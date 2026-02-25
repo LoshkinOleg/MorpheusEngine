@@ -1,0 +1,10 @@
+factions:
+  - id: world.nomad_caravans
+    name: Nomad Caravans
+    relationToPlayer: neutral
+  - id: world.scrap_raiders
+    name: Scrap Raiders
+    relationToPlayer: hostile
+  - id: world.oasis_union
+    name: Oasis Union
+    relationToPlayer: cautious

@@ -1,0 +1,17 @@
+{
+  "id": "sandcrawler",
+  "title": "Sandcrawler Captain",
+  "engineVersion": "0.1.x",
+  "entryState": {
+    "playerId": "entity.player.captain",
+    "anchorId": "anchor.bridge"
+  },
+  "moduleBindings": {
+    "intent_extractor": "llm.default",
+    "lore_retriever": "data.default",
+    "loremaster": "llm.default",
+    "default_simulator": "llm.default",
+    "arbiter": "llm.default",
+    "proser": "llm.default"
+  }
+}

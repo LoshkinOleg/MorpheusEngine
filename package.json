@@ -1,0 +1,25 @@
+{
+  "name": "morpheus-engine",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Modular LLM narrative game engine monorepo",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run --workspaces --if-present build",
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "npm run -w @morpheus/shared build && npm run -w @morpheus/backend dev",
+    "dev:frontend": "npm run -w @morpheus/frontend dev",
+    "test": "node --test",
+    "typecheck": "npm run -w @morpheus/shared build && npm run --workspaces --if-present typecheck",
+    "postinstall": "npm run -w @morpheus/shared build"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}
