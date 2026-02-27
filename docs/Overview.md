@@ -1,6 +1,6 @@
 # Morpheus Engine Overview
 
-Morpheus Engine is a modular narrative game engine for interactive text experiences (AI Dungeon-like), designed around a pipeline of specialized modules instead of one monolithic model.
+Morpheus Engine is a modular narrative game engine for interactive text experiences (AI Dungeon-like), designed around a router that orchestrates specialized module processes.
 
 ## Project goals
 
@@ -14,6 +14,7 @@ Morpheus Engine is a modular narrative game engine for interactive text experien
 - **Soft resolution over refusal**: improbable actions should resolve into plausible outcomes, not hard "cannot do" responses.
     - Example: if the player enters "I kill the skeleton by shooting it with my bow!", the outcome should be "You shoot the skeleton with your bow but the arrow bounces off." and not "You can't do that, skeletons are immune to piercing damage."
 - **Traceable turns**: every turn should be inspectable end-to-end through event logs and module traces via the Debug UI.
+- **Traceable pipeline order**: debug should present ordered stage-by-stage events, not only aggregate dumps.
 - **Mod-as-full-game**: each game project can define lore, tables, module bindings, and optional plugin code.
 - **Fair hidden information**: world truth and player-visible truth are separate to support stealth and discovery gameplay.
 - **LLMs propose; engine commits**: LLM modules propose structured outputs, but final state changes are committed only by engine-controlled arbiter.
@@ -41,10 +42,11 @@ Core contract:
 
 ## What exists today (MVP scaffold)
 
-- `apps/backend`: Node.js + TypeScript backend orchestrator with SQLite persistence.
-- `apps/frontend`: React + Vite UI with stacked Game UI + Debug UI, session selector, and log-backed state.
+- `apps/backend`: Node.js + TypeScript API + router orchestrator with per-run SQLite persistence.
+- `apps/frontend`: React + Vite UI with stacked Game UI + Debug UI, session selector, and DB-backed state.
 - `packages/shared`: shared schemas/types for structured module IR.
 - `game_projects/sandcrawler`: example game project with manifest, lore, and tables.
+- standalone module services under `apps/module-*` (`intent`, `loremaster`, `default_simulator`, `arbiter`, `proser`).
 
 ## Runtime concept in one page
 
@@ -54,7 +56,8 @@ Core contract:
 4. Simulator modules produce structured proposals (`ProposedDiff`).
 5. Arbiter commits final diff (`CommittedDiff`), and engine records warnings + persists snapshots.
 6. Narration is generated from committed outcomes.
-7. Session logs are appended (`prose.log` and `debug.log`) and frontend refreshes from those logs.
+7. Events/snapshots are persisted to per-run `world_state.db`, and frontend refreshes via `GET /run/:runId/state`.
+8. Optional step mode executes one router stage at a time via `/turn/step/start` + `/turn/step/next`.
 
 The current implementation is intentionally minimal and deterministic in places, but the structure is built to grow into a full modular simulation pipeline.
 
@@ -65,9 +68,12 @@ The current implementation is intentionally minimal and deterministic in places,
 - `GET /game_projects/:id`
 - `GET /game_projects/:id/sessions`
 - `POST /run/start`
-- `GET /run/:runId/logs`
+- `GET /run/:runId/state`
+- `GET /run/:runId/turn/:turn/pipeline`
 - `POST /run/:runId/open-saved-folder`
 - `POST /turn`
+- `POST /turn/step/start`
+- `POST /turn/step/next`
 
 ## Where to read next
 

@@ -9,10 +9,15 @@
   ],
   "scripts": {
     "build": "npm run --workspaces --if-present build",
-    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\" \"npm run dev:module-intent\" \"npm run dev:module-loremaster\" \"npm run dev:module-simulator\" \"npm run dev:module-arbiter\" \"npm run dev:module-proser\"",
     "dev:backend": "npm run -w @morpheus/shared build && npm run -w @morpheus/backend dev",
     "dev:frontend": "npm run -w @morpheus/frontend dev",
-    "test": "node --test",
+    "dev:module-intent": "npm run -w @morpheus/shared build && npm run -w @morpheus/module-intent dev",
+    "dev:module-loremaster": "npm run -w @morpheus/shared build && npm run -w @morpheus/module-loremaster dev",
+    "dev:module-simulator": "npm run -w @morpheus/shared build && npm run -w @morpheus/module-default-simulator dev",
+    "dev:module-arbiter": "npm run -w @morpheus/shared build && npm run -w @morpheus/module-arbiter dev",
+    "dev:module-proser": "npm run -w @morpheus/shared build && npm run -w @morpheus/module-proser dev",
+    "test": "npm run -w @morpheus/shared build && npm run -w @morpheus/backend build && node --test",
     "typecheck": "npm run -w @morpheus/shared build && npm run --workspaces --if-present typecheck",
     "postinstall": "npm run -w @morpheus/shared build"
   },

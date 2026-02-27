@@ -2,11 +2,11 @@
 
 ## Purpose
 
-Track frontend contracts for session lifecycle, chat turn submission, and file-backed Game/Debug UI behavior.
+Track frontend contracts for session lifecycle, chat turn submission, and DB-backed Game/Debug UI behavior.
 
 ## Last verified
 
-2026-02-25
+2026-02-26
 
 ## Owner / Source of truth
 
@@ -17,20 +17,18 @@ Track frontend contracts for session lifecycle, chat turn submission, and file-b
 ## Invariants / Contracts (Facts)
 
 - Frontend talks to backend using `VITE_API_BASE_URL`.
-  - Evidence: `apps/frontend/src/api.ts`, `apps/frontend/.env.example`
 - Session lifecycle:
   - Start with `POST /run/start`
   - Send turns via `POST /turn`
-  - Refresh display from `GET /run/:runId/logs`
-  - Evidence: `apps/frontend/src/App.tsx`, `apps/frontend/src/api.ts`
-- Session selector options come from disk-backed backend endpoint (`GET /game_projects/:id/sessions`).
-  - Evidence: `apps/frontend/src/api.ts`, `apps/frontend/src/App.tsx`
-- Player-facing Game UI derives from `prose.log` entries, not synthetic local placeholders.
-  - Evidence: `apps/frontend/src/App.tsx` rendering logic
-- Debug UI derives from `debug.log` entries and supports per-turn selection with latest-turn auto-scoping.
-  - Evidence: `apps/frontend/src/App.tsx`
-- Full provider conversations are displayed in Debug UI (`intent_extractor`, `loremaster`, `default_simulator`, `proser`).
-  - Evidence: `apps/frontend/src/App.tsx` debug card sections
+  - Optional stepped turns via `POST /turn/step/start` + `POST /turn/step/next`
+  - Refresh display from `GET /run/:runId/state`
+- Pipeline timeline reads from `GET /run/:runId/turn/:turn/pipeline` and/or persisted `module_trace.pipelineEvents`.
+- Session selector options come from `GET /game_projects/:id/sessions`.
+- Game UI derives from persisted `messages[]` returned by backend run-state projection.
+- Debug UI derives from persisted `debugEntries[]` (module trace payloads) and supports per-turn selection.
+- Debug UI supports ordered pipeline timeline cards and step controls (start/next/run-to-end).
+- Timeline order includes explicit `arbiter` module event before `proser`, with final `world_state_update` persistence step.
+- Model conversations are rendered with readable module/attempt formatting.
 
 ## Key entry points
 
@@ -44,29 +42,25 @@ Track frontend contracts for session lifecycle, chat turn submission, and file-b
   - [ ] Set `VITE_API_BASE_URL` to backend URL
   - [ ] Run `npm run dev:frontend`
   - [ ] Start/choose session and submit turn
-  - [ ] Confirm Game/Debug panels refresh from logs
-- Debug trace inspection:
-  - [ ] Submit at least two turns
-  - [ ] Use turn selector arrows
-  - [ ] Confirm selected turn trace sections match `debug.log`
+  - [ ] Confirm Game/Debug panels refresh from `GET /run/:runId/state`
 
 ## Gotchas / footguns
 
-- Do not reintroduce synthetic "welcome" log entries; this causes file/view mismatch.
+- Do not reintroduce synthetic local placeholders that diverge from backend state projection.
 - Blank/whitespace player input is valid and should advance turn; avoid re-adding strict trim-blocking.
-- Large debug JSON can hurt readability/performance if layout constraints are removed.
+- Very large prompt/response payloads can hurt readability if debug collapse/scroll rules are removed.
 
 ## Recent changes
 
-- UI split to vertical Game UI (top) + Debug UI (bottom).
-- Added turn-focused Debug UI cards and per-module conversation views.
-- Added "open saved folder" action for selected session.
-- Updated turn payload handling to show `warnings` (without validator module response object).
+- Switched from log-file-backed UI loading to DB-backed run-state loading.
+- Upgraded model conversation rendering to structured module/attempt cards.
+- Kept split Game UI (top) + Debug UI (bottom) with turn navigation.
+- Preserved manual Debug turn selection during polling (older turn view no longer snaps back to latest turn).
 
 ## To verify
 
-- Add richer debug trace UI (collapsible attempt/message blocks) without breaking raw data visibility.
-- Add request-level loading diagnostics when log polling races with turn submission.
+- Add request-level loading diagnostics when state polling races with turn submission.
+- Add provenance/citation panel for retrieved lore evidence in debug trace.
 
 ## References / Links
 

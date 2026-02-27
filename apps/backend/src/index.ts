@@ -5,16 +5,22 @@ import cors from "cors";
 import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { spawn } from "node:child_process";
-import { initDb } from "./db.js";
-import { processTurn } from "./engine.js";
 import { loadGameProjectManifest } from "./gameProject.js";
 import {
+  getTurnExecutionState,
   getSessionDirPath,
-  initializeSessionLogs,
+  initializeRunStore,
   listSessionsOnDisk,
-  readSessionLogs,
-} from "./logs.js";
-import { createLlmProviderFromEnv } from "./providers/factory.js";
+  openRunStore,
+  readPipelineState,
+  readSessionState,
+  resolveRunLocation,
+} from "./sessionStore.js";
+import {
+  advanceTurnStepExecution,
+  processTurnViaRouter,
+  startTurnStepExecution,
+} from "./router/orchestrator.js";
 
 const port = Number(process.env.PORT ?? 8787);
 const defaultGameProjectId = process.env.GAME_PROJECT_ID ?? "sandcrawler";
@@ -69,8 +75,6 @@ function openFolderInExplorer(folderPath: string) {
 }
 
 async function main() {
-  const llmProvider = createLlmProviderFromEnv(process.env);
-  const db = await initDb();
   const app = express();
   app.use(cors());
   app.use(express.json());
@@ -131,16 +135,7 @@ async function main() {
     try {
       const runId = randomUUID();
       const manifest = loadGameProjectManifest(defaultGameProjectId);
-
-      await db.run(`INSERT INTO runs (id, game_project_id) VALUES (?, ?)`, runId, manifest.id);
-      await db.run(
-        `INSERT INTO snapshots (run_id, turn, world_state, view_state) VALUES (?, ?, ?, ?)`,
-        runId,
-        0,
-        JSON.stringify({ gameProjectId: manifest.id, entities: [], facts: [], anchors: [] }),
-        JSON.stringify({ player: { observations: [] } }),
-      );
-      await initializeSessionLogs(manifest.id, runId);
+      await initializeRunStore(manifest.id, runId);
 
       logInfo("run_started", {
         request_id: requestId,
@@ -160,32 +155,29 @@ async function main() {
     }
   });
 
-  app.get("/run/:runId/logs", async (req, res) => {
+  app.get("/run/:runId/state", async (req, res) => {
     const requestId = randomUUID();
     const runId = req.params.runId;
 
     try {
-      const existingRun = await db.get<{ id: string; game_project_id: string }>(
-        `SELECT id, game_project_id FROM runs WHERE id = ?`,
-        runId,
-      );
-      if (!existingRun) {
+      const runLocation = await resolveRunLocation(runId);
+      if (!runLocation) {
         sendError(res, 404, "RUN_NOT_FOUND", "Run not found.", requestId, { runId });
         return;
       }
 
-      const logs = await readSessionLogs(existingRun.game_project_id, runId);
+      const state = await readSessionState(runLocation.gameProjectId, runId);
       res.json({
         runId,
-        gameProjectId: existingRun.game_project_id,
-        ...logs,
+        gameProjectId: runLocation.gameProjectId,
+        ...state,
       });
     } catch (error) {
       sendError(
         res,
         500,
-        "RUN_LOGS_READ_FAILED",
-        "Could not read run logs.",
+        "RUN_STATE_READ_FAILED",
+        "Could not read run state.",
         requestId,
         error instanceof Error ? error.message : String(error),
       );
@@ -197,16 +189,13 @@ async function main() {
     const runId = req.params.runId;
 
     try {
-      const existingRun = await db.get<{ id: string; game_project_id: string }>(
-        `SELECT id, game_project_id FROM runs WHERE id = ?`,
-        runId,
-      );
-      if (!existingRun) {
+      const runLocation = await resolveRunLocation(runId);
+      if (!runLocation) {
         sendError(res, 404, "RUN_NOT_FOUND", "Run not found.", requestId, { runId });
         return;
       }
 
-      const sessionDir = getSessionDirPath(existingRun.game_project_id, runId);
+      const sessionDir = getSessionDirPath(runLocation.gameProjectId, runId);
       await mkdir(sessionDir, { recursive: true });
       openFolderInExplorer(sessionDir);
       res.json({ ok: true, runId, openedPath: sessionDir });
@@ -249,44 +238,45 @@ async function main() {
     }
 
     try {
-      const existingRun = await db.get<{ id: string; game_project_id: string }>(
-        `SELECT id, game_project_id FROM runs WHERE id = ?`,
-        runId,
-      );
-      if (!existingRun) {
+      const runLocation = await resolveRunLocation(runId);
+      if (!runLocation) {
         sendError(res, 404, "RUN_NOT_FOUND", "Run not found.", requestId, { runId });
         return;
       }
+      const manifest = loadGameProjectManifest(runLocation.gameProjectId);
 
-      const turnRow = await db.get<{ maxTurn: number | null }>(
-        `SELECT MAX(turn) as maxTurn FROM snapshots WHERE run_id = ?`,
-        runId,
-      );
-      const expectedTurn = (turnRow?.maxTurn ?? 0) + 1;
+      const db = await openRunStore(runLocation.gameProjectId, runId);
+      let result: Awaited<ReturnType<typeof processTurnViaRouter>>;
+      try {
+        const turnRow = await db.get<{ maxTurn: number | null }>(`SELECT MAX(turn) as maxTurn FROM snapshots`);
+        const expectedTurn = (turnRow?.maxTurn ?? 0) + 1;
 
-      if (turn !== expectedTurn) {
-        sendError(
-          res,
-          409,
-          "TURN_SEQUENCE_CONFLICT",
-          "Turn is out of sequence.",
-          requestId,
-          { expectedTurn, receivedTurn: turn },
+        if (turn !== expectedTurn) {
+          sendError(
+            res,
+            409,
+            "TURN_SEQUENCE_CONFLICT",
+            "Turn is out of sequence.",
+            requestId,
+            { expectedTurn, receivedTurn: turn },
+          );
+          return;
+        }
+
+        result = await processTurnViaRouter(
+          db,
+          {
+            runId,
+            gameProjectId: runLocation.gameProjectId,
+            moduleBindings: manifest.moduleBindings,
+            turn,
+            playerInput,
+            playerId,
+          },
         );
-        return;
+      } finally {
+        await db.close();
       }
-
-      const result = await processTurn(
-        db,
-        {
-          runId,
-          gameProjectId: existingRun.game_project_id,
-          turn,
-          playerInput,
-          playerId,
-        },
-        llmProvider,
-      );
 
       logInfo("turn_processed", {
         request_id: requestId,
@@ -308,10 +298,201 @@ async function main() {
     }
   });
 
+  app.post("/turn/step/start", async (req, res) => {
+    const requestId = randomUUID();
+    const { runId, turn, playerInput, playerId } = req.body as {
+      runId: string;
+      turn: number;
+      playerInput: string;
+      playerId: string;
+    };
+
+    if (!runId || typeof playerInput !== "string" || !playerId || !Number.isInteger(turn)) {
+      sendError(
+        res,
+        400,
+        "BAD_STEP_START_REQUEST",
+        "Missing or invalid step start payload fields.",
+        requestId,
+        "Expected runId, playerInput, playerId, and integer turn.",
+      );
+      return;
+    }
+
+    if (turn < 1) {
+      sendError(res, 400, "INVALID_TURN_INDEX", "Turn must be >= 1.", requestId);
+      return;
+    }
+
+    try {
+      const runLocation = await resolveRunLocation(runId);
+      if (!runLocation) {
+        sendError(res, 404, "RUN_NOT_FOUND", "Run not found.", requestId, { runId });
+        return;
+      }
+      const manifest = loadGameProjectManifest(runLocation.gameProjectId);
+      const db = await openRunStore(runLocation.gameProjectId, runId);
+      try {
+        const turnRow = await db.get<{ maxTurn: number | null }>(`SELECT MAX(turn) as maxTurn FROM snapshots`);
+        const expectedTurn = (turnRow?.maxTurn ?? 0) + 1;
+        if (turn !== expectedTurn) {
+          sendError(
+            res,
+            409,
+            "TURN_SEQUENCE_CONFLICT",
+            "Turn is out of sequence.",
+            requestId,
+            { expectedTurn, receivedTurn: turn },
+          );
+          return;
+        }
+
+        const activeExecution = await db.get<{ turn: number }>(
+          `SELECT turn FROM turn_execution WHERE run_id = ? AND completed = 0 ORDER BY turn ASC LIMIT 1`,
+          runId,
+        );
+        if (activeExecution && activeExecution.turn !== turn) {
+          sendError(
+            res,
+            409,
+            "STEP_EXECUTION_CONFLICT",
+            "Another stepped turn is already in progress for this run.",
+            requestId,
+            { activeTurn: activeExecution.turn },
+          );
+          return;
+        }
+
+        const started = await startTurnStepExecution(db, {
+          runId,
+          gameProjectId: runLocation.gameProjectId,
+          moduleBindings: manifest.moduleBindings,
+          turn,
+          playerInput,
+          playerId,
+        });
+        const pipelineState = await readPipelineState(runLocation.gameProjectId, runId, turn);
+        res.json({
+          runId,
+          turn,
+          execution: started,
+          pipelineEvents: pipelineState.events,
+        });
+      } finally {
+        await db.close();
+      }
+    } catch (error) {
+      sendError(
+        res,
+        500,
+        "STEP_START_FAILED",
+        "Could not start stepped turn execution.",
+        requestId,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  });
+
+  app.post("/turn/step/next", async (req, res) => {
+    const requestId = randomUUID();
+    const { runId, turn } = req.body as {
+      runId: string;
+      turn: number;
+    };
+    if (!runId || !Number.isInteger(turn)) {
+      sendError(
+        res,
+        400,
+        "BAD_STEP_NEXT_REQUEST",
+        "Missing or invalid step next payload fields.",
+        requestId,
+        "Expected runId and integer turn.",
+      );
+      return;
+    }
+    try {
+      const runLocation = await resolveRunLocation(runId);
+      if (!runLocation) {
+        sendError(res, 404, "RUN_NOT_FOUND", "Run not found.", requestId, { runId });
+        return;
+      }
+      const manifest = loadGameProjectManifest(runLocation.gameProjectId);
+      const db = await openRunStore(runLocation.gameProjectId, runId);
+      try {
+        const execution = await getTurnExecutionState(db, runId, turn);
+        if (!execution) {
+          sendError(
+            res,
+            404,
+            "STEP_EXECUTION_NOT_FOUND",
+            "No active step execution found for this turn.",
+            requestId,
+            { runId, turn },
+          );
+          return;
+        }
+        const advanced = await advanceTurnStepExecution(db, {
+          runId,
+          gameProjectId: runLocation.gameProjectId,
+          moduleBindings: manifest.moduleBindings,
+          turn,
+          playerInput: execution.playerInput,
+          playerId: execution.playerId,
+        });
+        res.json({
+          runId,
+          turn,
+          execution: advanced.state,
+          pipelineEvents: advanced.pipelineEvents,
+          result: advanced.result,
+        });
+      } finally {
+        await db.close();
+      }
+    } catch (error) {
+      sendError(
+        res,
+        500,
+        "STEP_NEXT_FAILED",
+        "Could not advance stepped turn execution.",
+        requestId,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  });
+
+  app.get("/run/:runId/turn/:turn/pipeline", async (req, res) => {
+    const requestId = randomUUID();
+    const runId = req.params.runId;
+    const turn = Number(req.params.turn);
+    if (!Number.isInteger(turn) || turn < 1) {
+      sendError(res, 400, "INVALID_TURN_INDEX", "Turn must be >= 1.", requestId);
+      return;
+    }
+    try {
+      const runLocation = await resolveRunLocation(runId);
+      if (!runLocation) {
+        sendError(res, 404, "RUN_NOT_FOUND", "Run not found.", requestId, { runId });
+        return;
+      }
+      const pipelineState = await readPipelineState(runLocation.gameProjectId, runId, turn);
+      res.json(pipelineState);
+    } catch (error) {
+      sendError(
+        res,
+        500,
+        "PIPELINE_STATE_READ_FAILED",
+        "Could not read pipeline state.",
+        requestId,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  });
+
   app.listen(port, () => {
     // Intentional single-line startup log for easy tooling parsing.
     console.log(
-      `Morpheus backend listening on http://localhost:${port} (llm_provider=${llmProvider.name})`,
+      `Morpheus backend listening on http://localhost:${port} (router mode)`,
     );
   });
 }

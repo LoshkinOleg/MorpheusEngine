@@ -1,2 +1,3 @@
-- Go through academic papers made available under working_memory/ and update docs / LLM_ files with insights obtained from them.
-- work on intent extractor step
+- start implementing tests
+- don't clarify intent for now, only decide to refuse an action but give the player an explanation as to why.
+- Implement intent clarification pipeline.

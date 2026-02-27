@@ -18,9 +18,9 @@ A compact direction checkpoint file: what we are intentionally building next, wh
 - Near-term target remains a single-player, modular text narrative engine with auditable turns.
   - Evidence: `docs/Overview.md`, `docs/Architecture.md`
 - Non-prose modules are expected to operate on structured IR, not freeform text.
-  - Evidence: `packages/shared/src/schemas.ts`, `apps/backend/src/engine.ts`
+  - Evidence: `packages/shared/src/schemas.ts`, module services under `apps/module-*`
 - Debug visibility of model conversations is considered a first-class requirement.
-  - Evidence: `apps/backend/src/engine.ts` (`llmConversations`), `apps/frontend/src/App.tsx`
+  - Evidence: `apps/backend/src/router/orchestrator.ts` (`llmConversations`), `apps/frontend/src/App.tsx`
 
 ## Key entry points
 

@@ -6,7 +6,7 @@ Routing/index file for LLM memory in this repository. Use this first, then jump 
 
 ## Last verified
 
-2026-02-25
+2026-02-26
 
 ## Owner / Source of truth
 
@@ -19,8 +19,8 @@ Routing/index file for LLM memory in this repository. Use this first, then jump 
   - Evidence: `working_memory/LLM_LlmFilesUsage.md` section "Where they live"
 - Core implementation is split across backend, frontend, shared contracts, and game project data.
   - Evidence: `README.md` monorepo layout section
-- Session logs are persisted per run under `game_projects/<id>/saved/<session_id>/`.
-  - Evidence: `apps/backend/src/engine.ts` (appendTurnLogs path), `apps/backend/src/logs.ts`
+- Run state is persisted per run under `game_projects/<id>/saved/<session_id>/world_state.db`.
+  - Evidence: `apps/backend/src/sessionStore.ts`
 
 ## Key entry points
 
@@ -45,14 +45,15 @@ Routing/index file for LLM memory in this repository. Use this first, then jump 
 
 ## Gotchas / footguns
 
-- Do not treat stale in-memory UI placeholders as source of truth; player/debug views are log-backed.
+- Do not treat stale in-memory UI placeholders as source of truth; player/debug views are DB-backed via backend state projection.
 - Do not treat DB run rows as authoritative session list for UI; session selector is disk-backed (`saved/*` folders).
 
 ## Recent changes
 
 - Added initial `LLM_*.md` memory baseline for backend/frontend/game-project tracking.
-- Added consequence-tag clarification flow and loremaster placeholder stage.
+- Migrated runtime to router + standalone module services (`apps/module-*`).
 - Removed standalone validator module usage from runtime/docs for now.
+- Added explicit standalone arbiter module stage and stepped pipeline timeline/docs updates.
 
 ## To verify
 

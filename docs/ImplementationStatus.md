@@ -4,82 +4,62 @@ This file tracks what is currently implemented in code versus the target archite
 
 ## Snapshot
 
-- Date: 2026-02-25
+- Date: 2026-02-26
 - Scope: runtime/backend/frontend/shared contracts
 
 ## Implemented now
 
-- **Monorepo + build**
-  - Workspaces for backend/frontend/shared are active.
-  - Evidence: `package.json`, `apps/*/package.json`, `packages/shared/package.json`
-  - Verify: `npm run typecheck`, `npm run build`
+- **Router + module-process architecture**
+  - Backend API delegates turn orchestration to router, which calls standalone services over HTTP.
+  - Evidence: `apps/backend/src/index.ts`, `apps/backend/src/router/orchestrator.ts`, `apps/backend/src/router/client.ts`
 
-- **Backend runtime shell**
-  - Express server, SQLite init, run start, turn processing.
-  - Evidence: `apps/backend/src/index.ts`, `apps/backend/src/db.ts`, `apps/backend/src/engine.ts`
-  - Verify: `GET /health`, `POST /run/start`, `POST /turn`
+- **Standalone module services**
+  - `intent_extractor`, `loremaster` (retrieve/pre/post), `default_simulator`, `arbiter`, and `proser` each run as separate apps.
+  - Evidence: `apps/module-intent/src/index.ts`, `apps/module-loremaster/src/index.ts`, `apps/module-default-simulator/src/index.ts`, `apps/module-arbiter/src/index.ts`, `apps/module-proser/src/index.ts`
 
-- **No standalone validator module (current policy)**
-  - Turn payloads expose `warnings` and do not include a validator stage/module.
-  - Evidence: `apps/backend/src/engine.ts`, `apps/frontend/src/api.ts`, `game_projects/sandcrawler/manifest.json`
+- **Per-run DB authority**
+  - Session truth is `game_projects/<id>/saved/<runId>/world_state.db` (events + snapshots).
+  - Evidence: `apps/backend/src/sessionStore.ts`
 
-- **LLM provider abstraction**
-  - Stub + Ollama providers with env-based selection.
-  - Evidence: `apps/backend/src/providers/factory.ts`, `apps/backend/src/providers/ollama.ts`
-  - Verify: `LLM_PROVIDER=ollama`, `npm test`
+- **Shared inter-process contracts**
+  - Module request/response envelopes and payload schemas are centralized in shared contracts.
+  - Evidence: `packages/shared/src/schemas.ts`
 
-- **Structured turn trace**
-  - Intent/loremaster/proposal/commit/warnings/narration and provider conversation traces are persisted.
-  - Evidence: `apps/backend/src/engine.ts` (`turnTracePayload`, `llmConversations`)
-  - Verify: inspect `game_projects/<id>/saved/<session_id>/debug.log`
-
-- **Session file model**
-  - Per-session logs under `game_projects/<id>/saved/<session_id>/`.
-  - Evidence: `apps/backend/src/engine.ts`, `apps/backend/src/logs.ts`
-  - Verify: start run, submit turn, inspect created folder and files
-
-- **Frontend file-backed UI**
-  - Game UI + Debug UI render from log files via backend APIs.
-  - Evidence: `apps/frontend/src/App.tsx`, `apps/frontend/src/api.ts`
-  - Verify: run app, observe views update after `/run/:runId/logs`
+- **Frontend DB-backed state**
+  - Frontend reads run state via backend `GET /run/:runId/state`.
+  - Evidence: `apps/frontend/src/api.ts`, `apps/frontend/src/App.tsx`
 
 - **Debug inspection UX**
-  - Turn selector, up/down navigation, structured debug cards, model conversation visibility.
-  - Evidence: `apps/frontend/src/App.tsx`
-  - Verify: submit multiple turns, browse turns in Debug UI
+  - Turn selector, stepped pipeline timeline, and readable model conversation formatting are active.
+  - Evidence: `apps/frontend/src/App.tsx`, `apps/frontend/src/styles.css`
+
+- **Validation coverage**
+  - Contract tests and router integration tests are present and passing.
+  - Evidence: `tests/module-contracts.test.mjs`, `tests/router-integration.test.mjs`
 
 ## Partially implemented
 
-- **Intent extraction**
-  - LLM call + schema validation + retries exists, but fallback behavior is common in stub mode.
-  - Evidence: `apps/backend/src/engine.ts::extractIntent()`
+- **Arbiter policy depth**
+  - Arbiter is a standalone module but currently runs accept-first policy (no rerun/alternative selection behavior yet).
+  - Evidence: `apps/module-arbiter/src/index.ts`, `apps/backend/src/router/orchestrator.ts`
 
-- **Clarification turn policy**
-  - Runtime now has an explicit clarification branch driven by consequence tags (`needs_clarification`, `no_target_in_scope`) and optional `clarificationQuestion`.
-  - Evidence: `packages/shared/src/schemas.ts`, `apps/backend/src/engine.ts`
+- **Retriever sophistication**
+  - Lore retrieval exists but uses simple deterministic chunk scoring, not semantic ranking.
+  - Evidence: `apps/module-loremaster/src/index.ts`
 
-- **Loremaster placeholder stage**
-  - Deterministic placeholder `loremaster` stage runs each turn and emits structured assessments with status/tags/rationale.
-  - Evidence: `packages/shared/src/schemas.ts::LoremasterOutputSchema`, `apps/backend/src/engine.ts::runLoremasterPlaceholder()`
-
-- **Default simulation**
-  - LLM operations proposal + deterministic invariant stamping (`moduleName`) exists.
-  - Evidence: `apps/backend/src/engine.ts::runDefaultSimulator()`
-
-- **Narration**
-  - Proser call exists with leak-safe fallback derived from committed observation.
-  - Evidence: `apps/backend/src/engine.ts::generateNarration()`
+- **Invariant library breadth**
+  - Turn sequencing and schema contracts are enforced; richer world invariants remain limited.
+  - Evidence: `apps/backend/src/index.ts`, `packages/shared/src/schemas.ts`
 
 ## Not yet implemented
 
-- Lore retrieval module and world-lore ranking pipeline.
-- Full LoreMaster LLM-based plausibility critic (current stage is deterministic placeholder).
-- Arbiter conflict resolution across multiple resolvers (authoritative + advisory merge policy).
-- Deterministic invariant/policy check library beyond current turn sequencing checks.
-- Rich test coverage for endpoint edge cases and module misuse cases.
+- Authoritative classic simulation services (stealth/damage/economy/crew).
+- Full deterministic authoritative/advisory merge policy engine beyond current fallback flow.
+- Visibility/fog-of-war leak enforcement at world/view granularity.
+- Rich provenance UI (citations panel) for retrieved lore.
 
 ## Current risks / drift watch
 
-- Prompt content still partly hand-authored in backend logic (though schema contracts are centralized in shared).
-- Session listing is disk-based; DB and disk can diverge by design if files are manually altered.
-- Retry/fallback behavior may mask low-quality model outputs if warning inspection is skipped.
+- Duplication risk: LLM provider/retry logic currently exists independently in each module service.
+- Module binding currently maps to service URLs/env defaults; richer registry/provider indirection is still evolving.
+- Retry/fallback behavior can still mask low-quality model output if warnings are ignored in debug review.

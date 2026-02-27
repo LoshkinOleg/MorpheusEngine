@@ -2,7 +2,7 @@
 
 Modular LLM narrative game engine scaffold (AI Dungeon-like) with:
 
-- Node.js + TypeScript backend orchestrator
+- Node.js + TypeScript backend API + router orchestrator
 - React + Vite frontend shell
 - Shared JSON schema package
 - SQLite event/snapshot persistence
@@ -10,7 +10,11 @@ Modular LLM narrative game engine scaffold (AI Dungeon-like) with:
 
 ## Monorepo layout
 
-- `apps/backend` - orchestrator runtime and APIs
+- `apps/backend` - API server + router orchestrator runtime
+- `apps/module-intent` - standalone `intent_extractor` module service
+- `apps/module-loremaster` - standalone lore retrieval + pre/post loremaster service
+- `apps/module-default-simulator` - standalone fallback simulator service
+- `apps/module-proser` - standalone prose generation service
 - `apps/frontend` - chat/menu/debug web UI shell
 - `packages/shared` - core schemas and shared types
 - `game_projects/sandcrawler` - example game project
@@ -35,7 +39,7 @@ Frontend defaults to `http://localhost:5173`.
 - `GET /game_projects/:id`
 - `GET /game_projects/:id/sessions`
 - `POST /run/start`
-- `GET /run/:runId/logs`
+- `GET /run/:runId/state`
 - `POST /run/:runId/open-saved-folder`
 - `POST /turn`
 
@@ -52,11 +56,11 @@ Frontend defaults to `http://localhost:5173`.
 
 ## Notes
 
-- The current pipeline is a runnable skeleton with deterministic placeholder modules.
+- The runtime uses a router that calls standalone module services over HTTP.
 - Shared schemas include: `ActionCandidates`, `LoremasterOutput`, `ProposedDiff`, `CommittedDiff`, and `ObservationEvent`.
 - `game_projects` are folder-based for now and can be zipped later for distribution.
-- Session logs are persisted per run under `game_projects/<id>/saved/<session_id>/`.
-- Frontend state is file-backed from session logs via backend APIs.
+- Run state is persisted per run under `game_projects/<id>/saved/<session_id>/world_state.db`.
+- Frontend state is DB-backed via backend `GET /run/:runId/state`.
 
 ## Documentation map
 

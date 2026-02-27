@@ -14,7 +14,8 @@ This document defines coding style, naming conventions, and API contract rules f
 
 - **TypeScript symbols**: `camelCase` for variables/functions, `PascalCase` for types/classes/interfaces.
 - **Filesystem**:
-  - Backend modules: descriptive lowercase files like `gameProject.ts`, `engine.ts`, `db.ts`.
+  - Backend router/API modules: descriptive lowercase files like `gameProject.ts`, `sessionStore.ts`, `router/orchestrator.ts`.
+  - Standalone module services live in `apps/module-*`.
   - Game content: `game_projects/<project_id>/...`.
 - **Module IDs** (pipeline): use `snake_case` identifiers such as `intent_extractor`, `lore_retriever`, `loremaster`, `default_simulator`, `arbiter`, `proser`.
 - **Fact keys**:

@@ -53,6 +53,21 @@ body {
   gap: 1rem;
 }
 
+.tabBar {
+  margin-top: 1rem;
+  display: flex;
+  gap: 0.5rem;
+}
+
+.tabButton {
+  padding: 0.45rem 0.7rem;
+}
+
+.tabButtonActive {
+  border-color: #7aa8ff;
+  color: #dfe9ff;
+}
+
 .metaLine {
   margin-top: 0;
   color: #b8b8b8;
@@ -73,6 +88,40 @@ body {
 .chatInput {
   display: flex;
   gap: 0.5rem;
+}
+
+.moduleDebugGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.6rem;
+  margin-bottom: 0.7rem;
+}
+
+.moduleDebugGrid label,
+.moduleDebugLabel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.9rem;
+  color: #d4d4d4;
+}
+
+.moduleDebugLabel {
+  margin-bottom: 0.7rem;
+}
+
+.moduleDebugActions {
+  margin-bottom: 0.7rem;
+}
+
+textarea {
+  width: 100%;
+  padding: 0.55rem;
+  border-radius: 6px;
+  border: 1px solid #444;
+  background: #121212;
+  color: #ececec;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 .debugControls {
@@ -117,8 +166,94 @@ body {
   border: 1px solid #222;
 }
 
+.jsonCollapse {
+  border: 1px solid #2a2a2a;
+  border-radius: 6px;
+  background: #0d0d0d;
+}
+
+.jsonCollapse summary {
+  cursor: pointer;
+  padding: 0.45rem 0.6rem;
+  color: #cfcfcf;
+  user-select: none;
+}
+
+.jsonCollapse pre {
+  margin: 0 0.6rem 0.6rem;
+}
+
 .debugCardWide {
   grid-column: 1 / -1;
+}
+
+.conversationList {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.conversationModule {
+  border: 1px solid #2f2f2f;
+  border-radius: 6px;
+  padding: 0.6rem;
+  background: #101010;
+}
+
+.conversationModuleHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.4rem;
+  color: #d8d8d8;
+  font-size: 0.9rem;
+}
+
+.conversationFallback {
+  margin: 0 0 0.5rem 0;
+  color: #ffb570;
+  font-size: 0.9rem;
+}
+
+.conversationAttempt {
+  border: 1px solid #252525;
+  border-radius: 6px;
+  margin-top: 0.45rem;
+  background: #0d0d0d;
+}
+
+.conversationAttempt summary {
+  cursor: pointer;
+  padding: 0.5rem 0.6rem;
+  color: #d0d0d0;
+}
+
+.conversationAttemptBody {
+  padding: 0.2rem 0.6rem 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.conversationRole {
+  margin: 0 0 0.3rem 0;
+  color: #9ecbff;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.conversationMessage pre,
+.conversationResponse pre,
+.conversationError pre {
+  margin: 0;
+  max-height: 240px;
+  min-height: auto;
+}
+
+.conversationError .conversationRole {
+  color: #ff8f8f;
 }
 
 .panel pre {

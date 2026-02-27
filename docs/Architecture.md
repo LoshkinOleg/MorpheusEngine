@@ -4,18 +4,21 @@ This document describes the target architecture and the current MVP implementati
 
 ## 1) System topology
 
-The project is a TypeScript monorepo with three main runtime layers:
+The project is a TypeScript monorepo with four runtime layers:
 
 - **Frontend (`apps/frontend`)**
   - React UI for player interaction.
-  - Core UX scope: stacked Game UI + Debug UI with session selector and log-backed state.
-- **Backend orchestrator (`apps/backend`)**
-  - Runs turn orchestration and module pipeline.
+  - Core UX scope: stacked Game UI + Debug UI with session selector and DB-backed state.
+- **Backend API + router (`apps/backend`)**
+  - Runs API endpoints and router orchestration.
   - Loads game project manifests.
   - Persists events and snapshots.
-  - Exposes HTTP API for game runs and turns.
+  - Calls standalone module services over HTTP.
+- **Standalone module services (`apps/module-*`)**
+  - One process per pipeline module (`intent_extractor`, `loremaster`, `default_simulator`, `arbiter`, `proser`).
+  - Expose module-specific invoke endpoints.
 - **Shared contracts (`packages/shared`)**
-  - Common schema definitions and types for module IR and schema-level enforcement.
+  - Common schema definitions and types for module IR and inter-process request/response contracts.
 
 ## 2) Turn loop architecture
 
@@ -23,18 +26,18 @@ The runtime follows an event-sourced turn pattern:
 
 1. **Input capture**
    - Player action is received (`POST /turn`) and stored as an event.
-2. **Intent extraction**
-   - Input is translated into structured candidates (`ActionCandidates`).
-3. **Loremaster checks**
-   - The actions are approved or altered depending on what's possible according to existing world rules.
-4. **Simulation proposals**
+2. **Router pipeline calls**
+   - Router calls `intent_extractor`, lore retrieval, `loremaster` pre-check.
+3. **Simulation proposals**
    - One or more modules produce `ProposedDiff` operations.
+4. **Post-diff lore checks**
+   - Router calls `loremaster` post-check for outcome/narration consistency hints.
 5. **Arbiter commit**
    - Final operations are selected/merged into `CommittedDiff`.
 6. **Persistence**
-   - Module trace and snapshots are written to storage.
+   - Pipeline step events, module trace, and snapshots are written to storage.
 7. **Presentation**
-   - UI consumes committed result and trace payloads from storage.
+   - UI consumes committed result, trace payloads, and ordered pipeline events from storage.
 
 Why this pattern:
 
@@ -47,18 +50,18 @@ Why this pattern:
 Planned default pipeline:
 
 1. `intent_extractor` (LLM)
-2. `loremaster` plausibility critic (deterministic placeholder now, LLM target later)
-3. optional `lore_retriever` (future data/RAG module)
+2. `loremaster` retrieval + pre/post checks (standalone service)
+3. optional external `lore_retriever` service (future split if needed)
 4. resolvers:
    - authoritative code simulators (when available)
    - fallback `default_simulator` (LLM)
-5. `arbiter` (LLM-assisted judge)
+5. `arbiter` (standalone service, currently accept-first policy)
 6. optional critic loop
 7. `proser` (LLM)
 
 Current state:
 
-- MVP backend includes deterministic skeleton implementation of intent extraction, loremaster placeholder assessment, default simulation, and arbiter commit to validate wiring and persistence flow.
+- Router + standalone module services are implemented for intent, loremaster, default simulation, and prose generation.
 
 Authoritative vs advisory resolver policy:
 
@@ -129,14 +132,18 @@ Promotion decisions are finalized by arbiter at commit time, then validated by d
 
 ## 5) Storage model (MVP)
 
-Backend uses SQLite (`apps/backend/data/morpheus.sqlite`) with:
+Backend uses per-run SQLite (`game_projects/<id>/saved/<runId>/world_state.db`) with:
 
-- `runs`
-  - run metadata and selected game project.
 - `events`
   - append-only turn events and module traces.
 - `snapshots`
   - persisted world/view snapshots per turn.
+- `meta`
+  - run/game project metadata for the session DB.
+- `turn_execution`
+  - in-progress/completed turn execution state for normal and step mode.
+- `pipeline_events`
+  - ordered per-turn step events (`stepNumber`, stage, endpoint, request/response payloads).
 
 This supports local-first development and turn replay diagnostics (without requiring deterministic replay).
 
@@ -149,9 +156,12 @@ Current endpoints:
 - `GET /game_projects/:id`
 - `GET /game_projects/:id/sessions`
 - `POST /run/start`
-- `GET /run/:runId/logs`
+- `GET /run/:runId/state`
+- `GET /run/:runId/turn/:turn/pipeline`
 - `POST /run/:runId/open-saved-folder`
 - `POST /turn`
+- `POST /turn/step/start`
+- `POST /turn/step/next`
 
 ### 6.1 Endpoint details
 
@@ -262,17 +272,17 @@ Success response (`200`) shape:
 - `gameProjectId`
 - `sessions[]` with `sessionId` and `createdAt`
 
-#### `GET /run/:runId/logs`
+#### `GET /run/:runId/state`
 
 Purpose:
 
-- Return file-backed session logs used by frontend as source of truth.
+- Return DB-backed run state projection used by frontend as source of truth.
 
 Success response (`200`) shape:
 
 - `runId`
 - `gameProjectId`
-- `proseEntries[]`
+- `messages[]`
 - `debugEntries[]`
 - `nextTurn`
 
@@ -315,6 +325,47 @@ Success response (`200`) shape:
 - `warnings`: non-fatal pipeline warnings
 - `narrationText`: player-facing prose for this turn
 
+#### `POST /turn/step/start`
+
+Purpose:
+
+- Start stepped router execution for one turn.
+- Record player input and initialize paused execution state.
+
+Success response (`200`) shape:
+
+- `runId`
+- `turn`
+- `execution`: `TurnExecutionState`
+- `pipelineEvents[]`: starts with frontend input acceptance event
+
+#### `POST /turn/step/next`
+
+Purpose:
+
+- Execute exactly one next router stage in stepped mode.
+
+Success response (`200`) shape:
+
+- `runId`
+- `turn`
+- `execution`: updated `TurnExecutionState` (cursor/completed)
+- `pipelineEvents[]`: accumulated ordered events
+- `result`: final trace payload when completed, otherwise `null`
+
+#### `GET /run/:runId/turn/:turn/pipeline`
+
+Purpose:
+
+- Read ordered pipeline timeline for a specific turn (in-progress or completed).
+
+Success response (`200`) shape:
+
+- `runId`
+- `turn`
+- `execution`: `TurnExecutionState | null`
+- `events[]`: ordered `PipelineStepEvent`
+
 Validation error (`400`) example:
 
 ```json
@@ -354,7 +405,7 @@ Recommended local default for early development:
 - Ollama
 - `qwen2.5:7b-instruct`
 
-The backend currently includes a stub provider contract and can evolve toward production multi-provider routing per module.
+Each standalone module service currently has its own provider selection from env and can evolve to shared provider utilities.
 
 ## 9) Frontend architecture notes
 
@@ -362,8 +413,10 @@ Current UI behavior:
 
 - stacked Game UI (top) and Debug UI (bottom)
 - session selector backed by `GET /game_projects/:id/sessions`
-- turn log source of truth from `GET /run/:runId/logs`
+- turn state source of truth from `GET /run/:runId/state`
 - debug turn navigation with structured trace cards
+- debug timeline rendering from ordered `pipelineEvents`
+- step mode controls: start, next stage, run-to-end without re-execution
 
 Future enhancements:
 
@@ -380,7 +433,7 @@ Future enhancements:
 
 Near-term:
 
-- Replace placeholder module logic with real module interface implementations.
+- Harden module service contracts and router policy enforcement.
 - Expand deterministic invariants and policy checks.
 - Add automated tests for schema/misuse/turn behavior.
 - Add OpenAPI and generated API docs.
@@ -629,10 +682,12 @@ Critical rule:
 
 1. player input arrives
 2. intent extractor proposes candidates
-3. loremaster scores plausibility/consequences (placeholder deterministic logic today)
+3. loremaster retrieves lore and scores plausibility/consequences (pre-check)
 4. simulators run (authoritative modules first, default simulator fallback)
-5. arbiter commits final diff
-6. proser narrates committed outcome only
+5. loremaster post-check returns narration constraints
+6. arbiter module selects commit candidate (currently always accepts validated proposal)
+7. proser narrates committed outcome only
+8. world state update persists trace, committed diff, and snapshot
 
 All module inputs/outputs and final commit are persisted in the event log for audit/debug.
 
@@ -649,3 +704,112 @@ For fastest delivery:
 - keep bounded retries for structured module outputs
 - defer critic/verifier LLM pass initially
 - use one model backend first (for example `qwen2.5:7b-instruct`), specialize per module later
+
+## 13) Architecture delta: near-term implementation roadmap
+
+This section translates current design direction into concrete implementation phases.
+
+### 13.1 Phase A (stabilize core contracts and runtime)
+
+Goals:
+
+- Formalize a turn-scoped blackboard payload as a first-class runtime object.
+- Keep module communication IR-first and schema-validated.
+- Make structured decoding behavior measurable in production logs.
+
+Required outputs:
+
+- `TurnBlackboard` contract in `packages/shared`:
+  - `context`
+  - `candidates`
+  - `constraints`
+  - `proposals`
+  - `committed`
+  - `citations`
+  - `warnings`
+- Backend instrumentation per module:
+  - parse success/fail
+  - retry count
+  - timeout count
+  - fallback count
+  - latency/token usage
+
+Acceptance criteria:
+
+- Every module read/write is represented in persisted `module_trace` events in structured form.
+- `POST /turn` success payload remains stable while adding non-breaking blackboard fields.
+
+### 13.2 Phase B (memory hierarchy + retrieval provenance)
+
+Goals:
+
+- Introduce memory tiers inspired by virtual context management:
+  - `working`
+  - `episodic`
+  - `semantic`
+- Implement `lore_retriever` with provenance-first outputs.
+
+Required outputs:
+
+- Retrieval contract in `packages/shared`:
+  - `retrievalQuery`
+  - `evidenceItems[]` (`id`, `source`, `text`, `score`)
+  - `selectedEvidenceIds[]`
+- Session persistence integration:
+  - persisted retrieval trace in `module_trace` events
+  - citation references available to `proser`
+
+Acceptance criteria:
+
+- Any factual claim used by simulator/proser can be traced to source evidence in debug output.
+- Retrieval can be toggled per game project manifest without code changes.
+
+### 13.3 Phase C (visibility/fog-of-war + deterministic authority)
+
+Goals:
+
+- Enforce player-view constraints at simulation and narration boundaries.
+- Strengthen deterministic authoritative module policy.
+
+Required outputs:
+
+- Visibility-aware state slices:
+  - `WorldState` (truth)
+  - `ViewState(player)` (known)
+- Deterministic gate checks:
+  - no “retry for different outcome” for deterministic authoritative modules
+  - explicit reject reasons (`contract_error`, `invariant_error`, `input_version_error`)
+
+Acceptance criteria:
+
+- Hidden information never appears in `narrationText` unless surfaced by observation events.
+- Deterministic module outputs are either accepted or rejected with typed reason; not creatively rewritten.
+
+### 13.4 Phase D (ReAct-style debug traces and operator control)
+
+Goals:
+
+- Improve observability of LLM decisions by normalizing traces to:
+  - `thought`
+  - `action`
+  - `observation`
+- Support safe human intervention hooks for debugging.
+
+Required outputs:
+
+- Trace schema extension for module conversations with optional ReAct segmentation.
+- UI improvements:
+  - grouped traces by module
+  - copyable structured blocks
+  - explicit retry/fallback badges
+
+Acceptance criteria:
+
+- Debug UI makes each module’s decision path inspectable without reading raw prompt dumps.
+- Manual diagnostics can identify whether failure came from retrieval, reasoning, schema, or policy gate.
+
+### 13.5 Out-of-scope for this roadmap
+
+- Multiplayer runtime model.
+- Full deterministic replay guarantee.
+- Graphical map/continuous geometry as required default.
