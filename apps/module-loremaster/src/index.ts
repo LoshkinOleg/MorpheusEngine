@@ -279,27 +279,17 @@ function fallbackPre(intent: ActionCandidates): LoremasterOutput {
   const assessments = intent.candidates.map((candidate, index) => {
     const tags = [...(candidate.consequenceTags ?? [])];
     const target = extractCandidateTarget(candidate.params ?? {});
-    let clarificationQuestion = candidate.clarificationQuestion?.trim();
     if (candidate.intent === "attack" && !target) {
-      if (!tags.includes("needs_clarification")) tags.push("needs_clarification");
       if (!tags.includes("no_target_in_scope")) tags.push("no_target_in_scope");
-      clarificationQuestion = clarificationQuestion || "What do you want to attack?";
-    }
-    if (tags.includes("needs_clarification") || tags.includes("no_target_in_scope")) {
-      return {
-        candidateIndex: index,
-        status: "needs_clarification" as const,
-        consequenceTags: tags,
-        clarificationQuestion,
-        rationale: "Clarification required before safe simulation.",
-      };
     }
     if (tags.length > 0) {
       return {
         candidateIndex: index,
         status: "allowed_with_consequences" as const,
         consequenceTags: tags,
-        rationale: "Action is plausible with explicit consequence handling.",
+        rationale: tags.includes("no_target_in_scope")
+          ? "Action cannot be resolved safely because no valid target is in scope."
+          : "Action is plausible with explicit consequence handling.",
       };
     }
     return {
@@ -322,11 +312,16 @@ function normalizePre(parsed: unknown): unknown {
   root.assessments = root.assessments.map((assessment) => {
     if (!assessment || typeof assessment !== "object") return assessment;
     const next = { ...assessment };
-    if (
-      typeof next.clarificationQuestion === "string" &&
-      next.clarificationQuestion.trim().length === 0
-    ) {
-      delete next.clarificationQuestion;
+    const status = typeof next.status === "string" ? next.status : "";
+    if (status !== "allowed" && status !== "allowed_with_consequences") {
+      next.status = "allowed_with_consequences";
+      const rawTags = Array.isArray(next.consequenceTags) ? next.consequenceTags : [];
+      next.consequenceTags = rawTags.includes("no_target_in_scope")
+        ? rawTags
+        : [...rawTags, "no_target_in_scope"];
+      if (typeof next.rationale !== "string" || next.rationale.trim().length === 0) {
+        next.rationale = "Action cannot be resolved safely because no valid target is in scope.";
+      }
     }
     return next;
   });
@@ -390,13 +385,12 @@ app.post("/pre", async (req, res) => {
   try {
     const payload = LoremasterPreModuleRequestSchema.parse(req.body);
     const basePrompt = [
-      "Task: assess action candidates for plausibility and clarification needs.",
+      "Task: assess action candidates for plausibility and refusal risk.",
       LOREMASTER_OUTPUT_CONTRACT,
       "Rules:",
       "- return one assessment per candidate index in the same order",
-      "- use status='needs_clarification' when action cannot be safely simulated yet",
-      "- include clarificationQuestion only when status is 'needs_clarification'",
-      "- do not include clarificationQuestion as an empty string",
+      "- status must be either 'allowed' or 'allowed_with_consequences'",
+      "- use consequenceTags (for example 'no_target_in_scope') when refusal justification is required",
       "- keep rationale concise and concrete",
       "Context:",
       JSON.stringify({

@@ -476,7 +476,7 @@ The core rule across all modules is:
   2. cap retries to a fixed maximum `N`
   3. if still invalid, return safe fallback behavior
 - Typical fallback:
-  - ask a clarification
+  - refuse invalid action with deterministic in-world narration
   - emit minimal safe response
   - avoid mutating critical state
 
@@ -502,14 +502,13 @@ Output (`ActionCandidates`):
   - `params` (target/tool/destination/topic)
   - `confidence` (`0..1`)
   - optional `consequenceTags[]`
-  - optional `clarificationQuestion`
 - `rawInput`
 
 Notes:
 
 - Keep intent taxonomy small and extensible.
-- Clarification can be triggered here or deferred to arbiter.
-- If clarification is required, runtime should return a proser clarification response and commit minimal or no world changes for that turn.
+- Invalid actions can be marked here and deterministically refused by backend refusal policy.
+- On refusal, runtime emits refusal narration and commits only a `view:player` observation (no world mutation).
 
 ### 12.3 Lore Retriever (`lore_retriever`)
 
@@ -532,7 +531,7 @@ Outputs:
 
 Responsibility:
 
-- Classify candidate actions as plausible, constrained, or clarification-needed.
+- Classify candidate actions as plausible or constrained.
 - Attach consequence tags and recommended resolution mode.
 
 Inputs:
@@ -546,9 +545,8 @@ Output (`LoremasterOutput` payload):
 
 - per candidate:
   - `candidateIndex`
-  - `status`: `allowed | allowed_with_consequences | needs_clarification`
+  - `status`: `allowed | allowed_with_consequences`
   - `consequenceTags[]`
-  - optional `clarificationQuestion`
   - `rationale`
 
 Critical constraint:
@@ -672,11 +670,13 @@ Outputs:
 
 - `narration_text`
 - optional structured debug extras (observations/recap)
+- internal grounded draft (sentences linked to committed operation indexes) before final text rendering
 
 Critical rule:
 
 - Proser must not invent new state facts.
-- If uncertain, remain vague or request upstream clarification flow.
+- Proser should derive every sentence from explicit committed operations; consequences not present in operation payload/reason are out of scope.
+- If uncertain, remain conservative and avoid inventing extra consequences.
 
 ### 12.9 One-turn interaction summary
 
@@ -691,10 +691,10 @@ Critical rule:
 
 All module inputs/outputs and final commit are persisted in the event log for audit/debug.
 
-Clarification path:
+Refusal path:
 
-- If intent/loremaster marks `needs_clarification`, the engine returns a clarification question and commits minimal/no world mutation until clarified input arrives.
-- Concrete behavior example: if current context has no valid enemies in scope and the player enters `attack`, the engine should ask a disambiguation question such as `What do you want to attack?` and avoid speculative combat state mutations on that turn.
+- If intent/loremaster marks an action as invalid (for example `no_target_in_scope`), backend currently refuses the action with deterministic narration and commits minimal/no world mutation until player provides a different action.
+- Concrete behavior example: if current context has no valid enemies in scope and the player enters `attack`, the engine should return a refusal such as `Refused: no valid attack target is currently in scope.` and avoid speculative combat state mutations on that turn.
 
 ### 12.10 Practical MVP defaults
 

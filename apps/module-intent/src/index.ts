@@ -116,22 +116,6 @@ function buildFallbackIntent(playerInput: string, playerId: string): ActionCandi
   });
 }
 
-function normalizeIntentOutput(parsed: unknown): unknown {
-  if (!parsed || typeof parsed !== "object") return parsed;
-  const root = structuredClone(parsed) as { candidates?: Array<Record<string, unknown>> };
-  if (!Array.isArray(root.candidates)) return root;
-  root.candidates = root.candidates.map((candidate) => {
-    if (!candidate || typeof candidate !== "object") return candidate;
-    const next = { ...candidate };
-    const clarification = next.clarificationQuestion;
-    if (typeof clarification === "string" && clarification.trim().length === 0) {
-      delete next.clarificationQuestion;
-    }
-    return next;
-  });
-  return root;
-}
-
 async function generateIntent(playerInput: string, playerId: string, turn: number): Promise<{
   output: ActionCandidates;
   warnings: string[];
@@ -173,8 +157,7 @@ async function generateIntent(playerInput: string, playerId: string, turn: numbe
     "- include at least one candidate",
     "- keep intent concise snake_case",
     "- add consequenceTags when constraints/side-effects apply",
-    "- add consequenceTags: ['needs_clarification'] for ambiguous commands",
-    "- include clarificationQuestion only when non-empty and needed",
+    "- if target/scope is invalid, use consequenceTags: ['no_target_in_scope']",
     "Context:",
     JSON.stringify({ playerText: playerInput, playerId, turn }),
   ].join("\n");
@@ -194,8 +177,7 @@ async function generateIntent(playerInput: string, playerId: string, turn: numbe
     try {
       const raw = await chat(requestMessages);
       const parsed = parseJsonObject(raw);
-      const normalized = normalizeIntentOutput(parsed);
-      const output = ActionCandidatesSchema.parse(normalized);
+      const output = ActionCandidatesSchema.parse(parsed);
       attempts.push({ attempt: attempt + 1, requestMessages, rawResponse: raw });
       return {
         output,

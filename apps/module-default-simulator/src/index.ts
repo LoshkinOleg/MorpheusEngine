@@ -163,6 +163,7 @@ async function generateProposal(params: {
     PROPOSED_DIFF_OPERATIONS_OUTPUT_CONTRACT,
     "Rules:",
     "- operations can be empty but should usually include at least one observation",
+    "- when using observation, prefer payload.text with explicit player-visible result instead of only symbolic event ids",
     "- keep outcomes plausible and conservative",
     "Context:",
     JSON.stringify({

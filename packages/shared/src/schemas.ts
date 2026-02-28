@@ -27,7 +27,6 @@ export const ActionCandidateSchema = z.object({
   consequenceTags: z
     .array(
       z.enum([
-        "needs_clarification",
         "no_target_in_scope",
         "partial_success_only",
         "high_risk_exposure",
@@ -37,7 +36,6 @@ export const ActionCandidateSchema = z.object({
       ]),
     )
     .default([]),
-  clarificationQuestion: z.string().min(1).optional(),
 });
 
 export const ActionCandidatesSchema = z.object({
@@ -47,9 +45,8 @@ export const ActionCandidatesSchema = z.object({
 
 export const LoremasterAssessmentSchema = z.object({
   candidateIndex: z.number().int().nonnegative(),
-  status: z.enum(["allowed", "allowed_with_consequences", "needs_clarification"]),
+  status: z.enum(["allowed", "allowed_with_consequences"]),
   consequenceTags: ActionCandidateSchema.shape.consequenceTags.default([]),
-  clarificationQuestion: z.string().min(1).optional(),
   rationale: z.string().min(1),
 });
 
@@ -214,6 +211,15 @@ export const ProserModuleResponseSchema = z.object({
   debug: z.record(z.string(), z.unknown()).default({}),
 });
 
+export const GroundedNarrationSentenceSchema = z.object({
+  text: z.string().min(1),
+  operationIndexes: z.array(z.number().int().nonnegative()).min(1),
+});
+
+export const GroundedNarrationDraftSchema = z.object({
+  sentences: z.array(GroundedNarrationSentenceSchema).min(1).max(4),
+});
+
 export const PipelineStepStatusSchema = z.enum(["ok", "error", "skipped"]);
 
 export const PipelineStepEventSchema = z.object({
@@ -265,3 +271,4 @@ export type PipelineStepStatus = z.infer<typeof PipelineStepStatusSchema>;
 export type TurnExecutionState = z.infer<typeof TurnExecutionStateSchema>;
 export type TurnExecutionMode = z.infer<typeof TurnExecutionModeSchema>;
 export type ArbiterDecision = z.infer<typeof ArbiterDecisionSchema>;
+export type GroundedNarrationDraft = z.infer<typeof GroundedNarrationDraftSchema>;

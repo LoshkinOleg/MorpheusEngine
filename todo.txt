@@ -1,3 +1,4 @@
 - start implementing tests
 - don't clarify intent for now, only decide to refuse an action but give the player an explanation as to why.
 - Implement intent clarification pipeline.
+- Expand on the sandcrawler lore to be able to more easily generate refusals from the backend.

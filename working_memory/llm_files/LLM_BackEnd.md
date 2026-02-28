@@ -32,6 +32,8 @@ Track backend API/router contracts, per-run DB persistence, and module-service o
 - Turn trace payload persists `llmConversations` and stage outputs in `events` (`module_trace`).
 - Step execution state is persisted in `turn_execution` and ordered stage events in `pipeline_events`.
 - Arbiter is now a standalone module stage (`/invoke`) before proser; world-state persistence is a separate final stage.
+- Invalid actions are currently refused in-router with deterministic in-world narration; refusal path skips simulator/lore_post/arbiter/proser and persists refusal trace + minimal view-only observation.
+- Proser generation is now grounded to committed operations via structured draft validation to reduce invented downstream consequences.
 
 ## Key entry points
 
@@ -65,6 +67,7 @@ Track backend API/router contracts, per-run DB persistence, and module-service o
 - Removed backend module debug endpoints; isolation testing is done by direct module service calls.
 - Replaced log-file-backed session state with DB-backed `GET /run/:runId/state`.
 - Added standalone `module-arbiter` and moved arbiter decision to explicit module stage before proser.
+- Replaced the prior disambiguation branch with explicit invalid-action refusal control path.
 
 ## To verify
 

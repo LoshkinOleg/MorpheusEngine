@@ -223,3 +223,132 @@ test("router pipeline processes full turn through module calls", async () => {
     await db.close();
   }
 });
+
+test("router refuses invalid action with in-world narration and no simulation path", async () => {
+  const db = await createInMemoryRunDb();
+  const originalFetch = globalThis.fetch;
+  process.env.MODULE_INTENT_URL = "http://intent";
+  process.env.MODULE_LOREMASTER_URL = "http://loremaster";
+  process.env.MODULE_DEFAULT_SIMULATOR_URL = "http://simulator";
+  process.env.MODULE_ARBITER_URL = "http://arbiter";
+  process.env.MODULE_PROSER_URL = "http://proser";
+
+  let simulatorCalled = false;
+  let arbiterCalled = false;
+  let proserCalled = false;
+  let lorePostCalled = false;
+
+  globalThis.fetch = async (url) => {
+    const target = String(url);
+    if (target.startsWith("http://intent")) {
+      return new Response(
+        JSON.stringify({
+          meta: { moduleName: "intent_extractor", warnings: [] },
+          output: {
+            rawInput: "Attack.",
+            candidates: [
+              {
+                actorId: "entity.player.captain",
+                intent: "attack",
+                confidence: 0.9,
+                params: {},
+                consequenceTags: ["no_target_in_scope"],
+              },
+            ],
+          },
+          debug: { llmConversation: { attempts: [], usedFallback: false } },
+        }),
+      );
+    }
+    if (target.startsWith("http://loremaster/retrieve")) {
+      return new Response(
+        JSON.stringify({
+          meta: { moduleName: "loremaster.retrieve", warnings: [] },
+          output: {
+            query: "Attack.",
+            evidence: [{ source: "lore/world.md", excerpt: "No enemies nearby", score: 3 }],
+            summary: "Retrieved lore.",
+          },
+          debug: {},
+        }),
+      );
+    }
+    if (target.startsWith("http://loremaster/pre")) {
+      return new Response(
+        JSON.stringify({
+          meta: { moduleName: "loremaster_pre", warnings: [] },
+          output: {
+            assessments: [
+              {
+                candidateIndex: 0,
+                status: "allowed_with_consequences",
+                consequenceTags: ["no_target_in_scope"],
+                rationale: "No valid target is in scope.",
+              },
+            ],
+            summary: "Refuse action.",
+          },
+          debug: { llmConversation: { attempts: [], usedFallback: false } },
+        }),
+      );
+    }
+    if (target.startsWith("http://simulator")) {
+      simulatorCalled = true;
+      return new Response("{}", { status: 500 });
+    }
+    if (target.startsWith("http://loremaster/post")) {
+      lorePostCalled = true;
+      return new Response("{}", { status: 500 });
+    }
+    if (target.startsWith("http://arbiter")) {
+      arbiterCalled = true;
+      return new Response("{}", { status: 500 });
+    }
+    if (target.startsWith("http://proser")) {
+      proserCalled = true;
+      return new Response("{}", { status: 500 });
+    }
+    return new Response("{}", { status: 404 });
+  };
+
+  try {
+    const result = await processTurnViaRouter(db, {
+      runId: "run-2",
+      gameProjectId: "sandcrawler",
+      moduleBindings: {
+        intent_extractor: "llm.default",
+        loremaster: "llm.default",
+        default_simulator: "llm.default",
+        arbiter: "llm.default",
+        proser: "llm.default",
+      },
+      turn: 1,
+      playerInput: "Attack.",
+      playerId: "entity.player.captain",
+    });
+
+    assert.equal(simulatorCalled, false);
+    assert.equal(lorePostCalled, false);
+    assert.equal(arbiterCalled, false);
+    assert.equal(proserCalled, false);
+    assert.equal(result.narrationText.startsWith("Refused:"), true);
+    assert.equal(Array.isArray(result.committed.operations), true);
+    assert.equal(result.committed.operations.length, 1);
+    assert.equal(result.committed.operations[0].scope, "view:player");
+
+    const traceRow = await db.get(`SELECT payload FROM events WHERE event_type = 'module_trace' ORDER BY id DESC LIMIT 1`);
+    const trace = JSON.parse(traceRow.payload);
+    assert.equal(typeof trace.refusal?.reason, "string");
+    assert.equal(trace.refusal.reason.startsWith("Refused:"), true);
+    const stages = trace.pipelineEvents.map((event) => event.stage);
+    assert.equal(stages.includes("default_simulator"), true);
+    assert.equal(stages.includes("world_state_update"), true);
+    const skippedStages = trace.pipelineEvents
+      .filter((event) => event.status === "skipped")
+      .map((event) => event.stage);
+    assert.deepEqual(skippedStages, ["default_simulator", "loremaster_post", "arbiter", "proser"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await db.close();
+  }
+});

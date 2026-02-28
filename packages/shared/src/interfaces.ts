@@ -4,7 +4,6 @@ export interface ActionCandidateContract {
   confidence?: number;
   params?: Record<string, unknown>;
   consequenceTags?: Array<
-    | "needs_clarification"
     | "no_target_in_scope"
     | "partial_success_only"
     | "high_risk_exposure"
@@ -12,7 +11,6 @@ export interface ActionCandidateContract {
     | "social_backlash"
     | "noise_generated"
   >;
-  clarificationQuestion?: string;
 }
 
 export interface ActionCandidatesContract {
@@ -22,9 +20,8 @@ export interface ActionCandidatesContract {
 
 export interface LoremasterAssessmentContract {
   candidateIndex: number;
-  status: "allowed" | "allowed_with_consequences" | "needs_clarification";
+  status: "allowed" | "allowed_with_consequences";
   consequenceTags: NonNullable<ActionCandidateContract["consequenceTags"]>;
-  clarificationQuestion?: string;
   rationale: string;
 }
 

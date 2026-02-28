@@ -60,7 +60,7 @@ interface PipelineCheckpoint {
   narrationText?: string;
   warnings: string[];
   llmConversations: Record<string, unknown>;
-  clarificationQuestion?: string;
+  refusalReason?: string;
 }
 
 type StepStage =
@@ -84,32 +84,33 @@ const STAGE_ORDER: StepStage[] = [
   "world_state_update",
 ];
 
-function deriveClarificationQuestion(intent: ActionCandidates): string | null {
-  const candidateNeedingClarification = intent.candidates.find((candidate) => {
+function deriveRefusalReasonFromIntent(intent: ActionCandidates): string | null {
+  const rejectedCandidate = intent.candidates.find((candidate) => {
     const tags = candidate.consequenceTags ?? [];
-    return tags.includes("needs_clarification") || tags.includes("no_target_in_scope");
+    return tags.includes("no_target_in_scope");
   });
-  if (!candidateNeedingClarification) return null;
-  if (candidateNeedingClarification.clarificationQuestion?.trim()) {
-    return candidateNeedingClarification.clarificationQuestion.trim();
+  if (!rejectedCandidate) return null;
+  if ((rejectedCandidate.consequenceTags ?? []).includes("no_target_in_scope")) {
+    if (rejectedCandidate.intent === "attack") return "Refused: no valid attack target is currently in scope.";
+    return `Refused: no valid target is in scope for ${rejectedCandidate.intent.replace(/_/g, " ")}.`;
   }
-  if ((candidateNeedingClarification.consequenceTags ?? []).includes("no_target_in_scope")) {
-    if (candidateNeedingClarification.intent === "attack") return "What do you want to attack?";
-    return `What do you want to ${candidateNeedingClarification.intent.replace(/_/g, " ")}?`;
-  }
-  return "Can you clarify what you want to do?";
+  return "Refused: action is ambiguous and cannot be safely resolved.";
 }
 
-function deriveClarificationQuestionFromLoremaster(
+function deriveRefusalReasonFromLoremaster(
   intent: ActionCandidates,
   loremaster: LoremasterOutput,
 ): string | null {
-  const assessment = loremaster.assessments.find((item) => item.status === "needs_clarification");
+  const assessment = loremaster.assessments.find((item) =>
+    (item.consequenceTags ?? []).includes("no_target_in_scope"),
+  );
   if (!assessment) return null;
-  if (assessment.clarificationQuestion?.trim()) return assessment.clarificationQuestion.trim();
+  if (assessment.rationale?.trim()) {
+    return `Refused: ${assessment.rationale.trim()}`;
+  }
   const candidate = intent.candidates[assessment.candidateIndex];
-  if (!candidate) return "Can you clarify what you want to do?";
-  return deriveClarificationQuestion({ candidates: [candidate], rawInput: intent.rawInput });
+  if (!candidate) return "Refused: action cannot be resolved safely.";
+  return deriveRefusalReasonFromIntent({ candidates: [candidate], rawInput: intent.rawInput });
 }
 
 function arbiterCommit(turn: number, proposal: ProposedDiff): CommittedDiff {
@@ -120,19 +121,19 @@ function arbiterCommit(turn: number, proposal: ProposedDiff): CommittedDiff {
   });
 }
 
-function buildClarificationProposal(input: TurnInput, question: string): ProposedDiff {
+function buildRefusalProposal(input: TurnInput, refusalReason: string): ProposedDiff {
   return ProposedDiffSchema.parse({
-    moduleName: "clarification_handler",
+    moduleName: "refusal_handler",
     operations: [
       {
         op: "observation",
         scope: "view:player",
         payload: {
           observerId: input.playerId,
-          text: question,
+          text: refusalReason,
           turn: input.turn,
         },
-        reason: "clarification required before safe simulation",
+        reason: "action refused by deterministic invalid-action policy",
       },
     ],
   });
@@ -141,7 +142,7 @@ function buildClarificationProposal(input: TurnInput, question: string): Propose
 function buildFallbackLorePost() {
   return LoremasterPostOutputSchema.parse({
     status: "consistent",
-    rationale: "Post-diff lore check skipped due to clarification branch.",
+    rationale: "Post-diff lore check skipped due to refusal path.",
     mustInclude: [],
     mustAvoid: [],
   });
@@ -177,8 +178,8 @@ function parseCheckpoint(value: unknown): PipelineCheckpoint {
       parsed.llmConversations && typeof parsed.llmConversations === "object"
         ? parsed.llmConversations
         : {},
-    clarificationQuestion:
-      typeof parsed.clarificationQuestion === "string" ? parsed.clarificationQuestion : undefined,
+    refusalReason:
+      typeof parsed.refusalReason === "string" ? parsed.refusalReason : undefined,
   };
 }
 
@@ -194,7 +195,7 @@ function stageEndpoint(stage: StepStage): string {
 }
 
 function shouldSkipStage(stage: StepStage, checkpoint: PipelineCheckpoint): boolean {
-  if (!checkpoint.clarificationQuestion) return false;
+  if (!checkpoint.refusalReason) return false;
   return stage === "default_simulator" || stage === "loremaster_post" || stage === "arbiter" || stage === "proser";
 }
 
@@ -214,6 +215,7 @@ function buildTurnTracePayload(checkpoint: PipelineCheckpoint, pipelineEvents: P
     proposal: checkpoint.proposal ?? null,
     arbiter: checkpoint.arbiterDecision ?? null,
     committed: checkpoint.committed ?? null,
+    refusal: checkpoint.refusalReason ? { reason: checkpoint.refusalReason } : null,
     warnings: checkpoint.warnings,
     narrationText: checkpoint.narrationText ?? "",
     pipelineEvents,
@@ -256,7 +258,7 @@ async function runStage(
       stage,
       endpoint: stageEndpoint(stage),
       status: "skipped",
-      request: { reason: "clarification branch active" },
+      request: { reason: "invalid action refusal path active", refusalReason: checkpoint.refusalReason ?? null },
       response: null,
       warnings: [],
       startedAt: nowIso(),
@@ -283,6 +285,7 @@ async function runStage(
     return {
       ...checkpoint,
       intent: result.output,
+      refusalReason: deriveRefusalReasonFromIntent(result.output) ?? checkpoint.refusalReason,
       warnings: [...checkpoint.warnings, ...result.meta.warnings],
       llmConversations: {
         ...checkpoint.llmConversations,
@@ -324,7 +327,7 @@ async function runStage(
       lore: checkpoint.loreRetrieval,
     });
     const result = await invokeLorePre(moduleUrls.loremaster, request);
-    const clarificationQuestion = deriveClarificationQuestionFromLoremaster(
+    const refusalReason = deriveRefusalReasonFromLoremaster(
       checkpoint.intent as ActionCandidates,
       result.output,
     );
@@ -342,8 +345,12 @@ async function runStage(
     return {
       ...checkpoint,
       loremasterPre: result.output,
-      clarificationQuestion: clarificationQuestion ?? undefined,
-      warnings: [...checkpoint.warnings, ...result.meta.warnings],
+      refusalReason: refusalReason ?? undefined,
+      warnings: [
+        ...checkpoint.warnings,
+        ...result.meta.warnings,
+        ...(refusalReason ? [`turn_refused: ${refusalReason}`] : []),
+      ],
       llmConversations: {
         ...checkpoint.llmConversations,
         loremaster_pre: result.debug.llmConversation,
@@ -484,19 +491,19 @@ async function runStage(
   }
 
   const startedAt = nowIso();
-  const clarificationQuestion = checkpoint.clarificationQuestion;
-  const proposal = clarificationQuestion
-    ? buildClarificationProposal(input, clarificationQuestion)
+  const refusalReason = checkpoint.refusalReason;
+  const proposal = refusalReason
+    ? buildRefusalProposal(input, refusalReason)
     : (checkpoint.proposal as ProposedDiff);
-  const lorePost = clarificationQuestion ? buildFallbackLorePost() : checkpoint.lorePost;
+  const lorePost = refusalReason ? buildFallbackLorePost() : checkpoint.lorePost;
   const committed = checkpoint.committed ?? arbiterCommit(input.turn, proposal);
-  const narrationText = clarificationQuestion ?? checkpoint.narrationText ?? "";
+  const narrationText = refusalReason ?? checkpoint.narrationText ?? "";
   const finishedAt = nowIso();
   await appendStepEvent(db, input, {
     stage,
     endpoint: stageEndpoint(stage),
     status: "ok",
-    request: { action: "persist_world_state", clarificationQuestion: clarificationQuestion ?? null },
+    request: { action: "persist_world_state", refusalReason: refusalReason ?? null },
     response: {
       committed,
       narrationText,

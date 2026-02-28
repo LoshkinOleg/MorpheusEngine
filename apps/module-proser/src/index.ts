@@ -4,7 +4,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import cors from "cors";
-import { ProserModuleRequestSchema, ProserModuleResponseSchema } from "@morpheus/shared";
+import { z } from "zod";
+import {
+  GroundedNarrationDraftSchema,
+  ProserModuleRequestSchema,
+  ProserModuleResponseSchema,
+  validateGroundedNarrationAgainstOperations,
+} from "@morpheus/shared";
 
 type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
 type ConversationTrace = {
@@ -19,6 +25,7 @@ type ConversationTrace = {
 };
 
 const port = Number(process.env.MODULE_PROSER_PORT ?? 8794);
+const MAX_JSON_RETRIES = 2;
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 for (const candidate of [
@@ -55,6 +62,47 @@ async function chat(messages: ChatMessage[]): Promise<string> {
   const content = data.message?.content?.trim();
   if (!content) throw new Error("No content in Ollama response.");
   return content;
+}
+
+function parseJsonObject(text: string): unknown {
+  const trimmed = text.trim();
+  const fencedMatch = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  const candidate = fencedMatch ? fencedMatch[1] : trimmed;
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    const start = candidate.indexOf("{");
+    if (start < 0) throw new Error("No JSON object found in model response.");
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < candidate.length; index += 1) {
+      const char = candidate[index];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (char === "\\") escaped = true;
+        else if (char === "\"") inString = false;
+        continue;
+      }
+      if (char === "\"") {
+        inString = true;
+        continue;
+      }
+      if (char === "{") depth += 1;
+      if (char === "}") {
+        depth -= 1;
+        if (depth === 0) return JSON.parse(candidate.slice(start, index + 1));
+      }
+    }
+    throw new Error("Could not isolate JSON object from model response.");
+  }
+}
+
+function renderNarrationFromDraft(draft: z.infer<typeof GroundedNarrationDraftSchema>): string {
+  return draft.sentences
+    .map((sentence) => sentence.text.trim())
+    .filter((sentence) => sentence.length > 0)
+    .join(" ");
 }
 
 function deriveFallbackNarration(committed: unknown): string {
@@ -115,44 +163,79 @@ async function generateNarration(payload: Parameters<typeof ProserModuleRequestS
     };
   }
 
-  const requestMessages: ChatMessage[] = [
-    {
-      role: "system",
-      content:
-        "You are the narrative proser. Write 2-4 grounded sentences. Do not invent state outside provided committed diff.",
-    },
-    {
-      role: "user",
-      content: JSON.stringify({
-        playerInput: parsed.context.playerInput,
-        turn: parsed.context.turn,
-        committedDiff: parsed.committed,
-        loreEvidence: parsed.lore.evidence,
-        loreNarrationGuidance: {
-          mustInclude: parsed.lorePost.mustInclude,
-          mustAvoid: parsed.lorePost.mustAvoid,
-        },
-      }),
-    },
-  ];
+  const outputContract = [
+    "Return ONLY one JSON object matching this schema:",
+    "```json",
+    JSON.stringify(z.toJSONSchema(GroundedNarrationDraftSchema), null, 2),
+    "```",
+  ].join("\n");
 
-  try {
-    const raw = await chat(requestMessages);
-    attempts.push({ attempt: 1, requestMessages, rawResponse: raw });
-    return {
-      narrationText: sanitizeNarrationForPlayer(raw, fallbackNarration),
-      warnings: [],
-      conversation: { attempts, usedFallback: false },
-    };
-  } catch (error) {
-    const errorText = error instanceof Error ? error.message : String(error);
-    attempts.push({ attempt: 1, requestMessages, error: errorText });
-    return {
-      narrationText: fallbackNarration,
-      warnings: [`proser: used fallback narration (${errorText})`],
-      conversation: { attempts, usedFallback: true, fallbackReason: errorText },
-    };
+  let retryHint = "";
+  for (let attempt = 0; attempt <= MAX_JSON_RETRIES; attempt += 1) {
+    const requestMessages: ChatMessage[] = [
+      {
+        role: "system",
+        content:
+          "You are the narrative proser. Produce grounded narration draft JSON only. Narrate only facts present in committed operations. Do not add causal consequences unless explicitly present in operation payload/reason text.",
+      },
+      {
+        role: "user",
+        content: `${[
+          "Task: write 1-4 short grounded narration sentences.",
+          outputContract,
+          "Rules:",
+          "- each sentence must cite one or more operationIndexes it is derived from",
+          "- do not introduce new entities, damage, slowdown, injuries, or resource changes unless explicitly in committed operations",
+          "- if operations are sparse, keep narration minimal and uncertain rather than speculative",
+          "- keep each sentence concise and player-facing",
+          "Input:",
+          JSON.stringify({
+            turn: parsed.context.turn,
+            playerId: parsed.context.playerId,
+            playerInput: parsed.context.playerInput,
+            committedOperations: parsed.committed.operations,
+            styleGuidance: {
+              mustInclude: parsed.lorePost.mustInclude,
+              mustAvoid: parsed.lorePost.mustAvoid,
+            },
+          }),
+          retryHint,
+        ].join("\n")}`,
+      },
+    ];
+    try {
+      const raw = await chat(requestMessages);
+      const parsedDraft = GroundedNarrationDraftSchema.parse(parseJsonObject(raw));
+      validateGroundedNarrationAgainstOperations(parsedDraft, parsed.committed);
+      attempts.push({ attempt: attempt + 1, requestMessages, rawResponse: raw });
+      const narrationText = renderNarrationFromDraft(parsedDraft);
+      return {
+        narrationText: sanitizeNarrationForPlayer(narrationText, fallbackNarration),
+        warnings: [],
+        conversation: { attempts, usedFallback: false },
+      };
+    } catch (error) {
+      const errorText = error instanceof Error ? error.message : String(error);
+      attempts.push({ attempt: attempt + 1, requestMessages, error: errorText });
+      if (attempt >= MAX_JSON_RETRIES) {
+        return {
+          narrationText: fallbackNarration,
+          warnings: [`proser: used fallback narration (${errorText})`],
+          conversation: { attempts, usedFallback: true, fallbackReason: errorText },
+        };
+      }
+      retryHint =
+        `\n\nYour previous output was invalid.\n` +
+        `Fix and return ONLY valid grounded JSON.\n` +
+        `Validation/parsing error: ${errorText}`;
+    }
   }
+
+  return {
+    narrationText: fallbackNarration,
+    warnings: ["proser: unexpected retry loop exit."],
+    conversation: { attempts, usedFallback: true, fallbackReason: "Unexpected retry loop exit." },
+  };
 }
 
 const app = express();

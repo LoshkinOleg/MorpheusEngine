@@ -28,6 +28,8 @@ Track frontend contracts for session lifecycle, chat turn submission, and DB-bac
 - Debug UI derives from persisted `debugEntries[]` (module trace payloads) and supports per-turn selection.
 - Debug UI supports ordered pipeline timeline cards and step controls (start/next/run-to-end).
 - Timeline order includes explicit `arbiter` module event before `proser`, with final `world_state_update` persistence step.
+- Debug trace now surfaces explicit refusal details when backend rejects invalid actions.
+- Proser narration should align more tightly with committed operations as backend grounding enforcement improves.
 - Model conversations are rendered with readable module/attempt formatting.
 
 ## Key entry points
@@ -56,6 +58,8 @@ Track frontend contracts for session lifecycle, chat turn submission, and DB-bac
 - Upgraded model conversation rendering to structured module/attempt cards.
 - Kept split Game UI (top) + Debug UI (bottom) with turn navigation.
 - Preserved manual Debug turn selection during polling (older turn view no longer snaps back to latest turn).
+- Added refusal visibility in Debug cards when backend records invalid-action refusal reason.
+- Clarification-specific debug semantics were removed; UI now treats invalid actions as binary refusal with justification.
 
 ## To verify
 

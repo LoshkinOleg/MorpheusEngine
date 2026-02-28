@@ -1,8 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  ActionCandidateSchema,
+  LoremasterAssessmentSchema,
   ArbiterModuleRequestSchema,
   ArbiterModuleResponseSchema,
+  GroundedNarrationDraftSchema,
   IntentModuleRequestSchema,
   IntentModuleResponseSchema,
   LoreRetrieverModuleRequestSchema,
@@ -17,6 +20,7 @@ import {
   SimulatorModuleRequestSchema,
   SimulatorModuleResponseSchema,
   TurnExecutionStateSchema,
+  validateGroundedNarrationAgainstOperations,
 } from "@morpheus/shared";
 
 const context = {
@@ -202,6 +206,40 @@ test("module request/response contracts parse valid payloads", () => {
     }),
   );
 
+  const groundedDraft = {
+    sentences: [
+      {
+        text: "You scan the horizon while sand whips against the deck.",
+        operationIndexes: [0],
+      },
+    ],
+  };
+  assert.doesNotThrow(() => GroundedNarrationDraftSchema.parse(groundedDraft));
+  assert.doesNotThrow(() =>
+    validateGroundedNarrationAgainstOperations(groundedDraft, {
+      turn: 1,
+      operations: proposalOutput.operations,
+      summary: "Committed.",
+    }),
+  );
+  assert.throws(() =>
+    validateGroundedNarrationAgainstOperations(
+      {
+        sentences: [
+          {
+            text: "The crawler treads are damaged and the vehicle slows down.",
+            operationIndexes: [0],
+          },
+        ],
+      },
+      {
+        turn: 1,
+        operations: proposalOutput.operations,
+        summary: "Committed.",
+      },
+    ),
+  );
+
   assert.doesNotThrow(() =>
     PipelineStepEventSchema.parse({
       stepNumber: 1,
@@ -230,6 +268,27 @@ test("module request/response contracts parse valid payloads", () => {
       requestId: "req-step",
       gameProjectId: "sandcrawler",
       result: { warnings: [] },
+    }),
+  );
+});
+
+test("clarification fields and statuses are rejected by shared contracts", () => {
+  assert.throws(() =>
+    ActionCandidateSchema.parse({
+      actorId: "entity.player.captain",
+      intent: "inspect_environment",
+      confidence: 0.9,
+      params: {},
+      consequenceTags: ["needs_clarification"],
+    }),
+  );
+
+  assert.throws(() =>
+    LoremasterAssessmentSchema.parse({
+      candidateIndex: 0,
+      status: "needs_clarification",
+      consequenceTags: [],
+      rationale: "Ambiguous action.",
     }),
   );
 });

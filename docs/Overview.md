@@ -11,8 +11,8 @@ Morpheus Engine is a modular narrative game engine for interactive text experien
 
 ## Design principles
 
-- **Soft resolution over refusal**: improbable actions should resolve into plausible outcomes, not hard "cannot do" responses.
-    - Example: if the player enters "I kill the skeleton by shooting it with my bow!", the outcome should be "You shoot the skeleton with your bow but the arrow bounces off." and not "You can't do that, skeletons are immune to piercing damage."
+- **Soft resolution where safe, deterministic refusal where invalid**: improbable actions may still resolve softly, but actions flagged invalid by intent/loremaster are refused with explicit in-world narration.
+    - Example: if no valid target is in scope and the player enters `attack`, the engine should respond with a refusal narration rather than speculative simulation.
 - **Traceable turns**: every turn should be inspectable end-to-end through event logs and module traces via the Debug UI.
 - **Traceable pipeline order**: debug should present ordered stage-by-stage events, not only aggregate dumps.
 - **Mod-as-full-game**: each game project can define lore, tables, module bindings, and optional plugin code.
@@ -31,14 +31,15 @@ Morpheus uses multiple focused LLM modules instead of a single "do everything" m
 - **Simulator(s)**: proposes state diffs when no authoritative classic module exists.
 - **Arbiter**: selects/merges proposals into final committed state diffs.
 - **Proser**: produces final player-facing prose from committed state only.
+  - Current policy: prose must be grounded in committed operations; no new consequences unless present in operation payload/reason.
 
 Core contract:
 
 - Structured JSON IR first; freeform text only in Proser.
 - Player text and retrieved lore are treated as untrusted content.
 - Schema/invariant failures use bounded retries and safe fallbacks.
-- If clarification is needed, engine returns a clarification question and commits minimal/no world changes for that turn.
-  - Example target behavior: if the player is in an empty room and inputs `attack`, the engine should ask `What do you want to attack?` instead of inventing a target or forcing a full simulation commit.
+- If action validity is invalid (for example `no_target_in_scope`), backend currently refuses the action and commits minimal/no world changes for that turn.
+  - Example target behavior: if the player is in an empty room and inputs `attack`, the engine should return refusal narration instead of inventing a target or forcing a full simulation commit.
 
 ## What exists today (MVP scaffold)
 

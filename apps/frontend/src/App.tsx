@@ -824,6 +824,10 @@ export function App() {
                   <h3>Warnings</h3>
                   {renderCollapsibleJson("Show JSON", selectedTrace.warnings ?? [])}
                 </section>
+                <section className="debugCard">
+                  <h3>Refusal</h3>
+                  {renderCollapsibleJson("Show JSON", selectedTrace.refusal ?? null)}
+                </section>
                 <section className="debugCard debugCardWide">
                   <h3>Narration Text</h3>
                   {renderCollapsibleJson("Show JSON", selectedTrace.narrationText ?? "")}
