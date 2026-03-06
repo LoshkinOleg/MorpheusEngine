@@ -36,6 +36,7 @@ import {
   createTurnExecution,
   getTurnExecutionState,
   listPipelineEvents,
+  readLatestSnapshot,
   readTurnExecutionCheckpoint,
   updateTurnExecutionProgress,
 } from "../sessionStore.js";
@@ -541,12 +542,181 @@ async function persistTurnFinalState(db: GameDb, input: TurnInput, checkpoint: P
     "committed_diff",
     JSON.stringify(checkpoint.committed),
   );
+
+  const previousSnapshot = await readLatestSnapshot(db);
+  const nextSnapshot = applyCommittedDiffToSnapshot(
+    {
+      worldState: previousSnapshot.worldState,
+      viewState: previousSnapshot.viewState,
+    },
+    checkpoint.committed,
+    input,
+  );
+
   await db.run(
     `INSERT INTO snapshots (turn, world_state, view_state) VALUES (?, ?, ?)`,
     input.turn,
-    JSON.stringify({ lastSummary: checkpoint.committed?.summary ?? "" }),
-    JSON.stringify({ lastObservation: checkpoint.committed?.operations ?? [] }),
+    JSON.stringify(nextSnapshot.worldState),
+    JSON.stringify(nextSnapshot.viewState),
   );
+}
+
+type StoredEntity = Record<string, unknown> & { id?: string };
+type StoredFact = {
+  subjectId: string;
+  key: string;
+  value: unknown;
+  confidence?: number;
+  source?: string;
+  stability?: string;
+};
+
+function toEntityMap(worldState: unknown): Record<string, StoredEntity> {
+  if (!worldState || typeof worldState !== "object") return {};
+  const maybeEntities = (worldState as { entities?: unknown }).entities;
+  if (maybeEntities && typeof maybeEntities === "object" && !Array.isArray(maybeEntities)) {
+    return { ...(maybeEntities as Record<string, StoredEntity>) };
+  }
+  if (Array.isArray(maybeEntities)) {
+    const map: Record<string, StoredEntity> = {};
+    for (const entity of maybeEntities) {
+      if (!entity || typeof entity !== "object") continue;
+      const id = (entity as { id?: unknown }).id;
+      if (typeof id !== "string" || id.trim().length === 0) continue;
+      map[id] = entity as StoredEntity;
+    }
+    return map;
+  }
+  return {};
+}
+
+function toFactsList(worldState: unknown): StoredFact[] {
+  if (!worldState || typeof worldState !== "object") return [];
+  const maybeFacts = (worldState as { facts?: unknown }).facts;
+  if (!Array.isArray(maybeFacts)) return [];
+  return maybeFacts.filter((fact): fact is StoredFact => {
+    if (!fact || typeof fact !== "object") return false;
+    const parsed = fact as { subjectId?: unknown; key?: unknown };
+    return typeof parsed.subjectId === "string" && typeof parsed.key === "string";
+  });
+}
+
+function toAnchors(worldState: unknown): string[] {
+  if (!worldState || typeof worldState !== "object") return [];
+  const maybeAnchors = (worldState as { anchors?: unknown }).anchors;
+  if (!Array.isArray(maybeAnchors)) return [];
+  return maybeAnchors.filter((anchor): anchor is string => typeof anchor === "string");
+}
+
+function toPlayerObservations(viewState: unknown): Array<Record<string, unknown>> {
+  if (!viewState || typeof viewState !== "object") return [];
+  const player = (viewState as { player?: unknown }).player;
+  if (!player || typeof player !== "object") return [];
+  const observations = (player as { observations?: unknown }).observations;
+  if (!Array.isArray(observations)) return [];
+  return observations.filter(
+    (observation): observation is Record<string, unknown> =>
+      !!observation && typeof observation === "object",
+  );
+}
+
+function applyCommittedDiffToSnapshot(
+  snapshot: { worldState: unknown; viewState: unknown },
+  committed: CommittedDiff | undefined,
+  input: TurnInput,
+): { worldState: Record<string, unknown>; viewState: Record<string, unknown> } {
+  const entities = toEntityMap(snapshot.worldState);
+  const facts = [...toFactsList(snapshot.worldState)];
+  const anchors = toAnchors(snapshot.worldState);
+  const playerObservations = [...toPlayerObservations(snapshot.viewState)];
+
+  const operations = committed?.operations ?? [];
+  for (const operation of operations) {
+    const payload =
+      operation.payload && typeof operation.payload === "object"
+        ? (operation.payload as Record<string, unknown>)
+        : {};
+
+    if (operation.op === "upsert_entity") {
+      const entityCandidate =
+        payload.entity && typeof payload.entity === "object"
+          ? (payload.entity as Record<string, unknown>)
+          : payload;
+      const entityId = typeof entityCandidate.id === "string" ? entityCandidate.id : undefined;
+      if (entityId && entityId.trim().length > 0) {
+        entities[entityId] = { ...entities[entityId], ...entityCandidate };
+      }
+      const anchorId = payload.anchorId;
+      if (typeof anchorId === "string" && anchorId.trim().length > 0 && !anchors.includes(anchorId)) {
+        anchors.push(anchorId);
+      }
+      continue;
+    }
+
+    if (operation.op === "upsert_fact") {
+      const subjectId = typeof payload.subjectId === "string" ? payload.subjectId : undefined;
+      const key = typeof payload.key === "string" ? payload.key : undefined;
+      if (!subjectId || !key) continue;
+      const replacement: StoredFact = {
+        subjectId,
+        key,
+        value: payload.value,
+        ...(typeof payload.confidence === "number" ? { confidence: payload.confidence } : {}),
+        ...(typeof payload.source === "string" ? { source: payload.source } : {}),
+        ...(typeof payload.stability === "string" ? { stability: payload.stability } : {}),
+      };
+      const index = facts.findIndex((fact) => fact.subjectId === subjectId && fact.key === key);
+      if (index >= 0) facts[index] = replacement;
+      else facts.push(replacement);
+      continue;
+    }
+
+    if (operation.op === "remove_fact") {
+      const subjectId = typeof payload.subjectId === "string" ? payload.subjectId : undefined;
+      const key = typeof payload.key === "string" ? payload.key : undefined;
+      if (!subjectId || !key) continue;
+      const index = facts.findIndex((fact) => fact.subjectId === subjectId && fact.key === key);
+      if (index >= 0) facts.splice(index, 1);
+      continue;
+    }
+
+    if (operation.op === "observation" || operation.op === "detection") {
+      const observation = {
+        op: operation.op,
+        scope: operation.scope,
+        payload,
+        reason: operation.reason,
+        turn: input.turn,
+      };
+      if (operation.scope === "view:player") {
+        playerObservations.push(observation);
+      }
+    }
+  }
+
+  const worldState = {
+    ...(snapshot.worldState && typeof snapshot.worldState === "object"
+      ? (snapshot.worldState as Record<string, unknown>)
+      : {}),
+    gameProjectId: input.gameProjectId,
+    entities,
+    facts,
+    anchors,
+    metadata: {
+      lastTurn: input.turn,
+      lastSummary: committed?.summary ?? "",
+      operationCount: operations.length,
+    },
+  };
+  const viewState = {
+    ...(snapshot.viewState && typeof snapshot.viewState === "object"
+      ? (snapshot.viewState as Record<string, unknown>)
+      : {}),
+    player: {
+      observations: playerObservations,
+    },
+  };
+  return { worldState, viewState };
 }
 
 async function ensurePlayerInputRecorded(db: GameDb, input: TurnInput): Promise<void> {

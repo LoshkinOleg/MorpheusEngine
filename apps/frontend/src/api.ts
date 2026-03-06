@@ -1,3 +1,5 @@
+import type { PipelineStepEvent, TurnExecutionState } from "@morpheus/shared";
+
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8787";
 const MODULE_INTENT_URL = import.meta.env.VITE_MODULE_INTENT_URL ?? "http://localhost:8791";
 const MODULE_LOREMASTER_URL = import.meta.env.VITE_MODULE_LOREMASTER_URL ?? "http://localhost:8792";
@@ -60,36 +62,7 @@ export interface RunStateResponse {
   nextTurn: number;
 }
 
-export interface PipelineStepEvent {
-  stepNumber: number;
-  stage: string;
-  endpoint: string;
-  status: "ok" | "error" | "skipped";
-  request: unknown;
-  response?: unknown;
-  warnings: string[];
-  error?: string;
-  startedAt: string;
-  finishedAt: string;
-}
-
-export interface TurnExecutionState {
-  runId: string;
-  turn: number;
-  mode: "normal" | "step";
-  cursor: number;
-  completed: boolean;
-  createdAt: string;
-  updatedAt: string;
-  playerInput: string;
-  playerId: string;
-  requestId: string;
-  gameProjectId: string;
-  result: {
-    narrationText?: string;
-    warnings: string[];
-  };
-}
+export type { PipelineStepEvent, TurnExecutionState };
 
 export interface PipelineStateResponse {
   runId: string;

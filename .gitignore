@@ -3,9 +3,12 @@ dist/
 build/
 .DS_Store
 *.log
+LLM_*.md
+llm_*.md
 .env
 .env.*
 !apps/backend/.env
 apps/backend/data/
 apps/backend/*.sqlite
 apps/backend/*.sqlite3
+game_projects/*/saved/

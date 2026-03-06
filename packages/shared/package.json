@@ -16,6 +16,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "dotenv": "^17.2.3",
     "zod": "^4.1.12"
   },
   "devDependencies": {

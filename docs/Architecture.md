@@ -382,6 +382,10 @@ Game projects are self-contained content packages in `game_projects/<id>/`:
   - project metadata
   - entry state
   - module bindings
+- Module binding resolution behavior is documented in `docs/GameProjectManifest.md`:
+  - direct URL bindings are used as-is
+  - symbolic bindings (for example `llm.default`) can be mapped via env overrides
+  - unresolved bindings fall back to role defaults
 - `lore/`
   - narrative source material
 - `tables/`

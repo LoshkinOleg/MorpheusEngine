@@ -1,5 +1,3 @@
-import dotenv from "dotenv";
-import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
@@ -9,94 +7,20 @@ import {
   GroundedNarrationDraftSchema,
   ProserModuleRequestSchema,
   ProserModuleResponseSchema,
+  chatWithProvider,
+  getProviderName,
+  loadBackendEnv,
+  parseJsonObject,
+  type ChatMessage,
+  type ConversationTrace,
   validateGroundedNarrationAgainstOperations,
 } from "@morpheus/shared";
-
-type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
-type ConversationTrace = {
-  attempts: Array<{
-    attempt: number;
-    requestMessages: ChatMessage[];
-    rawResponse?: string;
-    error?: string;
-  }>;
-  usedFallback: boolean;
-  fallbackReason?: string;
-};
 
 const port = Number(process.env.MODULE_PROSER_PORT ?? 8794);
 const MAX_JSON_RETRIES = 2;
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
-for (const candidate of [
-  path.resolve(moduleDir, "..", "..", "backend", ".env"),
-  path.resolve(process.cwd(), "apps", "backend", ".env"),
-  path.resolve(process.cwd(), ".env"),
-  path.resolve(moduleDir, "..", ".env"),
-]) {
-  if (fs.existsSync(candidate)) {
-    dotenv.config({ path: candidate, override: true });
-  }
-}
-
-function getProviderName(): "ollama" | "stub" {
-  return (process.env.LLM_PROVIDER ?? "stub").toLowerCase() === "ollama" ? "ollama" : "stub";
-}
-
-async function chat(messages: ChatMessage[]): Promise<string> {
-  if (getProviderName() === "stub") {
-    const lastUser = [...messages].reverse().find((item) => item.role === "user");
-    return `Stub response to: ${lastUser?.content ?? "empty input"}`;
-  }
-  const baseUrl = process.env.OLLAMA_BASE_URL ?? "http://localhost:11434";
-  const model = process.env.OLLAMA_MODEL ?? "qwen2.5:7b-instruct";
-  const timeoutMs = Number(process.env.OLLAMA_TIMEOUT_MS ?? "15000");
-  const response = await fetch(`${baseUrl.replace(/\/$/, "")}/api/chat`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ model, messages, stream: false }),
-    signal: AbortSignal.timeout(Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 15000),
-  });
-  if (!response.ok) throw new Error(`Ollama HTTP ${response.status}: ${await response.text()}`);
-  const data = (await response.json()) as { message?: { content?: string } };
-  const content = data.message?.content?.trim();
-  if (!content) throw new Error("No content in Ollama response.");
-  return content;
-}
-
-function parseJsonObject(text: string): unknown {
-  const trimmed = text.trim();
-  const fencedMatch = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-  const candidate = fencedMatch ? fencedMatch[1] : trimmed;
-  try {
-    return JSON.parse(candidate);
-  } catch {
-    const start = candidate.indexOf("{");
-    if (start < 0) throw new Error("No JSON object found in model response.");
-    let depth = 0;
-    let inString = false;
-    let escaped = false;
-    for (let index = start; index < candidate.length; index += 1) {
-      const char = candidate[index];
-      if (inString) {
-        if (escaped) escaped = false;
-        else if (char === "\\") escaped = true;
-        else if (char === "\"") inString = false;
-        continue;
-      }
-      if (char === "\"") {
-        inString = true;
-        continue;
-      }
-      if (char === "{") depth += 1;
-      if (char === "}") {
-        depth -= 1;
-        if (depth === 0) return JSON.parse(candidate.slice(start, index + 1));
-      }
-    }
-    throw new Error("Could not isolate JSON object from model response.");
-  }
-}
+loadBackendEnv(moduleDir);
 
 function renderNarrationFromDraft(draft: z.infer<typeof GroundedNarrationDraftSchema>): string {
   return draft.sentences
@@ -204,7 +128,7 @@ async function generateNarration(payload: Parameters<typeof ProserModuleRequestS
       },
     ];
     try {
-      const raw = await chat(requestMessages);
+      const raw = await chatWithProvider(requestMessages);
       const parsedDraft = GroundedNarrationDraftSchema.parse(parseJsonObject(raw));
       validateGroundedNarrationAgainstOperations(parsedDraft, parsed.committed);
       attempts.push({ attempt: attempt + 1, requestMessages, rawResponse: raw });

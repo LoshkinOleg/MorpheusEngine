@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   fetchTurnPipeline,
   fetchRunState,
@@ -18,6 +18,9 @@ import {
   type PipelineStepEvent,
   type TurnExecutionState,
 } from "./api";
+import { DebugTab } from "./components/DebugTab";
+import { GameTab } from "./components/GameTab";
+import { ModuleDebugTab } from "./components/ModuleDebugTab";
 
 type ChatLine = {
   speaker: "system" | "you" | "engine";
@@ -441,9 +444,7 @@ export function App() {
     }
   };
 
-  const applyStateToView = (state: Awaited<ReturnType<typeof fetchRunState>>) => {
-    const previousLatestTurn =
-      debugEntries.length > 0 ? debugEntries[debugEntries.length - 1].turn : null;
+  const applyStateToView = useCallback((state: Awaited<ReturnType<typeof fetchRunState>>) => {
     const chatFromState: ChatLine[] = state.messages.flatMap((entry) => [
       { speaker: "you", text: entry.playerText },
       { speaker: "engine", text: entry.engineText },
@@ -455,27 +456,31 @@ export function App() {
       turn: entry.turn,
       trace: entry.trace,
     }));
-    setDebugEntries(normalizedDebugEntries);
+    setDebugEntries((previousEntries) => {
+      const previousLatestTurn =
+        previousEntries.length > 0 ? previousEntries[previousEntries.length - 1].turn : null;
 
-    if (normalizedDebugEntries.length === 0) {
-      setSelectedDebugTurn(null);
-      return;
-    }
+      if (normalizedDebugEntries.length === 0) {
+        setSelectedDebugTurn(null);
+        return normalizedDebugEntries;
+      }
 
-    const latestTurn = normalizedDebugEntries[normalizedDebugEntries.length - 1].turn;
-    setSelectedDebugTurn((prev) => {
-      if (prev === null) return latestTurn;
-      if (!normalizedDebugEntries.some((entry) => entry.turn === prev)) return latestTurn;
-      const userWasOnLatest = previousLatestTurn !== null && prev === previousLatestTurn;
-      if (userWasOnLatest && latestTurn > previousLatestTurn) return latestTurn;
-      return prev;
+      const latestTurn = normalizedDebugEntries[normalizedDebugEntries.length - 1].turn;
+      setSelectedDebugTurn((prev) => {
+        if (prev === null) return latestTurn;
+        if (!normalizedDebugEntries.some((entry) => entry.turn === prev)) return latestTurn;
+        const userWasOnLatest = previousLatestTurn !== null && prev === previousLatestTurn;
+        if (userWasOnLatest && latestTurn > previousLatestTurn) return latestTurn;
+        return prev;
+      });
+      return normalizedDebugEntries;
     });
-  };
+  }, []);
 
-  const syncSessionFromState = async (activeRunId: string) => {
+  const syncSessionFromState = useCallback(async (activeRunId: string) => {
     const state = await fetchRunState(activeRunId);
     applyStateToView(state);
-  };
+  }, [applyStateToView]);
 
   const startNewGame = async () => {
     if (isLoading) return;
@@ -523,7 +528,7 @@ export function App() {
     }, STATE_POLL_INTERVAL_MS);
 
     return () => clearInterval(timer);
-  }, [runId, isLoading]);
+  }, [runId, isLoading, applyStateToView]);
 
   useEffect(() => {
     if (!runId || selectedDebugTurn === null) return;
@@ -630,367 +635,100 @@ export function App() {
       </section>
 
       {activeTab === "game" ? (
-        <section className="splitPanels">
-          <article className="panel">
-            <h2>Game UI</h2>
-            <p className="metaLine">
-              Run: {runId ?? "not started"} | Turn: {turn}
-            </p>
-            <>
-              <div className="log">
-                {messages.length === 0 ? <p className="metaLine">No turn data yet.</p> : null}
-                {messages.map((line, idx) => (
-                  <p key={`${idx}-${line.speaker}-${line.text}`}>
-                    {line.speaker === "you" ? "You" : line.speaker === "engine" ? "Engine" : "System"}:{" "}
-                    {line.speaker === "you" && line.text.trim().length === 0 ? "(wait / pass turn)" : line.text}
-                  </p>
-                ))}
-              </div>
-              {errorText ? <p className="statusError">Error: {errorText}</p> : null}
-              <form
-                className="chatInput"
-                onSubmit={async (e) => {
-                  e.preventDefault();
-                  if (!input.length || isLoading) return;
+        <GameTab
+          runId={runId}
+          turn={turn}
+          messages={messages}
+          errorText={errorText}
+          input={input}
+          isLoading={isLoading}
+          onInputChange={setInput}
+          onSubmit={async (e) => {
+            e.preventDefault();
+            if (!input.length || isLoading) return;
 
-                  const playerInput = input;
-                  setInput("");
-                  setErrorText(null);
-                  setIsLoading(true);
+            const playerInput = input;
+            setInput("");
+            setErrorText(null);
+            setIsLoading(true);
 
-                  try {
-                    let activeRunId = runId;
-                    if (!activeRunId) {
-                      const run = await startRun();
-                      setCurrentGameProjectId(run.gameProject);
-                      activeRunId = run.runId;
-                      setRunId(run.runId);
-                      await syncSessionFromState(activeRunId);
-                      const sessionResponse = await fetchSessions(run.gameProject);
-                      setSessions(sessionResponse.sessions);
-                    }
+            try {
+              let activeRunId = runId;
+              if (!activeRunId) {
+                const run = await startRun();
+                setCurrentGameProjectId(run.gameProject);
+                activeRunId = run.runId;
+                setRunId(run.runId);
+                await syncSessionFromState(activeRunId);
+                const sessionResponse = await fetchSessions(run.gameProject);
+                setSessions(sessionResponse.sessions);
+              }
 
-                    await submitTurn({
-                      runId: activeRunId,
-                      turn,
-                      playerInput,
-                      playerId: DEFAULT_PLAYER_ID,
-                    });
-                    await syncSessionFromState(activeRunId);
-                  } catch (error) {
-                    const message = error instanceof Error ? error.message : String(error);
-                    setErrorText(message);
-                  } finally {
-                    setIsLoading(false);
-                  }
-                }}
-              >
-                <input
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  placeholder="Describe your action (or send spaces to pass turn)..."
-                  disabled={isLoading}
-                />
-                <button type="submit" disabled={isLoading}>
-                  {isLoading ? "Thinking..." : "Send"}
-                </button>
-              </form>
-            </>
-          </article>
-        </section>
+              await submitTurn({
+                runId: activeRunId,
+                turn,
+                playerInput,
+                playerId: DEFAULT_PLAYER_ID,
+              });
+              await syncSessionFromState(activeRunId);
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              setErrorText(message);
+            } finally {
+              setIsLoading(false);
+            }
+          }}
+        />
       ) : null}
 
       {activeTab === "debug" ? (
-        <section className="splitPanels">
-          <article className="panel">
-            <h2>Debug UI</h2>
-            <div className="moduleDebugActions">
-              <input
-                value={stepPlayerInput}
-                onChange={(e) => setStepPlayerInput(e.target.value)}
-                placeholder="Player input for stepped execution"
-                disabled={stepLoading || !runId}
-              />
-              <button
-                type="button"
-                onClick={() => void startStepMode()}
-                disabled={stepLoading || !runId}
-                title="Begin a new stepped turn"
-              >
-                {stepLoading ? "Working..." : "Start Step Mode"}
-              </button>
-              <button
-                type="button"
-                onClick={() => void nextStepMode()}
-                disabled={stepLoading || !stepExecution || stepExecution.completed}
-                title="Advance one pipeline stage"
-              >
-                Next Step
-              </button>
-              <button
-                type="button"
-                onClick={() => void runStepModeToEnd()}
-                disabled={stepLoading || !stepExecution || stepExecution.completed}
-                title="Advance all remaining stages"
-              >
-                Run To End
-              </button>
-            </div>
-            {stepExecution ? (
-              <p className="metaLine">
-                Step Mode Turn: {stepExecution.turn} | Cursor: {stepExecution.cursor} | Status:{" "}
-                {stepExecution.completed ? "completed" : "waiting for next step"}
-              </p>
-            ) : null}
-            {debugTurnOptions.length > 0 ? (
-              <div className="debugControls">
-                <label htmlFor="debug-turn-select">Turn:</label>
-                <button
-                  type="button"
-                  onClick={() => stepDebugTurn("up")}
-                  disabled={
-                    selectedDebugTurn === null ||
-                    debugTurnOptions.findIndex((value) => value === selectedDebugTurn) <= 0
-                  }
-                  title="Previous turn"
-                >
-                  ↑
-                </button>
-                <select
-                  id="debug-turn-select"
-                  value={selectedDebugTurn ?? ""}
-                  onChange={(e) => setSelectedDebugTurn(Number(e.target.value))}
-                >
-                  {debugTurnOptions.map((turnOption) => (
-                    <option key={turnOption} value={turnOption}>
-                      {turnOption}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  onClick={() => stepDebugTurn("down")}
-                  disabled={
-                    selectedDebugTurn === null ||
-                    debugTurnOptions.findIndex((value) => value === selectedDebugTurn) < 0 ||
-                    debugTurnOptions.findIndex((value) => value === selectedDebugTurn) >=
-                      debugTurnOptions.length - 1
-                  }
-                  title="Next turn"
-                >
-                  ↓
-                </button>
-              </div>
-            ) : null}
-            {debugTurnOptions.length === 0 ? <p className="metaLine">No debug entries yet.</p> : null}
-            {selectedPipelineEvents.length > 0 ? (
-              <section className="debugCard debugCardWide">
-                <h3>Pipeline Events</h3>
-                <div className="conversationList">
-                  {selectedPipelineEvents.map((event) => (
-                    <details key={`pipeline-step-${event.stepNumber}`} className="conversationAttempt">
-                      <summary>
-                        {event.stepNumber}. {prettyStageName(event.stage)} ({event.endpoint}) - {event.status}
-                      </summary>
-                      <div className="conversationAttemptBody">
-                        {renderCollapsibleJson("Show request JSON", event.request)}
-                        {renderCollapsibleJson("Show response JSON", event.response ?? null)}
-                        {renderCollapsibleJson("Show warnings", event.warnings ?? [])}
-                      </div>
-                    </details>
-                  ))}
-                </div>
-              </section>
-            ) : null}
-            {selectedDebugEntry && selectedTrace ? (
-              <div className="debugStructured">
-                <section className="debugCard">
-                  <h3>Intent</h3>
-                  {renderCollapsibleJson("Show JSON", selectedTrace.intent ?? null)}
-                </section>
-                <section className="debugCard">
-                  <h3>Loremaster</h3>
-                  {renderCollapsibleJson("Show JSON", selectedTrace.loremaster ?? null)}
-                </section>
-                <section className="debugCard">
-                  <h3>Proposal</h3>
-                  {renderCollapsibleJson("Show JSON", selectedTrace.proposal ?? null)}
-                </section>
-                <section className="debugCard">
-                  <h3>Committed</h3>
-                  {renderCollapsibleJson("Show JSON", selectedTrace.committed ?? null)}
-                </section>
-                <section className="debugCard">
-                  <h3>Warnings</h3>
-                  {renderCollapsibleJson("Show JSON", selectedTrace.warnings ?? [])}
-                </section>
-                <section className="debugCard">
-                  <h3>Refusal</h3>
-                  {renderCollapsibleJson("Show JSON", selectedTrace.refusal ?? null)}
-                </section>
-                <section className="debugCard debugCardWide">
-                  <h3>Narration Text</h3>
-                  {renderCollapsibleJson("Show JSON", selectedTrace.narrationText ?? "")}
-                </section>
-                <section className="debugCard debugCardWide">
-                  <h3>Raw Trace</h3>
-                  {renderCollapsibleJson("Show JSON", selectedTrace)}
-                </section>
-                <section className="debugCard debugCardWide">
-                  <h3>Model Conversations</h3>
-                  {Object.entries(
-                    (selectedTrace.llmConversations as Record<string, unknown> | undefined) ?? {},
-                  ).length === 0 ? (
-                    <p className="metaLine">No model conversations captured for this turn.</p>
-                  ) : (
-                    <div className="conversationList">
-                      {Object.entries(
-                        (selectedTrace.llmConversations as Record<string, unknown> | undefined) ?? {},
-                      ).map(([moduleName, payload]) => renderConversationPayload(moduleName, payload))}
-                    </div>
-                  )}
-                </section>
-              </div>
-            ) : null}
-          </article>
-        </section>
+        <DebugTab
+          runId={runId}
+          stepLoading={stepLoading}
+          stepPlayerInput={stepPlayerInput}
+          onStepPlayerInputChange={setStepPlayerInput}
+          onStartStepMode={() => void startStepMode()}
+          onNextStepMode={() => void nextStepMode()}
+          onRunStepModeToEnd={() => void runStepModeToEnd()}
+          stepExecution={stepExecution}
+          debugTurnOptions={debugTurnOptions}
+          selectedDebugTurn={selectedDebugTurn}
+          onStepDebugTurn={stepDebugTurn}
+          onSelectedDebugTurnChange={setSelectedDebugTurn}
+          selectedPipelineEvents={selectedPipelineEvents}
+          selectedDebugEntry={selectedDebugEntry}
+          selectedTrace={selectedTrace}
+          prettyStageName={prettyStageName}
+          renderCollapsibleJson={renderCollapsibleJson}
+          renderConversationPayload={renderConversationPayload}
+        />
       ) : null}
 
       {activeTab === "module_debug" ? (
-        <section className="splitPanels">
-          <article className="panel">
-            <h2>Module Debug UI</h2>
-            <p className="metaLine">Call modules directly without running the full backend turn pipeline.</p>
-            <div className="moduleDebugGrid">
-              <label>
-                Module
-                <select
-                  value={moduleDebugTarget}
-                  onChange={(e) => setModuleDebugTarget(e.target.value as ModuleDebugTarget)}
-                >
-                  <option value="intent">Intent Extractor</option>
-                  <option value="loremaster">Loremaster</option>
-                  <option value="simulator">Default Simulator</option>
-                  <option value="arbiter">Arbiter</option>
-                  <option value="proser">Proser</option>
-                </select>
-              </label>
-              {moduleDebugTarget === "loremaster" ? (
-                <label>
-                  Loremaster Endpoint
-                  <select
-                    value={moduleDebugLoremasterEndpoint}
-                    onChange={(e) =>
-                      setModuleDebugLoremasterEndpoint(e.target.value as LoremasterEndpoint)
-                    }
-                  >
-                    <option value="retrieve">/retrieve</option>
-                    <option value="pre">/pre</option>
-                    <option value="post">/post</option>
-                  </select>
-                </label>
-              ) : null}
-              <label>
-                Game Project
-                <input
-                  value={currentGameProjectId}
-                  onChange={(e) => setCurrentGameProjectId(e.target.value)}
-                  disabled={moduleDebugLoading}
-                />
-              </label>
-              <label>
-                Run ID
-                <input
-                  value={moduleDebugRunId}
-                  onChange={(e) => setModuleDebugRunId(e.target.value)}
-                  disabled={moduleDebugLoading}
-                />
-              </label>
-              <label>
-                Turn
-                <input
-                  type="number"
-                  value={moduleDebugTurn}
-                  onChange={(e) => setModuleDebugTurn(Number(e.target.value))}
-                  disabled={moduleDebugLoading}
-                />
-              </label>
-              <label>
-                Player ID
-                <input
-                  value={moduleDebugPlayerId}
-                  onChange={(e) => setModuleDebugPlayerId(e.target.value)}
-                  disabled={moduleDebugLoading}
-                />
-              </label>
-            </div>
-            <label className="moduleDebugLabel">
-              Player Input
-              <textarea
-                value={moduleDebugInput}
-                onChange={(e) => setModuleDebugInput(e.target.value)}
-                rows={4}
-                disabled={moduleDebugLoading}
-              />
-            </label>
-            <label className="moduleDebugLabel">
-              Proposal JSON (used for Loremaster `/post` and Proser)
-              <textarea
-                value={moduleDebugProposalJson}
-                onChange={(e) => setModuleDebugProposalJson(e.target.value)}
-                rows={8}
-                disabled={moduleDebugLoading}
-              />
-            </label>
-            <div className="moduleDebugActions">
-              <button type="button" onClick={() => void runModuleDebug()} disabled={moduleDebugLoading}>
-                {moduleDebugLoading ? "Running..." : "Run Module"}
-              </button>
-            </div>
-            {moduleDebugError ? <p className="statusError">Error: {moduleDebugError}</p> : null}
-            {moduleDebugResult && typeof moduleDebugResult === "object" ? (
-              <div className="debugStructured">
-                <section className="debugCard">
-                  <h3>Meta</h3>
-                  {renderCollapsibleJson("Show JSON", (moduleDebugResult as Record<string, unknown>).meta ?? null)}
-                </section>
-                <section className="debugCard debugCardWide">
-                  <h3>Output</h3>
-                  {renderCollapsibleJson("Show JSON", (moduleDebugResult as Record<string, unknown>).output ?? null)}
-                </section>
-                <section className="debugCard debugCardWide">
-                  <h3>Module Conversation</h3>
-                  {((moduleDebugResult as Record<string, unknown>).debug as Record<string, unknown> | undefined)
-                    ?.llmConversation ? (
-                    <div className="conversationList">
-                      {renderConversationPayload(
-                        moduleDebugTarget === "loremaster"
-                          ? `loremaster_${moduleDebugLoremasterEndpoint}`
-                          : moduleDebugTarget,
-                        ((moduleDebugResult as Record<string, unknown>).debug as Record<string, unknown>)
-                          .llmConversation,
-                      )}
-                    </div>
-                  ) : (
-                    <p className="metaLine">No `llmConversation` in this module response.</p>
-                  )}
-                </section>
-                <section className="debugCard debugCardWide">
-                  <h3>Raw Module Response</h3>
-                  {renderCollapsibleJson("Show JSON", moduleDebugResult)}
-                </section>
-              </div>
-            ) : (
-              <section className="debugCard debugCardWide">
-                <h3>Module Output</h3>
-                {renderCollapsibleJson(
-                  "Show JSON",
-                  moduleDebugResult ?? "No module output yet.",
-                )}
-              </section>
-            )}
-          </article>
-        </section>
+        <ModuleDebugTab
+          moduleDebugTarget={moduleDebugTarget}
+          onModuleDebugTargetChange={setModuleDebugTarget}
+          moduleDebugLoremasterEndpoint={moduleDebugLoremasterEndpoint}
+          onModuleDebugLoremasterEndpointChange={setModuleDebugLoremasterEndpoint}
+          currentGameProjectId={currentGameProjectId}
+          onCurrentGameProjectIdChange={setCurrentGameProjectId}
+          moduleDebugRunId={moduleDebugRunId}
+          onModuleDebugRunIdChange={setModuleDebugRunId}
+          moduleDebugTurn={moduleDebugTurn}
+          onModuleDebugTurnChange={setModuleDebugTurn}
+          moduleDebugPlayerId={moduleDebugPlayerId}
+          onModuleDebugPlayerIdChange={setModuleDebugPlayerId}
+          moduleDebugInput={moduleDebugInput}
+          onModuleDebugInputChange={setModuleDebugInput}
+          moduleDebugProposalJson={moduleDebugProposalJson}
+          onModuleDebugProposalJsonChange={setModuleDebugProposalJson}
+          moduleDebugLoading={moduleDebugLoading}
+          onRunModuleDebug={() => void runModuleDebug()}
+          moduleDebugError={moduleDebugError}
+          moduleDebugResult={moduleDebugResult}
+          renderCollapsibleJson={renderCollapsibleJson}
+          renderConversationPayload={renderConversationPayload}
+        />
       ) : null}
     </main>
   );

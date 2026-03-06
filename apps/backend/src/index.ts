@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { loadGameProjectManifest } from "./gameProject.js";
+import { createRunLock } from "./runLock.js";
 import {
   getTurnExecutionState,
   getSessionDirPath,
@@ -24,6 +25,8 @@ import {
 
 const port = Number(process.env.PORT ?? 8787);
 const defaultGameProjectId = process.env.GAME_PROJECT_ID ?? "sandcrawler";
+const jsonBodyLimit = process.env.BACKEND_JSON_LIMIT ?? "2mb";
+const withRunLock = createRunLock();
 
 function sendError(
   res: Response,
@@ -77,7 +80,7 @@ function openFolderInExplorer(folderPath: string) {
 async function main() {
   const app = express();
   app.use(cors());
-  app.use(express.json());
+  app.use(express.json({ limit: jsonBodyLimit }));
 
   app.get("/health", (_req, res) => {
     res.json({ ok: true });
@@ -238,54 +241,56 @@ async function main() {
     }
 
     try {
-      const runLocation = await resolveRunLocation(runId);
-      if (!runLocation) {
-        sendError(res, 404, "RUN_NOT_FOUND", "Run not found.", requestId, { runId });
-        return;
-      }
-      const manifest = loadGameProjectManifest(runLocation.gameProjectId);
-
-      const db = await openRunStore(runLocation.gameProjectId, runId);
-      let result: Awaited<ReturnType<typeof processTurnViaRouter>>;
-      try {
-        const turnRow = await db.get<{ maxTurn: number | null }>(`SELECT MAX(turn) as maxTurn FROM snapshots`);
-        const expectedTurn = (turnRow?.maxTurn ?? 0) + 1;
-
-        if (turn !== expectedTurn) {
-          sendError(
-            res,
-            409,
-            "TURN_SEQUENCE_CONFLICT",
-            "Turn is out of sequence.",
-            requestId,
-            { expectedTurn, receivedTurn: turn },
-          );
+      await withRunLock(runId, async () => {
+        const runLocation = await resolveRunLocation(runId);
+        if (!runLocation) {
+          sendError(res, 404, "RUN_NOT_FOUND", "Run not found.", requestId, { runId });
           return;
         }
+        const manifest = loadGameProjectManifest(runLocation.gameProjectId);
 
-        result = await processTurnViaRouter(
-          db,
-          {
-            runId,
-            gameProjectId: runLocation.gameProjectId,
-            moduleBindings: manifest.moduleBindings,
-            turn,
-            playerInput,
-            playerId,
-          },
-        );
-      } finally {
-        await db.close();
-      }
+        const db = await openRunStore(runLocation.gameProjectId, runId);
+        let result: Awaited<ReturnType<typeof processTurnViaRouter>>;
+        try {
+          const turnRow = await db.get<{ maxTurn: number | null }>(`SELECT MAX(turn) as maxTurn FROM snapshots`);
+          const expectedTurn = (turnRow?.maxTurn ?? 0) + 1;
 
-      logInfo("turn_processed", {
-        request_id: requestId,
-        run_id: runId,
-        turn,
-        warnings: result.warnings.length,
+          if (turn !== expectedTurn) {
+            sendError(
+              res,
+              409,
+              "TURN_SEQUENCE_CONFLICT",
+              "Turn is out of sequence.",
+              requestId,
+              { expectedTurn, receivedTurn: turn },
+            );
+            return;
+          }
+
+          result = await processTurnViaRouter(
+            db,
+            {
+              runId,
+              gameProjectId: runLocation.gameProjectId,
+              moduleBindings: manifest.moduleBindings,
+              turn,
+              playerInput,
+              playerId,
+            },
+          );
+        } finally {
+          await db.close();
+        }
+
+        logInfo("turn_processed", {
+          request_id: requestId,
+          run_id: runId,
+          turn,
+          warnings: result.warnings.length,
+        });
+
+        res.json(result);
       });
-
-      res.json(result);
     } catch (error) {
       sendError(
         res,
@@ -325,62 +330,64 @@ async function main() {
     }
 
     try {
-      const runLocation = await resolveRunLocation(runId);
-      if (!runLocation) {
-        sendError(res, 404, "RUN_NOT_FOUND", "Run not found.", requestId, { runId });
-        return;
-      }
-      const manifest = loadGameProjectManifest(runLocation.gameProjectId);
-      const db = await openRunStore(runLocation.gameProjectId, runId);
-      try {
-        const turnRow = await db.get<{ maxTurn: number | null }>(`SELECT MAX(turn) as maxTurn FROM snapshots`);
-        const expectedTurn = (turnRow?.maxTurn ?? 0) + 1;
-        if (turn !== expectedTurn) {
-          sendError(
-            res,
-            409,
-            "TURN_SEQUENCE_CONFLICT",
-            "Turn is out of sequence.",
-            requestId,
-            { expectedTurn, receivedTurn: turn },
-          );
+      await withRunLock(runId, async () => {
+        const runLocation = await resolveRunLocation(runId);
+        if (!runLocation) {
+          sendError(res, 404, "RUN_NOT_FOUND", "Run not found.", requestId, { runId });
           return;
         }
+        const manifest = loadGameProjectManifest(runLocation.gameProjectId);
+        const db = await openRunStore(runLocation.gameProjectId, runId);
+        try {
+          const turnRow = await db.get<{ maxTurn: number | null }>(`SELECT MAX(turn) as maxTurn FROM snapshots`);
+          const expectedTurn = (turnRow?.maxTurn ?? 0) + 1;
+          if (turn !== expectedTurn) {
+            sendError(
+              res,
+              409,
+              "TURN_SEQUENCE_CONFLICT",
+              "Turn is out of sequence.",
+              requestId,
+              { expectedTurn, receivedTurn: turn },
+            );
+            return;
+          }
 
-        const activeExecution = await db.get<{ turn: number }>(
-          `SELECT turn FROM turn_execution WHERE run_id = ? AND completed = 0 ORDER BY turn ASC LIMIT 1`,
-          runId,
-        );
-        if (activeExecution && activeExecution.turn !== turn) {
-          sendError(
-            res,
-            409,
-            "STEP_EXECUTION_CONFLICT",
-            "Another stepped turn is already in progress for this run.",
-            requestId,
-            { activeTurn: activeExecution.turn },
+          const activeExecution = await db.get<{ turn: number }>(
+            `SELECT turn FROM turn_execution WHERE run_id = ? AND completed = 0 ORDER BY turn ASC LIMIT 1`,
+            runId,
           );
-          return;
-        }
+          if (activeExecution && activeExecution.turn !== turn) {
+            sendError(
+              res,
+              409,
+              "STEP_EXECUTION_CONFLICT",
+              "Another stepped turn is already in progress for this run.",
+              requestId,
+              { activeTurn: activeExecution.turn },
+            );
+            return;
+          }
 
-        const started = await startTurnStepExecution(db, {
-          runId,
-          gameProjectId: runLocation.gameProjectId,
-          moduleBindings: manifest.moduleBindings,
-          turn,
-          playerInput,
-          playerId,
-        });
-        const pipelineState = await readPipelineState(runLocation.gameProjectId, runId, turn);
-        res.json({
-          runId,
-          turn,
-          execution: started,
-          pipelineEvents: pipelineState.events,
-        });
-      } finally {
-        await db.close();
-      }
+          const started = await startTurnStepExecution(db, {
+            runId,
+            gameProjectId: runLocation.gameProjectId,
+            moduleBindings: manifest.moduleBindings,
+            turn,
+            playerInput,
+            playerId,
+          });
+          const pipelineState = await readPipelineState(runLocation.gameProjectId, runId, turn);
+          res.json({
+            runId,
+            turn,
+            execution: started,
+            pipelineEvents: pipelineState.events,
+          });
+        } finally {
+          await db.close();
+        }
+      });
     } catch (error) {
       sendError(
         res,
@@ -411,44 +418,46 @@ async function main() {
       return;
     }
     try {
-      const runLocation = await resolveRunLocation(runId);
-      if (!runLocation) {
-        sendError(res, 404, "RUN_NOT_FOUND", "Run not found.", requestId, { runId });
-        return;
-      }
-      const manifest = loadGameProjectManifest(runLocation.gameProjectId);
-      const db = await openRunStore(runLocation.gameProjectId, runId);
-      try {
-        const execution = await getTurnExecutionState(db, runId, turn);
-        if (!execution) {
-          sendError(
-            res,
-            404,
-            "STEP_EXECUTION_NOT_FOUND",
-            "No active step execution found for this turn.",
-            requestId,
-            { runId, turn },
-          );
+      await withRunLock(runId, async () => {
+        const runLocation = await resolveRunLocation(runId);
+        if (!runLocation) {
+          sendError(res, 404, "RUN_NOT_FOUND", "Run not found.", requestId, { runId });
           return;
         }
-        const advanced = await advanceTurnStepExecution(db, {
-          runId,
-          gameProjectId: runLocation.gameProjectId,
-          moduleBindings: manifest.moduleBindings,
-          turn,
-          playerInput: execution.playerInput,
-          playerId: execution.playerId,
-        });
-        res.json({
-          runId,
-          turn,
-          execution: advanced.state,
-          pipelineEvents: advanced.pipelineEvents,
-          result: advanced.result,
-        });
-      } finally {
-        await db.close();
-      }
+        const manifest = loadGameProjectManifest(runLocation.gameProjectId);
+        const db = await openRunStore(runLocation.gameProjectId, runId);
+        try {
+          const execution = await getTurnExecutionState(db, runId, turn);
+          if (!execution) {
+            sendError(
+              res,
+              404,
+              "STEP_EXECUTION_NOT_FOUND",
+              "No active step execution found for this turn.",
+              requestId,
+              { runId, turn },
+            );
+            return;
+          }
+          const advanced = await advanceTurnStepExecution(db, {
+            runId,
+            gameProjectId: runLocation.gameProjectId,
+            moduleBindings: manifest.moduleBindings,
+            turn,
+            playerInput: execution.playerInput,
+            playerId: execution.playerId,
+          });
+          res.json({
+            runId,
+            turn,
+            execution: advanced.state,
+            pipelineEvents: advanced.pipelineEvents,
+            result: advanced.result,
+          });
+        } finally {
+          await db.close();
+        }
+      });
     } catch (error) {
       sendError(
         res,

@@ -27,12 +27,20 @@ export interface PipelineStateResult {
   events: PipelineStepEvent[];
 }
 
+export interface SnapshotRow {
+  turn: number;
+  worldState: unknown;
+  viewState: unknown;
+}
+
 interface RunLocation {
   runId: string;
   gameProjectId: string;
   sessionDir: string;
   dbPath: string;
 }
+
+const runLocationCache = new Map<string, RunLocation>();
 
 function resolveGameProjectsRoot(): string {
   return path.resolve(process.cwd(), "..", "..", "game_projects");
@@ -144,10 +152,42 @@ function parseCsvLine(line: string): string[] {
   return values.map((value) => value.replace(/^"(.*)"$/, "$1").trim());
 }
 
+function parseSimpleFactionYaml(raw: string): Array<Record<string, string>> {
+  const lines = raw.split(/\r?\n/);
+  const items: Array<Record<string, string>> = [];
+  let current: Record<string, string> | null = null;
+
+  for (const originalLine of lines) {
+    const line = originalLine.trimEnd();
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#") || trimmed === "factions:") continue;
+
+    if (/^-\s+/.test(trimmed)) {
+      if (current && Object.keys(current).length > 0) items.push(current);
+      current = {};
+      const rest = trimmed.replace(/^-\s+/, "");
+      const keyValue = rest.match(/^([^:]+):\s*(.+)$/);
+      if (keyValue) {
+        current[keyValue[1].trim()] = keyValue[2].trim();
+      }
+      continue;
+    }
+
+    const keyValue = trimmed.match(/^([^:]+):\s*(.+)$/);
+    if (keyValue && current) {
+      current[keyValue[1].trim()] = keyValue[2].trim();
+    }
+  }
+
+  if (current && Object.keys(current).length > 0) items.push(current);
+  return items;
+}
+
 async function seedLoreTable(db: SessionDb, gameProjectId: string): Promise<void> {
   const loreDir = path.join(resolveGameProjectsRoot(), gameProjectId, "lore");
   const worldPath = path.join(loreDir, "world.md");
   const csvPath = path.join(loreDir, "default_lore_entries.csv");
+  const factionsYamlPath = path.join(resolveGameProjectsRoot(), gameProjectId, "tables", "factions.yaml");
 
   try {
     const worldRaw = (await readFile(worldPath, "utf8")).trim();
@@ -193,6 +233,30 @@ async function seedLoreTable(db: SessionDb, gameProjectId: string): Promise<void
   } catch {
     // Optional CSV seed; ignore when absent.
   }
+
+  try {
+    const factionsYaml = await readFile(factionsYamlPath, "utf8");
+    const entries = parseSimpleFactionYaml(factionsYaml);
+    for (const entry of entries) {
+      const subject = entry.id?.trim();
+      if (!subject) continue;
+      const relation = entry.relationToPlayer?.trim();
+      const name = entry.name?.trim();
+      const fragments = [
+        name ? `name=${name}` : null,
+        relation ? `relationToPlayer=${relation}` : null,
+      ].filter((value): value is string => value !== null);
+      if (fragments.length === 0) continue;
+      await db.run(
+        `INSERT OR REPLACE INTO lore (subject, data, source) VALUES (?, ?, ?)`,
+        subject,
+        fragments.join("; "),
+        "tables/factions.yaml",
+      );
+    }
+  } catch {
+    // Optional factions.yaml seed; ignore when absent.
+  }
 }
 
 export async function initializeRunStore(gameProjectId: string, runId: string): Promise<void> {
@@ -214,6 +278,12 @@ export async function initializeRunStore(gameProjectId: string, runId: string): 
       anchors: [],
     }), JSON.stringify({ player: { observations: [] } }));
     await seedLoreTable(db, gameProjectId);
+    runLocationCache.set(runId, {
+      runId,
+      gameProjectId,
+      sessionDir: getSessionDirPath(gameProjectId, runId),
+      dbPath,
+    });
   } finally {
     await db.close();
   }
@@ -262,6 +332,19 @@ export async function listSessionsOnDisk(
 }
 
 export async function resolveRunLocation(runId: string): Promise<RunLocation | null> {
+  const cached = runLocationCache.get(runId);
+  if (cached) {
+    try {
+      const dbStats = await stat(cached.dbPath);
+      if (dbStats.isFile()) {
+        return cached;
+      }
+      runLocationCache.delete(runId);
+    } catch {
+      runLocationCache.delete(runId);
+    }
+  }
+
   const gameProjectsRoot = resolveGameProjectsRoot();
   let gameProjects: Array<{ name: string }> = [];
   try {
@@ -277,12 +360,14 @@ export async function resolveRunLocation(runId: string): Promise<RunLocation | n
     try {
       const dbStats = await stat(dbPath);
       if (!dbStats.isFile()) continue;
-      return {
+      const resolved: RunLocation = {
         runId,
         gameProjectId: gameProject.name,
         sessionDir,
         dbPath,
       };
+      runLocationCache.set(runId, resolved);
+      return resolved;
     } catch {
       // Continue searching in other game projects.
     }
@@ -356,6 +441,37 @@ export async function readSessionState(gameProjectId: string, runId: string): Pr
   } finally {
     await db.close();
   }
+}
+
+export async function readLatestSnapshot(db: SessionDb): Promise<SnapshotRow> {
+  const row = await db.get<{ turn: number; world_state: string; view_state: string }>(
+    `SELECT turn, world_state, view_state FROM snapshots ORDER BY turn DESC, id DESC LIMIT 1`,
+  );
+  if (!row) {
+    return {
+      turn: 0,
+      worldState: {},
+      viewState: {},
+    };
+  }
+
+  let worldState: unknown = {};
+  let viewState: unknown = {};
+  try {
+    worldState = JSON.parse(row.world_state);
+  } catch {
+    worldState = {};
+  }
+  try {
+    viewState = JSON.parse(row.view_state);
+  } catch {
+    viewState = {};
+  }
+  return {
+    turn: row.turn,
+    worldState,
+    viewState,
+  };
 }
 
 function asIsoString(value: unknown): string {

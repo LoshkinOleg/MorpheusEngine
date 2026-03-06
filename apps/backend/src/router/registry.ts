@@ -14,8 +14,31 @@ function getDefaultUrl(role: keyof ModuleUrls): string {
   return process.env.MODULE_PROSER_URL ?? "http://localhost:8794";
 }
 
+function getBindingEnvOverride(role: keyof ModuleUrls, binding: string): string | null {
+  const normalizedBinding = binding
+    .trim()
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .toUpperCase();
+  if (!normalizedBinding) return null;
+  const roleSpecificKey = `MODULE_BINDING_${normalizedBinding}_${role.toUpperCase()}_URL`;
+  const genericKey = `MODULE_BINDING_${normalizedBinding}_URL`;
+  const roleSpecific = process.env[roleSpecificKey];
+  if (typeof roleSpecific === "string" && roleSpecific.trim().length > 0) {
+    return roleSpecific.trim();
+  }
+  const generic = process.env[genericKey];
+  if (typeof generic === "string" && generic.trim().length > 0) {
+    return generic.trim();
+  }
+  return null;
+}
+
 function resolveUrlForBinding(role: keyof ModuleUrls, binding: string | undefined): string {
   if (binding && /^https?:\/\//i.test(binding)) return binding;
+  if (binding) {
+    const override = getBindingEnvOverride(role, binding);
+    if (override) return override;
+  }
   return getDefaultUrl(role);
 }
 
