@@ -15,7 +15,7 @@ The project is a TypeScript monorepo with four runtime layers:
   - Persists events and snapshots.
   - Calls standalone module services over HTTP.
 - **Standalone module services (`apps/module-*`)**
-  - One process per pipeline module (`intent_extractor`, `loremaster`, `default_simulator`, `arbiter`, `proser`).
+  - One process per pipeline module (`intent_extractor`, `intent_validator`, `default_simulator`, `arbiter`, `proser`). The router also runs an internal `context_assembler` stage (no separate HTTP service) between `arbiter` and `proser`.
   - Expose module-specific invoke endpoints.
 - **Shared contracts (`packages/shared`)**
   - Common schema definitions and types for module IR and inter-process request/response contracts.
@@ -27,16 +27,19 @@ The runtime follows an event-sourced turn pattern:
 1. **Input capture**
    - Player action is received (`POST /turn`) and stored as an event.
 2. **Router pipeline calls**
-   - Router calls `intent_extractor`, lore retrieval, `loremaster` pre-check.
+   - Router calls `intent_extractor`, then `intent_validator` to accept/refuse and emit world constraints.
+   - Validator (and future stages) may record `lore.subject` keys used for decisions; the router merges them into per-turn `loreAccumulation` on the checkpoint.
 3. **Simulation proposals**
    - One or more modules produce `ProposedDiff` operations.
-4. **Post-diff lore checks**
-   - Router calls `loremaster` post-check for outcome/narration consistency hints.
-5. **Arbiter commit**
+4. **Arbiter commit**
    - Final operations are selected/merged into `CommittedDiff`.
-6. **Persistence**
+5. **Context assembly (router-internal)**
+   - After `arbiter`, `context_assembler` resolves accumulated lore keys plus a small deterministic flavor pass against the session `lore` table, loads the persisted **narrative capsule** from `meta`, and builds the full `ProserModuleRequest` (validated intent JSON + committed diff + lore bundle + capsule).
+6. **Proser**
+   - LLM narration consumes the assembled packet; raw player text is not the canonical action description.
+7. **Persistence**
    - Pipeline step events, module trace, and snapshots are written to storage.
-7. **Presentation**
+8. **Presentation**
    - UI consumes committed result, trace payloads, and ordered pipeline events from storage.
 
 Why this pattern:
@@ -50,18 +53,18 @@ Why this pattern:
 Planned default pipeline:
 
 1. `intent_extractor` (LLM)
-2. `loremaster` retrieval + pre/post checks (standalone service)
-3. optional external `lore_retriever` service (future split if needed)
-4. resolvers:
+2. `intent_validator` (standalone service, sole refusal gate + consequence constraints)
+3. resolvers:
    - authoritative code simulators (when available)
    - fallback `default_simulator` (LLM)
-5. `arbiter` (standalone service, currently accept-first policy)
+4. `arbiter` (standalone service, currently accept-first policy)
+5. `context_assembler` (router-internal: lore resolution + narrative capsule + proser request shaping)
 6. optional critic loop
 7. `proser` (LLM)
 
 Current state:
 
-- Router + standalone module services are implemented for intent, loremaster, default simulation, and prose generation.
+- Router + standalone module services are implemented for intent, intent validation, default simulation, arbiter, and prose generation.
 
 Authoritative vs advisory resolver policy:
 
@@ -209,13 +212,12 @@ Example (`200`):
   "title": "Sandcrawler Captain",
   "engineVersion": "0.1.x",
   "entryState": {
-    "playerId": "entity.player.captain",
+    "playerId": "player.captain",
     "anchorId": "anchor.bridge"
   },
   "moduleBindings": {
     "intent_extractor": "llm.default",
-    "lore_retriever": "data.default",
-    "loremaster": "llm.default",
+    "intent_validator": "llm.default",
     "default_simulator": "llm.default",
     "arbiter": "llm.default",
     "proser": "llm.default"
@@ -312,14 +314,14 @@ Request example:
   "runId": "4de6c31b-d535-4cf6-b8f4-f248f87f5f4c",
   "turn": 1,
   "playerInput": "I order the crew to seal the hull breach.",
-  "playerId": "entity.player.captain"
+  "playerId": "player.captain"
 }
 ```
 
 Success response (`200`) shape:
 
 - `intent`: structured `ActionCandidates`
-- `loremaster`: structured loremaster assessments
+- `intentValidator`: structured validation decision + consequence constraints
 - `proposal`: module `ProposedDiff`
 - `committed`: `CommittedDiff`
 - `warnings`: non-fatal pipeline warnings
@@ -504,14 +506,12 @@ Output (`ActionCandidates`):
 - `candidates[]` with:
   - `intent` (for example `attack`, `talk`, `move`, `inspect`, `use_item`)
   - `params` (target/tool/destination/topic)
-  - `confidence` (`0..1`)
-  - optional `consequenceTags[]`
 - `rawInput`
 
 Notes:
 
 - Keep intent taxonomy small and extensible.
-- Invalid actions can be marked here and deterministically refused by backend refusal policy.
+- Invalid actions should be handled by dedicated downstream analysis modules and router policy.
 - On refusal, runtime emits refusal narration and commits only a `view:player` observation (no world mutation).
 
 ### 12.3 Lore Retriever (`lore_retriever`)
@@ -550,7 +550,6 @@ Output (`LoremasterOutput` payload):
 - per candidate:
   - `candidateIndex`
   - `status`: `allowed | allowed_with_consequences`
-  - `consequenceTags[]`
   - `rationale`
 
 Critical constraint:
@@ -567,7 +566,7 @@ Responsibility:
 Inputs:
 
 - selected action candidate
-- LoreMaster constraints/tags
+- LoreMaster assessment/rationale
 - relevant `WorldState` slice
 - relevant `ViewState(player)` slice
 - retrieved lore
@@ -586,7 +585,7 @@ Outputs (`ProposedDiff` plus narrative grounding payload):
 Notes:
 
 - This module is soft and story-friendly.
-- LoreMaster tags should directly steer partial-failure realism.
+- LoreMaster rationale should directly steer partial-failure realism.
 
 ### 12.6 Arbiter / Judge (`arbiter`)
 
@@ -686,25 +685,23 @@ Critical rule:
 
 1. player input arrives
 2. intent extractor proposes candidates
-3. loremaster retrieves lore and scores plausibility/consequences (pre-check)
+3. intent validator accepts/refuses and emits structured consequence constraints
 4. simulators run (authoritative modules first, default simulator fallback)
-5. loremaster post-check returns narration constraints
-6. arbiter module selects commit candidate (currently always accepts validated proposal)
-7. proser narrates committed outcome only
-8. world state update persists trace, committed diff, and snapshot
+5. arbiter module selects commit candidate (currently always accepts validated proposal)
+6. proser narrates committed outcome only
+7. world state update persists trace, committed diff, and snapshot
 
 All module inputs/outputs and final commit are persisted in the event log for audit/debug.
 
 Refusal path:
 
-- If intent/loremaster marks an action as invalid (for example `no_target_in_scope`), backend currently refuses the action with deterministic narration and commits minimal/no world mutation until player provides a different action.
-- Concrete behavior example: if current context has no valid enemies in scope and the player enters `attack`, the engine should return a refusal such as `Refused: no valid attack target is currently in scope.` and avoid speculative combat state mutations on that turn.
+- Refusal behavior is currently controlled by router policy and is no longer driven by `consequenceTags`.
 
 ### 12.10 Practical MVP defaults
 
 For fastest delivery:
 
-- implement `intent_extractor`, `loremaster`, `default_simulator`, `arbiter`, `proser`
+- implement `intent_extractor`, `intent_validator`, `default_simulator`, `arbiter`, `proser`
 - keep bounded retries for structured module outputs
 - defer critic/verifier LLM pass initially
 - use one model backend first (for example `qwen2.5:7b-instruct`), specialize per module later

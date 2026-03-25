@@ -22,20 +22,7 @@ export const FactSchema = z.object({
 export const ActionCandidateSchema = z.object({
   actorId: z.string().min(1),
   intent: z.string().min(1),
-  confidence: z.number().min(0).max(1).default(0.5),
   params: z.record(z.string(), z.unknown()).default({}),
-  consequenceTags: z
-    .array(
-      z.enum([
-        "no_target_in_scope",
-        "partial_success_only",
-        "high_risk_exposure",
-        "resource_cost_applies",
-        "social_backlash",
-        "noise_generated",
-      ]),
-    )
-    .default([]),
 });
 
 export const ActionCandidatesSchema = z.object({
@@ -46,7 +33,6 @@ export const ActionCandidatesSchema = z.object({
 export const LoremasterAssessmentSchema = z.object({
   candidateIndex: z.number().int().nonnegative(),
   status: z.enum(["allowed", "allowed_with_consequences"]),
-  consequenceTags: ActionCandidateSchema.shape.consequenceTags.default([]),
   rationale: z.string().min(1),
 });
 
@@ -124,6 +110,69 @@ export const IntentModuleResponseSchema = z.object({
   debug: z.record(z.string(), z.unknown()).default({}),
 });
 
+export const IntentValidatorConsequenceConstraintsSchema = z.object({
+  requiredOutcomes: z.array(z.string().min(1)).default([]),
+  forbiddenOutcomes: z.array(z.string().min(1)).default([]),
+});
+
+export const IntentValidatorDecisionSchema = z.enum(["accept", "refuse"]);
+
+export const LoreRefSchema = z.object({
+  subject: z.string().min(1),
+  source: z.string().min(1).optional(),
+});
+
+export const LoreAccumulationSchema = z.object({
+  loreKeys: z.array(z.string().min(1)).default([]),
+});
+
+export const NarrativeCapsuleSchema = z.object({
+  rollingSummary: z.string().default(""),
+  tension: z.enum(["calm", "rising", "high"]).default("calm"),
+  lastTurnsDigest: z.string().optional(),
+});
+
+export const LoreExcerptSchema = z.object({
+  subject: z.string().min(1),
+  data: z.string().min(1),
+  source: z.string().min(1),
+});
+
+export const ProserLoreBundleSchema = z.object({
+  decisionKeys: z.array(z.string().min(1)).default([]),
+  decisionExcerpts: z.array(LoreExcerptSchema).default([]),
+  flavorKeys: z.array(z.string().min(1)).default([]),
+  flavorExcerpts: z.array(LoreExcerptSchema).default([]),
+});
+
+export const ValidatedIntentForProserSchema = z.object({
+  candidates: z.array(ActionCandidateSchema).min(1),
+});
+
+export const IntentValidatorOutputSchema = z.object({
+  decision: IntentValidatorDecisionSchema,
+  rationale: z.string().min(1),
+  refusalReason: z.string().min(1).optional(),
+  consequenceConstraints: IntentValidatorConsequenceConstraintsSchema.default({
+    requiredOutcomes: [],
+    forbiddenOutcomes: [],
+  }),
+  loreKeysUsed: z.array(z.string().min(1)).default([]),
+});
+
+export const IntentValidatorModuleRequestSchema = z.object({
+  context: ModuleRunContextSchema,
+  intent: z.object({
+    candidates: z.array(ActionCandidateSchema).min(1),
+  }),
+});
+
+export const IntentValidatorModuleResponseSchema = z.object({
+  meta: ModuleEnvelopeMetaSchema,
+  output: IntentValidatorOutputSchema,
+  debug: z.record(z.string(), z.unknown()).default({}),
+});
+
 export const LoreRetrieverModuleRequestSchema = z.object({
   context: ModuleRunContextSchema,
   intent: ActionCandidatesSchema,
@@ -163,8 +212,7 @@ export const LoremasterPostModuleResponseSchema = z.object({
 export const SimulatorModuleRequestSchema = z.object({
   context: ModuleRunContextSchema,
   intent: ActionCandidatesSchema,
-  loremasterPre: LoremasterOutputSchema,
-  lore: LoreRetrievalSchema,
+  intentValidation: IntentValidatorOutputSchema,
 });
 
 export const SimulatorModuleResponseSchema = z.object({
@@ -176,10 +224,8 @@ export const SimulatorModuleResponseSchema = z.object({
 export const ArbiterModuleRequestSchema = z.object({
   context: ModuleRunContextSchema,
   intent: ActionCandidatesSchema,
-  lore: LoreRetrievalSchema,
-  loremasterPre: LoremasterOutputSchema,
+  intentValidation: IntentValidatorOutputSchema,
   proposal: ProposedDiffSchema,
-  lorePost: LoremasterPostOutputSchema,
 });
 
 export const ArbiterDecisionSchema = z.enum(["accept", "request_rerun", "choose_alternative"]);
@@ -199,8 +245,9 @@ export const ArbiterModuleResponseSchema = z.object({
 export const ProserModuleRequestSchema = z.object({
   context: ModuleRunContextSchema,
   committed: CommittedDiffSchema,
-  lore: LoreRetrievalSchema,
-  lorePost: LoremasterPostOutputSchema,
+  validatedIntent: ValidatedIntentForProserSchema,
+  lore: ProserLoreBundleSchema,
+  narrativeCapsule: NarrativeCapsuleSchema.optional(),
 });
 
 export const ProserModuleResponseSchema = z.object({
@@ -209,6 +256,14 @@ export const ProserModuleResponseSchema = z.object({
     narrationText: z.string().min(1),
   }),
   debug: z.record(z.string(), z.unknown()).default({}),
+});
+
+export const ProserContextTraceSummarySchema = z.object({
+  accumulatedLoreKeyCount: z.number().int().nonnegative(),
+  decisionExcerptCount: z.number().int().nonnegative(),
+  flavorExcerptCount: z.number().int().nonnegative(),
+  narrativeCapsulePresent: z.boolean(),
+  narrativeCapsuleHash: z.string().min(1).optional(),
 });
 
 export const GroundedNarrationSentenceSchema = z.object({
@@ -258,6 +313,14 @@ export const TurnExecutionStateSchema = z.object({
 });
 
 export type ActionCandidates = z.infer<typeof ActionCandidatesSchema>;
+export type IntentValidatorConsequenceConstraints = z.infer<typeof IntentValidatorConsequenceConstraintsSchema>;
+export type IntentValidatorOutput = z.infer<typeof IntentValidatorOutputSchema>;
+export type LoreRef = z.infer<typeof LoreRefSchema>;
+export type LoreAccumulation = z.infer<typeof LoreAccumulationSchema>;
+export type NarrativeCapsule = z.infer<typeof NarrativeCapsuleSchema>;
+export type ProserLoreBundle = z.infer<typeof ProserLoreBundleSchema>;
+export type ProserContextTraceSummary = z.infer<typeof ProserContextTraceSummarySchema>;
+export type ValidatedIntentForProser = z.infer<typeof ValidatedIntentForProserSchema>;
 export type LoremasterOutput = z.infer<typeof LoremasterOutputSchema>;
 export type LoreRetrieval = z.infer<typeof LoreRetrievalSchema>;
 export type LoreEvidenceItem = z.infer<typeof LoreEvidenceItemSchema>;

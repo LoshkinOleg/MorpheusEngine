@@ -1,4 +1,4 @@
-import type { PipelineStepEvent, TurnExecutionState } from "../api";
+import type { TurnExecutionState } from "../api";
 import type { ReactNode } from "react";
 
 interface DebugTabProps {
@@ -14,12 +14,12 @@ interface DebugTabProps {
   selectedDebugTurn: number | null;
   onStepDebugTurn: (direction: "up" | "down") => void;
   onSelectedDebugTurnChange: (value: number) => void;
-  selectedPipelineEvents: PipelineStepEvent[];
   selectedDebugEntry: { turn: number; trace: unknown } | null;
-  selectedTrace: Record<string, unknown> | null;
-  prettyStageName: (stage: string) => string;
-  renderCollapsibleJson: (summary: string, value: unknown) => ReactNode;
-  renderConversationPayload: (moduleName: string, payload: unknown) => ReactNode;
+  renderCollapsibleJson: (summary: string, value: unknown, options?: { open?: boolean }) => ReactNode;
+  dumpTracesLoading: boolean;
+  dumpTracesError: string | null;
+  dumpTracesResult: { outputPath: string; traceCount: number } | null;
+  onDumpTraces: () => void;
 }
 
 export function DebugTab(props: DebugTabProps) {
@@ -58,6 +58,14 @@ export function DebugTab(props: DebugTabProps) {
           >
             Run To End
           </button>
+          <button
+            type="button"
+            onClick={props.onDumpTraces}
+            disabled={props.dumpTracesLoading || !props.runId}
+            title="Write all recorded turn traces to the session saved folder"
+          >
+            {props.dumpTracesLoading ? "Dumping..." : "Dump All Turn Traces"}
+          </button>
         </div>
         {props.stepExecution ? (
           <p className="metaLine">
@@ -65,6 +73,12 @@ export function DebugTab(props: DebugTabProps) {
             {props.stepExecution.completed ? "completed" : "waiting for next step"}
           </p>
         ) : null}
+        {props.dumpTracesResult ? (
+          <p className="metaLine">
+            Dumped {props.dumpTracesResult.traceCount} traces to {props.dumpTracesResult.outputPath}
+          </p>
+        ) : null}
+        {props.dumpTracesError ? <p className="statusError">Error: {props.dumpTracesError}</p> : null}
         {props.debugTurnOptions.length > 0 ? (
           <div className="debugControls">
             <label htmlFor="debug-turn-select">Turn:</label>
@@ -106,74 +120,11 @@ export function DebugTab(props: DebugTabProps) {
           </div>
         ) : null}
         {props.debugTurnOptions.length === 0 ? <p className="metaLine">No debug entries yet.</p> : null}
-        {props.selectedPipelineEvents.length > 0 ? (
+        {props.selectedDebugEntry ? (
           <section className="debugCard debugCardWide">
-            <h3>Pipeline Events</h3>
-            <div className="conversationList">
-              {props.selectedPipelineEvents.map((event) => (
-                <details key={`pipeline-step-${event.stepNumber}`} className="conversationAttempt">
-                  <summary>
-                    {event.stepNumber}. {props.prettyStageName(event.stage)} ({event.endpoint}) - {event.status}
-                  </summary>
-                  <div className="conversationAttemptBody">
-                    {props.renderCollapsibleJson("Show request JSON", event.request)}
-                    {props.renderCollapsibleJson("Show response JSON", event.response ?? null)}
-                    {props.renderCollapsibleJson("Show warnings", event.warnings ?? [])}
-                  </div>
-                </details>
-              ))}
-            </div>
+            <h3>Raw Trace</h3>
+            {props.renderCollapsibleJson("Trace JSON", props.selectedDebugEntry.trace ?? null, { open: true })}
           </section>
-        ) : null}
-        {props.selectedDebugEntry && props.selectedTrace ? (
-          <div className="debugStructured">
-            <section className="debugCard">
-              <h3>Intent</h3>
-              {props.renderCollapsibleJson("Show JSON", props.selectedTrace.intent ?? null)}
-            </section>
-            <section className="debugCard">
-              <h3>Loremaster</h3>
-              {props.renderCollapsibleJson("Show JSON", props.selectedTrace.loremaster ?? null)}
-            </section>
-            <section className="debugCard">
-              <h3>Proposal</h3>
-              {props.renderCollapsibleJson("Show JSON", props.selectedTrace.proposal ?? null)}
-            </section>
-            <section className="debugCard">
-              <h3>Committed</h3>
-              {props.renderCollapsibleJson("Show JSON", props.selectedTrace.committed ?? null)}
-            </section>
-            <section className="debugCard">
-              <h3>Warnings</h3>
-              {props.renderCollapsibleJson("Show JSON", props.selectedTrace.warnings ?? [])}
-            </section>
-            <section className="debugCard">
-              <h3>Refusal</h3>
-              {props.renderCollapsibleJson("Show JSON", props.selectedTrace.refusal ?? null)}
-            </section>
-            <section className="debugCard debugCardWide">
-              <h3>Narration Text</h3>
-              {props.renderCollapsibleJson("Show JSON", props.selectedTrace.narrationText ?? "")}
-            </section>
-            <section className="debugCard debugCardWide">
-              <h3>Raw Trace</h3>
-              {props.renderCollapsibleJson("Show JSON", props.selectedTrace)}
-            </section>
-            <section className="debugCard debugCardWide">
-              <h3>Model Conversations</h3>
-              {Object.entries(
-                (props.selectedTrace.llmConversations as Record<string, unknown> | undefined) ?? {},
-              ).length === 0 ? (
-                <p className="metaLine">No model conversations captured for this turn.</p>
-              ) : (
-                <div className="conversationList">
-                  {Object.entries(
-                    (props.selectedTrace.llmConversations as Record<string, unknown> | undefined) ?? {},
-                  ).map(([moduleName, payload]) => props.renderConversationPayload(moduleName, payload))}
-                </div>
-              )}
-            </section>
-          </div>
         ) : null}
       </article>
     </section>

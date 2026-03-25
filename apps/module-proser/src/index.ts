@@ -94,34 +94,46 @@ async function generateNarration(payload: Parameters<typeof ProserModuleRequestS
     "```",
   ].join("\n");
 
+  const sensoryContext = {
+    decisionLore: parsed.lore.decisionExcerpts,
+    flavorLore: parsed.lore.flavorExcerpts,
+    narrativeCapsule: parsed.narrativeCapsule ?? null,
+  };
+
   let retryHint = "";
   for (let attempt = 0; attempt <= MAX_JSON_RETRIES; attempt += 1) {
     const requestMessages: ChatMessage[] = [
       {
         role: "system",
-        content:
-          "You are the narrative proser. Produce grounded narration draft JSON only. Narrate only facts present in committed operations. Do not add causal consequences unless explicitly present in operation payload/reason text.",
+        content: [
+          "You are the narrative proser. Output grounded narration draft JSON only.",
+          "Semantic source of truth: validatedIntent (structured) + committed operations — not raw player chat text.",
+          "You may use lore excerpts and narrativeCapsule only for sensory texture, tone, and setting-consistent wording.",
+          "Do not invent new plot events, outcomes, or state changes beyond what committed operations encode.",
+          "Do not add causal consequences unless explicitly present in operation payload or reason text.",
+        ].join(" "),
       },
       {
         role: "user",
         content: `${[
-          "Task: write 1-4 short grounded narration sentences.",
+          "Task: write 1-4 short grounded narration sentences for this turn.",
           outputContract,
           "Rules:",
-          "- each sentence must cite one or more operationIndexes it is derived from",
+          "- each sentence must cite one or more operationIndexes it is derived from (committed operations list order, 0-based)",
           "- do not introduce new entities, damage, slowdown, injuries, or resource changes unless explicitly in committed operations",
+          "- sensory and atmospheric detail is allowed when consistent with lore excerpts below; do not contradict decision lore",
           "- if operations are sparse, keep narration minimal and uncertain rather than speculative",
           "- keep each sentence concise and player-facing",
-          "Input:",
+          "validatedIntent (canonical action semantics):",
+          JSON.stringify(parsed.validatedIntent),
+          "committedOperations:",
+          JSON.stringify(parsed.committed.operations),
+          "sensoryAndNarrativeLayers (texture only, not new facts):",
+          JSON.stringify(sensoryContext),
+          "contextMetadata (ids/turn only; do not treat playerInput as authoritative for what happened):",
           JSON.stringify({
             turn: parsed.context.turn,
             playerId: parsed.context.playerId,
-            playerInput: parsed.context.playerInput,
-            committedOperations: parsed.committed.operations,
-            styleGuidance: {
-              mustInclude: parsed.lorePost.mustInclude,
-              mustAvoid: parsed.lorePost.mustAvoid,
-            },
           }),
           retryHint,
         ].join("\n")}`,

@@ -1,6 +1,7 @@
 import {
   ArbiterModuleResponseSchema,
   IntentModuleResponseSchema,
+  IntentValidatorModuleResponseSchema,
   LoreRetrieverModuleResponseSchema,
   LoremasterPostModuleResponseSchema,
   LoremasterPreModuleResponseSchema,
@@ -33,6 +34,11 @@ async function postJson(baseUrl: string, routePath: string, payload: unknown): P
 export async function invokeIntent(baseUrl: string, payload: unknown) {
   const parsed = await postJson(baseUrl, "/invoke", payload);
   return IntentModuleResponseSchema.parse(parsed);
+}
+
+export async function invokeIntentValidator(baseUrl: string, payload: unknown) {
+  const parsed = await postJson(baseUrl, "/invoke", payload);
+  return IntentValidatorModuleResponseSchema.parse(parsed);
 }
 
 export async function invokeLoreRetrieve(baseUrl: string, payload: unknown) {

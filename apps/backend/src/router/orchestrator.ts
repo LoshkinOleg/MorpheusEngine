@@ -4,11 +4,10 @@ import {
   ArbiterModuleRequestSchema,
   CommittedDiffSchema,
   IntentModuleRequestSchema,
-  LoreRetrieverModuleRequestSchema,
-  LoremasterPostModuleRequestSchema,
-  LoremasterPostOutputSchema,
-  LoremasterPreModuleRequestSchema,
+  IntentValidatorModuleRequestSchema,
+  LoreAccumulationSchema,
   ModuleRunContextSchema,
+  NarrativeCapsuleSchema,
   PipelineStepEventSchema,
   TurnExecutionStateSchema,
   ProserModuleRequestSchema,
@@ -16,17 +15,18 @@ import {
   SimulatorModuleRequestSchema,
   type ActionCandidates,
   type CommittedDiff,
+  type IntentValidatorOutput,
+  type LoreAccumulation,
+  type NarrativeCapsule,
   type PipelineStepEvent,
-  type LoremasterOutput,
   type ProposedDiff,
+  type ProserContextTraceSummary,
   type TurnExecutionState,
 } from "@morpheus/shared";
 import {
   invokeArbiter,
   invokeIntent,
-  invokeLorePost,
-  invokeLorePre,
-  invokeLoreRetrieve,
+  invokeIntentValidator,
   invokeProser,
   invokeSimulator,
 } from "./client.js";
@@ -37,9 +37,12 @@ import {
   getTurnExecutionState,
   listPipelineEvents,
   readLatestSnapshot,
+  readNarrativeCapsule,
   readTurnExecutionCheckpoint,
   updateTurnExecutionProgress,
+  writeNarrativeCapsule,
 } from "../sessionStore.js";
+import { assembleProserContext } from "./proserContextAssembler.js";
 
 export interface TurnInput {
   runId: string;
@@ -52,67 +55,37 @@ export interface TurnInput {
 
 interface PipelineCheckpoint {
   intent?: ActionCandidates;
-  loreRetrieval?: unknown;
-  loremasterPre?: LoremasterOutput;
+  intentValidation?: IntentValidatorOutput;
   proposal?: ProposedDiff;
-  lorePost?: ReturnType<typeof buildFallbackLorePost>;
   committed?: CommittedDiff;
   arbiterDecision?: unknown;
   narrationText?: string;
   warnings: string[];
   llmConversations: Record<string, unknown>;
   refusalReason?: string;
+  loreAccumulation?: LoreAccumulation;
+  proserPreparedRequest?: ReturnType<typeof ProserModuleRequestSchema.parse>;
+  proserContextTrace?: ProserContextTraceSummary;
 }
 
 type StepStage =
   | "intent_extractor"
-  | "loremaster_retrieve"
-  | "loremaster_pre"
+  | "intent_validator"
   | "default_simulator"
-  | "loremaster_post"
   | "arbiter"
+  | "context_assembler"
   | "proser"
   | "world_state_update";
 
 const STAGE_ORDER: StepStage[] = [
   "intent_extractor",
-  "loremaster_retrieve",
-  "loremaster_pre",
+  "intent_validator",
   "default_simulator",
-  "loremaster_post",
   "arbiter",
+  "context_assembler",
   "proser",
   "world_state_update",
 ];
-
-function deriveRefusalReasonFromIntent(intent: ActionCandidates): string | null {
-  const rejectedCandidate = intent.candidates.find((candidate) => {
-    const tags = candidate.consequenceTags ?? [];
-    return tags.includes("no_target_in_scope");
-  });
-  if (!rejectedCandidate) return null;
-  if ((rejectedCandidate.consequenceTags ?? []).includes("no_target_in_scope")) {
-    if (rejectedCandidate.intent === "attack") return "Refused: no valid attack target is currently in scope.";
-    return `Refused: no valid target is in scope for ${rejectedCandidate.intent.replace(/_/g, " ")}.`;
-  }
-  return "Refused: action is ambiguous and cannot be safely resolved.";
-}
-
-function deriveRefusalReasonFromLoremaster(
-  intent: ActionCandidates,
-  loremaster: LoremasterOutput,
-): string | null {
-  const assessment = loremaster.assessments.find((item) =>
-    (item.consequenceTags ?? []).includes("no_target_in_scope"),
-  );
-  if (!assessment) return null;
-  if (assessment.rationale?.trim()) {
-    return `Refused: ${assessment.rationale.trim()}`;
-  }
-  const candidate = intent.candidates[assessment.candidateIndex];
-  if (!candidate) return "Refused: action cannot be resolved safely.";
-  return deriveRefusalReasonFromIntent({ candidates: [candidate], rawInput: intent.rawInput });
-}
 
 function arbiterCommit(turn: number, proposal: ProposedDiff): CommittedDiff {
   return CommittedDiffSchema.parse({
@@ -140,35 +113,48 @@ function buildRefusalProposal(input: TurnInput, refusalReason: string): Proposed
   });
 }
 
-function buildFallbackLorePost() {
-  return LoremasterPostOutputSchema.parse({
-    status: "consistent",
-    rationale: "Post-diff lore check skipped due to refusal path.",
-    mustInclude: [],
-    mustAvoid: [],
-  });
-}
-
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function mergeLoreKeyLists(...lists: string[][]): string[] {
+  const set = new Set<string>();
+  for (const list of lists) {
+    for (const key of list) {
+      const trimmed = key.trim();
+      if (trimmed.length > 0) set.add(trimmed);
+    }
+  }
+  return [...set];
+}
+
+function parseLoreAccumulation(value: unknown): LoreAccumulation {
+  const parsed = LoreAccumulationSchema.safeParse(value);
+  if (parsed.success) return parsed.data;
+  return { loreKeys: [] };
 }
 
 function emptyCheckpoint(): PipelineCheckpoint {
   return {
     warnings: [],
     llmConversations: {},
+    loreAccumulation: { loreKeys: [] },
   };
 }
 
 function parseCheckpoint(value: unknown): PipelineCheckpoint {
   if (!value || typeof value !== "object") return emptyCheckpoint();
   const parsed = value as Partial<PipelineCheckpoint>;
+  const base = emptyCheckpoint();
+  let proserPrepared: PipelineCheckpoint["proserPreparedRequest"];
+  if (parsed.proserPreparedRequest !== undefined) {
+    const pr = ProserModuleRequestSchema.safeParse(parsed.proserPreparedRequest);
+    proserPrepared = pr.success ? pr.data : undefined;
+  }
   return {
     intent: parsed.intent,
-    loreRetrieval: parsed.loreRetrieval,
-    loremasterPre: parsed.loremasterPre,
+    intentValidation: parsed.intentValidation,
     proposal: parsed.proposal,
-    lorePost: parsed.lorePost,
     committed: parsed.committed,
     arbiterDecision: parsed.arbiterDecision,
     narrationText: parsed.narrationText,
@@ -181,23 +167,30 @@ function parseCheckpoint(value: unknown): PipelineCheckpoint {
         : {},
     refusalReason:
       typeof parsed.refusalReason === "string" ? parsed.refusalReason : undefined,
+    loreAccumulation: parseLoreAccumulation(parsed.loreAccumulation ?? base.loreAccumulation),
+    proserPreparedRequest: proserPrepared,
+    proserContextTrace: parsed.proserContextTrace as ProserContextTraceSummary | undefined,
   };
 }
 
 function stageEndpoint(stage: StepStage): string {
   if (stage === "intent_extractor") return "/invoke";
-  if (stage === "loremaster_retrieve") return "/retrieve";
-  if (stage === "loremaster_pre") return "/pre";
+  if (stage === "intent_validator") return "/invoke";
   if (stage === "default_simulator") return "/invoke";
-  if (stage === "loremaster_post") return "/post";
   if (stage === "arbiter") return "/invoke";
+  if (stage === "context_assembler") return "internal";
   if (stage === "proser") return "/invoke";
   return "persist";
 }
 
 function shouldSkipStage(stage: StepStage, checkpoint: PipelineCheckpoint): boolean {
   if (!checkpoint.refusalReason) return false;
-  return stage === "default_simulator" || stage === "loremaster_post" || stage === "arbiter" || stage === "proser";
+  return (
+    stage === "default_simulator" ||
+    stage === "arbiter" ||
+    stage === "context_assembler" ||
+    stage === "proser"
+  );
 }
 
 function resolveStageFromCursor(cursor: number): StepStage | null {
@@ -208,11 +201,7 @@ function resolveStageFromCursor(cursor: number): StepStage | null {
 function buildTurnTracePayload(checkpoint: PipelineCheckpoint, pipelineEvents: PipelineStepEvent[]) {
   return {
     intent: checkpoint.intent ?? null,
-    loremaster: {
-      retrieval: checkpoint.loreRetrieval ?? null,
-      pre: checkpoint.loremasterPre ?? null,
-      post: checkpoint.lorePost ?? buildFallbackLorePost(),
-    },
+    intentValidator: checkpoint.intentValidation ?? null,
     proposal: checkpoint.proposal ?? null,
     arbiter: checkpoint.arbiterDecision ?? null,
     committed: checkpoint.committed ?? null,
@@ -221,6 +210,8 @@ function buildTurnTracePayload(checkpoint: PipelineCheckpoint, pipelineEvents: P
     narrationText: checkpoint.narrationText ?? "",
     pipelineEvents,
     llmConversations: checkpoint.llmConversations,
+    loreAccumulation: checkpoint.loreAccumulation ?? { loreKeys: [] },
+    proserContext: checkpoint.proserContextTrace ?? null,
   };
 }
 
@@ -286,7 +277,6 @@ async function runStage(
     return {
       ...checkpoint,
       intent: result.output,
-      refusalReason: deriveRefusalReasonFromIntent(result.output) ?? checkpoint.refusalReason,
       warnings: [...checkpoint.warnings, ...result.meta.warnings],
       llmConversations: {
         ...checkpoint.llmConversations,
@@ -295,13 +285,15 @@ async function runStage(
     };
   }
 
-  if (stage === "loremaster_retrieve") {
+  if (stage === "intent_validator") {
     const startedAt = nowIso();
-    const request = LoreRetrieverModuleRequestSchema.parse({
+    const request = IntentValidatorModuleRequestSchema.parse({
       context,
-      intent: checkpoint.intent,
+      intent: {
+        candidates: (checkpoint.intent as ActionCandidates).candidates,
+      },
     });
-    const result = await invokeLoreRetrieve(moduleUrls.loremaster, request);
+    const result = await invokeIntentValidator(moduleUrls.intentValidator, request);
     const finishedAt = nowIso();
     await appendStepEvent(db, input, {
       stage,
@@ -313,40 +305,19 @@ async function runStage(
       startedAt,
       finishedAt,
     });
-    return {
-      ...checkpoint,
-      loreRetrieval: result.output,
-      warnings: [...checkpoint.warnings, ...result.meta.warnings],
-    };
-  }
-
-  if (stage === "loremaster_pre") {
-    const startedAt = nowIso();
-    const request = LoremasterPreModuleRequestSchema.parse({
-      context,
-      intent: checkpoint.intent,
-      lore: checkpoint.loreRetrieval,
-    });
-    const result = await invokeLorePre(moduleUrls.loremaster, request);
-    const refusalReason = deriveRefusalReasonFromLoremaster(
-      checkpoint.intent as ActionCandidates,
-      result.output,
+    const refusalReason =
+      result.output.decision === "refuse"
+        ? result.output.refusalReason ?? `Refused: ${result.output.rationale}`
+        : undefined;
+    const mergedLoreKeys = mergeLoreKeyLists(
+      checkpoint.loreAccumulation?.loreKeys ?? [],
+      result.output.loreKeysUsed ?? [],
     );
-    const finishedAt = nowIso();
-    await appendStepEvent(db, input, {
-      stage,
-      endpoint: stageEndpoint(stage),
-      status: "ok",
-      request,
-      response: result,
-      warnings: result.meta.warnings,
-      startedAt,
-      finishedAt,
-    });
     return {
       ...checkpoint,
-      loremasterPre: result.output,
-      refusalReason: refusalReason ?? undefined,
+      intentValidation: result.output,
+      refusalReason,
+      loreAccumulation: { loreKeys: mergedLoreKeys },
       warnings: [
         ...checkpoint.warnings,
         ...result.meta.warnings,
@@ -354,7 +325,7 @@ async function runStage(
       ],
       llmConversations: {
         ...checkpoint.llmConversations,
-        loremaster_pre: result.debug.llmConversation,
+        intent_validator: result.debug.llmConversation,
       },
     };
   }
@@ -364,8 +335,7 @@ async function runStage(
     const request = SimulatorModuleRequestSchema.parse({
       context,
       intent: checkpoint.intent,
-      lore: checkpoint.loreRetrieval,
-      loremasterPre: checkpoint.loremasterPre,
+      intentValidation: checkpoint.intentValidation,
     });
     const result = await invokeSimulator(moduleUrls.simulator, request);
     const finishedAt = nowIso();
@@ -390,46 +360,13 @@ async function runStage(
     };
   }
 
-  if (stage === "loremaster_post") {
-    const startedAt = nowIso();
-    const request = LoremasterPostModuleRequestSchema.parse({
-      context,
-      intent: checkpoint.intent,
-      lore: checkpoint.loreRetrieval,
-      proposal: checkpoint.proposal,
-    });
-    const result = await invokeLorePost(moduleUrls.loremaster, request);
-    const finishedAt = nowIso();
-    await appendStepEvent(db, input, {
-      stage,
-      endpoint: stageEndpoint(stage),
-      status: "ok",
-      request,
-      response: result,
-      warnings: result.meta.warnings,
-      startedAt,
-      finishedAt,
-    });
-    return {
-      ...checkpoint,
-      lorePost: result.output,
-      warnings: [...checkpoint.warnings, ...result.meta.warnings],
-      llmConversations: {
-        ...checkpoint.llmConversations,
-        loremaster_post: result.debug.llmConversation,
-      },
-    };
-  }
-
   if (stage === "arbiter") {
     const startedAt = nowIso();
     const request = ArbiterModuleRequestSchema.parse({
       context,
       intent: checkpoint.intent,
-      lore: checkpoint.loreRetrieval,
-      loremasterPre: checkpoint.loremasterPre,
+      intentValidation: checkpoint.intentValidation,
       proposal: checkpoint.proposal,
-      lorePost: checkpoint.lorePost ?? buildFallbackLorePost(),
     });
     const result = await invokeArbiter(moduleUrls.arbiter, request);
     const selectedProposal = result.output.selectedProposal;
@@ -458,15 +395,56 @@ async function runStage(
     };
   }
 
+  if (stage === "context_assembler") {
+    const startedAt = nowIso();
+    const committedForAssembler =
+      checkpoint.committed ?? arbiterCommit(input.turn, checkpoint.proposal as ProposedDiff);
+    const { request: proserRequest, traceSummary } = await assembleProserContext({
+      db,
+      context,
+      loreAccumulation: checkpoint.loreAccumulation ?? { loreKeys: [] },
+      intent: checkpoint.intent as ActionCandidates,
+      intentValidation: checkpoint.intentValidation as IntentValidatorOutput,
+      committed: committedForAssembler,
+    });
+    const finishedAt = nowIso();
+    await appendStepEvent(db, input, {
+      stage,
+      endpoint: stageEndpoint(stage),
+      status: "ok",
+      request: {
+        accumulatedLoreKeys: proserRequest.lore.decisionKeys.length,
+        flavorKeysPlanned: proserRequest.lore.flavorKeys.length,
+      },
+      response: { traceSummary },
+      warnings: [],
+      startedAt,
+      finishedAt,
+    });
+    return {
+      ...checkpoint,
+      committed: committedForAssembler,
+      proserPreparedRequest: proserRequest,
+      proserContextTrace: traceSummary,
+    };
+  }
+
   if (stage === "proser") {
     const startedAt = nowIso();
     const committedForProser = checkpoint.committed ?? arbiterCommit(input.turn, checkpoint.proposal as ProposedDiff);
-    const request = ProserModuleRequestSchema.parse({
-      context,
-      committed: committedForProser,
-      lore: checkpoint.loreRetrieval,
-      lorePost: checkpoint.lorePost ?? buildFallbackLorePost(),
-    });
+    const request =
+      checkpoint.proserPreparedRequest ??
+      ProserModuleRequestSchema.parse({
+        context,
+        committed: committedForProser,
+        validatedIntent: { candidates: (checkpoint.intent as ActionCandidates).candidates },
+        lore: {
+          decisionKeys: [],
+          decisionExcerpts: [],
+          flavorKeys: [],
+          flavorExcerpts: [],
+        },
+      });
     const result = await invokeProser(moduleUrls.proser, request);
     const finishedAt = nowIso();
     await appendStepEvent(db, input, {
@@ -496,7 +474,6 @@ async function runStage(
   const proposal = refusalReason
     ? buildRefusalProposal(input, refusalReason)
     : (checkpoint.proposal as ProposedDiff);
-  const lorePost = refusalReason ? buildFallbackLorePost() : checkpoint.lorePost;
   const committed = checkpoint.committed ?? arbiterCommit(input.turn, proposal);
   const narrationText = refusalReason ?? checkpoint.narrationText ?? "";
   const finishedAt = nowIso();
@@ -517,7 +494,6 @@ async function runStage(
   const persistedCheckpoint = {
     ...checkpoint,
     proposal,
-    lorePost,
     committed,
     narrationText,
   };
@@ -527,7 +503,33 @@ async function runStage(
   };
 }
 
+function mergeNarrativeCapsuleAfterProser(
+  previous: NarrativeCapsule | null,
+  narrationText: string,
+  turn: number,
+): NarrativeCapsule {
+  const snippet = narrationText.trim().slice(0, 280);
+  const line = `T${turn}: ${snippet}`;
+  const prior = previous?.rollingSummary ?? "";
+  const rolling = [prior, line].filter(Boolean).join("\n").slice(-2500);
+  return NarrativeCapsuleSchema.parse({
+    rollingSummary: rolling,
+    tension: previous?.tension ?? "calm",
+    lastTurnsDigest: snippet,
+  });
+}
+
 async function persistTurnFinalState(db: GameDb, input: TurnInput, checkpoint: PipelineCheckpoint): Promise<void> {
+  if (!checkpoint.refusalReason && typeof checkpoint.narrationText === "string" && checkpoint.narrationText.trim()) {
+    const previousCapsule = await readNarrativeCapsule(db);
+    const nextCapsule = mergeNarrativeCapsuleAfterProser(
+      previousCapsule,
+      checkpoint.narrationText,
+      input.turn,
+    );
+    await writeNarrativeCapsule(db, nextCapsule);
+  }
+
   const pipelineEvents = await listPipelineEvents(db, input.runId, input.turn);
   const trace = buildTurnTracePayload(checkpoint, pipelineEvents);
   await db.run(
@@ -858,11 +860,7 @@ export async function processTurnViaRouter(db: GameDb, input: TurnInput) {
 
   return {
     intent: checkpoint.intent,
-    loremaster: {
-      retrieval: checkpoint.loreRetrieval,
-      pre: checkpoint.loremasterPre,
-      post: checkpoint.lorePost ?? buildFallbackLorePost(),
-    },
+    intentValidator: checkpoint.intentValidation,
     proposal: checkpoint.proposal,
     committed: checkpoint.committed,
     warnings: checkpoint.warnings,

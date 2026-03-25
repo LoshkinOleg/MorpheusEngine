@@ -3,6 +3,7 @@ import {
   fetchTurnPipeline,
   fetchRunState,
   fetchSessions,
+  dumpAllTurnTraces,
   invokeArbiterModule,
   invokeIntentModule,
   invokeLorePostModule,
@@ -27,8 +28,32 @@ type ChatLine = {
   text: string;
 };
 
-const DEFAULT_PLAYER_ID = "entity.player.captain";
+const DEFAULT_PLAYER_ID = "player.captain";
 const DEFAULT_GAME_PROJECT_ID = "sandcrawler";
+
+function loreRetrievalToFlavorExcerpts(lore: {
+  evidence?: Array<{ source: string; excerpt: string }>;
+}): Array<{ subject: string; data: string; source: string }> {
+  const out: Array<{ subject: string; data: string; source: string }> = [];
+  for (const item of lore.evidence ?? []) {
+    if (!item.excerpt?.trim()) continue;
+    const idx = item.excerpt.indexOf(": ");
+    if (idx > 0) {
+      out.push({
+        subject: item.excerpt.slice(0, idx).trim() || "lore",
+        data: item.excerpt.slice(idx + 2).trim(),
+        source: item.source?.trim() || "lore",
+      });
+    } else {
+      out.push({
+        subject: "retrieved",
+        data: item.excerpt.trim(),
+        source: item.source?.trim() || "lore",
+      });
+    }
+  }
+  return out;
+}
 const STATE_POLL_INTERVAL_MS = 1500;
 type ActiveTab = "game" | "debug" | "module_debug";
 type ModuleDebugTarget =
@@ -93,10 +118,10 @@ function normalizeJsonForDisplay(value: unknown): unknown {
   return value;
 }
 
-function renderCollapsibleJson(summary: string, value: unknown) {
+function renderCollapsibleJson(summary: string, value: unknown, options?: { open?: boolean }) {
   const normalized = normalizeJsonForDisplay(value);
   return (
-    <details className="jsonCollapse">
+    <details className="jsonCollapse" open={options?.open}>
       <summary>{summary}</summary>
       <pre>{JSON.stringify(normalized, null, 2)}</pre>
     </details>
@@ -150,27 +175,38 @@ export function App() {
   const [stepExecution, setStepExecution] = useState<TurnExecutionState | null>(null);
   const [stepPipelineEvents, setStepPipelineEvents] = useState<PipelineStepEvent[]>([]);
   const [stepLoading, setStepLoading] = useState(false);
+  const [dumpTracesLoading, setDumpTracesLoading] = useState(false);
+  const [dumpTracesError, setDumpTracesError] = useState<string | null>(null);
+  const [dumpTracesResult, setDumpTracesResult] = useState<{
+    outputPath: string;
+    traceCount: number;
+  } | null>(null);
   const hasActiveSessionInList = runId ? sessions.some((session) => session.sessionId === runId) : false;
   const selectedDebugIndex = debugEntries.findIndex((entry) => entry.turn === selectedDebugTurn);
   const selectedDebugEntry =
     selectedDebugIndex >= 0 ? debugEntries[selectedDebugIndex] : null;
-  const selectedTrace =
-    selectedDebugEntry && typeof selectedDebugEntry.trace === "object" && selectedDebugEntry.trace !== null
-      ? (selectedDebugEntry.trace as Record<string, unknown>)
-      : null;
-  const selectedTracePipelineEvents = Array.isArray(selectedTrace?.pipelineEvents)
-    ? (selectedTrace.pipelineEvents as PipelineStepEvent[])
-    : [];
-  const selectedPipelineEvents =
-    stepExecution && selectedDebugTurn === stepExecution.turn && stepPipelineEvents.length > 0
-      ? stepPipelineEvents
-      : selectedTracePipelineEvents;
   const debugTurnOptions = [
     ...new Set([
       ...debugEntries.map((entry) => entry.turn),
       ...(stepExecution ? [stepExecution.turn] : []),
     ]),
   ].sort((a, b) => a - b);
+
+  const dumpTraces = async () => {
+    if (!runId || dumpTracesLoading) return;
+    setDumpTracesLoading(true);
+    setDumpTracesError(null);
+    setDumpTracesResult(null);
+    try {
+      const result = await dumpAllTurnTraces(runId);
+      setDumpTracesResult({ outputPath: result.outputPath, traceCount: result.traceCount });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setDumpTracesError(message);
+    } finally {
+      setDumpTracesLoading(false);
+    }
+  };
 
   const stepDebugTurn = (direction: "up" | "down") => {
     if (selectedDebugTurn === null) return;
@@ -357,11 +393,22 @@ export function App() {
         summary: "Manual committed diff for module debug",
       };
 
+      const flavorExcerpts = loreRetrievalToFlavorExcerpts(
+        lore as { evidence?: Array<{ source: string; excerpt: string }> },
+      );
+      const intentForProser = intent as {
+        candidates: Array<{ actorId: string; intent: string; params?: Record<string, unknown> }>;
+      };
       const proserResponse = await invokeProserModule({
         context,
         committed,
-        lore,
-        lorePost,
+        validatedIntent: { candidates: intentForProser.candidates },
+        lore: {
+          decisionKeys: [],
+          decisionExcerpts: [],
+          flavorKeys: flavorExcerpts.map((row) => row.subject),
+          flavorExcerpts,
+        },
       });
       setModuleDebugResult(proserResponse);
     } catch (error) {
@@ -695,12 +742,12 @@ export function App() {
           selectedDebugTurn={selectedDebugTurn}
           onStepDebugTurn={stepDebugTurn}
           onSelectedDebugTurnChange={setSelectedDebugTurn}
-          selectedPipelineEvents={selectedPipelineEvents}
           selectedDebugEntry={selectedDebugEntry}
-          selectedTrace={selectedTrace}
-          prettyStageName={prettyStageName}
           renderCollapsibleJson={renderCollapsibleJson}
-          renderConversationPayload={renderConversationPayload}
+          dumpTracesLoading={dumpTracesLoading}
+          dumpTracesError={dumpTracesError}
+          dumpTracesResult={dumpTracesResult}
+          onDumpTraces={() => void dumpTraces()}
         />
       ) : null}
 

@@ -43,8 +43,7 @@ async function generateProposal(params: {
   playerId: string;
   turn: number;
   intent: unknown;
-  lore: unknown;
-  loremasterPre: unknown;
+  intentValidation: unknown;
 }): Promise<{ output: ProposedDiff; warnings: string[]; conversation: ConversationTrace }> {
   const fallbackValue = ProposedDiffOperationsOnlySchema.parse({
     operations: buildFallbackProposal(params.playerId, params.turn).operations,
@@ -62,8 +61,7 @@ async function generateProposal(params: {
       playerId: params.playerId,
       turn: params.turn,
       intent: params.intent,
-      loremaster: params.loremasterPre,
-      loreEvidence: params.lore,
+      intentValidation: params.intentValidation,
     }),
   ].join("\n");
   const result = await generateStructuredWithRetries({
@@ -98,8 +96,7 @@ app.post("/invoke", async (req, res) => {
       playerId: payload.context.playerId,
       turn: payload.context.turn,
       intent: payload.intent,
-      lore: payload.lore,
-      loremasterPre: payload.loremasterPre,
+      intentValidation: payload.intentValidation,
     });
     res.json(
       SimulatorModuleResponseSchema.parse({

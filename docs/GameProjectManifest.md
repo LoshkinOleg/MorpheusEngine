@@ -22,7 +22,7 @@ The backend router resolves module endpoints from `moduleBindings` in this order
    - generic: `MODULE_BINDING_<BINDING>_URL`
 3. If no override exists, fall back to role defaults:
    - intent: `MODULE_INTENT_URL` (default `http://localhost:8791`)
-   - loremaster: `MODULE_LOREMASTER_URL` (default `http://localhost:8792`)
+   - intent validator: `MODULE_INTENT_VALIDATOR_URL` (default `http://localhost:8796`)
    - simulator: `MODULE_DEFAULT_SIMULATOR_URL` (default `http://localhost:8793`)
    - proser: `MODULE_PROSER_URL` (default `http://localhost:8794`)
    - arbiter: `MODULE_ARBITER_URL` (default `http://localhost:8795`)
@@ -43,12 +43,12 @@ Example:
   "title": "Sandcrawler Captain",
   "engineVersion": "0.1.x",
   "entryState": {
-    "playerId": "entity.player.captain",
+    "playerId": "player.captain",
     "anchorId": "anchor.bridge"
   },
   "moduleBindings": {
     "intent_extractor": "llm.default",
-    "loremaster": "llm.default",
+    "intent_validator": "llm.default",
     "default_simulator": "llm.default",
     "arbiter": "llm.default",
     "proser": "llm.default"

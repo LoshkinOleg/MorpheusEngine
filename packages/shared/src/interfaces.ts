@@ -1,16 +1,7 @@
 export interface ActionCandidateContract {
   actorId: string;
   intent: string;
-  confidence?: number;
   params?: Record<string, unknown>;
-  consequenceTags?: Array<
-    | "no_target_in_scope"
-    | "partial_success_only"
-    | "high_risk_exposure"
-    | "resource_cost_applies"
-    | "social_backlash"
-    | "noise_generated"
-  >;
 }
 
 export interface ActionCandidatesContract {
@@ -18,10 +9,36 @@ export interface ActionCandidatesContract {
   rawInput: string;
 }
 
+export interface IntentValidatorConsequenceConstraintsContract {
+  requiredOutcomes: string[];
+  forbiddenOutcomes: string[];
+}
+
+export interface IntentValidatorOutputContract {
+  decision: "accept" | "refuse";
+  rationale: string;
+  refusalReason?: string;
+  consequenceConstraints: IntentValidatorConsequenceConstraintsContract;
+  /** Lore table primary keys (`lore.subject`) consulted during validation */
+  loreKeysUsed?: string[];
+}
+
+export interface ProserLoreBundleContract {
+  decisionKeys: string[];
+  decisionExcerpts: Array<{ subject: string; data: string; source: string }>;
+  flavorKeys: string[];
+  flavorExcerpts: Array<{ subject: string; data: string; source: string }>;
+}
+
+export interface NarrativeCapsuleContract {
+  rollingSummary: string;
+  tension: "calm" | "rising" | "high";
+  lastTurnsDigest?: string;
+}
+
 export interface LoremasterAssessmentContract {
   candidateIndex: number;
   status: "allowed" | "allowed_with_consequences";
-  consequenceTags: NonNullable<ActionCandidateContract["consequenceTags"]>;
   rationale: string;
 }
 

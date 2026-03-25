@@ -1,5 +1,6 @@
 export interface ModuleUrls {
   intent: string;
+  intentValidator: string;
   loremaster: string;
   simulator: string;
   arbiter: string;
@@ -8,6 +9,9 @@ export interface ModuleUrls {
 
 function getDefaultUrl(role: keyof ModuleUrls): string {
   if (role === "intent") return process.env.MODULE_INTENT_URL ?? "http://localhost:8791";
+  if (role === "intentValidator") {
+    return process.env.MODULE_INTENT_VALIDATOR_URL ?? "http://localhost:8796";
+  }
   if (role === "loremaster") return process.env.MODULE_LOREMASTER_URL ?? "http://localhost:8792";
   if (role === "simulator") return process.env.MODULE_DEFAULT_SIMULATOR_URL ?? "http://localhost:8793";
   if (role === "arbiter") return process.env.MODULE_ARBITER_URL ?? "http://localhost:8795";
@@ -45,6 +49,7 @@ function resolveUrlForBinding(role: keyof ModuleUrls, binding: string | undefine
 export function resolveModuleUrls(moduleBindings: Record<string, string>): ModuleUrls {
   return {
     intent: resolveUrlForBinding("intent", moduleBindings.intent_extractor),
+    intentValidator: resolveUrlForBinding("intentValidator", moduleBindings.intent_validator),
     loremaster: resolveUrlForBinding("loremaster", moduleBindings.loremaster),
     simulator: resolveUrlForBinding("simulator", moduleBindings.default_simulator),
     arbiter: resolveUrlForBinding("arbiter", moduleBindings.arbiter),

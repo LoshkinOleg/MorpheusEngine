@@ -9,10 +9,11 @@
   ],
   "scripts": {
     "build": "npm run --workspaces --if-present build",
-    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\" \"npm run dev:module-intent\" \"npm run dev:module-loremaster\" \"npm run dev:module-simulator\" \"npm run dev:module-arbiter\" \"npm run dev:module-proser\"",
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\" \"npm run dev:module-intent\" \"npm run dev:module-intent-validator\" \"npm run dev:module-loremaster\" \"npm run dev:module-simulator\" \"npm run dev:module-arbiter\" \"npm run dev:module-proser\"",
     "dev:backend": "npm run -w @morpheus/shared build && npm run -w @morpheus/backend dev",
     "dev:frontend": "npm run -w @morpheus/frontend dev",
     "dev:module-intent": "npm run -w @morpheus/shared build && npm run -w @morpheus/module-intent dev",
+    "dev:module-intent-validator": "npm run -w @morpheus/shared build && npm run -w @morpheus/module-intent-validator dev",
     "dev:module-loremaster": "npm run -w @morpheus/shared build && npm run -w @morpheus/module-loremaster dev",
     "dev:module-simulator": "npm run -w @morpheus/shared build && npm run -w @morpheus/module-default-simulator dev",
     "dev:module-arbiter": "npm run -w @morpheus/shared build && npm run -w @morpheus/module-arbiter dev",

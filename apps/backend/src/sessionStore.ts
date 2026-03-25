@@ -2,9 +2,16 @@ import path from "node:path";
 import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import sqlite3 from "sqlite3";
 import { open } from "sqlite";
-import type { PipelineStepEvent, TurnExecutionState } from "@morpheus/shared";
+import {
+  NarrativeCapsuleSchema,
+  type NarrativeCapsule,
+  type PipelineStepEvent,
+  type TurnExecutionState,
+} from "@morpheus/shared";
 
 type SessionDb = Awaited<ReturnType<typeof open>>;
+
+const NARRATIVE_CAPSULE_META_KEY = "narrative_capsule";
 
 export interface SessionStateResult {
   messages: Array<{
@@ -690,4 +697,59 @@ export async function readPipelineState(
   } finally {
     await db.close();
   }
+}
+
+export async function readLoreRowsBySubjects(
+  db: SessionDb,
+  subjects: string[],
+): Promise<Array<{ subject: string; data: string; source: string }>> {
+  const unique = [...new Set(subjects.map((s) => s.trim()).filter((s) => s.length > 0))];
+  if (unique.length === 0) return [];
+  const placeholders = unique.map(() => "?").join(", ");
+  const rows = await db.all<Array<{ subject: string; data: string; source: string }>>(
+    `SELECT subject, data, source FROM lore WHERE subject IN (${placeholders})`,
+    ...unique,
+  );
+  return rows.filter(
+    (row) =>
+      typeof row.subject === "string" &&
+      row.subject.trim().length > 0 &&
+      typeof row.data === "string" &&
+      row.data.trim().length > 0 &&
+      typeof row.source === "string" &&
+      row.source.trim().length > 0,
+  );
+}
+
+export async function listAllLoreRows(
+  db: SessionDb,
+): Promise<Array<{ subject: string; data: string; source: string }>> {
+  const rows = await db.all<Array<{ subject: string; data: string; source: string }>>(
+    `SELECT subject, data, source FROM lore`,
+  );
+  return rows.filter(
+    (row) =>
+      typeof row.subject === "string" &&
+      row.subject.trim().length > 0 &&
+      typeof row.data === "string" &&
+      row.data.trim().length > 0,
+  );
+}
+
+export async function readNarrativeCapsule(db: SessionDb): Promise<NarrativeCapsule | null> {
+  const row = await db.get<{ value: string }>(
+    `SELECT value FROM meta WHERE key = ?`,
+    NARRATIVE_CAPSULE_META_KEY,
+  );
+  if (!row?.value) return null;
+  try {
+    return NarrativeCapsuleSchema.parse(JSON.parse(row.value));
+  } catch {
+    return null;
+  }
+}
+
+export async function writeNarrativeCapsule(db: SessionDb, capsule: NarrativeCapsule): Promise<void> {
+  const parsed = NarrativeCapsuleSchema.parse(capsule);
+  await db.run(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, NARRATIVE_CAPSULE_META_KEY, JSON.stringify(parsed));
 }

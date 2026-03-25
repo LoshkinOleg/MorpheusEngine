@@ -18,6 +18,10 @@ This document defines coding style, naming conventions, and API contract rules f
   - Standalone module services live in `apps/module-*`.
   - Game content: `game_projects/<project_id>/...`.
 - **Module IDs** (pipeline): use `snake_case` identifiers such as `intent_extractor`, `lore_retriever`, `loremaster`, `default_simulator`, `arbiter`, `proser`.
+- **Actor IDs** (`actorId`, `playerId`, `observerId`):
+  - Treat these as game-project-defined role/identity handles, not engine-owned entity keys.
+  - Preferred style is dotted role namespace (for example `player.captain`, `player.crew`, `npc.scavenger`).
+  - Do not assume an actor maps 1:1 to a single world entity; a game project may model an actor as an individual, group, vehicle, faction, or other abstraction.
 - **Fact keys**:
   - `core.*` reserved for engine-level keys.
   - `world.*` for first-party game project facts.

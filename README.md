@@ -50,7 +50,7 @@ Frontend defaults to `http://localhost:5173`.
   "runId": "uuid",
   "turn": 1,
   "playerInput": "I order the crew to seal the hull breach.",
-  "playerId": "entity.player.captain"
+  "playerId": "player.captain"
 }
 ```
 

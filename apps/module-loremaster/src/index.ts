@@ -108,38 +108,12 @@ async function retrieveLore(
   };
 }
 
-function extractCandidateTarget(params: Record<string, unknown>): string | null {
-  for (const key of ["target", "targetId", "targetText"]) {
-    const value = params[key];
-    if (typeof value === "string" && value.trim().length > 0) return value.trim();
-  }
-  return null;
-}
-
 function fallbackPre(intent: ActionCandidates): LoremasterOutput {
-  const assessments = intent.candidates.map((candidate, index) => {
-    const tags = [...(candidate.consequenceTags ?? [])];
-    const target = extractCandidateTarget(candidate.params ?? {});
-    if (candidate.intent === "attack" && !target) {
-      if (!tags.includes("no_target_in_scope")) tags.push("no_target_in_scope");
-    }
-    if (tags.length > 0) {
-      return {
-        candidateIndex: index,
-        status: "allowed_with_consequences" as const,
-        consequenceTags: tags,
-        rationale: tags.includes("no_target_in_scope")
-          ? "Action cannot be resolved safely because no valid target is in scope."
-          : "Action is plausible with explicit consequence handling.",
-      };
-    }
-    return {
-      candidateIndex: index,
-      status: "allowed" as const,
-      consequenceTags: [],
-      rationale: "No additional constraints detected.",
-    };
-  });
+  const assessments = intent.candidates.map((_candidate, index) => ({
+    candidateIndex: index,
+    status: "allowed" as const,
+    rationale: "No additional constraints detected.",
+  }));
   return LoremasterOutputSchema.parse({
     assessments,
     summary: "Fallback loremaster pre-diff assessment completed.",
@@ -153,15 +127,14 @@ function normalizePre(parsed: unknown): unknown {
   root.assessments = root.assessments.map((assessment) => {
     if (!assessment || typeof assessment !== "object") return assessment;
     const next = { ...assessment };
+    if ("consequenceTags" in next) {
+      delete next.consequenceTags;
+    }
     const status = typeof next.status === "string" ? next.status : "";
     if (status !== "allowed" && status !== "allowed_with_consequences") {
       next.status = "allowed_with_consequences";
-      const rawTags = Array.isArray(next.consequenceTags) ? next.consequenceTags : [];
-      next.consequenceTags = rawTags.includes("no_target_in_scope")
-        ? rawTags
-        : [...rawTags, "no_target_in_scope"];
       if (typeof next.rationale !== "string" || next.rationale.trim().length === 0) {
-        next.rationale = "Action cannot be resolved safely because no valid target is in scope.";
+        next.rationale = "Action needs tighter consequence framing.";
       }
     }
     return next;
@@ -231,7 +204,6 @@ app.post("/pre", async (req, res) => {
       "Rules:",
       "- return one assessment per candidate index in the same order",
       "- status must be either 'allowed' or 'allowed_with_consequences'",
-      "- use consequenceTags (for example 'no_target_in_scope') when refusal justification is required",
       "- keep rationale concise and concrete",
       "Context:",
       JSON.stringify({

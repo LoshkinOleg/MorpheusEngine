@@ -30,6 +30,14 @@ export interface SessionsResponse {
   }>;
 }
 
+export interface DumpTracesResponse {
+  ok: true;
+  runId: string;
+  gameProjectId: string;
+  outputPath: string;
+  traceCount: number;
+}
+
 export interface TurnRequest {
   runId: string;
   turn: number;
@@ -128,6 +136,13 @@ export async function openSessionSavedFolder(runId: string): Promise<{ ok: true;
       body: JSON.stringify({}),
     },
   );
+}
+
+export async function dumpAllTurnTraces(runId: string): Promise<DumpTracesResponse> {
+  return requestJson<DumpTracesResponse>(`/run/${encodeURIComponent(runId)}/dump-traces`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
 }
 
 export async function startTurnStep(payload: TurnRequest): Promise<{

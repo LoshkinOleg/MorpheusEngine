@@ -27,7 +27,7 @@ Morpheus Engine is a modular narrative game engine for interactive text experien
 Morpheus uses multiple focused LLM modules instead of a single "do everything" model:
 
 - **Intent Extractor**: turns player text into structured action candidates.
-- **LoreMaster**: evaluates plausibility and consequence tags.
+- **Intent Validator**: accepts/refuses extracted intent and emits consequence constraints for downstream simulation.
 - **Simulator(s)**: proposes state diffs when no authoritative classic module exists.
 - **Arbiter**: selects/merges proposals into final committed state diffs.
 - **Proser**: produces final player-facing prose from committed state only.
@@ -38,8 +38,7 @@ Core contract:
 - Structured JSON IR first; freeform text only in Proser.
 - Player text and retrieved lore are treated as untrusted content.
 - Schema/invariant failures use bounded retries and safe fallbacks.
-- If action validity is invalid (for example `no_target_in_scope`), backend currently refuses the action and commits minimal/no world changes for that turn.
-  - Example target behavior: if the player is in an empty room and inputs `attack`, the engine should return refusal narration instead of inventing a target or forcing a full simulation commit.
+- Refusal behavior is currently controlled by router policy and is not driven by `consequenceTags`.
 
 ## What exists today (MVP scaffold)
 
@@ -47,13 +46,13 @@ Core contract:
 - `apps/frontend`: React + Vite UI with stacked Game UI + Debug UI, session selector, and DB-backed state.
 - `packages/shared`: shared schemas/types for structured module IR.
 - `game_projects/sandcrawler`: example game project with manifest, lore, and tables.
-- standalone module services under `apps/module-*` (`intent`, `loremaster`, `default_simulator`, `arbiter`, `proser`).
+- standalone module services under `apps/module-*` (`intent`, `intent-validator`, `default_simulator`, `arbiter`, `proser`).
 
 ## Runtime concept in one page
 
 1. Player submits input.
 2. Engine records input as an event.
-3. Intent and loremaster stages interpret/assess the action in structured form.
+3. Intent and intent-validator stages interpret/validate the action in structured form.
 4. Simulator modules produce structured proposals (`ProposedDiff`).
 5. Arbiter commits final diff (`CommittedDiff`), and engine records warnings + persists snapshots.
 6. Narration is generated from committed outcomes.

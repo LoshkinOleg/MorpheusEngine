@@ -3,7 +3,8 @@ import express from "express";
 import type { Response } from "express";
 import cors from "cors";
 import { randomUUID } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import path from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { loadGameProjectManifest } from "./gameProject.js";
 import { createRunLock } from "./runLock.js";
@@ -75,6 +76,38 @@ function openFolderInExplorer(folderPath: string) {
     stdio: "ignore",
   });
   child.unref();
+}
+
+function toTwoDigits(value: number): string {
+  return value.toString().padStart(2, "0");
+}
+
+function buildTraceExportFileName(now: Date): string {
+  return (
+    `trace_${now.getFullYear()}_${toTwoDigits(now.getMonth() + 1)}_${toTwoDigits(now.getDate())}` +
+    `_${toTwoDigits(now.getHours())}_${toTwoDigits(now.getMinutes())}.json`
+  );
+}
+
+function normalizeActorLikeIds(value: unknown, parentKey?: string): unknown {
+  const actorKeys = new Set(["actorId", "playerId", "observerId"]);
+  if (typeof value === "string") {
+    if (parentKey && actorKeys.has(parentKey) && value.startsWith("entity.")) {
+      return value.replace(/^entity\./, "");
+    }
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeActorLikeIds(item));
+  }
+  if (value && typeof value === "object") {
+    const normalized: Record<string, unknown> = {};
+    for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+      normalized[key] = normalizeActorLikeIds(nested, key);
+    }
+    return normalized;
+  }
+  return value;
 }
 
 async function main() {
@@ -208,6 +241,50 @@ async function main() {
         500,
         "OPEN_SAVED_FOLDER_FAILED",
         "Could not open session saved folder.",
+        requestId,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  });
+
+  app.post("/run/:runId/dump-traces", async (req, res) => {
+    const requestId = randomUUID();
+    const runId = req.params.runId;
+
+    try {
+      const runLocation = await resolveRunLocation(runId);
+      if (!runLocation) {
+        sendError(res, 404, "RUN_NOT_FOUND", "Run not found.", requestId, { runId });
+        return;
+      }
+
+      const sessionDir = getSessionDirPath(runLocation.gameProjectId, runId);
+      const exportsDir = path.join(sessionDir, "exports");
+      await mkdir(exportsDir, { recursive: true });
+
+      const state = await readSessionState(runLocation.gameProjectId, runId);
+      const traces = state.debugEntries
+        .filter((entry) => entry.trace && typeof entry.trace === "object")
+        .sort((left, right) => left.turn - right.turn)
+        .map((entry) => normalizeActorLikeIds(entry.trace));
+
+      const payload = { traces };
+      const outputPath = path.join(exportsDir, buildTraceExportFileName(new Date()));
+      await writeFile(outputPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+
+      res.json({
+        ok: true,
+        runId,
+        gameProjectId: runLocation.gameProjectId,
+        outputPath,
+        traceCount: traces.length,
+      });
+    } catch (error) {
+      sendError(
+        res,
+        500,
+        "DUMP_TRACES_FAILED",
+        "Could not dump turn traces.",
         requestId,
         error instanceof Error ? error.message : String(error),
       );
