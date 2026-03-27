@@ -1,7 +1,3 @@
-- start implementing tests
-- don't clarify intent for now, only decide to refuse an action but give the player an explanation as to why.
-- Implement intent clarification pipeline.
-- Implement anchors
-- Fix front end fetching backend before it's ready
-- Implement lore accumulator mechanism for the proser OK?
-- Make test to ensure that multiple intent candiates can be returned by the intent extractor and that all of them are considered in the follow up pipeline.
+- make player UI
+- make dedicated intent extractor module, look at how the intent extractor payload was shaped in the ts version of the engine.
+- make a solution wide config file for setting things like ports and endpoints (with their templates)

@@ -9,9 +9,9 @@ namespace MorpheusEngine
         #region Nested types
         private sealed class GenerateRequest
         {
-            public string Prompt = ""; // Request specific, ex: classify this player input into classes of intent.
-            public string Model = "";
-            public string System = ""; // Used to pass general instructions that describe the role of the LLM. Ex: respond only with json
+            public string Prompt { get; set; } = ""; // Request specific, ex: classify this player input into classes of intent.
+            public string Model { get; set; } = "";
+            public string System { get; set; } = ""; // Used to pass general instructions that describe the role of the LLM. Ex: respond only with json
         }
         #endregion
 
@@ -142,6 +142,7 @@ namespace MorpheusEngine
                 system = request.System,
                 stream = false // Generate whole response in one go and return it.
             };
+            Console.WriteLine("OLLAMA_IO REQUEST " + JsonSerializer.Serialize(ollamaPayload));
 
             var content = new StringContent(
                 JsonSerializer.Serialize(ollamaPayload),
@@ -155,6 +156,7 @@ namespace MorpheusEngine
             }
             catch (Exception e)
             {
+                Console.WriteLine("OLLAMA_IO ERROR Failed to reach Ollama: " + e.Message);
                 Respond(context, 502, new
                 {
                     ok = false,
@@ -165,6 +167,7 @@ namespace MorpheusEngine
             }
 
             var ollamaBody = await ollamaResponse.Content.ReadAsStringAsync();
+            Console.WriteLine($"OLLAMA_IO RESPONSE status={(int)ollamaResponse.StatusCode} body={ollamaBody}");
             if (!ollamaResponse.IsSuccessStatusCode)
             {
                 Respond(context, (int)ollamaResponse.StatusCode, new

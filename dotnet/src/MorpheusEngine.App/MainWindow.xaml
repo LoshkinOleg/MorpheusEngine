@@ -10,8 +10,9 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="8" />
-            <RowDefinition Height="220" />
-            <RowDefinition Height="8" />
+            <RowDefinition Height="2*" MinHeight="220" />
+            <RowDefinition Height="6" />
+            <RowDefinition Height="3*" MinHeight="180" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
@@ -49,6 +50,10 @@
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="8" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="8" />
+                    <RowDefinition Height="90" />
+                    <RowDefinition Height="8" />
                     <RowDefinition Height="*" />
                 </Grid.RowDefinitions>
                 <Grid.ColumnDefinitions>
@@ -62,12 +67,15 @@
                 </Grid.ColumnDefinitions>
 
                 <TextBlock Grid.Row="0" Grid.Column="0" VerticalAlignment="Center" Text="Port:" />
-                <TextBox x:Name="PortTextBox"
-                         Grid.Row="0"
-                         Grid.Column="1"
-                         Height="28"
-                         VerticalContentAlignment="Center"
-                         Text="8790" />
+                <ComboBox x:Name="PortComboBox"
+                          Grid.Row="0"
+                          Grid.Column="1"
+                          Height="28"
+                          SelectedIndex="0"
+                          SelectionChanged="PortComboBox_SelectionChanged">
+                    <ComboBoxItem Content="RouterModule (8790)" Tag="8790" />
+                    <ComboBoxItem Content="LlmProvider_qwen (8791)" Tag="8791" />
+                </ComboBox>
 
                 <TextBlock Grid.Row="0" Grid.Column="3" VerticalAlignment="Center" Text="Endpoint:" />
                 <TextBox x:Name="EndpointTextBox"
@@ -75,7 +83,8 @@
                          Grid.Column="4"
                          Height="28"
                          VerticalContentAlignment="Center"
-                         Text="/info" />
+                         Text="/info"
+                         TextChanged="EndpointTextBox_TextChanged" />
 
                 <Button x:Name="SendHttpButton"
                         Grid.Row="0"
@@ -85,8 +94,28 @@
                         Content="Send"
                         Click="SendHttpButton_Click" />
 
-                <TextBox x:Name="HttpResponsePane"
+                <TextBlock Grid.Row="2" Grid.Column="0" VerticalAlignment="Center" Text="Custom Port:" />
+                <TextBox x:Name="CustomPortTextBox"
                          Grid.Row="2"
+                         Grid.Column="1"
+                         Height="28"
+                         VerticalContentAlignment="Center" />
+
+                <TextBox x:Name="HttpRequestBodyTextBox"
+                         Grid.Row="4"
+                         Grid.ColumnSpan="7"
+                         FontFamily="Consolas"
+                         FontSize="12"
+                         AcceptsReturn="True"
+                         VerticalScrollBarVisibility="Auto"
+                         HorizontalScrollBarVisibility="Auto"
+                         TextWrapping="NoWrap"
+                         Background="#101010"
+                         Foreground="#DDDDDD"
+                         Padding="8" />
+
+                <TextBox x:Name="HttpResponsePane"
+                         Grid.Row="6"
                          Grid.ColumnSpan="7"
                          FontFamily="Consolas"
                          FontSize="12"
@@ -101,18 +130,71 @@
             </Grid>
         </Border>
 
-        <Border Grid.Row="4" BorderThickness="1" BorderBrush="#4A4A4A" CornerRadius="4">
-            <TextBox x:Name="ConsolePane"
-                     FontFamily="Consolas"
-                     FontSize="13"
-                     IsReadOnly="True"
-                     AcceptsReturn="True"
-                     VerticalScrollBarVisibility="Auto"
-                     HorizontalScrollBarVisibility="Auto"
-                     TextWrapping="NoWrap"
-                     Background="#111111"
-                     Foreground="#DDDDDD"
-                     Padding="8"/>
-        </Border>
+        <GridSplitter Grid.Row="3"
+                      HorizontalAlignment="Stretch"
+                      VerticalAlignment="Center"
+                      Height="6"
+                      ResizeDirection="Rows"
+                      ResizeBehavior="PreviousAndNext"
+                      Background="#3F3F3F" />
+
+        <TabControl Grid.Row="4">
+            <TabItem Header="Console">
+                <Border Margin="6" BorderThickness="1" BorderBrush="#4A4A4A" CornerRadius="4">
+                    <TextBox x:Name="ConsolePane"
+                             FontFamily="Consolas"
+                             FontSize="13"
+                             IsReadOnly="True"
+                             AcceptsReturn="True"
+                             VerticalScrollBarVisibility="Auto"
+                             HorizontalScrollBarVisibility="Auto"
+                             TextWrapping="NoWrap"
+                             Background="#111111"
+                             Foreground="#DDDDDD"
+                             Padding="8"/>
+                </Border>
+            </TabItem>
+            <TabItem Header="Qwen Monitor">
+                <Grid Margin="6">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="8" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <TextBlock Grid.Row="0"
+                               Grid.Column="0"
+                               VerticalAlignment="Center"
+                               FontSize="14"
+                               FontWeight="SemiBold"
+                               Text="Qwen Monitor" />
+
+                    <Button Grid.Row="0"
+                            Grid.Column="1"
+                            Width="72"
+                            Height="26"
+                            Content="Clear"
+                            Click="ClearQwenMonitorButton_Click" />
+
+                    <Border Grid.Row="2" Grid.ColumnSpan="2" BorderThickness="1" BorderBrush="#4A4A4A" CornerRadius="4">
+                        <TextBox x:Name="QwenMonitorPane"
+                                 FontFamily="Consolas"
+                                 FontSize="12"
+                                 IsReadOnly="True"
+                                 AcceptsReturn="True"
+                                 VerticalScrollBarVisibility="Auto"
+                                 HorizontalScrollBarVisibility="Auto"
+                                 TextWrapping="NoWrap"
+                                 Background="#131722"
+                                 Foreground="#D6E3FF"
+                                 Padding="8"/>
+                    </Border>
+                </Grid>
+            </TabItem>
+        </TabControl>
     </Grid>
 </Window>

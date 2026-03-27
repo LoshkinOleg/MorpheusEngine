@@ -2,6 +2,7 @@ using System.IO;
 using System.Net.Http;
 using System.Text;
 using System.Windows;
+using System.Windows.Controls;
 
 namespace MorpheusEngine.App;
 
@@ -33,6 +34,18 @@ public partial class MainWindow : Window
     #endregion
 
     #region Private data
+    private const int QWEN_PORT = 8791;
+    private const int ROUTER_PORT = 8790;
+    private const string GENERATE_BODY_TEMPLATE =
+        "{\n" +
+        "  \"prompt\": \"Write a short response.\",\n" +
+        "  \"model\": \"qwen2.5:7b-instruct\",\n" +
+        "  \"system\": \"You are a helpful assistant.\"\n" +
+        "}";
+    private const string TURN_BODY_TEMPLATE =
+        "{\n" +
+        "  \"playerInput\": \"look around\"\n" +
+        "}";
     private static readonly HttpClient Http = new(); // Used to send HTTP messages from UI.
     private MorpheusEngine _engine = new MorpheusEngine();
 
@@ -57,6 +70,7 @@ public partial class MainWindow : Window
 
         Console.WriteLine("MorpheusEngine GUI started.");
         Console.WriteLine("Click Start Engine to run.");
+        ApplyEndpointBodyTemplateIfNeeded();
         UpdateButtonState();
     }
 
@@ -89,12 +103,13 @@ public partial class MainWindow : Window
 
     private async void SendHttpButton_Click(object sender, RoutedEventArgs e)
     {
-        var portText = PortTextBox.Text.Trim();
+        var portText = GetEffectivePortText();
         var endpoint = EndpointTextBox.Text.Trim();
+        var requestBody = HttpRequestBodyTextBox.Text;
 
         if (!int.TryParse(portText, out var port) || port < 1 || port > 65535)
         {
-            HttpResponsePane.Text = "Invalid port. Enter a number between 1 and 65535.";
+            HttpResponsePane.Text = "Invalid port. Enter a custom port (1-65535) or choose one from the list.";
             return;
         }
 
@@ -108,18 +123,23 @@ public partial class MainWindow : Window
         }
 
         var uri = $"http://127.0.0.1:{port}{endpoint}";
+        var hasBody = !string.IsNullOrWhiteSpace(requestBody);
+        var method = hasBody ? "POST" : "GET";
+
         SendHttpButton.IsEnabled = false;
-        HttpResponsePane.Text = $"GET {uri}\r\nSending...";
+        HttpResponsePane.Text = $"{method} {uri}\r\nSending...";
 
         try
         {
-            using var response = await Http.GetAsync(uri);
+            using var response = hasBody
+                ? await Http.PostAsync(uri, new StringContent(requestBody, Encoding.UTF8, "application/json"))
+                : await Http.GetAsync(uri);
             var body = await response.Content.ReadAsStringAsync();
-            HttpResponsePane.Text = $"GET {uri}\r\nStatus: {(int)response.StatusCode} {response.ReasonPhrase}\r\n\r\n{body}";
+            HttpResponsePane.Text = $"{method} {uri}\r\nStatus: {(int)response.StatusCode} {response.ReasonPhrase}\r\n\r\n{body}";
         }
         catch (Exception ex)
         {
-            HttpResponsePane.Text = $"GET {uri}\r\nRequest failed:\r\n{ex.Message}";
+            HttpResponsePane.Text = $"{method} {uri}\r\nRequest failed:\r\n{ex.Message}";
         }
         finally
         {
@@ -176,6 +196,11 @@ public partial class MainWindow : Window
             ConsolePane.AppendText(text);
             ConsolePane.CaretIndex = ConsolePane.Text.Length;
             ConsolePane.ScrollToEnd();
+
+            if (TryExtractQwenLogLine(text, out var qwenLogLine))
+            {
+                AppendQwenMonitorEntry(qwenLogLine);
+            }
         });
     }
     private void StartButton_Click(object sender, RoutedEventArgs e)
@@ -187,9 +212,143 @@ public partial class MainWindow : Window
     {
         await StopEngineAsync();
     }
+
+    private void ClearQwenMonitorButton_Click(object sender, RoutedEventArgs e)
+    {
+        QwenMonitorPane.Clear();
+    }
+
+    private void EndpointTextBox_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
+    {
+        ApplyEndpointBodyTemplateIfNeeded();
+    }
+
+    private void PortComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        ApplyEndpointBodyTemplateIfNeeded();
+    }
     #endregion
 
     #region Helpers
+    private string GetSelectedPortText()
+    {
+        if (PortComboBox.SelectedItem is ComboBoxItem item && item.Tag is string tag)
+        {
+            return tag;
+        }
+
+        return string.Empty;
+    }
+
+    private string GetEffectivePortText()
+    {
+        var customPort = CustomPortTextBox.Text.Trim();
+        if (!string.IsNullOrWhiteSpace(customPort))
+        {
+            return customPort;
+        }
+
+        return GetSelectedPortText();
+    }
+
+    private void AppendQwenMonitorEntry(string text)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            var timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
+            QwenMonitorPane.AppendText($"[{timestamp}] {text}{Environment.NewLine}----------------{Environment.NewLine}");
+            QwenMonitorPane.CaretIndex = QwenMonitorPane.Text.Length;
+            QwenMonitorPane.ScrollToEnd();
+        });
+    }
+
+    private static bool TryExtractQwenLogLine(string text, out string qwenLogLine)
+    {
+        if (text.StartsWith("[Qwen] OLLAMA_IO ", StringComparison.Ordinal))
+        {
+            qwenLogLine = text.Substring("[Qwen] OLLAMA_IO ".Length).TrimEnd('\r', '\n');
+            return true;
+        }
+
+        if (text.StartsWith("[Qwen:ERR] OLLAMA_IO ", StringComparison.Ordinal))
+        {
+            qwenLogLine = "ERR: " + text.Substring("[Qwen:ERR] OLLAMA_IO ".Length).TrimEnd('\r', '\n');
+            return true;
+        }
+
+        qwenLogLine = string.Empty;
+        return false;
+    }
+
+    private void ApplyEndpointBodyTemplateIfNeeded()
+    {
+        if (HttpRequestBodyTextBox is null || EndpointTextBox is null)
+        {
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(HttpRequestBodyTextBox.Text))
+        {
+            return;
+        }
+
+        var endpoint = EndpointTextBox.Text;
+        if (IsGenerateEndpoint(endpoint))
+        {
+            HttpRequestBodyTextBox.Text = GENERATE_BODY_TEMPLATE;
+            HttpRequestBodyTextBox.CaretIndex = HttpRequestBodyTextBox.Text.Length;
+            return;
+        }
+
+        if (IsTurnEndpoint(endpoint) && IsRouterSelected())
+        {
+            HttpRequestBodyTextBox.Text = TURN_BODY_TEMPLATE;
+            HttpRequestBodyTextBox.CaretIndex = HttpRequestBodyTextBox.Text.Length;
+        }
+    }
+
+    private static bool IsGenerateEndpoint(string endpoint)
+    {
+        if (string.IsNullOrWhiteSpace(endpoint))
+        {
+            return false;
+        }
+
+        var normalized = endpoint.Trim();
+        if (!normalized.StartsWith('/'))
+        {
+            normalized = "/" + normalized;
+        }
+
+        return normalized.Equals("/generate", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsTurnEndpoint(string endpoint)
+    {
+        if (string.IsNullOrWhiteSpace(endpoint))
+        {
+            return false;
+        }
+
+        var normalized = endpoint.Trim();
+        if (!normalized.StartsWith('/'))
+        {
+            normalized = "/" + normalized;
+        }
+
+        return normalized.Equals("/turn", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool IsRouterSelected()
+    {
+        if (PortComboBox is null)
+        {
+            return false;
+        }
+
+        return int.TryParse(GetSelectedPortText(), out var selectedPort) && selectedPort == ROUTER_PORT;
+    }
+
     private bool IsEngineRunning()
     {
         return _engineTask != Task.CompletedTask;
