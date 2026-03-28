@@ -4,8 +4,15 @@ namespace MorpheusEngine
     public class MorpheusEngine
     {
         private bool _shutdownRequested;
-        private readonly RouterModule _routerModule = new();
-        private readonly LlmProviderQwenModule _llmProviderQwenModule = new();
+        private readonly EngineConfiguration _configuration = EngineConfigLoader.GetConfiguration();
+        private readonly IReadOnlyList<ManagedModule> _modules;
+
+        public MorpheusEngine()
+        {
+            _modules = _configuration.Modules
+                .Select(module => new ManagedModule(_configuration, module))
+                .ToArray();
+        }
 
         public void RequestShutdown() => _shutdownRequested = true;
 
@@ -31,8 +38,16 @@ namespace MorpheusEngine
 
         private void Initialize()
         {
-            _routerModule.Run();
-            _llmProviderQwenModule.Run();
+            foreach (var module in _modules)
+            {
+                module.Start();
+            }
+
+            var readinessTasks = _modules
+                .Where(module => module.Required)
+                .Select(module => module.WaitUntilReadyAsync(TimeSpan.FromSeconds(15)));
+
+            Task.WhenAll(readinessTasks).GetAwaiter().GetResult();
 
             Console.WriteLine("Engine initialized.");
         }
@@ -44,8 +59,11 @@ namespace MorpheusEngine
 
         private void Shutdown()
         {
-            _llmProviderQwenModule.Stop();
-            _routerModule.Stop();
+            foreach (var module in _modules.Reverse())
+            {
+                module.StopAsync().GetAwaiter().GetResult();
+            }
+
             Console.WriteLine("Engine shut down.");
         }
     }

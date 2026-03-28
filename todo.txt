@@ -1,3 +1,1 @@
 - make player UI
-- make dedicated intent extractor module, look at how the intent extractor payload was shaped in the ts version of the engine.
-- make a solution wide config file for setting things like ports and endpoints (with their templates)

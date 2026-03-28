@@ -6,17 +6,7 @@ namespace MorpheusEngine
 {
     public class LlmProviderQwen
     {
-        #region Nested types
-        private sealed class GenerateRequest
-        {
-            public string Prompt { get; set; } = ""; // Request specific, ex: classify this player input into classes of intent.
-            public string Model { get; set; } = "";
-            public string System { get; set; } = ""; // Used to pass general instructions that describe the role of the LLM. Ex: respond only with json
-        }
-        #endregion
-
         #region Public data
-        public const int PORT = 8791;
         public const string DEFAULT_MODEL = "qwen2.5:7b-instruct";
         #endregion
 
@@ -43,7 +33,7 @@ namespace MorpheusEngine
                 while (!_shutdownRequested)
                 {
                     var context = await _listener.GetContextAsync();
-                    await ProcessQuery(context);
+                    _ = ProcessQuery(context);
                 }
             }
             catch (HttpListenerException e)
@@ -58,45 +48,70 @@ namespace MorpheusEngine
 
         private void Initialize()
         {
-            _listener.Prefixes.Add($"http://127.0.0.1:{PORT}/");
+            var ports = EngineConfigLoader.GetPorts();
+            _listener.Prefixes.Add($"http://127.0.0.1:{ports.LlmProviderQwen}/");
             _listener.Start();
-            Console.WriteLine($"LlmProvider_qwen listening on http://127.0.0.1:{PORT}/");
+            Console.WriteLine($"LlmProvider_qwen listening on http://127.0.0.1:{ports.LlmProviderQwen}/");
             Console.WriteLine("LlmProvider_qwen initialized.");
         }
 
         private async Task ProcessQuery(HttpListenerContext context)
         {
-            if (context.Request.Url is null)
+            try
             {
-                Console.WriteLine("LlmProvider_qwen received invalid request: Url is null.");
-                Respond(context, 400, new { ok = false, error = "Invalid request URL." });
-                return;
-            }
-
-            var path = context.Request.Url.AbsolutePath;
-
-            if (path.Equals("/info", StringComparison.OrdinalIgnoreCase))
-            {
-                Console.WriteLine("LlmProvider_qwen/info called.");
-                Respond(context, 200, new
+                if (context.Request.Url is null)
                 {
-                    ok = true,
-                    module_name = "llm_provider_qwen",
-                    provider = "ollama",
-                    model = DEFAULT_MODEL
-                });
-                return;
-            }
+                    Console.WriteLine("LlmProvider_qwen received invalid request: Url is null.");
+                    await Respond(context, 400, new ErrorResponse(false, "Invalid request URL."));
+                    return;
+                }
 
-            if (path.Equals("/generate", StringComparison.OrdinalIgnoreCase))
+                var path = context.Request.Url.AbsolutePath;
+
+                if (path.Equals("/info", StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.WriteLine("LlmProvider_qwen/info called.");
+                    await Respond(context, 200, new
+                    {
+                        ok = true,
+                        module_name = "llm_provider_qwen",
+                        provider = "ollama",
+                        model = DEFAULT_MODEL
+                    });
+                    return;
+                }
+
+                if (path.Equals("/health", StringComparison.OrdinalIgnoreCase))
+                {
+                    await Respond(context, 200, new ModuleHealthResponse(true, "llm_provider_qwen", "healthy"));
+                    return;
+                }
+
+                if (path.Equals("/shutdown", StringComparison.OrdinalIgnoreCase))
+                {
+                    await Respond(context, 200, new ModuleShutdownResponse(true, "llm_provider_qwen", "Shutdown requested."));
+                    BeginShutdown();
+                    return;
+                }
+
+                if (path.Equals("/generate", StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.WriteLine("LlmProvider_qwen/generate called.");
+                    await ProcessRequest_generate(context);
+                    return;
+                }
+
+                Console.WriteLine("LlmProvider_qwen called with an unknown path: " + path);
+                await Respond(context, 404, new ErrorResponse(false, "Not found: " + path));
+            }
+            catch (Exception e)
             {
-                Console.WriteLine("LlmProvider_qwen/generate called.");
-                await ProcessRequest_generate(context);
-                return;
+                Console.WriteLine("LlmProvider_qwen encountered unhandled request error: " + e.Message);
+                if (context.Response.OutputStream.CanWrite)
+                {
+                    await Respond(context, 500, new ErrorResponse(false, "Unhandled llm provider error.", e.Message));
+                }
             }
-
-            Console.WriteLine("LlmProvider_qwen called with an unknown path: " + path);
-            Respond(context, 404, new { ok = false, error = "Not found: " + path });
         }
 
         public void RequestShutdown() => _shutdownRequested = true;
@@ -108,6 +123,22 @@ namespace MorpheusEngine
             Console.WriteLine("LlmProvider_qwen shut down.");
         }
 
+        private void BeginShutdown()
+        {
+            _shutdownRequested = true;
+
+            try
+            {
+                _listener.Stop();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+            catch (HttpListenerException)
+            {
+            }
+        }
+
         private async Task ProcessRequest_generate(HttpListenerContext context)
         {
             string body;
@@ -116,20 +147,20 @@ namespace MorpheusEngine
                 body = await reader.ReadToEndAsync();
             }
 
-            GenerateRequest? request = null;
+            QwenGenerateRequest? request = null;
             try
             {
-                request = JsonSerializer.Deserialize<GenerateRequest>(body, _jsonOptions);
+                request = JsonSerializer.Deserialize<QwenGenerateRequest>(body, _jsonOptions);
             }
             catch (JsonException e)
             {
-                Respond(context, 400, new { ok = false, error = "Invalid JSON payload.", details = e.Message });
+                await Respond(context, 400, new ErrorResponse(false, "Invalid JSON payload.", e.Message));
                 return;
             }
 
             if (request is null || string.IsNullOrWhiteSpace(request.Prompt))
             {
-                Respond(context, 400, new { ok = false, error = "Request must include a non-empty 'prompt' field." });
+                await Respond(context, 400, new ErrorResponse(false, "Request must include a non-empty 'prompt' field."));
                 return;
             }
 
@@ -149,18 +180,19 @@ namespace MorpheusEngine
                 Encoding.UTF8,
                 "application/json");
 
+            var ollamaPort = EngineConfigLoader.GetPorts().Ollama;
             HttpResponseMessage ollamaResponse;
             try
             {
-                ollamaResponse = await _httpClient.PostAsync("http://127.0.0.1:11434/api/generate", content);
+                ollamaResponse = await _httpClient.PostAsync($"http://127.0.0.1:{ollamaPort}/api/generate", content);
             }
             catch (Exception e)
             {
                 Console.WriteLine("OLLAMA_IO ERROR Failed to reach Ollama: " + e.Message);
-                Respond(context, 502, new
+                await Respond(context, 502, new
                 {
                     ok = false,
-                    error = "Failed to reach Ollama. Ensure Ollama is running locally on port 11434.",
+                    error = $"Failed to reach Ollama. Ensure Ollama is running locally on port {ollamaPort}.",
                     details = e.Message
                 });
                 return;
@@ -170,7 +202,7 @@ namespace MorpheusEngine
             Console.WriteLine($"OLLAMA_IO RESPONSE status={(int)ollamaResponse.StatusCode} body={ollamaBody}");
             if (!ollamaResponse.IsSuccessStatusCode)
             {
-                Respond(context, (int)ollamaResponse.StatusCode, new
+                await Respond(context, (int)ollamaResponse.StatusCode, new
                 {
                     ok = false,
                     error = "Ollama returned an error.",
@@ -195,7 +227,7 @@ namespace MorpheusEngine
                 // keep raw body when parsing fails
             }
 
-            Respond(context, 200, new
+            await Respond(context, 200, new
             {
                 ok = true,
                 model,
@@ -205,14 +237,14 @@ namespace MorpheusEngine
         }
 
         #region Helpers
-        private void Respond(HttpListenerContext context, int statusCode, object payload)
+        private async Task Respond(HttpListenerContext context, int statusCode, object payload)
         {
             var response = context.Response;
             response.StatusCode = statusCode;
             response.ContentType = "application/json";
             var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(payload));
             response.ContentLength64 = bytes.LongLength;
-            response.OutputStream.Write(bytes);
+            await response.OutputStream.WriteAsync(bytes);
             response.OutputStream.Close();
         }
         #endregion

@@ -1,8 +1,13 @@
+using System.Collections.ObjectModel;
 using System.IO;
 using System.Net.Http;
 using System.Text;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Media;
+using MorpheusEngine;
 
 namespace MorpheusEngine.App;
 
@@ -31,27 +36,41 @@ public partial class MainWindow : Window
             onWrite((value ?? string.Empty) + Environment.NewLine);
         }
     }
+
+    private sealed record HttpCallResult(
+        string Method,
+        string Uri,
+        int StatusCode,
+        string ReasonPhrase,
+        string Body);
+
+    private sealed record GameChatMessage(
+        string SpeakerLabel,
+        string Text,
+        HorizontalAlignment BubbleAlignment,
+        Brush BubbleBackground,
+        Brush BubbleBorderBrush,
+        Brush BubbleForeground);
     #endregion
 
     #region Private data
-    private const int QWEN_PORT = 8791;
-    private const int ROUTER_PORT = 8790;
-    private const string GENERATE_BODY_TEMPLATE =
-        "{\n" +
-        "  \"prompt\": \"Write a short response.\",\n" +
-        "  \"model\": \"qwen2.5:7b-instruct\",\n" +
-        "  \"system\": \"You are a helpful assistant.\"\n" +
-        "}";
-    private const string TURN_BODY_TEMPLATE =
-        "{\n" +
-        "  \"playerInput\": \"look around\"\n" +
-        "}";
-    private static readonly HttpClient Http = new(); // Used to send HTTP messages from UI.
-    private MorpheusEngine _engine = new MorpheusEngine();
+    private readonly EngineConfiguration _config = EngineConfigLoader.GetConfiguration();
+    private readonly ObservableCollection<GameChatMessage> _gameMessages = [];
+    private static readonly HttpClient Http = new();
+    private MorpheusEngine _engine = new();
 
     private Task _engineTask = Task.CompletedTask;
-    private bool _allowClose = false; // Used to halt window closing while the engine shuts down.
-    private bool _shutdownInProgress = false; // Used to guard against duplicate engine shutdown invocations.
+    private bool _allowClose;
+    private bool _shutdownInProgress;
+    private bool _suppressEndpointPresetEvents;
+    private bool _applyingEndpointFromPreset;
+    private bool _gameRequestInFlight;
+    private string[] _qwenMonitorModuleNames = ["Qwen", "LlmProvider_qwen"];
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        WriteIndented = true
+    };
     #endregion
 
     public MainWindow()
@@ -70,21 +89,35 @@ public partial class MainWindow : Window
 
         Console.WriteLine("MorpheusEngine GUI started.");
         Console.WriteLine("Click Start Engine to run.");
+        _qwenMonitorModuleNames = _config.Modules
+            .Where(module => module.PortKey.Equals("llm_provider_qwen", StringComparison.OrdinalIgnoreCase))
+            .Select(module => module.DisplayName)
+            .Append("Qwen")
+            .Append("LlmProvider_qwen")
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        GameMessagesListBox.ItemsSource = _gameMessages;
+        AppendSystemGameMessage("Game tab ready. Player input is sent to router /turn, which currently returns the extracted intent.");
+        SetGameStatus("Ready to send player input through the router.");
+
+        PopulatePortComboBox();
+        PopulateEndpointPresetComboBox();
         ApplyEndpointBodyTemplateIfNeeded();
         UpdateButtonState();
     }
 
     private async void OnClosing(object? sender, System.ComponentModel.CancelEventArgs e)
     {
-        if (_allowClose) // Shutdown work has already been done, this is a >second invocation.
+        if (_allowClose)
         {
             Console.SetOut(Console.Out);
             Console.SetError(Console.Error);
-            // Don't e.Cancel since it's a valid action.
             return;
         }
 
-        if (_shutdownInProgress) // Guard against duplicate shutdown invocations.
+        if (_shutdownInProgress)
         {
             e.Cancel = true;
             return;
@@ -94,11 +127,11 @@ public partial class MainWindow : Window
         _shutdownInProgress = true;
         UpdateButtonState();
 
-        await StopEngineAsync(isAppClosing: true); // Wait for engine to shut down.
+        await StopEngineAsync();
 
-        _allowClose = true; // Authorise window closing now that the engine is shut down.
+        _allowClose = true;
         _shutdownInProgress = false;
-        _ = Dispatcher.BeginInvoke(new Action(Close)); // Queue another close window invocation.
+        _ = Dispatcher.BeginInvoke(new Action(Close));
     }
 
     private async void SendHttpButton_Click(object sender, RoutedEventArgs e)
@@ -113,33 +146,22 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(endpoint))
-        {
-            endpoint = "/";
-        }
-        else if (!endpoint.StartsWith('/'))
-        {
-            endpoint = "/" + endpoint;
-        }
-
-        var uri = $"http://127.0.0.1:{port}{endpoint}";
-        var hasBody = !string.IsNullOrWhiteSpace(requestBody);
-        var method = hasBody ? "POST" : "GET";
-
         SendHttpButton.IsEnabled = false;
-        HttpResponsePane.Text = $"{method} {uri}\r\nSending...";
 
         try
         {
-            using var response = hasBody
-                ? await Http.PostAsync(uri, new StringContent(requestBody, Encoding.UTF8, "application/json"))
-                : await Http.GetAsync(uri);
-            var body = await response.Content.ReadAsStringAsync();
-            HttpResponsePane.Text = $"{method} {uri}\r\nStatus: {(int)response.StatusCode} {response.ReasonPhrase}\r\n\r\n{body}";
+            var previewEndpoint = EngineConfiguration.NormalizePath(endpoint);
+            var previewUri = $"http://127.0.0.1:{port}{previewEndpoint}";
+            HttpResponsePane.Text = $"{previewUri}\r\nSending...";
+
+            var result = await SendRequestAsync(port, endpoint, requestBody);
+            HttpResponsePane.Text =
+                $"{result.Method} {result.Uri}\r\nStatus: {result.StatusCode} {result.ReasonPhrase}\r\n\r\n{result.Body}";
         }
         catch (Exception ex)
         {
-            HttpResponsePane.Text = $"{method} {uri}\r\nRequest failed:\r\n{ex.Message}";
+            var safeEndpoint = EngineConfiguration.NormalizePath(endpoint);
+            HttpResponsePane.Text = $"http://127.0.0.1:{port}{safeEndpoint}\r\nRequest failed:\r\n{ex.Message}";
         }
         finally
         {
@@ -147,9 +169,91 @@ public partial class MainWindow : Window
         }
     }
 
+    private async void GameSendButton_Click(object sender, RoutedEventArgs e)
+    {
+        await SubmitGameInputAsync();
+    }
+
+    private async void GameInputTextBox_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter || Keyboard.Modifiers != ModifierKeys.None)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        await SubmitGameInputAsync();
+    }
+
+    private void StartButton_Click(object sender, RoutedEventArgs e)
+    {
+        StartEngine();
+    }
+
+    private async void StopButton_Click(object sender, RoutedEventArgs e)
+    {
+        await StopEngineAsync();
+    }
+
+    private void ClearQwenMonitorButton_Click(object sender, RoutedEventArgs e)
+    {
+        QwenMonitorPane.Clear();
+    }
+
+    private void EndpointTextBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_applyingEndpointFromPreset)
+        {
+            return;
+        }
+
+        ApplyEndpointBodyTemplateIfNeeded();
+        TrySelectMatchingPreset();
+    }
+
+    private void PortComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        PopulateEndpointPresetComboBox();
+        ApplyEndpointBodyTemplateIfNeeded();
+    }
+
+    private void CustomPortTextBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        PopulateEndpointPresetComboBox();
+        ApplyEndpointBodyTemplateIfNeeded();
+    }
+
+    private void EndpointPresetComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_suppressEndpointPresetEvents)
+        {
+            return;
+        }
+
+        if (EndpointPresetComboBox.SelectedItem is not ComboBoxItem item || item.Tag is not EngineEndpointInfo info)
+        {
+            return;
+        }
+
+        _applyingEndpointFromPreset = true;
+        try
+        {
+            EndpointTextBox.Text = info.Path;
+            HttpRequestBodyTextBox.Text = info.BodyTemplate ?? string.Empty;
+            HttpRequestBodyTextBox.CaretIndex = HttpRequestBodyTextBox.Text.Length;
+        }
+        finally
+        {
+            _applyingEndpointFromPreset = false;
+        }
+    }
+
     private void StartEngine()
     {
-        if (IsEngineRunning()) return;
+        if (IsEngineRunning())
+        {
+            return;
+        }
 
         _engine = new MorpheusEngine();
 
@@ -166,9 +270,12 @@ public partial class MainWindow : Window
         UpdateButtonState();
     }
 
-    private async Task StopEngineAsync(bool isAppClosing = false)
+    private async Task StopEngineAsync()
     {
-        if (!IsEngineRunning()) return;
+        if (!IsEngineRunning())
+        {
+            return;
+        }
 
         _engine.RequestShutdown();
 
@@ -186,9 +293,18 @@ public partial class MainWindow : Window
     {
         StartButton.IsEnabled = !IsEngineRunning() && !_shutdownInProgress;
         StopButton.IsEnabled = IsEngineRunning() && !_shutdownInProgress;
+
+        if (GameSendButton is not null)
+        {
+            GameSendButton.IsEnabled = !_shutdownInProgress && !_gameRequestInFlight;
+        }
+
+        if (GameInputTextBox is not null)
+        {
+            GameInputTextBox.IsEnabled = !_shutdownInProgress && !_gameRequestInFlight;
+        }
     }
 
-    #region UI Callbacks
     private void AppendLineToPane(string text)
     {
         Dispatcher.BeginInvoke(() =>
@@ -203,33 +319,135 @@ public partial class MainWindow : Window
             }
         });
     }
-    private void StartButton_Click(object sender, RoutedEventArgs e)
+
+    private void PopulatePortComboBox()
     {
-        StartEngine();
+        if (PortComboBox is null)
+        {
+            return;
+        }
+
+        PortComboBox.Items.Clear();
+        foreach (var module in _config.Modules)
+        {
+            var port = _config.ResolvePort(module.PortKey);
+            if (port is null)
+            {
+                continue;
+            }
+
+            PortComboBox.Items.Add(new ComboBoxItem
+            {
+                Content = $"{module.DisplayName} ({port})",
+                Tag = port.Value.ToString()
+            });
+        }
+
+        if (PortComboBox.Items.Count > 0)
+        {
+            PortComboBox.SelectedIndex = 0;
+        }
     }
 
-    private async void StopButton_Click(object sender, RoutedEventArgs e)
+    private void PopulateEndpointPresetComboBox()
     {
-        await StopEngineAsync();
+        if (EndpointPresetComboBox is null || EndpointTextBox is null)
+        {
+            return;
+        }
+
+        _suppressEndpointPresetEvents = true;
+        try
+        {
+            EndpointPresetComboBox.Items.Clear();
+            EndpointPresetComboBox.Items.Add(new ComboBoxItem
+            {
+                Content = "(Custom - use Endpoint field)",
+                Tag = null
+            });
+
+            if (int.TryParse(GetEffectivePortText(), out var port))
+            {
+                var module = _config.GetModuleForListeningPort(port);
+                if (module is not null)
+                {
+                    foreach (var endpoint in module.Endpoints)
+                    {
+                        var label = string.IsNullOrEmpty(endpoint.Description)
+                            ? endpoint.Path
+                            : $"{endpoint.Description} - {endpoint.Path}";
+                        EndpointPresetComboBox.Items.Add(new ComboBoxItem
+                        {
+                            Content = label,
+                            Tag = endpoint
+                        });
+                    }
+                }
+            }
+
+            var path = EngineConfiguration.NormalizePath(EndpointTextBox.Text);
+            var selectIndex = 0;
+            for (var i = 1; i < EndpointPresetComboBox.Items.Count; i++)
+            {
+                if (EndpointPresetComboBox.Items[i] is ComboBoxItem comboBoxItem
+                    && comboBoxItem.Tag is EngineEndpointInfo endpoint
+                    && string.Equals(
+                        EngineConfiguration.NormalizePath(endpoint.Path),
+                        path,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    selectIndex = i;
+                    break;
+                }
+            }
+
+            EndpointPresetComboBox.SelectedIndex = selectIndex;
+        }
+        finally
+        {
+            _suppressEndpointPresetEvents = false;
+        }
     }
 
-    private void ClearQwenMonitorButton_Click(object sender, RoutedEventArgs e)
+    private void TrySelectMatchingPreset()
     {
-        QwenMonitorPane.Clear();
+        if (_suppressEndpointPresetEvents || EndpointPresetComboBox is null || EndpointTextBox is null)
+        {
+            return;
+        }
+
+        var path = EngineConfiguration.NormalizePath(EndpointTextBox.Text);
+        var selectIndex = 0;
+        for (var i = 1; i < EndpointPresetComboBox.Items.Count; i++)
+        {
+            if (EndpointPresetComboBox.Items[i] is ComboBoxItem comboBoxItem
+                && comboBoxItem.Tag is EngineEndpointInfo endpoint
+                && string.Equals(
+                    EngineConfiguration.NormalizePath(endpoint.Path),
+                    path,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                selectIndex = i;
+                break;
+            }
+        }
+
+        if (EndpointPresetComboBox.SelectedIndex == selectIndex)
+        {
+            return;
+        }
+
+        _suppressEndpointPresetEvents = true;
+        try
+        {
+            EndpointPresetComboBox.SelectedIndex = selectIndex;
+        }
+        finally
+        {
+            _suppressEndpointPresetEvents = false;
+        }
     }
 
-    private void EndpointTextBox_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
-    {
-        ApplyEndpointBodyTemplateIfNeeded();
-    }
-
-    private void PortComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        ApplyEndpointBodyTemplateIfNeeded();
-    }
-    #endregion
-
-    #region Helpers
     private string GetSelectedPortText()
     {
         if (PortComboBox.SelectedItem is ComboBoxItem item && item.Tag is string tag)
@@ -251,6 +469,178 @@ public partial class MainWindow : Window
         return GetSelectedPortText();
     }
 
+    private async Task<HttpCallResult> SendRequestAsync(
+        int port,
+        string endpoint,
+        string? requestBody,
+        string? forcedMethod = null)
+    {
+        var normalizedEndpoint = EngineConfiguration.NormalizePath(endpoint);
+        var endpointInfo = _config.FindEndpointForPort(port, normalizedEndpoint);
+        var usePost = forcedMethod is not null
+            ? forcedMethod.Equals("POST", StringComparison.OrdinalIgnoreCase)
+            : endpointInfo is not null
+                ? endpointInfo.Method.Equals("POST", StringComparison.OrdinalIgnoreCase)
+                : !string.IsNullOrWhiteSpace(requestBody);
+        var method = usePost ? "POST" : "GET";
+        var uri = $"http://127.0.0.1:{port}{normalizedEndpoint}";
+
+        using var request = new HttpRequestMessage(
+            usePost ? HttpMethod.Post : HttpMethod.Get,
+            uri);
+        if (usePost)
+        {
+            request.Content = string.IsNullOrWhiteSpace(requestBody)
+                ? new ByteArrayContent(Array.Empty<byte>())
+                : new StringContent(requestBody, Encoding.UTF8, "application/json");
+        }
+
+        using var response = await Http.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+        return new HttpCallResult(
+            method,
+            uri,
+            (int)response.StatusCode,
+            response.ReasonPhrase ?? string.Empty,
+            body);
+    }
+
+    private async Task SubmitGameInputAsync()
+    {
+        if (_gameRequestInFlight)
+        {
+            return;
+        }
+
+        var playerInput = GameInputTextBox.Text;
+        if (string.IsNullOrWhiteSpace(playerInput))
+        {
+            SetGameStatus("Enter a player action before sending.", isError: true);
+            return;
+        }
+
+        AppendPlayerGameMessage(playerInput.Trim());
+        GameInputTextBox.Clear();
+        _gameRequestInFlight = true;
+        SetGameStatus("Sending player input to router /turn...");
+        UpdateButtonState();
+
+        try
+        {
+            var body = JsonSerializer.Serialize(new TurnRequest(playerInput), JsonOptions);
+            var result = await SendRequestAsync(_config.Ports.Router, "/turn", body, "POST");
+
+            if (result.StatusCode is >= 200 and < 300)
+            {
+                if (TryParseIntentResponse(result.Body, out var intentResponse))
+                {
+                    AppendEngineGameMessage(FormatIntentResponse(intentResponse));
+                    SetGameStatus($"Intent received from router /turn: {intentResponse.Intent}");
+                }
+                else
+                {
+                    AppendEngineGameMessage(result.Body);
+                    SetGameStatus("Router /turn responded with non-standard JSON. Showing raw response.");
+                }
+            }
+            else
+            {
+                AppendSystemGameMessage($"Router /turn returned {result.StatusCode} {result.ReasonPhrase}.\n{result.Body}");
+                SetGameStatus($"Router /turn failed with {result.StatusCode} {result.ReasonPhrase}.", isError: true);
+            }
+        }
+        catch (Exception e)
+        {
+            AppendSystemGameMessage("Request failed: " + e.Message);
+            SetGameStatus("Game request failed.", isError: true);
+        }
+        finally
+        {
+            _gameRequestInFlight = false;
+            UpdateButtonState();
+            GameInputTextBox.Focus();
+        }
+    }
+
+    private static bool TryParseIntentResponse(string body, out IntentResponse intentResponse)
+    {
+        intentResponse = null!;
+
+        try
+        {
+            var parsed = JsonSerializer.Deserialize<IntentResponse>(body, JsonOptions);
+            if (parsed is null)
+            {
+                return false;
+            }
+
+            intentResponse = parsed;
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static string FormatIntentResponse(IntentResponse response)
+    {
+        var lines = new List<string> { $"Intent: {response.Intent}" };
+        if (response.Parameters.Count == 0)
+        {
+            lines.Add("Params: (none)");
+        }
+        else
+        {
+            lines.Add("Params:");
+            foreach (var parameter in response.Parameters)
+            {
+                lines.Add($"- {parameter.Key}: {parameter.Value}");
+            }
+        }
+
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    private void SetGameStatus(string text, bool isError = false)
+    {
+        GameStatusTextBlock.Text = text;
+        GameStatusTextBlock.Foreground = isError
+            ? Brushes.Salmon
+            : Brushes.LightSteelBlue;
+    }
+
+    private void AppendPlayerGameMessage(string text) =>
+        AppendGameMessage("You", text, HorizontalAlignment.Right, "#365CA8", "#4C74C2", Brushes.White);
+
+    private void AppendEngineGameMessage(string text) =>
+        AppendGameMessage("Engine", text, HorizontalAlignment.Left, "#1E2837", "#304057", Brushes.WhiteSmoke);
+
+    private void AppendSystemGameMessage(string text) =>
+        AppendGameMessage("System", text, HorizontalAlignment.Left, "#302534", "#5B456D", Brushes.WhiteSmoke);
+
+    private void AppendGameMessage(
+        string speaker,
+        string text,
+        HorizontalAlignment alignment,
+        string backgroundColor,
+        string borderColor,
+        Brush foreground)
+    {
+        _gameMessages.Add(new GameChatMessage(
+            speaker,
+            text,
+            alignment,
+            (Brush)new BrushConverter().ConvertFromString(backgroundColor)!,
+            (Brush)new BrushConverter().ConvertFromString(borderColor)!,
+            foreground));
+
+        if (_gameMessages.Count > 0)
+        {
+            GameMessagesListBox.ScrollIntoView(_gameMessages[^1]);
+        }
+    }
+
     private void AppendQwenMonitorEntry(string text)
     {
         Dispatcher.BeginInvoke(() =>
@@ -262,18 +652,23 @@ public partial class MainWindow : Window
         });
     }
 
-    private static bool TryExtractQwenLogLine(string text, out string qwenLogLine)
+    private bool TryExtractQwenLogLine(string text, out string qwenLogLine)
     {
-        if (text.StartsWith("[Qwen] OLLAMA_IO ", StringComparison.Ordinal))
+        foreach (var moduleName in _qwenMonitorModuleNames)
         {
-            qwenLogLine = text.Substring("[Qwen] OLLAMA_IO ".Length).TrimEnd('\r', '\n');
-            return true;
-        }
+            var normalPrefix = $"[{moduleName}] OLLAMA_IO ";
+            if (text.StartsWith(normalPrefix, StringComparison.Ordinal))
+            {
+                qwenLogLine = text.Substring(normalPrefix.Length).TrimEnd('\r', '\n');
+                return true;
+            }
 
-        if (text.StartsWith("[Qwen:ERR] OLLAMA_IO ", StringComparison.Ordinal))
-        {
-            qwenLogLine = "ERR: " + text.Substring("[Qwen:ERR] OLLAMA_IO ".Length).TrimEnd('\r', '\n');
-            return true;
+            var errorPrefix = $"[{moduleName}:ERR] OLLAMA_IO ";
+            if (text.StartsWith(errorPrefix, StringComparison.Ordinal))
+            {
+                qwenLogLine = "ERR: " + text.Substring(errorPrefix.Length).TrimEnd('\r', '\n');
+                return true;
+            }
         }
 
         qwenLogLine = string.Empty;
@@ -282,7 +677,7 @@ public partial class MainWindow : Window
 
     private void ApplyEndpointBodyTemplateIfNeeded()
     {
-        if (HttpRequestBodyTextBox is null || EndpointTextBox is null)
+        if (_applyingEndpointFromPreset || HttpRequestBodyTextBox is null || EndpointTextBox is null)
         {
             return;
         }
@@ -292,66 +687,20 @@ public partial class MainWindow : Window
             return;
         }
 
-        var endpoint = EndpointTextBox.Text;
-        if (IsGenerateEndpoint(endpoint))
+        if (!int.TryParse(GetEffectivePortText(), out var port))
         {
-            HttpRequestBodyTextBox.Text = GENERATE_BODY_TEMPLATE;
-            HttpRequestBodyTextBox.CaretIndex = HttpRequestBodyTextBox.Text.Length;
             return;
         }
 
-        if (IsTurnEndpoint(endpoint) && IsRouterSelected())
+        var match = _config.FindEndpointForPort(port, EndpointTextBox.Text);
+        if (match?.BodyTemplate is null)
         {
-            HttpRequestBodyTextBox.Text = TURN_BODY_TEMPLATE;
-            HttpRequestBodyTextBox.CaretIndex = HttpRequestBodyTextBox.Text.Length;
+            return;
         }
+
+        HttpRequestBodyTextBox.Text = match.BodyTemplate;
+        HttpRequestBodyTextBox.CaretIndex = HttpRequestBodyTextBox.Text.Length;
     }
 
-    private static bool IsGenerateEndpoint(string endpoint)
-    {
-        if (string.IsNullOrWhiteSpace(endpoint))
-        {
-            return false;
-        }
-
-        var normalized = endpoint.Trim();
-        if (!normalized.StartsWith('/'))
-        {
-            normalized = "/" + normalized;
-        }
-
-        return normalized.Equals("/generate", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool IsTurnEndpoint(string endpoint)
-    {
-        if (string.IsNullOrWhiteSpace(endpoint))
-        {
-            return false;
-        }
-
-        var normalized = endpoint.Trim();
-        if (!normalized.StartsWith('/'))
-        {
-            normalized = "/" + normalized;
-        }
-
-        return normalized.Equals("/turn", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private bool IsRouterSelected()
-    {
-        if (PortComboBox is null)
-        {
-            return false;
-        }
-
-        return int.TryParse(GetSelectedPortText(), out var selectedPort) && selectedPort == ROUTER_PORT;
-    }
-
-    private bool IsEngineRunning()
-    {
-        return _engineTask != Task.CompletedTask;
-    }
-    #endregion
+    private bool IsEngineRunning() => _engineTask != Task.CompletedTask;
 }

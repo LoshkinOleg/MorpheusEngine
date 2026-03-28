@@ -1,0 +1,91 @@
+{
+  "ports": {
+    "router": 8790,
+    "llm_provider_qwen": 8791,
+    "intent_extractor": 8792,
+    "ollama": 11434
+  },
+  "modules": [
+    {
+      "port_key": "router",
+      "display_name": "RouterModule",
+      "required": true,
+      "launch": {
+        "artifact": "dotnet/src/MorpheusEngine.RouterModule/bin/Debug/net9.0/MorpheusEngine.RouterModule.exe",
+        "dev_project": "dotnet/src/MorpheusEngine.RouterModule/MorpheusEngine.RouterModule.csproj"
+      },
+      "endpoints": [
+        {
+          "path": "/info",
+          "description": "Module metadata",
+          "method": "GET"
+        },
+        {
+          "path": "/health",
+          "description": "Health check",
+          "method": "GET"
+        },
+        {
+          "path": "/turn",
+          "description": "Submit player turn",
+          "method": "POST",
+          "request_contract": "turn_request"
+        }
+      ]
+    },
+    {
+      "port_key": "llm_provider_qwen",
+      "display_name": "LlmProvider_qwen",
+      "required": true,
+      "launch": {
+        "artifact": "dotnet/src/MorpheusEngine.LlmProvider_qwen/bin/Debug/net9.0/MorpheusEngine.LlmProvider_qwen.exe",
+        "dev_project": "dotnet/src/MorpheusEngine.LlmProvider_qwen/MorpheusEngine.LlmProvider_qwen.csproj"
+      },
+      "endpoints": [
+        {
+          "path": "/info",
+          "description": "Module metadata",
+          "method": "GET"
+        },
+        {
+          "path": "/health",
+          "description": "Health check",
+          "method": "GET"
+        },
+        {
+          "path": "/generate",
+          "description": "LLM generate",
+          "method": "POST",
+          "request_contract": "qwen_generate_request"
+        }
+      ]
+    },
+    {
+      "port_key": "intent_extractor",
+      "display_name": "IntentExtractor",
+      "required": true,
+      "launch": {
+        "artifact": "dotnet/src/MorpheusEngine.IntentExtractor/bin/Debug/net9.0/MorpheusEngine.IntentExtractor.exe",
+        "dev_project": "dotnet/src/MorpheusEngine.IntentExtractor/MorpheusEngine.IntentExtractor.csproj"
+      },
+      "endpoints": [
+        {
+          "path": "/info",
+          "description": "Module metadata",
+          "method": "GET"
+        },
+        {
+          "path": "/health",
+          "description": "Health check",
+          "method": "GET"
+        },
+        {
+          "path": "/intent",
+          "description": "Extract player intent",
+          "method": "POST",
+          "request_contract": "intent_request"
+        }
+      ]
+    }
+  ]
+}
