@@ -6,9 +6,9 @@ namespace MorpheusEngine;
 public sealed record TurnRequest(
     [property: JsonPropertyName("playerInput")] string PlayerInput);
 
-public sealed record QwenGenerateRequest(
+public sealed record LlmGenerateRequest(
     [property: JsonPropertyName("prompt")] string Prompt,
-    [property: JsonPropertyName("model")] string Model = "qwen2.5:7b-instruct",
+    [property: JsonPropertyName("model")] string Model,
     [property: JsonPropertyName("system")] string System = "You are a helpful assistant.");
 
 public sealed record IntentRequest(
@@ -40,6 +40,15 @@ public sealed record ErrorResponse(
     [property: JsonPropertyName("error")] string Error,
     [property: JsonPropertyName("details")] string? Details = null);
 
+/// <summary>
+/// JSON envelope returned by an LLM provider module (e.g. <c>llm_provider_qwen</c>) on successful <c>/generate</c>.
+/// </summary>
+public sealed record LlmProviderGenerateResponse(
+    [property: JsonPropertyName("ok")] bool Ok,
+    [property: JsonPropertyName("model")] string? Model,
+    [property: JsonPropertyName("response")] string? Response,
+    [property: JsonPropertyName("raw_response")] string? RawResponse);
+
 public sealed record IntentResponse(
     [property: JsonPropertyName("ok")] bool Ok,
     [property: JsonPropertyName("intent")] string Intent,
@@ -55,14 +64,14 @@ public static class EngineContractExamples
     public static string? TryGetRequestBodyTemplate(string? requestContract) => requestContract switch
     {
         "turn_request" => Serialize(new TurnRequest("look around")),
-        "qwen_generate_request" => Serialize(new QwenGenerateRequest("Write a short response.")),
+        "qwen_generate_request" => Serialize(new LlmGenerateRequest("Write a short response.", "qwen2.5:7b-instruct")),
         "intent_request" => Serialize(new IntentRequest("look around")),
         "module_proxy_request" => Serialize(new ModuleProxyRequest(
             "intent_extractor",
-            "llm_provider_qwen",
+            "generic_llm_provider",
             "/generate",
             "POST",
-            JsonSerializer.SerializeToElement(new QwenGenerateRequest("Write a short response.")))),
+            JsonSerializer.SerializeToElement(new LlmGenerateRequest("Write a short response.", "qwen2.5:7b-instruct")))),
         _ => null
     };
 

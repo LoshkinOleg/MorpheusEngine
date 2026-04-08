@@ -1,4 +1,10 @@
 {
+  "intent_extraction": {
+    "default_llm_model": "qwen2.5:7b-instruct"
+  },
+  "module_aliases": {
+    "generic_llm_provider": "llm_provider_qwen"
+  },
   "ports": {
     "router": 8790,
     "llm_provider_qwen": 8791,

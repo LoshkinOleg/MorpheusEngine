@@ -16,7 +16,8 @@ namespace MorpheusEngine
             PropertyNameCaseInsensitive = true // Allows either casing for json fields.
         };
 
-        private static readonly HttpClient _httpClient = new HttpClient // Outbound http client for communicating with Ollama.
+        // Instance-owned HttpClient: we dispose it in Shutdown() after the listener stops so sockets are released cleanly for this process.
+        private readonly HttpClient _httpClient = new()
         {
             Timeout = TimeSpan.FromSeconds(30)
         };
@@ -25,11 +26,15 @@ namespace MorpheusEngine
         private bool _shutdownRequested = false;
         #endregion
 
+        #region Public methods
         public async Task Run()
         {
+            // Bind and start listening before entering the accept loop.
             Initialize();
+
             try
             {
+                // Block until a request arrives, then handle it without awaiting (concurrent requests).
                 while (!_shutdownRequested)
                 {
                     var context = await _listener.GetContextAsync();
@@ -42,10 +47,16 @@ namespace MorpheusEngine
             }
             finally
             {
+                // Always release listener and outbound HTTP resources when the loop ends or faults.
                 Shutdown();
             }
         }
 
+        public void RequestShutdown() => _shutdownRequested = true;
+        #endregion
+
+        #region Private methods
+        // Intentional single use method.
         private void Initialize()
         {
             var ports = EngineConfigLoader.GetPorts();
@@ -55,10 +66,12 @@ namespace MorpheusEngine
             Console.WriteLine("LlmProvider_qwen initialized.");
         }
 
+        // Intentional single use method.
         private async Task ProcessQuery(HttpListenerContext context)
         {
             try
             {
+                // Contract checks.
                 if (context.Request.Url is null)
                 {
                     Console.WriteLine("LlmProvider_qwen received invalid request: Url is null.");
@@ -68,6 +81,7 @@ namespace MorpheusEngine
 
                 var path = context.Request.Url.AbsolutePath;
 
+                // /info endpoint.
                 if (path.Equals("/info", StringComparison.OrdinalIgnoreCase))
                 {
                     Console.WriteLine("LlmProvider_qwen/info called.");
@@ -81,19 +95,21 @@ namespace MorpheusEngine
                     return;
                 }
 
+                // /health endpoint
                 if (path.Equals("/health", StringComparison.OrdinalIgnoreCase))
                 {
                     await Respond(context, 200, new ModuleHealthResponse(true, "llm_provider_qwen", "healthy"));
                     return;
                 }
 
+                // /shutdown endpoint
                 if (path.Equals("/shutdown", StringComparison.OrdinalIgnoreCase))
                 {
-                    await Respond(context, 200, new ModuleShutdownResponse(true, "llm_provider_qwen", "Shutdown requested."));
-                    BeginShutdown();
+                    await ProcessRequest_shutdown(context);
                     return;
                 }
 
+                // /generate endpoint.
                 if (path.Equals("/generate", StringComparison.OrdinalIgnoreCase))
                 {
                     Console.WriteLine("LlmProvider_qwen/generate called.");
@@ -101,6 +117,7 @@ namespace MorpheusEngine
                     return;
                 }
 
+                // Invalid endpoint specified.
                 Console.WriteLine("LlmProvider_qwen called with an unknown path: " + path);
                 await Respond(context, 404, new ErrorResponse(false, "Not found: " + path));
             }
@@ -114,17 +131,19 @@ namespace MorpheusEngine
             }
         }
 
-        public void RequestShutdown() => _shutdownRequested = true;
-
+        // Intentional single use method.
         private void Shutdown()
         {
-            _listener.Stop();
+            _listener.Stop(); // Technically redundant as it's included in _listener.Close().
             _listener.Close();
+            _httpClient.Dispose();
             Console.WriteLine("LlmProvider_qwen shut down.");
         }
 
-        private void BeginShutdown()
+        // Exception to "extract only when >1 use": kept as a named handler parallel to ProcessRequest_generate for /shutdown routing clarity.
+        private async Task ProcessRequest_shutdown(HttpListenerContext context)
         {
+            await Respond(context, 200, new ModuleShutdownResponse(true, "llm_provider_qwen", "Shutdown requested."));
             _shutdownRequested = true;
 
             try
@@ -139,18 +158,20 @@ namespace MorpheusEngine
             }
         }
 
+        // Intentional single use method.
         private async Task ProcessRequest_generate(HttpListenerContext context)
         {
+            // Parse caller's request.
             string body;
             using (var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding))
             {
                 body = await reader.ReadToEndAsync();
             }
 
-            QwenGenerateRequest? request = null;
+            LlmGenerateRequest? request = null;
             try
             {
-                request = JsonSerializer.Deserialize<QwenGenerateRequest>(body, _jsonOptions);
+                request = JsonSerializer.Deserialize<LlmGenerateRequest>(body, _jsonOptions);
             }
             catch (JsonException e)
             {
@@ -163,9 +184,18 @@ namespace MorpheusEngine
                 await Respond(context, 400, new ErrorResponse(false, "Request must include a non-empty 'prompt' field."));
                 return;
             }
+            // Request validated.
 
-            var model = string.IsNullOrWhiteSpace(request.Model) ? DEFAULT_MODEL : request.Model;
+            // No default model: caller must supply model explicitly (fail fast).
+            if (string.IsNullOrWhiteSpace(request.Model))
+            {
+                await Respond(context, 400, new ErrorResponse(false, "Request must include a non-empty 'model' field."));
+                return;
+            }
 
+            var model = request.Model.Trim();
+
+            // Construct an ollama payload from the internal generic payload.
             var ollamaPayload = new
             {
                 model,
@@ -175,11 +205,13 @@ namespace MorpheusEngine
             };
             Console.WriteLine("OLLAMA_IO REQUEST " + JsonSerializer.Serialize(ollamaPayload));
 
+            // Convert to json for transmission.
             var content = new StringContent(
                 JsonSerializer.Serialize(ollamaPayload),
                 Encoding.UTF8,
                 "application/json");
 
+            // Send message to ollama.
             var ollamaPort = EngineConfigLoader.GetPorts().Ollama;
             HttpResponseMessage ollamaResponse;
             try
@@ -197,10 +229,12 @@ namespace MorpheusEngine
                 });
                 return;
             }
+            // Received response from ollama / errored out.
 
+            // Relay the ollama response back to caller.
             var ollamaBody = await ollamaResponse.Content.ReadAsStringAsync();
             Console.WriteLine($"OLLAMA_IO RESPONSE status={(int)ollamaResponse.StatusCode} body={ollamaBody}");
-            if (!ollamaResponse.IsSuccessStatusCode)
+            if (!ollamaResponse.IsSuccessStatusCode) // Ollama errored out, relay message to caller.
             {
                 await Respond(context, (int)ollamaResponse.StatusCode, new
                 {
@@ -210,9 +244,11 @@ namespace MorpheusEngine
                     ollama_status = (int)ollamaResponse.StatusCode,
                     ollama_response = ollamaBody
                 });
-                return;
+                return; // End of method execution if ollama errored out.
             }
 
+            // Call to ollama was successful.
+            // Parse ollama response.
             string? responseText = null;
             try
             {
@@ -227,22 +263,18 @@ namespace MorpheusEngine
                 // keep raw body when parsing fails
             }
 
-            await Respond(context, 200, new
-            {
-                ok = true,
-                model,
-                response = responseText,
-                ollama_raw = ollamaBody
-            });
+            // Relay the successful ollama response back to the caller.
+            await Respond(context, 200, new LlmProviderGenerateResponse(true, model, responseText, ollamaBody));
         }
+        #endregion
 
-        #region Helpers
+        #region Helper methods
         private async Task Respond(HttpListenerContext context, int statusCode, object payload)
         {
             var response = context.Response;
             response.StatusCode = statusCode;
             response.ContentType = "application/json";
-            var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(payload));
+            var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(payload)); // using the "object" type to avoid having to define a type for every kind of communication.
             response.ContentLength64 = bytes.LongLength;
             await response.OutputStream.WriteAsync(bytes);
             response.OutputStream.Close();

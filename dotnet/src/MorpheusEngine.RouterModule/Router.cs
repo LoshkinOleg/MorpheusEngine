@@ -4,22 +4,56 @@ using System.Text.Json;
 
 namespace MorpheusEngine
 {
+    /// <summary>
+    /// HTTP entrypoint for player-facing routes and for proxying allowlisted calls between modules.
+    /// Configuration (ports, module endpoints) comes from <see cref="EngineConfiguration"/>.
+    /// </summary>
     public class Router
     {
+        #region Nested types
+
+        /// <summary>
+        /// Carrier for an outbound module call result: status, content type, and body as already received from the target.
+        /// <see cref="sealed"/> + <see cref="record"/>: immutable value type; sealed documents that this type is not meant to be extended
+        /// (subclassing a private nested type is already impossible from outside, but sealing keeps intent obvious and can help the compiler).
+        /// </summary>
+        private sealed record ForwardedModuleResult(int StatusCode, string ContentType, string Body)
+        {
+            public static ForwardedModuleResult FromError(int statusCode, string error, string? details = null) =>
+                new(
+                    statusCode,
+                    "application/json",
+                    JsonSerializer.Serialize(new ErrorResponse(false, error, details)));
+        }
+
+        #endregion
+
+        #region Private data
+
+        /// <summary>Accepts incoming HTTP requests for this process (router port from config).</summary>
+        private readonly HttpListener _listener = new();
+
+        private readonly EngineConfiguration _configuration = EngineConfigLoader.GetConfiguration();
+
+        /// <summary>Set when <c>/shutdown</c> is received or <see cref="RequestShutdown"/> is called; exits the accept loop.</summary>
+        private bool _shutdownRequested;
+
         private static readonly JsonSerializerOptions _jsonOptions = new()
         {
             PropertyNameCaseInsensitive = true
         };
 
-        private readonly HttpListener _listener = new HttpListener();
-        private readonly EngineConfiguration _configuration = EngineConfigLoader.GetConfiguration();
-        private bool _shutdownRequested;
-        private static readonly HttpClient _httpClient = new HttpClient
+        private static readonly HttpClient _httpClient = new()
         {
             Timeout = TimeSpan.FromSeconds(30)
         };
 
-        public void RequestShutdown() => _shutdownRequested = true;
+        /// <summary>
+        /// Proxied responses from downstream modules must declare this media type (no silent fallback to JSON).
+        /// </summary>
+        private const string ExpectedProxiedResponseMediaType = "application/json";
+
+        #endregion
 
         public async Task Run()
         {
@@ -29,6 +63,8 @@ namespace MorpheusEngine
             {
                 while (!_shutdownRequested)
                 {
+                    // GetContextAsync yields the thread while waiting; it does not burn a thread pool thread blocking.
+                    // When a connection arrives, the await completes and we handle the request (fire-and-forget below).
                     var context = await _listener.GetContextAsync();
                     _ = ProcessQuery(context);
                 }
@@ -43,12 +79,15 @@ namespace MorpheusEngine
             }
         }
 
+        /// <summary>
+        /// Registers the URL prefix HttpListener will bind to. Must match scheme, host, port, and optional path
+        /// (here: loopback + router port + root path). Without a registered prefix, Start() cannot listen.
+        /// </summary>
         private void Initialize()
         {
             _listener.Prefixes.Add($"http://127.0.0.1:{_configuration.Ports.Router}/");
             _listener.Start();
             Console.WriteLine($"Router module listening on http://127.0.0.1:{_configuration.Ports.Router}/");
-
             Console.WriteLine("Router initialized.");
         }
 
@@ -63,7 +102,6 @@ namespace MorpheusEngine
                 }
 
                 var path = context.Request.Url.AbsolutePath;
-
                 Console.WriteLine("Router received call: " + path);
 
                 if (path.Equals("/info", StringComparison.OrdinalIgnoreCase))
@@ -81,7 +119,18 @@ namespace MorpheusEngine
                 if (path.Equals("/shutdown", StringComparison.OrdinalIgnoreCase))
                 {
                     await RespondAsync(context, 200, new ModuleShutdownResponse(true, "router", "Shutdown requested."));
-                    BeginShutdown();
+                    _shutdownRequested = true;
+                    try
+                    {
+                        _listener.Stop();
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                    }
+                    catch (HttpListenerException)
+                    {
+                    }
+
                     return;
                 }
 
@@ -110,41 +159,19 @@ namespace MorpheusEngine
             }
         }
 
+        public void RequestShutdown() => _shutdownRequested = true;
+
         private void Shutdown()
         {
             _listener.Stop();
             _listener.Close();
-
             Console.WriteLine("Router shut down.");
         }
 
-        private void BeginShutdown()
-        {
-            _shutdownRequested = true;
-
-            try
-            {
-                _listener.Stop();
-            }
-            catch (ObjectDisposedException)
-            {
-            }
-            catch (HttpListenerException)
-            {
-            }
-        }
-
-        private async Task RespondAsync(HttpListenerContext context, int statusCode, object payload)
-        {
-            var response = context.Response;
-            response.StatusCode = statusCode;
-            response.ContentType = "application/json";
-            var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(payload));
-            response.ContentLength64 = bytes.LongLength;
-            await response.OutputStream.WriteAsync(bytes);
-            response.OutputStream.Close();
-        }
-
+        /// <summary>
+        /// Player turn: validate body as <see cref="TurnRequest"/>, then forward the same JSON body to intent extractor <c>/intent</c>.
+        /// Today <c>TurnRequest</c> and <c>IntentRequest</c> share the <c>playerInput</c> shape; later a dedicated mapping may be needed.
+        /// </summary>
         private async Task ProcessRequest_turn(HttpListenerContext context)
         {
             var body = await ReadRequestBodyAsync(context);
@@ -166,6 +193,7 @@ namespace MorpheusEngine
                 return;
             }
 
+            // Audit label for logs only; not authenticated. Same mechanism as /proxy uses for cross-module calls.
             var result = await ForwardModuleCallAsync(
                 "player_ui",
                 "intent_extractor",
@@ -176,6 +204,10 @@ namespace MorpheusEngine
             await WriteForwardedResultAsync(context, result);
         }
 
+        /// <summary>
+        /// Generic proxy: caller supplies target module key, path, HTTP method, and optional JSON body.
+        /// Only pairs (path, method) that appear on that module in <c>engine_config.json</c> are allowed.
+        /// </summary>
         private async Task ProcessRequest_proxy(HttpListenerContext context)
         {
             var body = await ReadRequestBodyAsync(context);
@@ -200,12 +232,17 @@ namespace MorpheusEngine
                 return;
             }
 
-            var method = string.IsNullOrWhiteSpace(request.Method)
-                ? "POST"
-                : request.Method.Trim().ToUpperInvariant();
+            // Fail fast: method is required; do not default to POST.
+            if (string.IsNullOrWhiteSpace(request.Method))
+            {
+                await RespondAsync(context, 400, new ErrorResponse(false, "Proxy request must include a non-empty 'method' field (GET or POST)."));
+                return;
+            }
+
+            var method = request.Method.Trim().ToUpperInvariant();
             if (method != "GET" && method != "POST")
             {
-                await RespondAsync(context, 400, new ErrorResponse(false, $"Unsupported proxy method '{request.Method}'."));
+                await RespondAsync(context, 400, new ErrorResponse(false, $"Unsupported proxy method '{request.Method}'. Only GET and POST are supported."));
                 return;
             }
 
@@ -219,12 +256,14 @@ namespace MorpheusEngine
             await WriteForwardedResultAsync(context, result);
         }
 
-        private async Task<string> ReadRequestBodyAsync(HttpListenerContext context)
-        {
-            using var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding);
-            return await reader.ReadToEndAsync();
-        }
-
+        /// <summary>
+        /// Performs an allowlisted HTTP call to another module and returns its response for re-sending to the original client.
+        /// </summary>
+        /// <param name="sourceModule">Label for audit logs only (e.g. <c>intent_extractor</c>, <c>player_ui</c>).</param>
+        /// <param name="targetModuleKey"><c>port_key</c> from config, e.g. <c>llm_provider_qwen</c>.</param>
+        /// <param name="targetPath">Path on the target, e.g. <c>/generate</c>.</param>
+        /// <param name="method">GET or POST (already normalized by callers).</param>
+        /// <param name="requestBody">JSON string for POST; may be null/empty for POST with empty body.</param>
         private async Task<ForwardedModuleResult> ForwardModuleCallAsync(
             string sourceModule,
             string targetModuleKey,
@@ -234,10 +273,12 @@ namespace MorpheusEngine
         {
             var normalizedPath = EngineConfiguration.NormalizePath(targetPath);
             var methodUpper = method.Trim().ToUpperInvariant();
-            var targetModule = _configuration.FindModule(targetModuleKey);
+
+            var resolvedModuleKey = _configuration.ResolveProxyTargetModuleKey(targetModuleKey);
+            var targetModule = _configuration.FindModule(resolvedModuleKey);
             if (targetModule is null)
             {
-                return ForwardedModuleResult.FromError(400, $"Unknown target module '{targetModuleKey}'.");
+                return ForwardedModuleResult.FromError(400, $"Unknown target module '{resolvedModuleKey}'.");
             }
 
             var targetPort = _configuration.ResolvePort(targetModule.PortKey);
@@ -246,6 +287,8 @@ namespace MorpheusEngine
                 return ForwardedModuleResult.FromError(500, $"Target module '{targetModuleKey}' does not have a configured listening port.");
             }
 
+            // Allowlist: only (path, method) pairs declared on this module in engine_config.json may be reached through the proxy.
+            // This blocks arbitrary SSRF-style forwarding even though the caller is on localhost.
             var endpoint = targetModule.Endpoints.FirstOrDefault(ep =>
                 string.Equals(EngineConfiguration.NormalizePath(ep.Path), normalizedPath, StringComparison.OrdinalIgnoreCase)
                 && string.Equals(ep.Method, methodUpper, StringComparison.OrdinalIgnoreCase));
@@ -259,24 +302,36 @@ namespace MorpheusEngine
 
             try
             {
-                using var request = new HttpRequestMessage(new HttpMethod(methodUpper), uri);
+                using var outbound = new HttpRequestMessage(new HttpMethod(methodUpper), uri);
                 if (methodUpper == "POST")
                 {
-                    request.Content = string.IsNullOrWhiteSpace(requestBody)
+                    outbound.Content = string.IsNullOrWhiteSpace(requestBody)
                         ? new ByteArrayContent(Array.Empty<byte>())
                         : new StringContent(requestBody, Encoding.UTF8, "application/json");
                 }
 
-                using var response = await _httpClient.SendAsync(request);
+                using var response = await _httpClient.SendAsync(outbound);
                 var responseBody = await response.Content.ReadAsStringAsync();
-                var contentType = response.Content.Headers.ContentType?.MediaType ?? "application/json";
+
+                // Fail loud: downstream modules used through the proxy must return application/json (no ?? fallback).
+                var mediaTypeHeader = response.Content.Headers.ContentType;
+                if (mediaTypeHeader is null
+                    || !string.Equals(mediaTypeHeader.MediaType, ExpectedProxiedResponseMediaType, StringComparison.OrdinalIgnoreCase))
+                {
+                    var actual = mediaTypeHeader?.MediaType ?? "(null)";
+                    throw new InvalidOperationException(
+                        $"Proxied module response must have Content-Type '{ExpectedProxiedResponseMediaType}'; received '{actual}'.");
+                }
+
                 Console.WriteLine($"[RouterProxy] {sourceModule} -> {targetModule.PortKey} {methodUpper} {normalizedPath} => {(int)response.StatusCode}");
+
+                // What the router's caller receives: same status code, content type, and body the router got from the target module.
                 return new ForwardedModuleResult(
                     (int)response.StatusCode,
-                    contentType,
+                    ExpectedProxiedResponseMediaType,
                     responseBody);
             }
-            catch (Exception e)
+            catch (Exception e) when (e is not InvalidOperationException)
             {
                 Console.WriteLine($"[RouterProxy] {sourceModule} -> {targetModule.PortKey} {methodUpper} {normalizedPath} => network error: {e.Message}");
                 return ForwardedModuleResult.FromError(
@@ -286,6 +341,21 @@ namespace MorpheusEngine
             }
         }
 
+        #region Helpers
+
+        /// <summary>
+        /// Reads the request body without blocking a thread pool thread for the duration of the read:
+        /// <see cref="StreamReader.ReadToEndAsync"/> is asynchronous I/O when the stream supports it.
+        /// </summary>
+        private async Task<string> ReadRequestBodyAsync(HttpListenerContext context)
+        {
+            using var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding);
+            return await reader.ReadToEndAsync();
+        }
+
+        /// <summary>
+        /// Writes a proxied module response verbatim (status, content-type, body) to the incoming HttpListener response.
+        /// </summary>
         private async Task WriteForwardedResultAsync(HttpListenerContext context, ForwardedModuleResult result)
         {
             var response = context.Response;
@@ -297,13 +367,21 @@ namespace MorpheusEngine
             response.OutputStream.Close();
         }
 
-        private sealed record ForwardedModuleResult(int StatusCode, string ContentType, string Body)
+        /// <summary>
+        /// Router-native JSON responses: serializes a CLR object to JSON and always sets <c>application/json</c>.
+        /// Used for /info, /health, errors, etc. — not for pass-through of another module's raw body.
+        /// </summary>
+        private async Task RespondAsync(HttpListenerContext context, int statusCode, object payload)
         {
-            public static ForwardedModuleResult FromError(int statusCode, string error, string? details = null) =>
-                new(
-                    statusCode,
-                    "application/json",
-                    JsonSerializer.Serialize(new ErrorResponse(false, error, details)));
+            var response = context.Response;
+            response.StatusCode = statusCode;
+            response.ContentType = "application/json";
+            var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(payload));
+            response.ContentLength64 = bytes.LongLength;
+            await response.OutputStream.WriteAsync(bytes);
+            response.OutputStream.Close();
         }
+
+        #endregion
     }
 }

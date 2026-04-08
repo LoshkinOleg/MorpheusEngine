@@ -21,11 +21,31 @@ public sealed record EngineModuleInfo(
     EngineModuleLaunchInfo Launch,
     IReadOnlyList<EngineEndpointInfo> Endpoints);
 
+public sealed record IntentExtractionConfig(
+    [property: JsonPropertyName("default_llm_model")] string DefaultLlmModel);
+
 public sealed record EngineConfiguration(
     string RepositoryRoot,
     EnginePorts Ports,
-    IReadOnlyList<EngineModuleInfo> Modules)
+    IReadOnlyList<EngineModuleInfo> Modules,
+    IntentExtractionConfig IntentExtraction,
+    IReadOnlyDictionary<string, string> ModuleAliases)
 {
+    /// <summary>
+    /// Resolves a logical proxy target (e.g. <c>generic_llm_provider</c>) to a configured <c>port_key</c> before module lookup.
+    /// </summary>
+    public string ResolveProxyTargetModuleKey(string logicalKey)
+    {
+        if (string.IsNullOrWhiteSpace(logicalKey))
+        {
+            return logicalKey;
+        }
+
+        return ModuleAliases.TryGetValue(logicalKey, out var mapped) && !string.IsNullOrWhiteSpace(mapped)
+            ? mapped.Trim()
+            : logicalKey;
+    }
+
     public int? ResolvePort(string portKey) => portKey switch
     {
         "router" => Ports.Router,
@@ -108,6 +128,7 @@ public static class EngineConfigLoader
     private const int DefaultLlmProviderQwen = 8791;
     private const int DefaultIntentExtractor = 8792;
     private const int DefaultOllama = 11434;
+    private const string DefaultIntentLlmModel = "qwen2.5:7b-instruct";
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -150,8 +171,10 @@ public static class EngineConfigLoader
             var dto = JsonSerializer.Deserialize<EngineConfigFileDto>(json, JsonOptions);
             var ports = MergePorts(dto?.Ports, path);
             var modules = MergeModules(dto?.Modules, ports, repositoryRoot, path);
+            var intentExtraction = MergeIntentExtraction(dto?.IntentExtraction, path);
+            var moduleAliases = MergeModuleAliases(dto?.ModuleAliases, path);
             Console.WriteLine($"Loaded engine configuration from {path}.");
-            return new EngineConfiguration(repositoryRoot, ports, modules);
+            return new EngineConfiguration(repositoryRoot, ports, modules, intentExtraction, moduleAliases);
         }
         catch (Exception e)
         {
@@ -309,7 +332,45 @@ public static class EngineConfigLoader
     private static EnginePorts Defaults() => new(DefaultRouter, DefaultLlmProviderQwen, DefaultIntentExtractor, DefaultOllama);
 
     private static EngineConfiguration BuildDefaultConfiguration(string repositoryRoot) =>
-        new(repositoryRoot, Defaults(), CreateBuiltinModules(repositoryRoot));
+        new(repositoryRoot, Defaults(), CreateBuiltinModules(repositoryRoot), DefaultIntentExtraction(), DefaultModuleAliases());
+
+    private static IntentExtractionConfig DefaultIntentExtraction() =>
+        new(DefaultIntentLlmModel);
+
+    private static IReadOnlyDictionary<string, string> DefaultModuleAliases() =>
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["generic_llm_provider"] = "llm_provider_qwen"
+        };
+
+    private static IntentExtractionConfig MergeIntentExtraction(IntentExtractionDto? dto, string path)
+    {
+        var model = string.IsNullOrWhiteSpace(dto?.DefaultLlmModel)
+            ? DefaultIntentLlmModel
+            : dto.DefaultLlmModel.Trim();
+        Console.WriteLine($"Engine intent_extraction: default_llm_model={model} ({path})");
+        return new IntentExtractionConfig(model);
+    }
+
+    private static IReadOnlyDictionary<string, string> MergeModuleAliases(Dictionary<string, string>? fromFile, string path)
+    {
+        var merged = new Dictionary<string, string>(DefaultModuleAliases(), StringComparer.OrdinalIgnoreCase);
+        if (fromFile is not null)
+        {
+            foreach (var pair in fromFile)
+            {
+                if (string.IsNullOrWhiteSpace(pair.Key) || string.IsNullOrWhiteSpace(pair.Value))
+                {
+                    continue;
+                }
+
+                merged[pair.Key.Trim()] = pair.Value.Trim();
+            }
+        }
+
+        Console.WriteLine($"Engine module_aliases: {merged.Count} entries ({path})");
+        return merged;
+    }
 
     private static IReadOnlyList<EngineModuleInfo> CreateBuiltinModules(string repositoryRoot) =>
         new[]
@@ -391,6 +452,18 @@ public static class EngineConfigLoader
     {
         public PortsDto? Ports { get; set; }
         public List<ModuleDto>? Modules { get; set; }
+
+        [JsonPropertyName("intent_extraction")]
+        public IntentExtractionDto? IntentExtraction { get; set; }
+
+        [JsonPropertyName("module_aliases")]
+        public Dictionary<string, string>? ModuleAliases { get; set; }
+    }
+
+    private sealed class IntentExtractionDto
+    {
+        [JsonPropertyName("default_llm_model")]
+        public string? DefaultLlmModel { get; set; }
     }
 
     private sealed class ModuleDto

@@ -1,1 +1,15 @@
-- make player UI
+- go over the existing code and understand it: EngineConfigLoader.cs, Module.cs, MainWindow.xaml.cs, relationship between the front end and MorpheusEngineCore.cs
+- implement loremaster
+- Make intent extractor actions data driven instead of hardcoded.
+
+- Investigate good options to use with qwen: {
+  "model": "llama3.2",
+  "prompt": "your prompt here",
+  "stream": false,
+  "options": {
+    "temperature": 0.2,
+    "top_k": 40,
+    "top_p": 0.9
+  }
+}
+
