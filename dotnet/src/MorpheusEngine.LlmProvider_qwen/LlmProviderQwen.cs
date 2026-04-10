@@ -60,9 +60,10 @@ namespace MorpheusEngine
         private void Initialize()
         {
             var ports = EngineConfigLoader.GetPorts();
-            _listener.Prefixes.Add($"http://127.0.0.1:{ports.LlmProviderQwen}/");
+            var qwenListen = ports.GetRequiredPort("llm_provider_qwen");
+            _listener.Prefixes.Add($"http://127.0.0.1:{qwenListen}/");
             _listener.Start();
-            Console.WriteLine($"LlmProvider_qwen listening on http://127.0.0.1:{ports.LlmProviderQwen}/");
+            Console.WriteLine($"LlmProvider_qwen listening on http://127.0.0.1:{qwenListen}/");
             Console.WriteLine("LlmProvider_qwen initialized.");
         }
 
@@ -212,7 +213,7 @@ namespace MorpheusEngine
                 "application/json");
 
             // Send message to ollama.
-            var ollamaPort = EngineConfigLoader.GetPorts().Ollama;
+            var ollamaPort = EngineConfigLoader.GetConfiguration().LlmProviderOllamaListenPort;
             HttpResponseMessage ollamaResponse;
             try
             {

@@ -85,9 +85,10 @@ namespace MorpheusEngine
         /// </summary>
         private void Initialize()
         {
-            _listener.Prefixes.Add($"http://127.0.0.1:{_configuration.Ports.Router}/");
+            var routerPort = _configuration.GetRequiredListenPort("router");
+            _listener.Prefixes.Add($"http://127.0.0.1:{routerPort}/");
             _listener.Start();
-            Console.WriteLine($"Router module listening on http://127.0.0.1:{_configuration.Ports.Router}/");
+            Console.WriteLine($"Router module listening on http://127.0.0.1:{routerPort}/");
             Console.WriteLine("Router initialized.");
         }
 
@@ -281,11 +282,7 @@ namespace MorpheusEngine
                 return ForwardedModuleResult.FromError(400, $"Unknown target module '{resolvedModuleKey}'.");
             }
 
-            var targetPort = _configuration.ResolvePort(targetModule.PortKey);
-            if (targetPort is null)
-            {
-                return ForwardedModuleResult.FromError(500, $"Target module '{targetModuleKey}' does not have a configured listening port.");
-            }
+            var targetPort = _configuration.GetRequiredListenPort(targetModule.PortKey);
 
             // Allowlist: only (path, method) pairs declared on this module in engine_config.json may be reached through the proxy.
             // This blocks arbitrary SSRF-style forwarding even though the caller is on localhost.
@@ -297,7 +294,7 @@ namespace MorpheusEngine
                 return ForwardedModuleResult.FromError(403, $"Proxy target '{targetModuleKey} {methodUpper} {normalizedPath}' is not allowed by configuration.");
             }
 
-            var uri = $"http://127.0.0.1:{targetPort.Value}{normalizedPath}";
+            var uri = $"http://127.0.0.1:{targetPort}{normalizedPath}";
             Console.WriteLine($"[RouterProxy] {sourceModule} -> {targetModule.PortKey} {methodUpper} {normalizedPath}");
 
             try

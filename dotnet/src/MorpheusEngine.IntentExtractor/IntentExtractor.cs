@@ -79,9 +79,10 @@ namespace MorpheusEngine
         private void Initialize()
         {
             var ports = EngineConfigLoader.GetPorts();
-            _listener.Prefixes.Add($"http://127.0.0.1:{ports.IntentExtractor}/");
+            var intentPort = ports.GetRequiredPort("intent_extractor");
+            _listener.Prefixes.Add($"http://127.0.0.1:{intentPort}/");
             _listener.Start();
-            Console.WriteLine($"IntentExtractor listening on http://127.0.0.1:{ports.IntentExtractor}/");
+            Console.WriteLine($"IntentExtractor listening on http://127.0.0.1:{intentPort}/");
             Console.WriteLine("IntentExtractor initialized.");
         }
 
@@ -186,7 +187,7 @@ namespace MorpheusEngine
             // IntentRequest validated.
 
             // Model comes from engine_config (intent_extraction.default_llm_model), not from this module.
-            var model = _configuration.IntentExtraction.DefaultLlmModel;
+            var model = _configuration.IntentDefaultLlmModel;
 
             // Assemble the generic LLM payload; router resolves generic_llm_provider to the configured provider module.
             var qwenRequest = new LlmGenerateRequest(
@@ -212,7 +213,7 @@ namespace MorpheusEngine
             try
             {
                 qwenResponse = await _httpClient.PostAsync(
-                    $"http://127.0.0.1:{ports.Router}/proxy",
+                    $"http://127.0.0.1:{ports.GetRequiredPort("router")}/proxy",
                     content);
             }
             catch (Exception e)

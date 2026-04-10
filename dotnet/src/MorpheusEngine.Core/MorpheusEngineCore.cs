@@ -9,7 +9,7 @@ namespace MorpheusEngine
 
         public MorpheusEngine()
         {
-            _modules = _configuration.Modules
+            _modules = _configuration.ModulesInfos
                 .Select(module => new ManagedModule(_configuration, module))
                 .ToArray();
         }

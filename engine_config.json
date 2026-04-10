@@ -1,15 +1,11 @@
 {
-  "intent_extraction": {
-    "default_llm_model": "qwen2.5:7b-instruct"
-  },
   "module_aliases": {
     "generic_llm_provider": "llm_provider_qwen"
   },
   "ports": {
     "router": 8790,
     "llm_provider_qwen": 8791,
-    "intent_extractor": 8792,
-    "ollama": 11434
+    "intent_extractor": 8792
   },
   "modules": [
     {
@@ -43,6 +39,7 @@
       "port_key": "llm_provider_qwen",
       "display_name": "LlmProvider_qwen",
       "required": true,
+      "ollama_port": 11434,
       "launch": {
         "artifact": "dotnet/src/MorpheusEngine.LlmProvider_qwen/bin/Debug/net9.0/MorpheusEngine.LlmProvider_qwen.exe",
         "dev_project": "dotnet/src/MorpheusEngine.LlmProvider_qwen/MorpheusEngine.LlmProvider_qwen.csproj"
@@ -70,6 +67,7 @@
       "port_key": "intent_extractor",
       "display_name": "IntentExtractor",
       "required": true,
+      "default_llm_model": "qwen2.5:7b-instruct",
       "launch": {
         "artifact": "dotnet/src/MorpheusEngine.IntentExtractor/bin/Debug/net9.0/MorpheusEngine.IntentExtractor.exe",
         "dev_project": "dotnet/src/MorpheusEngine.IntentExtractor/MorpheusEngine.IntentExtractor.csproj"

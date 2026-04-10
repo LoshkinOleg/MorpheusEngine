@@ -19,8 +19,7 @@ namespace MorpheusEngine
         {
             _configuration = configuration;
             _definition = definition;
-            Port = _configuration.ResolvePort(definition.PortKey)
-                ?? throw new InvalidOperationException($"Unknown port key '{definition.PortKey}'.");
+            Port = _configuration.GetRequiredListenPort(definition.PortKey);
         }
 
         public string DisplayName => _definition.DisplayName;
@@ -137,14 +136,14 @@ namespace MorpheusEngine
             var useDevLaunch = string.Equals(Environment.GetEnvironmentVariable("MORPHEUS_DEV_LAUNCH"), "1", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(Environment.GetEnvironmentVariable("MORPHEUS_DEV_LAUNCH"), "true", StringComparison.OrdinalIgnoreCase);
 
-            if (useDevLaunch && !string.IsNullOrWhiteSpace(_definition.Launch.DevProject))
+            if (useDevLaunch && !string.IsNullOrWhiteSpace(_definition.LaunchInfo.DevProject))
             {
-                var projectPath = ResolveRepositoryRelativePath(_definition.Launch.DevProject);
+                var projectPath = ResolveRepositoryRelativePath(_definition.LaunchInfo.DevProject);
                 return new ProcessStartInfo
                 {
                     FileName = "dotnet",
                     Arguments = $"run --project \"{projectPath}\" --",
-                    WorkingDirectory = _configuration.DotnetRoot,
+                    WorkingDirectory = _configuration.GetDotnetRoot(),
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     RedirectStandardOutput = true,
@@ -152,7 +151,7 @@ namespace MorpheusEngine
                 };
             }
 
-            var artifactPath = ResolveRepositoryRelativePath(_definition.Launch.Artifact);
+            var artifactPath = ResolveRepositoryRelativePath(_definition.LaunchInfo.Artifact);
             if (!File.Exists(artifactPath))
             {
                 throw new FileNotFoundException(
@@ -166,7 +165,7 @@ namespace MorpheusEngine
                 {
                     FileName = "dotnet",
                     Arguments = $"\"{artifactPath}\"",
-                    WorkingDirectory = Path.GetDirectoryName(artifactPath) ?? _configuration.DotnetRoot,
+                    WorkingDirectory = Path.GetDirectoryName(artifactPath) ?? _configuration.GetDotnetRoot(),
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     RedirectStandardOutput = true,
@@ -177,7 +176,7 @@ namespace MorpheusEngine
             return new ProcessStartInfo
             {
                 FileName = artifactPath,
-                WorkingDirectory = Path.GetDirectoryName(artifactPath) ?? _configuration.DotnetRoot,
+                WorkingDirectory = Path.GetDirectoryName(artifactPath) ?? _configuration.GetDotnetRoot(),
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 RedirectStandardOutput = true,

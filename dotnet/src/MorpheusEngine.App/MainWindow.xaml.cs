@@ -54,10 +54,11 @@ public partial class MainWindow : Window
     #endregion
 
     #region Private data
-    private readonly EngineConfiguration _config = EngineConfigLoader.GetConfiguration();
+    private readonly EngineConfiguration? _config;
+    private readonly string? _configLoadError;
     private readonly ObservableCollection<GameChatMessage> _gameMessages = [];
     private static readonly HttpClient Http = new();
-    private MorpheusEngine _engine = new();
+    private MorpheusEngine? _engine;
 
     private Task _engineTask = Task.CompletedTask;
     private bool _allowClose;
@@ -76,6 +77,15 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        try
+        {
+            _config = EngineConfigLoader.GetConfiguration();
+        }
+        catch (EngineConfigurationException ex)
+        {
+            _configLoadError = ex.Message;
+        }
+
         Loaded += OnLoaded;
         Closing += OnClosing;
     }
@@ -89,18 +99,35 @@ public partial class MainWindow : Window
 
         Console.WriteLine("MorpheusEngine GUI started.");
         Console.WriteLine("Click Start Engine to run.");
-        _qwenMonitorModuleNames = _config.Modules
-            .Where(module => module.PortKey.Equals("llm_provider_qwen", StringComparison.OrdinalIgnoreCase))
-            .Select(module => module.DisplayName)
-            .Append("Qwen")
-            .Append("LlmProvider_qwen")
-            .Where(name => !string.IsNullOrWhiteSpace(name))
-            .Distinct(StringComparer.Ordinal)
-            .ToArray();
+
+        if (_configLoadError is not null)
+        {
+            MessageBox.Show(
+                $"Engine configuration failed to load:\n{_configLoadError}",
+                "MorpheusEngine",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+
+        if (_config is not null)
+        {
+            _qwenMonitorModuleNames = _config.ModulesInfos
+                .Where(module => module.PortKey.Equals("llm_provider_qwen", StringComparison.OrdinalIgnoreCase))
+                .Select(module => module.DisplayName)
+                .Append("Qwen")
+                .Append("LlmProvider_qwen")
+                .Where(name => !string.IsNullOrWhiteSpace(name))
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+        }
 
         GameMessagesListBox.ItemsSource = _gameMessages;
         AppendSystemGameMessage("Game tab ready. Player input is sent to router /turn, which currently returns the extracted intent.");
-        SetGameStatus("Ready to send player input through the router.");
+        SetGameStatus(
+            _config is null
+                ? "Fix engine_config.json and restart the application."
+                : "Ready to send player input through the router.",
+            isError: _config is null);
 
         PopulatePortComboBox();
         PopulateEndpointPresetComboBox();
@@ -143,6 +170,12 @@ public partial class MainWindow : Window
         if (!int.TryParse(portText, out var port) || port < 1 || port > 65535)
         {
             HttpResponsePane.Text = "Invalid port. Enter a custom port (1-65535) or choose one from the list.";
+            return;
+        }
+
+        if (_config is null)
+        {
+            HttpResponsePane.Text = "Engine configuration is not loaded. Fix engine_config.json and restart.";
             return;
         }
 
@@ -255,11 +288,24 @@ public partial class MainWindow : Window
             return;
         }
 
-        _engine = new MorpheusEngine();
+        if (_config is null)
+        {
+            MessageBox.Show(
+                _configLoadError is not null
+                    ? $"Cannot start engine:\n{_configLoadError}"
+                    : "Engine configuration is not loaded.",
+                "MorpheusEngine",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
+        var engine = new MorpheusEngine();
+        _engine = engine;
 
         _engineTask = Task.Run(() =>
         {
-            _engine.Run();
+            engine.Run();
             Dispatcher.BeginInvoke(() =>
             {
                 _engineTask = Task.CompletedTask;
@@ -277,21 +323,21 @@ public partial class MainWindow : Window
             return;
         }
 
-        _engine.RequestShutdown();
+        _engine?.RequestShutdown();
 
         if (IsEngineRunning())
         {
             await Task.WhenAny(_engineTask, Task.Delay(3000));
         }
 
-        _engine = new MorpheusEngine();
+        _engine = null;
         _engineTask = Task.CompletedTask;
         UpdateButtonState();
     }
 
     private void UpdateButtonState()
     {
-        StartButton.IsEnabled = !IsEngineRunning() && !_shutdownInProgress;
+        StartButton.IsEnabled = !IsEngineRunning() && !_shutdownInProgress && _config is not null;
         StopButton.IsEnabled = IsEngineRunning() && !_shutdownInProgress;
 
         if (GameSendButton is not null)
@@ -322,24 +368,20 @@ public partial class MainWindow : Window
 
     private void PopulatePortComboBox()
     {
-        if (PortComboBox is null)
+        if (PortComboBox is null || _config is null)
         {
             return;
         }
 
         PortComboBox.Items.Clear();
-        foreach (var module in _config.Modules)
+        foreach (var module in _config.ModulesInfos)
         {
-            var port = _config.ResolvePort(module.PortKey);
-            if (port is null)
-            {
-                continue;
-            }
+            var port = _config.GetRequiredListenPort(module.PortKey);
 
             PortComboBox.Items.Add(new ComboBoxItem
             {
                 Content = $"{module.DisplayName} ({port})",
-                Tag = port.Value.ToString()
+                Tag = port.ToString()
             });
         }
 
@@ -366,7 +408,7 @@ public partial class MainWindow : Window
                 Tag = null
             });
 
-            if (int.TryParse(GetEffectivePortText(), out var port))
+            if (_config is not null && int.TryParse(GetEffectivePortText(), out var port))
             {
                 var module = _config.GetModuleForListeningPort(port);
                 if (module is not null)
@@ -475,6 +517,11 @@ public partial class MainWindow : Window
         string? requestBody,
         string? forcedMethod = null)
     {
+        if (_config is null)
+        {
+            throw new InvalidOperationException("Engine configuration is not loaded.");
+        }
+
         var normalizedEndpoint = EngineConfiguration.NormalizePath(endpoint);
         var endpointInfo = _config.FindEndpointForPort(port, normalizedEndpoint);
         var usePost = forcedMethod is not null
@@ -512,6 +559,12 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (_config is null)
+        {
+            SetGameStatus("Engine configuration is not loaded. Fix engine_config.json and restart.", isError: true);
+            return;
+        }
+
         var playerInput = GameInputTextBox.Text;
         if (string.IsNullOrWhiteSpace(playerInput))
         {
@@ -528,7 +581,7 @@ public partial class MainWindow : Window
         try
         {
             var body = JsonSerializer.Serialize(new TurnRequest(playerInput), JsonOptions);
-            var result = await SendRequestAsync(_config.Ports.Router, "/turn", body, "POST");
+            var result = await SendRequestAsync(_config.GetRequiredListenPort("router"), "/turn", body, "POST");
 
             if (result.StatusCode is >= 200 and < 300)
             {
@@ -687,7 +740,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (!int.TryParse(GetEffectivePortText(), out var port))
+        if (_config is null || !int.TryParse(GetEffectivePortText(), out var port))
         {
             return;
         }
