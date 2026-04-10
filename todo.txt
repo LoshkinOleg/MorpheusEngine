@@ -1,4 +1,4 @@
-- go over the existing code and understand it: EngineConfigLoader.cs, Module.cs, MainWindow.xaml.cs, relationship between the front end and MorpheusEngineCore.cs
+- go over the existing code and understand it: EngineConfigLoader.cs, Module.cs, MainWindow.xaml.cs, SessionStoreModule.cs, RunPersistence.cs,  relationship between the front end and MorpheusEngineCore.cs
 - implement loremaster
 - Make intent extractor actions data driven instead of hardcoded.
 

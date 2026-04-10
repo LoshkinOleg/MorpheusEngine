@@ -3,8 +3,44 @@ using System.Text.Json.Serialization;
 
 namespace MorpheusEngine;
 
+/// <summary>Player-facing turn envelope: identifies the run and turn index before the router forwards <see cref="IntentRequest"/> downstream.</summary>
 public sealed record TurnRequest(
+    [property: JsonPropertyName("runId")] string RunId,
+    [property: JsonPropertyName("gameProjectId")] string GameProjectId,
+    [property: JsonPropertyName("turn")] int Turn,
+    [property: JsonPropertyName("playerId")] string PlayerId,
     [property: JsonPropertyName("playerInput")] string PlayerInput);
+
+public sealed record RunStartRequest(
+    [property: JsonPropertyName("gameProjectId")] string GameProjectId,
+    [property: JsonPropertyName("runId")] string RunId);
+
+public sealed record RunStartResponse(
+    [property: JsonPropertyName("ok")] bool Ok,
+    [property: JsonPropertyName("runId")] string RunId,
+    [property: JsonPropertyName("gameProjectId")] string GameProjectId);
+
+public sealed record TurnValidateRequest(
+    [property: JsonPropertyName("gameProjectId")] string GameProjectId,
+    [property: JsonPropertyName("runId")] string RunId,
+    [property: JsonPropertyName("turn")] int Turn);
+
+public sealed record TurnValidateResponse(
+    [property: JsonPropertyName("ok")] bool Ok,
+    [property: JsonPropertyName("expectedTurn")] int ExpectedTurn,
+    [property: JsonPropertyName("maxSnapshotTurn")] int MaxSnapshotTurn,
+    [property: JsonPropertyName("error")] string? Error = null);
+
+public sealed record TurnPersistRequest(
+    [property: JsonPropertyName("gameProjectId")] string GameProjectId,
+    [property: JsonPropertyName("runId")] string RunId,
+    [property: JsonPropertyName("turn")] int Turn,
+    [property: JsonPropertyName("playerId")] string PlayerId,
+    [property: JsonPropertyName("playerInput")] string PlayerInput,
+    [property: JsonPropertyName("intentResponseBody")] string IntentResponseBody);
+
+public sealed record TurnPersistResponse(
+    [property: JsonPropertyName("ok")] bool Ok);
 
 public sealed record LlmGenerateRequest(
     [property: JsonPropertyName("prompt")] string Prompt,
@@ -63,7 +99,21 @@ public static class EngineContractExamples
 
     public static string? TryGetRequestBodyTemplate(string? requestContract) => requestContract switch
     {
-        "turn_request" => Serialize(new TurnRequest("look around")),
+        "turn_request" => Serialize(new TurnRequest(
+            "00000000-0000-0000-0000-000000000001",
+            "default",
+            1,
+            "player",
+            "look around")),
+        "run_start_request" => Serialize(new RunStartRequest("default", "00000000-0000-0000-0000-000000000001")),
+        "session_turn_validate_request" => Serialize(new TurnValidateRequest("default", "00000000-0000-0000-0000-000000000001", 1)),
+        "session_turn_persist_request" => Serialize(new TurnPersistRequest(
+            "default",
+            "00000000-0000-0000-0000-000000000001",
+            1,
+            "player",
+            "look around",
+            "{\"ok\":true,\"intent\":\"wait\",\"params\":{}}")),
         "qwen_generate_request" => Serialize(new LlmGenerateRequest("Write a short response.", "qwen2.5:7b-instruct")),
         "intent_request" => Serialize(new IntentRequest("look around")),
         "module_proxy_request" => Serialize(new ModuleProxyRequest(

@@ -141,6 +141,12 @@ namespace MorpheusEngine
                     return;
                 }
 
+                if (path.Equals("/run/start", StringComparison.OrdinalIgnoreCase))
+                {
+                    await ProcessRequest_run_start(context);
+                    return;
+                }
+
                 if (path.Equals("/proxy", StringComparison.OrdinalIgnoreCase))
                 {
                     await ProcessRequest_proxy(context);
@@ -170,8 +176,18 @@ namespace MorpheusEngine
         }
 
         /// <summary>
-        /// Player turn: validate body as <see cref="TurnRequest"/>, then forward the same JSON body to intent extractor <c>/intent</c>.
-        /// Today <c>TurnRequest</c> and <c>IntentRequest</c> share the <c>playerInput</c> shape; later a dedicated mapping may be needed.
+        /// Initializes a per-run SQLite session via <c>session_store</c> (router forwards; DB ownership stays out of the router process).
+        /// </summary>
+        private async Task ProcessRequest_run_start(HttpListenerContext context)
+        {
+            var body = await ReadRequestBodyAsync(context);
+            var result = await ForwardModuleCallAsync("player_ui", "session_store", "/run/start", "POST", body);
+            await WriteForwardedResultAsync(context, result);
+        }
+
+        /// <summary>
+        /// Player turn: validate <see cref="TurnRequest"/> against <c>session_store</c> sequencing, call <c>intent_extractor</c> with <see cref="IntentRequest"/>,
+        /// then persist TS-shaped events + snapshot through <c>session_store</c>. Returns the intent response body on success.
         /// </summary>
         private async Task ProcessRequest_turn(HttpListenerContext context)
         {
@@ -188,21 +204,144 @@ namespace MorpheusEngine
                 return;
             }
 
-            if (request is null || string.IsNullOrWhiteSpace(request.PlayerInput))
+            if (request is null
+                || string.IsNullOrWhiteSpace(request.RunId)
+                || string.IsNullOrWhiteSpace(request.GameProjectId)
+                || string.IsNullOrWhiteSpace(request.PlayerId)
+                || string.IsNullOrWhiteSpace(request.PlayerInput))
             {
-                await RespondAsync(context, 400, new ErrorResponse(false, "Request must include a non-empty 'playerInput' field."));
+                await RespondAsync(
+                    context,
+                    400,
+                    new ErrorResponse(false, "Turn request must include non-empty runId, gameProjectId, playerId, and playerInput."));
                 return;
             }
 
-            // Audit label for logs only; not authenticated. Same mechanism as /proxy uses for cross-module calls.
-            var result = await ForwardModuleCallAsync(
-                "player_ui",
+            if (request.Turn < 1)
+            {
+                await RespondAsync(context, 400, new ErrorResponse(false, "Turn must be >= 1."));
+                return;
+            }
+
+            var validateJson = JsonSerializer.Serialize(
+                new TurnValidateRequest(request.GameProjectId.Trim(), request.RunId.Trim(), request.Turn));
+            var validateResult = await ForwardModuleCallAsync(
+                "router",
+                "session_store",
+                "/turn/validate",
+                "POST",
+                validateJson);
+
+            if (validateResult.StatusCode != 200)
+            {
+                await WriteForwardedResultAsync(context, validateResult);
+                return;
+            }
+
+            TurnValidateResponse? validateBody;
+            try
+            {
+                validateBody = JsonSerializer.Deserialize<TurnValidateResponse>(validateResult.Body, _jsonOptions);
+            }
+            catch (JsonException e)
+            {
+                await RespondAsync(
+                    context,
+                    502,
+                    new ErrorResponse(false, "Session store returned invalid JSON for turn validation.", e.Message));
+                return;
+            }
+
+            if (validateBody is null || !validateBody.Ok)
+            {
+                var detail = validateBody?.Error ?? "Turn validation failed.";
+                await RespondAsync(context, 409, new ErrorResponse(false, detail));
+                return;
+            }
+
+            var intentPayload = JsonSerializer.Serialize(new IntentRequest(request.PlayerInput.Trim()));
+            var intentResult = await ForwardModuleCallAsync(
+                "router",
                 "intent_extractor",
                 "/intent",
                 "POST",
-                body);
+                intentPayload);
 
-            await WriteForwardedResultAsync(context, result);
+            if (intentResult.StatusCode is < 200 or >= 300)
+            {
+                await WriteForwardedResultAsync(context, intentResult);
+                return;
+            }
+
+            IntentResponse? parsedIntent;
+            try
+            {
+                parsedIntent = JsonSerializer.Deserialize<IntentResponse>(intentResult.Body, _jsonOptions);
+            }
+            catch (JsonException)
+            {
+                await WriteForwardedResultAsync(context, intentResult);
+                return;
+            }
+
+            if (parsedIntent is null || !parsedIntent.Ok)
+            {
+                await WriteForwardedResultAsync(context, intentResult);
+                return;
+            }
+
+            var persistJson = JsonSerializer.Serialize(
+                new TurnPersistRequest(
+                    request.GameProjectId.Trim(),
+                    request.RunId.Trim(),
+                    request.Turn,
+                    request.PlayerId.Trim(),
+                    request.PlayerInput.Trim(),
+                    intentResult.Body));
+
+            var persistResult = await ForwardModuleCallAsync(
+                "router",
+                "session_store",
+                "/turn/persist",
+                "POST",
+                persistJson);
+
+            if (persistResult.StatusCode != 200)
+            {
+                await RespondAsync(
+                    context,
+                    500,
+                    new ErrorResponse(
+                        false,
+                        "Intent extraction succeeded but session persistence failed (fail-fast).",
+                        persistResult.Body));
+                return;
+            }
+
+            TurnPersistResponse? persistBody;
+            try
+            {
+                persistBody = JsonSerializer.Deserialize<TurnPersistResponse>(persistResult.Body, _jsonOptions);
+            }
+            catch (JsonException e)
+            {
+                await RespondAsync(
+                    context,
+                    500,
+                    new ErrorResponse(false, "Session store returned invalid JSON for turn persistence.", e.Message));
+                return;
+            }
+
+            if (persistBody is null || !persistBody.Ok)
+            {
+                await RespondAsync(
+                    context,
+                    500,
+                    new ErrorResponse(false, "Session store reported persistence failure.", persistResult.Body));
+                return;
+            }
+
+            await WriteForwardedResultAsync(context, intentResult);
         }
 
         /// <summary>

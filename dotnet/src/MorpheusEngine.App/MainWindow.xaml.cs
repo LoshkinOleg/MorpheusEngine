@@ -66,6 +66,13 @@ public partial class MainWindow : Window
     private bool _suppressEndpointPresetEvents;
     private bool _applyingEndpointFromPreset;
     private bool _gameRequestInFlight;
+    /// <summary>Logical game project folder under <c>game_projects/</c> (mirrors TS layout).</summary>
+    private string _gameProjectId = "default";
+    /// <summary>Per-run id; empty until <see cref="EnsureRunStartedAsync"/> succeeds.</summary>
+    private string _runId = string.Empty;
+    /// <summary>Next turn index to send (1-based; must match <c>MAX(snapshots.turn)+1</c>).</summary>
+    private int _nextTurn = 1;
+    private const string PlayerId = "player";
     private string[] _qwenMonitorModuleNames = ["Qwen", "LlmProvider_qwen"];
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -122,7 +129,8 @@ public partial class MainWindow : Window
         }
 
         GameMessagesListBox.ItemsSource = _gameMessages;
-        AppendSystemGameMessage("Game tab ready. Player input is sent to router /turn, which currently returns the extracted intent.");
+        AppendSystemGameMessage(
+            "Game tab ready. First send starts a run (router /run/start → session_store), then each message goes to router /turn with turn sequencing and SQLite persistence.");
         SetGameStatus(
             _config is null
                 ? "Fix engine_config.json and restart the application."
@@ -552,6 +560,34 @@ public partial class MainWindow : Window
             body);
     }
 
+    /// <summary>POST router <c>/run/start</c> once per UI session so <c>world_state.db</c> exists before the first <c>/turn</c>.</summary>
+    private async Task<bool> EnsureRunStartedAsync()
+    {
+        if (_config is null)
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrEmpty(_runId))
+        {
+            return true;
+        }
+
+        _runId = Guid.NewGuid().ToString("D");
+        var startBody = JsonSerializer.Serialize(new RunStartRequest(_gameProjectId, _runId), JsonOptions);
+        var startResult = await SendRequestAsync(_config.GetRequiredListenPort("router"), "/run/start", startBody, "POST");
+        if (startResult.StatusCode is not (>= 200 and < 300))
+        {
+            AppendSystemGameMessage(
+                $"Router /run/start returned {startResult.StatusCode} {startResult.ReasonPhrase}.\n{startResult.Body}");
+            _runId = string.Empty;
+            return false;
+        }
+
+        _nextTurn = 1;
+        return true;
+    }
+
     private async Task SubmitGameInputAsync()
     {
         if (_gameRequestInFlight)
@@ -575,12 +611,20 @@ public partial class MainWindow : Window
         AppendPlayerGameMessage(playerInput.Trim());
         GameInputTextBox.Clear();
         _gameRequestInFlight = true;
-        SetGameStatus("Sending player input to router /turn...");
+        SetGameStatus("Preparing run / sending player input to router /turn...");
         UpdateButtonState();
 
         try
         {
-            var body = JsonSerializer.Serialize(new TurnRequest(playerInput), JsonOptions);
+            if (!await EnsureRunStartedAsync())
+            {
+                SetGameStatus("Failed to start run via router /run/start.", isError: true);
+                return;
+            }
+
+            var body = JsonSerializer.Serialize(
+                new TurnRequest(_runId, _gameProjectId, _nextTurn, PlayerId, playerInput.Trim()),
+                JsonOptions);
             var result = await SendRequestAsync(_config.GetRequiredListenPort("router"), "/turn", body, "POST");
 
             if (result.StatusCode is >= 200 and < 300)
@@ -588,7 +632,8 @@ public partial class MainWindow : Window
                 if (TryParseIntentResponse(result.Body, out var intentResponse))
                 {
                     AppendEngineGameMessage(FormatIntentResponse(intentResponse));
-                    SetGameStatus($"Intent received from router /turn: {intentResponse.Intent}");
+                    SetGameStatus($"Turn {_nextTurn}: intent {intentResponse.Intent} (persisted to session DB).");
+                    _nextTurn++;
                 }
                 else
                 {
