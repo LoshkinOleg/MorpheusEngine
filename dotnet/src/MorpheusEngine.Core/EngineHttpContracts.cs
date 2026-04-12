@@ -105,7 +105,7 @@ public static class EngineContractExamples
             1,
             "player",
             "look around")),
-        "run_start_request" => Serialize(new RunStartRequest("default", "00000000-0000-0000-0000-000000000001")),
+        "initialize_request" => Serialize(new RunStartRequest("default", "00000000-0000-0000-0000-000000000001")),
         "session_turn_validate_request" => Serialize(new TurnValidateRequest("default", "00000000-0000-0000-0000-000000000001", 1)),
         "session_turn_persist_request" => Serialize(new TurnPersistRequest(
             "default",

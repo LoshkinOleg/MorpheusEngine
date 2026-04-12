@@ -38,7 +38,7 @@ Frontend defaults to `http://localhost:5173`.
 - `GET /health`
 - `GET /game_projects/:id`
 - `GET /game_projects/:id/sessions`
-- `POST /run/start`
+- `POST /initialize`
 - `GET /run/:runId/state`
 - `POST /run/:runId/open-saved-folder`
 - `POST /turn`

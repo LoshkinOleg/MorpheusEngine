@@ -7,26 +7,30 @@ namespace MorpheusEngine;
 
 /// <summary>
 /// Per-run SQLite file under <c>game_projects/&lt;gameProjectId&gt;/saved/&lt;runId&gt;/world_state.db</c>.
-/// Mirrors the TypeScript <c>sessionStore</c> schema and bootstrap rules (WAL, idempotent DDL, turn-0 snapshot, optional lore seed).
+/// Mirrors the TypeScript <c>sessionStore</c> schema and bootstrap rules (WAL, idempotent DDL, turn-0 snapshot, optional lore seed from CSV only).
 /// </summary>
 internal sealed class RunPersistence
 {
     private readonly string _repositoryRoot;
 
+    // ctor
     public RunPersistence(string repositoryRoot)
     {
         _repositoryRoot = repositoryRoot;
     }
 
-    /// <summary>Creates session directory, opens DB, applies schema, meta, turn-0 snapshot, and lore seed.</summary>
+    #region Public methods
+    /// <summary>
+    /// Creates session directory, opens DB, applies schema, meta, turn-0 snapshot, and optional lore seed from <c>lore/default_lore_entries.csv</c> only.
+    /// Called from <c>SessionStoreHost</c> on <c>POST /initialize</c> when the run folder/DB does not exist yet (router exposes the same path and forwards to this module).
+    /// </summary>
     public RunStartResponse InitializeRun(string gameProjectId, string runId)
     {
         RequireSafePathSegment(nameof(gameProjectId), gameProjectId);
         RequireSafePathSegment(nameof(runId), runId);
 
         var dbPath = GetDbPath(gameProjectId, runId);
-        var sessionDir = Path.GetDirectoryName(dbPath)
-                         ?? throw new InvalidOperationException("Failed to resolve session directory.");
+        var sessionDir = Path.GetDirectoryName(dbPath) ?? throw new InvalidOperationException("Failed to resolve session directory.");
 
         Directory.CreateDirectory(sessionDir);
 
@@ -35,6 +39,7 @@ internal sealed class RunPersistence
         SetMeta(connection, "run_id", runId);
         SetMeta(connection, "game_project_id", gameProjectId);
 
+        // Q: why do we need a turn 0? Why can't the player's actual first turn be turn 0? Is it to make the engine generate an opening message to present to the player or something?
         using (var cmd = connection.CreateCommand())
         {
             cmd.CommandText =
@@ -58,7 +63,60 @@ internal sealed class RunPersistence
             cmd.ExecuteNonQuery();
         }
 
-        SeedLoreTable(connection, gameProjectId);
+        // Lore seed: default_lore_entries.csv under game_projects/&lt;id&gt;/lore/ only.
+        var loreDir = Path.Combine(GetGameProjectsRoot(), gameProjectId, "lore");
+        var csvPath = Path.Combine(loreDir, "default_lore_entries.csv");
+
+        try
+        {
+            if (!File.Exists(csvPath))
+            {
+                if (Directory.Exists(loreDir))
+                {
+                    Console.WriteLine(
+                        $"[SessionStore] WARNING: No default_lore_entries.csv under '{loreDir}' for game project '{gameProjectId}'. Lore table will not be seeded from disk.");
+                }
+            }
+            else
+            {
+                var lines = File.ReadAllLines(csvPath)
+                    .Select(static line => line.Trim())
+                    .Where(static line => line.Length > 0 && !line.StartsWith('#'))
+                    .ToArray();
+                if (lines.Length > 0)
+                {
+                    var headers = ParseCsvLine(lines[0]).Select(static h => h.ToLowerInvariant()).ToArray();
+                    var subjectIndex = Array.IndexOf(headers, "subject");
+                    var dataIndex = Array.FindIndex(
+                        headers,
+                        static h => h is "data" or "description" or "entry");
+                    if (subjectIndex >= 0 && dataIndex >= 0)
+                    {
+                        for (var i = 1; i < lines.Length; i++)
+                        {
+                            var columns = ParseCsvLine(lines[i]);
+                            if (subjectIndex >= columns.Count || dataIndex >= columns.Count)
+                            {
+                                continue;
+                            }
+
+                            var subject = columns[subjectIndex].Trim();
+                            var data = columns[dataIndex].Trim();
+                            if (subject.Length == 0 || data.Length == 0)
+                            {
+                                continue;
+                            }
+
+                            UpsertLore(connection, subject, data, "lore/default_lore_entries.csv");
+                        }
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[SessionStore] Lore CSV seed failed: {ex.Message}");
+        }
 
         return new RunStartResponse(true, runId, gameProjectId);
     }
@@ -72,7 +130,11 @@ internal sealed class RunPersistence
         var dbPath = GetDbPath(gameProjectId, runId);
         if (!File.Exists(dbPath))
         {
-            return new TurnValidateResponse(false, 1, 0, "Run database not found; call POST /run/start first.");
+            return new TurnValidateResponse(
+                false,
+                1,
+                0,
+                "Run database not found; call router POST /initialize first (forwards to session_store).");
         }
 
         if (turn < 1)
@@ -80,6 +142,9 @@ internal sealed class RunPersistence
             return new TurnValidateResponse(false, 0, 0, "Turn must be >= 1.");
         }
 
+        // Q (answered): We do not hold one long-lived connection from /initialize. Each HTTP request opens SQLite, does work, and disposes —
+        // avoids leaking handles across requests, matches WAL expectations for short transactions, and keeps validate/persist independent
+        // (router may call validate then intent then persist; a single global connection would serialize poorly and outlive request scope).
         using var connection = OpenConnection(dbPath);
         InitializeSessionSchema(connection);
         var maxSnapshotTurn = ReadMaxSnapshotTurn(connection);
@@ -107,7 +172,8 @@ internal sealed class RunPersistence
         var dbPath = GetDbPath(request.GameProjectId, request.RunId);
         if (!File.Exists(dbPath))
         {
-            throw new InvalidOperationException("Run database not found; call POST /run/start first.");
+            throw new InvalidOperationException(
+                "Run database not found; call router POST /initialize first (forwards to session_store).");
         }
 
         using var connection = OpenConnection(dbPath);
@@ -144,62 +210,10 @@ internal sealed class RunPersistence
 
         return new TurnPersistResponse(true);
     }
-
-    #region Path and connection
-
-    private string GetGameProjectsRoot() => Path.Combine(_repositoryRoot, "game_projects");
-
-    private string GetDbPath(string gameProjectId, string runId) =>
-        Path.Combine(GetGameProjectsRoot(), gameProjectId, "saved", runId, "world_state.db");
-
-    private static SqliteConnection OpenConnection(string dbPath)
-    {
-        var builder = new SqliteConnectionStringBuilder
-        {
-            DataSource = dbPath,
-            Mode = SqliteOpenMode.ReadWriteCreate
-        };
-        var connection = new SqliteConnection(builder.ConnectionString);
-        connection.Open();
-
-        using (var pragma = connection.CreateCommand())
-        {
-            // Match TS sessionStore: WAL for concurrent readers / simpler crash behavior.
-            pragma.CommandText = "PRAGMA journal_mode=WAL;";
-            pragma.ExecuteNonQuery();
-        }
-
-        return connection;
-    }
-
-    private static void RequireSafePathSegment(string name, string value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            throw new ArgumentException($"{name} must be non-empty.");
-        }
-
-        var trimmed = value.Trim();
-        if (!string.Equals(trimmed, value, StringComparison.Ordinal))
-        {
-            throw new ArgumentException($"{name} must not have leading or trailing whitespace.");
-        }
-
-        if (value.Contains("..", StringComparison.Ordinal))
-        {
-            throw new ArgumentException($"{name} must not contain '..'.");
-        }
-
-        if (value.IndexOfAny([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar, '/', '\\']) >= 0)
-        {
-            throw new ArgumentException($"{name} must not contain path separators.");
-        }
-    }
-
     #endregion
 
-    #region Schema and meta
-
+    #region db I/O
+    // First migration.
     private static void InitializeSessionSchema(SqliteConnection connection)
     {
         using var cmd = connection.CreateCommand();
@@ -261,7 +275,6 @@ internal sealed class RunPersistence
             """;
         cmd.ExecuteNonQuery();
     }
-
     private static void SetMeta(SqliteConnection connection, string key, string value)
     {
         using var cmd = connection.CreateCommand();
@@ -270,26 +283,6 @@ internal sealed class RunPersistence
         cmd.Parameters.AddWithValue("@v", value);
         cmd.ExecuteNonQuery();
     }
-
-    #endregion
-
-    #region Turn helpers
-
-    private static int ReadMaxSnapshotTurn(SqliteConnection connection, SqliteTransaction? transaction = null)
-    {
-        using var cmd = connection.CreateCommand();
-        cmd.Transaction = transaction;
-        cmd.CommandText = "SELECT MAX(turn) FROM snapshots;";
-        var scalar = cmd.ExecuteScalar();
-        if (scalar is null || scalar is DBNull)
-        {
-            return 0;
-        }
-
-        var asLong = Convert.ToInt64(scalar);
-        return (int)asLong;
-    }
-
     private static void InsertEvent(
         SqliteConnection connection,
         SqliteTransaction transaction,
@@ -324,7 +317,6 @@ internal sealed class RunPersistence
 
         return "{}";
     }
-
     private static void InsertSnapshot(
         SqliteConnection connection,
         SqliteTransaction transaction,
@@ -340,10 +332,93 @@ internal sealed class RunPersistence
         cmd.Parameters.AddWithValue("@v", viewState);
         cmd.ExecuteNonQuery();
     }
+    private static void UpsertLore(SqliteConnection connection, string subject, string data, string source)
+    {
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = "INSERT OR REPLACE INTO lore (subject, data, source) VALUES (@s, @d, @src);";
+        cmd.Parameters.AddWithValue("@s", subject);
+        cmd.Parameters.AddWithValue("@d", data);
+        cmd.Parameters.AddWithValue("@src", source);
+        cmd.ExecuteNonQuery();
+    }
+    #endregion
 
+    #region Helpers
+    private static void RequireSafePathSegment(string name, string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            throw new ArgumentException($"{name} must be non-empty.");
+        }
+
+        var trimmed = value.Trim();
+        if (!string.Equals(trimmed, value, StringComparison.Ordinal))
+        {
+            throw new ArgumentException($"{name} must not have leading or trailing whitespace.");
+        }
+
+        if (value.Contains("..", StringComparison.Ordinal))
+        {
+            throw new ArgumentException($"{name} must not contain '..'.");
+        }
+
+        if (value.IndexOfAny([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar, '/', '\\']) >= 0)
+        {
+            throw new ArgumentException($"{name} must not contain path separators.");
+        }
+    }
+    private static int ReadMaxSnapshotTurn(SqliteConnection connection, SqliteTransaction? transaction = null)
+    {
+        using var cmd = connection.CreateCommand();
+        cmd.Transaction = transaction;
+        cmd.CommandText = "SELECT MAX(turn) FROM snapshots;";
+        var scalar = cmd.ExecuteScalar();
+        if (scalar is null || scalar is DBNull)
+        {
+            return 0;
+        }
+
+        var asLong = Convert.ToInt64(scalar);
+        return (int)asLong;
+    }
     private static string BuildModuleTracePayload(string playerInput, string intentResponseBody)
     {
-        var narrationText = TryBuildNarrationFromIntent(intentResponseBody, out var narration)
+        static bool tryBuildNarrationFromIntent(string body, out string narration)
+        {
+            narration = string.Empty;
+            try
+            {
+                var parsed = JsonSerializer.Deserialize<IntentResponse>(body);
+                if (parsed is null || !parsed.Ok)
+                {
+                    return false;
+                }
+
+                var lines = new List<string> { $"Intent: {parsed.Intent}" };
+                var parameters = parsed.Parameters ?? new Dictionary<string, string>();
+                if (parameters.Count == 0)
+                {
+                    lines.Add("Params: (none)");
+                }
+                else
+                {
+                    lines.Add("Params:");
+                    foreach (var parameter in parameters)
+                    {
+                        lines.Add($"- {parameter.Key}: {parameter.Value}");
+                    }
+                }
+
+                narration = string.Join(Environment.NewLine, lines);
+                return true;
+            }
+            catch (JsonException)
+            {
+                return false;
+            }
+        }
+
+        var narrationText = tryBuildNarrationFromIntent(intentResponseBody, out var narration)
             ? narration
             : "Intent extractor returned a non-standard response.";
 
@@ -354,40 +429,30 @@ internal sealed class RunPersistence
             playerInputEcho = playerInput
         });
     }
+    private string GetGameProjectsRoot() => Path.Combine(_repositoryRoot, "game_projects");
 
-    private static bool TryBuildNarrationFromIntent(string intentResponseBody, out string narration)
+    private string GetDbPath(string gameProjectId, string runId) =>
+        Path.Combine(GetGameProjectsRoot(), gameProjectId, "saved", runId, "world_state.db");
+
+    private static SqliteConnection OpenConnection(string dbPath)
     {
-        narration = string.Empty;
-        try
+        var builder = new SqliteConnectionStringBuilder
         {
-            var parsed = JsonSerializer.Deserialize<IntentResponse>(intentResponseBody);
-            if (parsed is null || !parsed.Ok)
-            {
-                return false;
-            }
+            DataSource = dbPath,
+            Mode = SqliteOpenMode.ReadWriteCreate
+        };
+        var connection = new SqliteConnection(builder.ConnectionString);
+        connection.Open();
 
-            var lines = new List<string> { $"Intent: {parsed.Intent}" };
-            var parameters = parsed.Parameters ?? new Dictionary<string, string>();
-            if (parameters.Count == 0)
-            {
-                lines.Add("Params: (none)");
-            }
-            else
-            {
-                lines.Add("Params:");
-                foreach (var parameter in parameters)
-                {
-                    lines.Add($"- {parameter.Key}: {parameter.Value}");
-                }
-            }
-
-            narration = string.Join(Environment.NewLine, lines);
-            return true;
-        }
-        catch (JsonException)
+        // Q (answered): This is not redundant with the connection string — SQLite applies journal_mode per connection.
+        // We set WAL here on every open so the file always uses WAL even if an older build created it with a different mode (mirrors TS openSessionDb).
+        using (var pragma = connection.CreateCommand())
         {
-            return false;
+            pragma.CommandText = "PRAGMA journal_mode=WAL;";
+            pragma.ExecuteNonQuery();
         }
+
+        return connection;
     }
 
     private static string BuildViewStateEnvelope(string intentResponseBody)
@@ -402,160 +467,6 @@ internal sealed class RunPersistence
             return JsonSerializer.Serialize(new { intentExtractorRawText = intentResponseBody });
         }
     }
-
-    #endregion
-
-    #region Lore seed (parity with TS sessionStore.seedLoreTable)
-
-    private void SeedLoreTable(SqliteConnection connection, string gameProjectId)
-    {
-        var loreDir = Path.Combine(GetGameProjectsRoot(), gameProjectId, "lore");
-        var worldPath = Path.Combine(loreDir, "world.md");
-        var csvPath = Path.Combine(loreDir, "default_lore_entries.csv");
-        var factionsYamlPath = Path.Combine(GetGameProjectsRoot(), gameProjectId, "tables", "factions.yaml");
-
-        TrySeedWorldMd(connection, worldPath);
-        TrySeedCsv(connection, csvPath);
-        TrySeedFactionsYaml(connection, factionsYamlPath);
-    }
-
-    private static void TrySeedWorldMd(SqliteConnection connection, string worldPath)
-    {
-        try
-        {
-            if (!File.Exists(worldPath))
-            {
-                return;
-            }
-
-            var worldRaw = File.ReadAllText(worldPath).Trim();
-            if (worldRaw.Length == 0)
-            {
-                return;
-            }
-
-            UpsertLore(connection, "world_context", worldRaw, "lore/world.md");
-        }
-        catch
-        {
-            // Optional world.md seed; ignore when absent or unreadable (TS behavior).
-        }
-    }
-
-    private static void TrySeedCsv(SqliteConnection connection, string csvPath)
-    {
-        try
-        {
-            if (!File.Exists(csvPath))
-            {
-                return;
-            }
-
-            var lines = File.ReadAllLines(csvPath)
-                .Select(static line => line.Trim())
-                .Where(static line => line.Length > 0 && !line.StartsWith('#'))
-                .ToArray();
-            if (lines.Length == 0)
-            {
-                return;
-            }
-
-            var headers = ParseCsvLine(lines[0]).Select(static h => h.ToLowerInvariant()).ToArray();
-            var subjectIndex = Array.IndexOf(headers, "subject");
-            var dataIndex = Array.FindIndex(
-                headers,
-                static h => h is "data" or "description" or "entry");
-            if (subjectIndex < 0 || dataIndex < 0)
-            {
-                return;
-            }
-
-            for (var i = 1; i < lines.Length; i++)
-            {
-                var columns = ParseCsvLine(lines[i]);
-                if (subjectIndex >= columns.Count || dataIndex >= columns.Count)
-                {
-                    continue;
-                }
-
-                var subject = columns[subjectIndex].Trim();
-                var data = columns[dataIndex].Trim();
-                if (subject.Length == 0 || data.Length == 0)
-                {
-                    continue;
-                }
-
-                UpsertLore(connection, subject, data, "lore/default_lore_entries.csv");
-            }
-        }
-        catch
-        {
-            // Optional CSV seed; ignore when absent or malformed (TS behavior).
-        }
-    }
-
-    private static void TrySeedFactionsYaml(SqliteConnection connection, string factionsYamlPath)
-    {
-        try
-        {
-            if (!File.Exists(factionsYamlPath))
-            {
-                return;
-            }
-
-            var raw = File.ReadAllText(factionsYamlPath);
-            foreach (var entry in ParseSimpleFactionYaml(raw))
-            {
-                if (!entry.TryGetValue("id", out var idRaw))
-                {
-                    continue;
-                }
-
-                var subject = idRaw.Trim();
-                if (subject.Length == 0)
-                {
-                    continue;
-                }
-
-                entry.TryGetValue("relationToPlayer", out var relation);
-                entry.TryGetValue("name", out var name);
-                var relationTrim = relation?.Trim() ?? string.Empty;
-                var nameTrim = name?.Trim() ?? string.Empty;
-                var fragments = new List<string>();
-                if (nameTrim.Length > 0)
-                {
-                    fragments.Add($"name={nameTrim}");
-                }
-
-                if (relationTrim.Length > 0)
-                {
-                    fragments.Add($"relationToPlayer={relationTrim}");
-                }
-
-                if (fragments.Count == 0)
-                {
-                    continue;
-                }
-
-                UpsertLore(connection, subject, string.Join("; ", fragments), "tables/factions.yaml");
-            }
-        }
-        catch
-        {
-            // Optional factions.yaml seed; ignore when absent or malformed (TS behavior).
-        }
-    }
-
-    private static void UpsertLore(SqliteConnection connection, string subject, string data, string source)
-    {
-        using var cmd = connection.CreateCommand();
-        cmd.CommandText = "INSERT OR REPLACE INTO lore (subject, data, source) VALUES (@s, @d, @src);";
-        cmd.Parameters.AddWithValue("@s", subject);
-        cmd.Parameters.AddWithValue("@d", data);
-        cmd.Parameters.AddWithValue("@src", source);
-        cmd.ExecuteNonQuery();
-    }
-
     /// <summary>Minimal CSV line parser mirroring TS <c>parseCsvLine</c> (quoted fields, doubled quotes).</summary>
     private static List<string> ParseCsvLine(string line)
     {
@@ -602,55 +513,5 @@ internal sealed class RunPersistence
 
         return values;
     }
-
-    /// <summary>Minimal YAML list-of-maps parser for faction rows (TS <c>parseSimpleFactionYaml</c>).</summary>
-    private static List<Dictionary<string, string>> ParseSimpleFactionYaml(string raw)
-    {
-        var lines = raw.Split(["\r\n", "\n"], StringSplitOptions.None);
-        var items = new List<Dictionary<string, string>>();
-        Dictionary<string, string>? current = null;
-
-        foreach (var originalLine in lines)
-        {
-            var line = originalLine.TrimEnd();
-            var trimmed = line.Trim();
-            if (trimmed.Length == 0 || trimmed.StartsWith('#') || trimmed == "factions:")
-            {
-                continue;
-            }
-
-            if (trimmed.StartsWith("- ", StringComparison.Ordinal))
-            {
-                if (current is not null && current.Count > 0)
-                {
-                    items.Add(current);
-                }
-
-                current = [];
-                var rest = trimmed[2..];
-                var dashKv = System.Text.RegularExpressions.Regex.Match(rest, "^([^:]+):\\s*(.+)$");
-                if (dashKv.Success)
-                {
-                    current[dashKv.Groups[1].Value.Trim()] = dashKv.Groups[2].Value.Trim();
-                }
-
-                continue;
-            }
-
-            var kv = System.Text.RegularExpressions.Regex.Match(trimmed, "^([^:]+):\\s*(.+)$");
-            if (kv.Success && current is not null)
-            {
-                current[kv.Groups[1].Value.Trim()] = kv.Groups[2].Value.Trim();
-            }
-        }
-
-        if (current is not null && current.Count > 0)
-        {
-            items.Add(current);
-        }
-
-        return items;
-    }
-
     #endregion
 }

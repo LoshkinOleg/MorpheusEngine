@@ -6,6 +6,7 @@ namespace MorpheusEngine;
 
 /// <summary>
 /// HTTP host for the <c>session_store</c> module: per-run SQLite open, schema bootstrap, run lifecycle, and turn validate/persist.
+/// Essentially a wrapper for RunPersistence which does the actual work. This is just a wrapper that handles the HTTP messaging.
 /// </summary>
 public sealed class SessionStoreHost
 {
@@ -117,21 +118,22 @@ public sealed class SessionStoreHost
                 return;
             }
 
-            if (path.Equals("/run/start", StringComparison.OrdinalIgnoreCase) && method == "POST")
+            // Run bootstrap: same path name as the router (router forwards JSON to this module).
+            if (path.Equals("/initialize", StringComparison.OrdinalIgnoreCase) && method == "POST")
             {
-                await HandleRunStartAsync(context);
+                await HandleRequest_initialize(context);
                 return;
             }
 
-            if (path.Equals("/turn/validate", StringComparison.OrdinalIgnoreCase) && method == "POST")
+            if (path.Equals("/validate_turn", StringComparison.OrdinalIgnoreCase) && method == "POST")
             {
-                await HandleTurnValidateAsync(context);
+                await HandleRequest_validateTurn(context);
                 return;
             }
 
-            if (path.Equals("/turn/persist", StringComparison.OrdinalIgnoreCase) && method == "POST")
+            if (path.Equals("/persist_turn", StringComparison.OrdinalIgnoreCase) && method == "POST")
             {
-                await HandleTurnPersistAsync(context);
+                await HandleRequest_persistTurn(context);
                 return;
             }
 
@@ -147,7 +149,7 @@ public sealed class SessionStoreHost
         }
     }
 
-    private async Task HandleRunStartAsync(HttpListenerContext context)
+    private async Task HandleRequest_initialize(HttpListenerContext context)
     {
         var body = await ReadRequestBodyAsync(context);
         RunStartRequest? request;
@@ -171,7 +173,7 @@ public sealed class SessionStoreHost
 
         try
         {
-            var response = _persistence.InitializeRun(request.GameProjectId.Trim(), request.RunId.Trim());
+            var response = _persistence.InitializeRun(request.GameProjectId.Trim(), request.RunId.Trim()); // Actual initialization logic.
             await RespondJsonAsync(context, 200, response);
         }
         catch (ArgumentException e)
@@ -184,7 +186,7 @@ public sealed class SessionStoreHost
         }
     }
 
-    private async Task HandleTurnValidateAsync(HttpListenerContext context)
+    private async Task HandleRequest_validateTurn(HttpListenerContext context)
     {
         var body = await ReadRequestBodyAsync(context);
         TurnValidateRequest? request;
@@ -208,7 +210,7 @@ public sealed class SessionStoreHost
 
         try
         {
-            var response = _persistence.ValidateTurn(request.GameProjectId.Trim(), request.RunId.Trim(), request.Turn);
+            var response = _persistence.ValidateTurn(request.GameProjectId.Trim(), request.RunId.Trim(), request.Turn); // Actual logic.
             await RespondJsonAsync(context, 200, response);
         }
         catch (ArgumentException e)
@@ -221,7 +223,7 @@ public sealed class SessionStoreHost
         }
     }
 
-    private async Task HandleTurnPersistAsync(HttpListenerContext context)
+    private async Task HandleRequest_persistTurn(HttpListenerContext context)
     {
         var body = await ReadRequestBodyAsync(context);
         TurnPersistRequest? request;
@@ -251,7 +253,7 @@ public sealed class SessionStoreHost
 
         try
         {
-            var response = _persistence.PersistTurn(request);
+            var response = _persistence.PersistTurn(request); // Actual logic.
             await RespondJsonAsync(context, 200, response);
         }
         catch (ArgumentException e)
@@ -268,12 +270,14 @@ public sealed class SessionStoreHost
         }
     }
 
+    #endregion
+
+    #region Helpers
     private static async Task<string> ReadRequestBodyAsync(HttpListenerContext context)
     {
         using var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding);
         return await reader.ReadToEndAsync();
     }
-
     private static async Task RespondJsonAsync(HttpListenerContext context, int statusCode, object payload)
     {
         var response = context.Response;
@@ -284,6 +288,5 @@ public sealed class SessionStoreHost
         await response.OutputStream.WriteAsync(bytes);
         response.OutputStream.Close();
     }
-
     #endregion
 }

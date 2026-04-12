@@ -141,9 +141,9 @@ namespace MorpheusEngine
                     return;
                 }
 
-                if (path.Equals("/run/start", StringComparison.OrdinalIgnoreCase))
+                if (path.Equals("/initialize", StringComparison.OrdinalIgnoreCase))
                 {
-                    await ProcessRequest_run_start(context);
+                    await ProcessRequest_initialize(context);
                     return;
                 }
 
@@ -176,12 +176,12 @@ namespace MorpheusEngine
         }
 
         /// <summary>
-        /// Initializes a per-run SQLite session via <c>session_store</c> (router forwards; DB ownership stays out of the router process).
+        /// Initializes a per-run SQLite session: forwards to <c>session_store POST /initialize</c> (DB ownership stays in the session_store process).
         /// </summary>
-        private async Task ProcessRequest_run_start(HttpListenerContext context)
+        private async Task ProcessRequest_initialize(HttpListenerContext context)
         {
             var body = await ReadRequestBodyAsync(context);
-            var result = await ForwardModuleCallAsync("player_ui", "session_store", "/run/start", "POST", body);
+            var result = await ForwardModuleCallAsync("player_ui", "session_store", "/initialize", "POST", body);
             await WriteForwardedResultAsync(context, result);
         }
 
@@ -228,7 +228,7 @@ namespace MorpheusEngine
             var validateResult = await ForwardModuleCallAsync(
                 "router",
                 "session_store",
-                "/turn/validate",
+                "/validate_turn",
                 "POST",
                 validateJson);
 
@@ -302,7 +302,7 @@ namespace MorpheusEngine
             var persistResult = await ForwardModuleCallAsync(
                 "router",
                 "session_store",
-                "/turn/persist",
+                "/persist_turn",
                 "POST",
                 persistJson);
 

@@ -130,7 +130,7 @@ public partial class MainWindow : Window
 
         GameMessagesListBox.ItemsSource = _gameMessages;
         AppendSystemGameMessage(
-            "Game tab ready. First send starts a run (router /run/start → session_store), then each message goes to router /turn with turn sequencing and SQLite persistence.");
+            "Game tab ready. First send starts a run (router POST /initialize → session_store), then each message goes to router /turn with sequencing and SQLite persistence.");
         SetGameStatus(
             _config is null
                 ? "Fix engine_config.json and restart the application."
@@ -560,7 +560,7 @@ public partial class MainWindow : Window
             body);
     }
 
-    /// <summary>POST router <c>/run/start</c> once per UI session so <c>world_state.db</c> exists before the first <c>/turn</c>.</summary>
+    /// <summary>POST router <c>/initialize</c> once per UI session so <c>world_state.db</c> exists before the first <c>/turn</c>.</summary>
     private async Task<bool> EnsureRunStartedAsync()
     {
         if (_config is null)
@@ -575,11 +575,11 @@ public partial class MainWindow : Window
 
         _runId = Guid.NewGuid().ToString("D");
         var startBody = JsonSerializer.Serialize(new RunStartRequest(_gameProjectId, _runId), JsonOptions);
-        var startResult = await SendRequestAsync(_config.GetRequiredListenPort("router"), "/run/start", startBody, "POST");
+        var startResult = await SendRequestAsync(_config.GetRequiredListenPort("router"), "/initialize", startBody, "POST");
         if (startResult.StatusCode is not (>= 200 and < 300))
         {
             AppendSystemGameMessage(
-                $"Router /run/start returned {startResult.StatusCode} {startResult.ReasonPhrase}.\n{startResult.Body}");
+                $"Router /initialize returned {startResult.StatusCode} {startResult.ReasonPhrase}.\n{startResult.Body}");
             _runId = string.Empty;
             return false;
         }
@@ -618,7 +618,7 @@ public partial class MainWindow : Window
         {
             if (!await EnsureRunStartedAsync())
             {
-                SetGameStatus("Failed to start run via router /run/start.", isError: true);
+                SetGameStatus("Failed to start run via router /initialize.", isError: true);
                 return;
             }
 
