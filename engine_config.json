@@ -125,6 +125,12 @@
           "method": "GET"
         },
         {
+          "path": "/initialize",
+          "description": "Load system prompt and bind a single in-process run (same body as session_store initialize)",
+          "method": "POST",
+          "request_contract": "initialize_request"
+        },
+        {
           "path": "/message",
           "description": "Send a player message to the Director",
           "method": "POST",

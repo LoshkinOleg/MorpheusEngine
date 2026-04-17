@@ -18,7 +18,7 @@ File: `dotnet/src/MorpheusEngine.RouterModule/Router.cs`.
 |--------|------|------------|
 | GET | `/info`, `/health` | Router identity. |
 | POST | `/shutdown` | Stops router listener. |
-| POST | `/initialize` | Forwards body to **`session_store` `/initialize`** (same path). |
+| POST | `/initialize` | **`director` `/initialize`** first (same **`RunStartRequest`** body), then **`session_store` `/initialize`**. Returns the session_store response body (or the director error if that step fails). |
 | POST | `/turn` | Validates turn → **Director** `/message` → persists → returns Director JSON body. |
 | POST | `/proxy` | **Allowlisted** forward to another module (see below). |
 
@@ -55,9 +55,10 @@ Host: `SessionStoreHost.cs`; persistence: `RunPersistence.cs`.
 
 | Method | Path | Role |
 |--------|------|------|
-| POST | `/message` | Accept **`DirectorMessageRequest`**; maintain per-`runId` chat history; call LLM via **`router /proxy`** → **`generic_llm_provider` `/chat`**; return **`IntentResponse`** narration shim. |
+| POST | `/initialize` | Accept **`RunStartRequest`** (`gameProjectId`, `runId`); load **`system/instructions.md`** + lore CSV once; bind that single run in memory. Second call in the same process → **409**. |
+| POST | `/message` | Accept **`DirectorMessageRequest`**; requires matching **`runId`** / **`gameProjectId`** after **`/initialize`**; call LLM via **`router /proxy`** → **`generic_llm_provider` `/chat`**; return **`IntentResponse`** narration shim. |
 
-State is **in-process memory** only (lost if Director restarts). Lore and GM instructions are read from disk under **`game_projects/<gameProjectId>/`** on first use for that `runId`.
+State is **in-process memory** for **one run per Director process** (lost if Director restarts). Lore and GM instructions are read at **`/initialize`**, not lazily on first **`/message`**.
 
 ## Intent extractor (`MorpheusEngine.IntentExtractor`)
 

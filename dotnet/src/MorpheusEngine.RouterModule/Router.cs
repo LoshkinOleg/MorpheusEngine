@@ -176,13 +176,57 @@ namespace MorpheusEngine
         }
 
         /// <summary>
-        /// Initializes a per-run SQLite session: forwards to <c>session_store POST /initialize</c> (DB ownership stays in the session_store process).
+        /// Initializes the Director in-memory run (system prompt + history) then creates the per-run SQLite session via <c>session_store POST /initialize</c>.
+        /// Director runs first so missing game project files fail before the database is created.
         /// </summary>
         private async Task ProcessRequest_initialize(HttpListenerContext context)
         {
+            if (!string.Equals(context.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase))
+            {
+                await RespondAsync(context, 405, new ErrorResponse(false, "Method not allowed; use POST."));
+                return;
+            }
+
             var body = await ReadRequestBodyAsync(context);
-            var result = await ForwardModuleCallAsync("player_ui", "session_store", "/initialize", "POST", body);
-            await WriteForwardedResultAsync(context, result);
+
+            RunStartRequest? parsed;
+            try
+            {
+                parsed = JsonSerializer.Deserialize<RunStartRequest>(body, _jsonOptions);
+            }
+            catch (JsonException e)
+            {
+                await RespondAsync(context, 400, new ErrorResponse(false, "Invalid JSON payload.", e.Message));
+                return;
+            }
+
+            if (parsed is null
+                || string.IsNullOrWhiteSpace(parsed.RunId)
+                || string.IsNullOrWhiteSpace(parsed.GameProjectId))
+            {
+                await RespondAsync(
+                    context,
+                    400,
+                    new ErrorResponse(false, "Initialize request must include non-empty runId and gameProjectId."));
+                return;
+            }
+
+            var directorResult = await ForwardModuleCallAsync("player_ui", "director", "/initialize", "POST", body);
+            if (directorResult.StatusCode != 200)
+            {
+                await WriteForwardedResultAsync(context, directorResult);
+                return;
+            }
+
+            var sessionResult = await ForwardModuleCallAsync("player_ui", "session_store", "/initialize", "POST", body);
+            if (sessionResult.StatusCode != 200)
+            {
+                Console.WriteLine(
+                    "[Router] session_store /initialize failed after director /initialize succeeded; "
+                    + "Director remains initialized until its process restarts.");
+            }
+
+            await WriteForwardedResultAsync(context, sessionResult);
         }
 
         /// <summary>

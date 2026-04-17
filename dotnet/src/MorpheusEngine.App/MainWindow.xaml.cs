@@ -66,8 +66,8 @@ public partial class MainWindow : Window
     private bool _suppressEndpointPresetEvents;
     private bool _applyingEndpointFromPreset;
     private bool _gameRequestInFlight;
-    /// <summary>Logical game project folder under <c>game_projects/</c> (mirrors TS layout).</summary>
-    private string _gameProjectId = "default";
+    /// <summary>Logical game project folder under <c>game_projects/</c> (mirrors TS layout). Must match an on-disk project; no silent fallback.</summary>
+    private string _gameProjectId = "sandcrawler";
     /// <summary>Per-run id; empty until <see cref="EnsureRunStartedAsync"/> succeeds.</summary>
     private string _runId = string.Empty;
     /// <summary>Next turn index to send (1-based; must match <c>MAX(snapshots.turn)+1</c>).</summary>

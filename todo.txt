@@ -1,8 +1,6 @@
-- go over the existing code and understand it: EngineConfigLoader.cs, Module.cs, MainWindow.xaml.cs, SessionStoreModule.cs, RunPersistence.cs,  relationship between the front end and MorpheusEngineCore.cs
+- Good start for the Director, needs polishing. UI output is wrong, mentions of intent extraction.
 
 - Make intent extractor actions data driven instead of hardcoded.
-
-- Fold the contents of factions.yaml and world.md into the csv
 
 - Investigate good options to use with qwen: {
   "model": "llama3.2",

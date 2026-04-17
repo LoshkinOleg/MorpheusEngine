@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Net;
 using System.Text;
 using System.Text.Json;
@@ -6,7 +5,7 @@ using System.Text.Json;
 namespace MorpheusEngine;
 
 /// <summary>
-/// HTTP host for the <c>director</c> module: in-memory chat per <c>runId</c>, system prompt from game project files, LLM via router proxy to <c>generic_llm_provider /chat</c>.
+/// HTTP host for the <c>director</c> module: one in-process run at a time, system prompt from game project files, LLM via router proxy to <c>generic_llm_provider /chat</c>.
 /// </summary>
 public sealed class Director
 {
@@ -28,18 +27,23 @@ public sealed class Director
 
     private readonly HttpClient _httpClient = new()
     {
-        // Narration can exceed intent-extraction latency; fail loud on timeout rather than hang indefinitely.
-        Timeout = TimeSpan.FromSeconds(120)
+        Timeout = TimeSpan.FromSeconds(30)
     };
 
     private readonly HttpListener _listener = new();
     private bool _shutdownRequested = false;
 
-    /// <summary>Per-run conversation: first entry is always <c>system</c> after lazy init.</summary>
-    private readonly ConcurrentDictionary<string, List<ChatMessage>> _historyByRunId = new(StringComparer.Ordinal);
+    /// <summary>Single-flight gate for <c>/initialize</c> and <c>/message</c> (one active run per Director process).</summary>
+    private readonly SemaphoreSlim _sessionGate = new(1, 1);
 
-    /// <summary>Serializes concurrent <c>/message</c> calls for the same <c>runId</c> so history + LLM round-trip stay consistent.</summary>
-    private readonly ConcurrentDictionary<string, SemaphoreSlim> _locksByRunId = new(StringComparer.Ordinal);
+    /// <summary>Set after successful <c>POST /initialize</c>; cleared only when the process restarts.</summary>
+    private bool _initialized = false;
+
+    private string _boundRunId = "";
+    private string _boundGameProjectId = "";
+
+    /// <summary>Conversation for the bound run; first entry is always <c>system</c> after <c>/initialize</c>.</summary>
+    private List<ChatMessage>? _history = null;
 
     #endregion
 
@@ -88,6 +92,7 @@ public sealed class Director
         _listener.Stop();
         _listener.Close();
         _httpClient.Dispose();
+        _sessionGate.Dispose();
         Console.WriteLine("Director shut down.");
     }
 
@@ -118,6 +123,12 @@ public sealed class Director
             if (path.Equals("/shutdown", StringComparison.OrdinalIgnoreCase))
             {
                 await ProcessRequest_shutdown(context);
+                return;
+            }
+
+            if (path.Equals("/initialize", StringComparison.OrdinalIgnoreCase))
+            {
+                await ProcessRequest_initialize(context);
                 return;
             }
 
@@ -157,10 +168,101 @@ public sealed class Director
     }
 
     /// <summary>
-    /// Deserializes <see cref="DirectorMessageRequest"/>, ensures per-run history + lock, builds chat messages for Ollama, proxies to LLM, appends user+assistant to history on success, returns <see cref="IntentResponse"/> shim for router/UI.
+    /// Accepts <see cref="RunStartRequest"/>, loads system prompt from disk once, seeds in-memory history; returns <see cref="RunStartResponse"/> on success. Second call without process restart yields 409 (fail-fast).
+    /// </summary>
+    private async Task ProcessRequest_initialize(HttpListenerContext context)
+    {
+        if (!string.Equals(context.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase))
+        {
+            await Respond(context, 405, new ErrorResponse(false, "Method not allowed; use POST."));
+            return;
+        }
+
+        string body;
+        using (var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding))
+        {
+            body = await reader.ReadToEndAsync();
+        }
+
+        RunStartRequest? request;
+        try
+        {
+            request = JsonSerializer.Deserialize<RunStartRequest>(body, JsonOptions);
+        }
+        catch (JsonException e)
+        {
+            await Respond(context, 400, new ErrorResponse(false, "Invalid JSON payload.", e.Message));
+            return;
+        }
+
+        if (request is null
+            || string.IsNullOrWhiteSpace(request.RunId)
+            || string.IsNullOrWhiteSpace(request.GameProjectId))
+        {
+            await Respond(
+                context,
+                400,
+                new ErrorResponse(false, "Request must include non-empty runId and gameProjectId."));
+            return;
+        }
+
+        var runId = request.RunId.Trim();
+        var gameProjectId = request.GameProjectId.Trim();
+
+        await _sessionGate.WaitAsync();
+        try
+        {
+            if (_initialized)
+            {
+                await Respond(
+                    context,
+                    409,
+                    new ErrorResponse(
+                        false,
+                        "Director already initialized for this process; restart the Director module to start another run."));
+                return;
+            }
+
+            string systemContent;
+            try
+            {
+                systemContent = BuildSystemPromptFromDisk(_configuration.RepositoryRoot, gameProjectId);
+            }
+            catch (FileNotFoundException e)
+            {
+                await Respond(context, 500, new ErrorResponse(false, e.Message, e.FileName));
+                return;
+            }
+            catch (InvalidOperationException e)
+            {
+                await Respond(context, 500, new ErrorResponse(false, e.Message));
+                return;
+            }
+
+            _history = new List<ChatMessage> { new ChatMessage("system", systemContent) };
+            _boundRunId = runId;
+            _boundGameProjectId = gameProjectId;
+            _initialized = true;
+
+            await Respond(context, 200, new RunStartResponse(true, runId, gameProjectId));
+        }
+        finally
+        {
+            _sessionGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Deserializes <see cref="DirectorMessageRequest"/>; requires prior <c>POST /initialize</c> with matching ids; builds chat messages for Ollama, proxies to LLM, appends user+assistant to history on success, returns <see cref="IntentResponse"/> shim for router/UI.
     /// </summary>
     private async Task ProcessRequest_message(HttpListenerContext context)
     {
+        if (!string.Equals(context.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase))
+        {
+            await Respond(context, 405, new ErrorResponse(false, "Method not allowed; use POST."));
+            return;
+        }
+
         string body;
         using (var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding))
         {
@@ -200,33 +302,33 @@ public sealed class Director
         var runId = request.RunId.Trim();
         var gameProjectId = request.GameProjectId.Trim();
         var playerInput = request.PlayerInput.Trim();
-        var runLock = _locksByRunId.GetOrAdd(runId, static _ => new SemaphoreSlim(1, 1));
 
-        await runLock.WaitAsync();
+        await _sessionGate.WaitAsync();
         try
         {
-            // Lazy-init: first message for this run seeds system prompt from disk (fail fast if files missing).
-            List<ChatMessage> history;
-            try
+            if (!_initialized || _history is null)
             {
-                history = _historyByRunId.GetOrAdd(
-                    runId,
-                    _ =>
-                    {
-                        var systemContent = BuildSystemPromptFromDisk(_configuration.RepositoryRoot, gameProjectId);
-                        return new List<ChatMessage> { new ChatMessage("system", systemContent) };
-                    });
-            }
-            catch (FileNotFoundException e)
-            {
-                await Respond(context, 500, new ErrorResponse(false, e.Message, e.FileName));
+                await Respond(
+                    context,
+                    400,
+                    new ErrorResponse(false, "Director is not initialized; call POST /initialize with this runId and gameProjectId first."));
                 return;
             }
-            catch (InvalidOperationException e)
+
+            if (!string.Equals(runId, _boundRunId, StringComparison.Ordinal)
+                || !string.Equals(gameProjectId, _boundGameProjectId, StringComparison.Ordinal))
             {
-                await Respond(context, 500, new ErrorResponse(false, e.Message));
+                await Respond(
+                    context,
+                    409,
+                    new ErrorResponse(
+                        false,
+                        "runId/gameProjectId do not match the initialized run.",
+                        $"expected runId='{_boundRunId}', gameProjectId='{_boundGameProjectId}'."));
                 return;
             }
+
+            var history = _history;
 
             // Build outbound messages without mutating history until the LLM call succeeds (avoids orphan user rows on failure).
             var messagesForApi = new List<ChatMessageDto>(history.Count + 1);
@@ -235,9 +337,9 @@ public sealed class Director
                 messagesForApi.Add(new ChatMessageDto(row.Role, row.Content));
             }
 
-            messagesForApi.Add(new ChatMessageDto("user", playerInput));
+            messagesForApi.Add(new ChatMessageDto("user", playerInput)); // Add new player input.
 
-            var model = _configuration.IntentDefaultLlmModel;
+            var model = _configuration.IntentDefaultLlmModel; // TODO: I feel like this should be determined by the Router, not the Director.
             var chatRequest = new ChatGenerateRequest(model, messagesForApi);
             var proxyRequest = new ModuleProxyRequest(
                 "director",
@@ -251,6 +353,7 @@ public sealed class Director
                 Encoding.UTF8,
                 "application/json");
 
+            // I'm noticing that the routing mechanism makes reading endpoint handling code quite cumbersome. I wonder if there's some elegant way to avoid that.
             var routerPort = _configuration.GetRequiredListenPort("router");
             HttpResponseMessage llmResponse;
             try
@@ -324,7 +427,7 @@ public sealed class Director
         }
         finally
         {
-            runLock.Release();
+            _sessionGate.Release();
         }
     }
 
@@ -333,6 +436,8 @@ public sealed class Director
     /// </summary>
     private static string BuildSystemPromptFromDisk(string repositoryRoot, string gameProjectId)
     {
+        // TODO: I feel like this should be part of EngineConfigLoader instead.
+
         var instructionsPath = Path.Combine(repositoryRoot, "game_projects", gameProjectId, "system", "instructions.md");
         var loreCsvPath = Path.Combine(repositoryRoot, "game_projects", gameProjectId, "lore", "default_lore_entries.csv");
 

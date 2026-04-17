@@ -53,9 +53,9 @@ public sealed record IntentRequest(
 /// <summary>Router forwards <see cref="TurnRequest"/>-shaped JSON to <c>director</c> <c>POST /message</c> (same field names as <see cref="TurnRequest"/>).</summary>
 public sealed record DirectorMessageRequest(
     [property: JsonPropertyName("runId")] string RunId,
-    [property: JsonPropertyName("gameProjectId")] string GameProjectId,
+    [property: JsonPropertyName("gameProjectId")] string GameProjectId, // Q: do we need that?
     [property: JsonPropertyName("turn")] int Turn,
-    [property: JsonPropertyName("playerId")] string PlayerId,
+    [property: JsonPropertyName("playerId")] string PlayerId, // Q: do we need that?
     [property: JsonPropertyName("playerInput")] string PlayerInput);
 
 /// <summary>One chat message for <c>llm_provider_qwen</c> <c>POST /chat</c> (Ollama <c>/api/chat</c> message shape).</summary>
@@ -65,7 +65,7 @@ public sealed record ChatMessageDto(
 
 /// <summary>Request to <c>llm_provider_qwen</c> <c>POST /chat</c>: full message list (system + history + latest user).</summary>
 public sealed record ChatGenerateRequest(
-    [property: JsonPropertyName("model")] string Model,
+    [property: JsonPropertyName("model")] string Model, // Q: do we need this?
     [property: JsonPropertyName("messages")] IReadOnlyList<ChatMessageDto> Messages);
 
 /// <summary>JSON envelope returned by <c>llm_provider_qwen</c> on successful <c>/chat</c> (<see cref="Response"/> is assistant text).</summary>
@@ -126,14 +126,14 @@ public static class EngineContractExamples
     {
         "turn_request" => Serialize(new TurnRequest(
             "00000000-0000-0000-0000-000000000001",
-            "default",
+            "sandcrawler",
             1,
             "player",
             "look around")),
-        "initialize_request" => Serialize(new RunStartRequest("default", "00000000-0000-0000-0000-000000000001")),
-        "session_turn_validate_request" => Serialize(new TurnValidateRequest("default", "00000000-0000-0000-0000-000000000001", 1)),
+        "initialize_request" => Serialize(new RunStartRequest("sandcrawler", "00000000-0000-0000-0000-000000000001")),
+        "session_turn_validate_request" => Serialize(new TurnValidateRequest("sandcrawler", "00000000-0000-0000-0000-000000000001", 1)),
         "session_turn_persist_request" => Serialize(new TurnPersistRequest(
-            "default",
+            "sandcrawler",
             "00000000-0000-0000-0000-000000000001",
             1,
             "player",

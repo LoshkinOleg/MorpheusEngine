@@ -6,16 +6,16 @@ Per-game content lives under **`game_projects/<gameProjectId>/`**. The **`gamePr
 
 ```
 game_projects/<gameProjectId>/
-  manifest.json              # Game metadata (not read by Director/session store core path today)
+  manifest.json              # Optional human metadata (id/title); not read by the .NET engine today
   lore/
-    default_lore_entries.csv # Seeded into SQLite lore table on /initialize (subject + data columns)
+    default_lore_entries.csv # Seeded into SQLite lore table on /initialize (subject + data columns). Sandcrawler includes general lore plus rows prefixed faction … (former tables/factions.yaml).
   system/
-    instructions.md          # Director GM system prompt (required for Director /message)
+    instructions.md          # Director GM system prompt (required for Director POST /initialize)
   saved/<runId>/
     world_state.db           # Created by session_store POST /initialize
 ```
 
-A minimal **`default`** project exists alongside **`sandcrawler`** so the WPF default `gameProjectId` can run without extra setup.
+The WPF app’s default `gameProjectId` is **`sandcrawler`** (`MainWindow.xaml.cs`). Every `initialize` / `turn` request carries the client-chosen id; **`RunPersistence`** and **`Director`** resolve paths as `game_projects/<gameProjectId>/...` with **no** engine-level fallback to another folder if files are missing (Director fails fast on missing `system/instructions.md` or lore CSV; session store logs a warning if the lore CSV is absent on initialize).
 
 ## SQLite (`world_state.db`)
 
