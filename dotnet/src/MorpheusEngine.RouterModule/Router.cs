@@ -186,8 +186,8 @@ namespace MorpheusEngine
         }
 
         /// <summary>
-        /// Player turn: validate <see cref="TurnRequest"/> against <c>session_store</c> sequencing, call <c>intent_extractor</c> with <see cref="IntentRequest"/>,
-        /// then persist TS-shaped events + snapshot through <c>session_store</c>. Returns the intent response body on success.
+        /// Player turn: validate <see cref="TurnRequest"/> against <c>session_store</c> sequencing, call <c>director</c> with <see cref="DirectorMessageRequest"/>,
+        /// then persist events + snapshot through <c>session_store</c>. Returns the Director response body (IntentResponse-shaped) on success.
         /// </summary>
         private async Task ProcessRequest_turn(HttpListenerContext context)
         {
@@ -259,34 +259,40 @@ namespace MorpheusEngine
                 return;
             }
 
-            var intentPayload = JsonSerializer.Serialize(new IntentRequest(request.PlayerInput.Trim()));
-            var intentResult = await ForwardModuleCallAsync(
+            var directorPayload = JsonSerializer.Serialize(
+                new DirectorMessageRequest(
+                    request.RunId.Trim(),
+                    request.GameProjectId.Trim(),
+                    request.Turn,
+                    request.PlayerId.Trim(),
+                    request.PlayerInput.Trim()));
+            var directorResult = await ForwardModuleCallAsync(
                 "router",
-                "intent_extractor",
-                "/intent",
+                "director",
+                "/message",
                 "POST",
-                intentPayload);
+                directorPayload);
 
-            if (intentResult.StatusCode is < 200 or >= 300)
+            if (directorResult.StatusCode is < 200 or >= 300)
             {
-                await WriteForwardedResultAsync(context, intentResult);
+                await WriteForwardedResultAsync(context, directorResult);
                 return;
             }
 
-            IntentResponse? parsedIntent;
+            IntentResponse? parsedDirector;
             try
             {
-                parsedIntent = JsonSerializer.Deserialize<IntentResponse>(intentResult.Body, _jsonOptions);
+                parsedDirector = JsonSerializer.Deserialize<IntentResponse>(directorResult.Body, _jsonOptions);
             }
             catch (JsonException)
             {
-                await WriteForwardedResultAsync(context, intentResult);
+                await WriteForwardedResultAsync(context, directorResult);
                 return;
             }
 
-            if (parsedIntent is null || !parsedIntent.Ok)
+            if (parsedDirector is null || !parsedDirector.Ok)
             {
-                await WriteForwardedResultAsync(context, intentResult);
+                await WriteForwardedResultAsync(context, directorResult);
                 return;
             }
 
@@ -297,7 +303,7 @@ namespace MorpheusEngine
                     request.Turn,
                     request.PlayerId.Trim(),
                     request.PlayerInput.Trim(),
-                    intentResult.Body));
+                    directorResult.Body));
 
             var persistResult = await ForwardModuleCallAsync(
                 "router",
@@ -313,7 +319,7 @@ namespace MorpheusEngine
                     500,
                     new ErrorResponse(
                         false,
-                        "Intent extraction succeeded but session persistence failed (fail-fast).",
+                        "Director succeeded but session persistence failed (fail-fast).",
                         persistResult.Body));
                 return;
             }
@@ -341,7 +347,7 @@ namespace MorpheusEngine
                 return;
             }
 
-            await WriteForwardedResultAsync(context, intentResult);
+            await WriteForwardedResultAsync(context, directorResult);
         }
 
         /// <summary>

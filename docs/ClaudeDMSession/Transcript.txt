@@ -1,0 +1,692 @@
+Prompt 1:
+Look around.
+
+Answer 1:
+No prior sessions on record. This is the beginning.
+
+---
+
+Before we start, I need to know who you are.
+
+**Who are you?**
+
+A few quick questions to establish your character:
+
+1. What's your name and rough background — crew-born nomad, city-state exile, former mercenary, something else?
+2. What's your situation right now — do you have a berth on a crawler, or are you on foot?
+3. What's one thing you're good at, and one notable thing you're carrying?
+
+Prompt 2:
+1. Gus, captain of a small sized, independent, mercenary sandcrawler with a crew of 20 under my command.
+2. I am inside my crawler currently, on the control deck. I have a small captain's quarters on the crawler.
+3. I am notably good at coordinating the crew and I have a very old revolver on me.
+
+Answer 2:
+The control deck of the *crawler* hums beneath your boots. Two operators sit at the navigation and comms stations ahead of you, watching instruments. A third minds the periscope. Through the forward viewport slits, the hardpan stretches flat in every direction under a bleached white sky — late morning, the sun already punishing.
+
+Your crawler is halted. Fuel conservation. You've been sitting three days outside the minor oasis town of **Kettavar**, waiting on a contract that hasn't materialized. The broker who promised you escort work — a water convoy heading northeast — stopped responding to radio hails yesterday.
+
+Your first mate, a compact woman named **Sera**, steps up beside you and crosses her arms.
+
+"Twenty-two hours of fuel left at cruise speed," she says, not looking at you. "Rations are fine, water's fine. But if we sit another two days we won't have the range to reach Kettavar *or* Duskholm without coasting on fumes."
+
+She lets that hang.
+
+Behind you, someone coughs. The deck smells like machine oil and dust.
+
+**What do you do?**
+
+Prompt 3:
+I address the man sitting at the comms: "Do we know where the water convoy was supposed to be coming from?"
+
+Answer 3:
+The comms operator — a young man named **Dav**, barely twenty, with a permanent grease smear above his left ear — swivels in his chair and pulls a folded paper from beside his instrument panel.
+
+"Broker said the convoy was hauling out of **Pell's Draw**," he says, smoothing the paper against his knee. "Small oasis, maybe two days southwest of here. Six water tankers, he said. Heading to Duskholm." He taps the paper. "Last confirmed transmission from Pell's Draw was four days ago. Routine traffic, nothing unusual."
+
+He hesitates, then adds: "I've been sweeping their frequency since yesterday morning. Nothing. Could be storm interference —" he glances at the barometer on the wall, "— but skies have been clear."
+
+Sera hasn't moved. She's watching you.
+
+Four days of silence from a small oasis town. A broker who's gone quiet. A convoy that never came.
+
+**What do you do?**
+
+Prompt 4:
+I address Sara: "Alright, let's set course on Kettavar, see if we can gather any news on any trouble nearby or about the missing convoy. We'll refuel there and head down southwest to Pell's Draw."
+
+I pause, then ask Dav: "The broker, where is he located?"
+
+Answer 4:
+Sera gives a short nod and turns toward the navigation station. "Kettavar it is." She leans over the navigator's shoulder and begins talking bearing and distance in a low voice. A moment later the crawler shudders to life beneath you — the engine note rising from idle to cruise, tracks engaging, the whole deck swaying slightly as you get moving.
+
+Dav checks his papers again.
+
+"Broker goes by **Holt**. Listed a Kettavar address — a trade office on the fuel market side of town." He folds the paper back up. "Never met him in person. All the correspondence came through radio and a written letter dropped off by a runner two weeks back."
+
+He pauses, something crossing his face.
+
+"Captain — the letter had a Kettavar postmark, but the runner who brought it wasn't local. Didn't know the town. I asked him where the fuel depot was and he gave me a blank look." He shrugs, like he's not sure if it matters. "Probably nothing."
+
+Through the viewport slits, the hardpan is moving now, slow ripples of heat rising off the flat rock. Kettavar is roughly four hours at cruise speed.
+
+Sera calls back without turning around: "ETA Kettavar, mid-afternoon."
+
+**What do you do?**
+
+Prompt 5:
+I answer: "Doesn't surprise me much, the types that deal with mercenaries often have they own posse. If the broker has an address in Kettavar, it is likely he at least has someone posted there. Do we have radio chatter from Kettavar?"
+
+Answer 5:
+Dav turns back to his console and pulls on his headset, fingers walking across the dials. He listens for a moment, adjusting.
+
+"Some," he says. "Market prices, a couple of private frequencies I can't crack. Normal town traffic." He pulls the headset down around his neck. "Nothing about any convoy trouble. Nothing about Pell's Draw at all."
+
+He drums his fingers once on the console.
+
+"If there was a major incident — a raider hit, a town going dark — you'd expect *someone* talking about it on open frequencies by now. Word travels." He sounds uncertain rather than reassured. "Either nothing happened, or whatever happened was recent enough that news hasn't spread yet. Or people are keeping quiet on purpose."
+
+Sera speaks up from the navigation station, not turning around.
+
+"Or the people who'd normally be talking about it aren't in a position to."
+
+Nobody answers that. The engine hums. The hardpan scrolls past.
+
+Four hours is a long time to sit with a thought like that.
+
+**What do you do?**
+
+Prompt 6:
+"No, if there was trouble, there would either be silence or mayhem on the waves. If the convoy encountered trouble, they're probably still between Pell's Draw and Kettavar... alright maintain course."
+
+I walk out of the control bridge to check up on the rest of the crew.
+
+Answer 6:
+You duck through the hatch and move aft into the body of the crawler.
+
+The main corridor runs the spine of the vehicle, low-ceilinged and narrow, conduit and pipe bracketed along the walls. The engine noise is louder here, a constant bass throb you feel in your teeth.
+
+You pass the **engine room hatch** — through the small porthole window you can see your two engineers, **Mack** and a younger man everyone calls **Pip**, running checks on the drivetrain. Mack catches your eye through the glass and gives a thumbs up. Running clean.
+
+Further aft, three of your **combat crew** are in the ready room playing cards on an ammunition crate. They straighten slightly when you pass but don't leap to attention — small crawler familiarity. One of them, a broad-shouldered woman named **Renika**, nods at you.
+
+"Hear we're heading into Kettavar, Captain."
+
+It isn't quite a question.
+
+Down the port side, your **medic**, an older man named **Fass**, is inventorying his kit at his small station, squinting at labels without looking up.
+
+The crawler's support vehicles — two sand bikes and a battered armored car — are secured in the lower bay. You can feel them shifting slightly in their brackets as the tracks roll over uneven ground.
+
+Twenty people aboard. Everything appears to be in order.
+
+**What do you do?**
+
+Prompt 7:
+Sit down and play cards with the combat crew waiting for the crawler to reach the oasis.
+
+Answer 7:
+You pull up a crate and Renika deals you in without ceremony. The game is a simple bluffing game played with a worn deck missing two cards — everyone knows which two, and accounting for their absence is half the skill.
+
+The hours pass.
+
+You learn that **Joben**, the youngest of the three, has a bet running with someone in the engine room over whether Kettavar has a proper bathhouse. The third player, a lean quiet man named **Cross**, says nothing useful but wins most of the hands.
+
+Renika beats you twice before you find your footing.
+
+---
+
+Mid-afternoon, Dav's voice crackles over the internal comm above your head.
+
+*"Kettavar in sight, Captain. Requesting you return to the control deck."*
+
+You climb back forward. Through the viewport slits, Kettavar resolves out of the heat haze — a low cluster of pale structures built around a dense knot of dark vegetation. The oasis greenery is visible from kilometers away, almost shocking against the hardpan. Defensive walls ring the outer edge. A few crawlers are parked in the designated berths outside the walls, their hulls dusty and still.
+
+Sera points at the berths.
+
+"One of those is flying Duskholm colors." She pauses. "Duskholm is where the convoy was headed."
+
+**What do you do?**
+
+Prompt 8:
+"Humm, that it was. Get us to a berth and refuel us."
+
+I turn to Dav: "Make radio contact with that Duskholm crawler."
+
+Answer 8:
+Sera guides your crawler into a berth with practiced efficiency, the tracks grinding to a halt and the engine dropping to idle. Through the viewport you can see the fuel station attendants already moving toward you.
+
+Dav is on the radio before you finish the sentence. He hails the Duskholm crawler on the standard mercenary courtesy frequency — the polite knock on the door.
+
+A pause. Static.
+
+Then a voice comes back. Older, graveled, cautious.
+
+*"This is the* Ironback *out of Duskholm. Who's hailing?"*
+
+Dav looks at you, hand over the microphone.
+
+The question is really yours to answer — who you are, and how much you want to lead with. The *Ironback* crew don't know you. They don't know if you're friendly, competition, or trouble. Their tone is neutral but the caution in it is plain.
+
+Outside, Mack has already dropped down to oversee the refueling. The fuel station attendant is connecting the hose. Normal sounds of a crawler taking on supplies.
+
+The Duskholm crawler sits two berths over, its hull showing some fresh scrape damage along the port side that wasn't there from weathering alone.
+
+**What do you do?**
+
+Prompt 9:
+"This is captain Gus, of the Iron Maiden, mercenary. We were expecting to rendez-vous with a convoy from Pell's Draw heading for Duskholm for escorting about two days ago but the convoy never materialized. Any news on the matter?"
+
+Answer 9:
+Dav relays your words precisely. A longer pause this time.
+
+When the voice comes back it's dropped lower, like the man on the other end has leaned closer to his mic.
+
+*"Captain Gus. I'm Harven, captain of the* Ironback*. We were hired out of Duskholm to escort that same convoy from the Kettavar end."* A beat. *"Convoy never reached us either. We've been sitting here two days waiting."*
+
+Another pause.
+
+*"Pell's Draw has gone quiet. We sent a sand bike scout southwest yesterday morning. Hasn't come back."*
+
+The implication sits in the air of your control deck like smoke.
+
+Dav is watching you. Sera has turned around from the navigation station.
+
+Harven's voice comes back one more time, unprompted.
+
+*"I've got twelve crew and enough fuel for a hard push southwest. If you're thinking what I'm thinking, Captain, there's sense in not going alone."*
+
+Outside, the fuel hose is running. The sun is angling west, maybe three hours of good light left.
+
+**What do you do?**
+
+Prompt 10:
+"Agreed. We will resupply here before heading out. Who's the broker you've got the contract from?"
+
+Answer 10:
+Another pause. Shorter this time.
+
+*"Broker goes by Holt. Office here in Kettavar, fuel market district."* Harven's voice carries something dry in it now. *"Haven't been able to raise him since yesterday. Went to the office this morning — shuttered. Neighbors say they haven't seen him in two days."*
+
+Dav looks at you sideways.
+
+*"You're working Holt's contract too,"* Harven says. It isn't a question.
+
+The refueling hums outside. Somewhere in the town beyond the walls, a market bell rings the afternoon hour. Three hours of light. Pell's Draw is two days southwest — too far to reach before dark even if you left this moment.
+
+You could push a few hours out and make camp on the hardpan. Or resupply properly, spend the night in Kettavar's berths, and leave at first light with full tanks and rested crew. The second option costs you time. The first costs you comfort and a night's rest.
+
+Either way, a broker has vanished, a convoy has gone silent, a scout hasn't returned, and two mercenary crawlers are now looking at the same problem from the same direction.
+
+*"I'll keep this frequency open,"* Harven says. *"Let me know what you decide."*
+
+**What do you do?**
+
+Prompt 11:
+"Understood.". I power off the mic.
+
+I turn to Sera: "Keep the crew ready to depart and see if you can gather more info on the Ironback, they seem to have fresh wounds and it's strange that a broker would hire two mercenary crews for the same contract."
+
+I go out looking for one of the combat crew to accompany me to Holt's offices.
+
+Answer 11:
+Sera nods, already reaching for her own radio. "I'll ask around the berths. Someone always talks."
+
+---
+
+You find Renika in the ready room, still finishing her hand of cards. One look at your face and she's on her feet, checking the knife on her belt without being asked. Cross glances up but says nothing.
+
+The two of you drop down the ramp and into Kettavar proper.
+
+The town is modest — maybe three thousand people, sandstone walls, narrow streets designed for shade. The fuel market district is easy enough to find, a cluster of trade offices and brokers' fronts near the main gate. It smells like hot dust and frying food. People move with the unhurried purpose of a town that isn't in crisis.
+
+Holt's office is a single-room frontage wedged between a parts trader and a water assayer. The shutter is down, padlocked from the outside. A small hand-painted sign reads **HOLT LOGISTICS** in faded lettering.
+
+The parts trader next door — an elderly man sitting in his doorway out of the sun — watches you look at the shuttered office with mild interest.
+
+He hasn't been asked anything yet.
+
+Renika stands at your shoulder, relaxed but watching the street.
+
+**What do you do?**
+
+Prompt 12:
+I address the elderly man: "Greetings old man! How long has this frontage been locked up?"
+
+Answer 12:
+The old man squints at you, taking in the crawler captain's jacket, the revolver on your hip, Renika behind you. He makes some private calculation and decides you're worth answering.
+
+"Two days," he says. "Maybe three. Holt closed up sudden-like. Didn't say goodbye, didn't settle his tab at the water house down the street." He scratches his chin. "Left in a hurry is my read. Had a visitor the evening before he shuttered — a man I hadn't seen before. They talked inside maybe an hour. Next morning, locked up."
+
+He nods at the padlock.
+
+"That lock is Holt's own. He left on his own terms, whatever that means." A pause. "Didn't seem frightened when I saw him last. Seemed busy."
+
+He shifts in his chair, settling deeper into the shade.
+
+"You owed money by him, or you owe him?"
+
+The street around you is ordinary afternoon Kettavar. A pair of children chase something small and fast around a corner. Somewhere nearby meat is cooking. Nobody is paying you particular attention.
+
+**What do you do?**
+
+Prompt 13:
+"Nah, just strange he left without notice. Thanks."
+
+Renika and I head back to our crawler.
+
+Answer 13:
+The old man lifts a hand in acknowledgment and returns to doing nothing in the shade.
+
+---
+
+Back at the berths, the refueling is done. Mack is signing off on the fuel receipt with the attendant. The *Iron Maiden* sits full-tanked and ready.
+
+Sera meets you at the ramp, arms crossed.
+
+"Ironback's been in Kettavar four days," she says quietly. "Longer than they told you. That scrape damage on their hull is fresh — within the week, by the look of the raw metal. Nobody here seems to know where they picked it up." She pauses. "They've got a good reputation out of Duskholm. No obvious red flags. But they weren't straight with you about how long they've been sitting here."
+
+She leaves the interpretation to you.
+
+The sun is getting low. An hour and a half of good light, maybe two. The decision about timing is still in front of you — leave now and camp on the hardpan, or sleep in Kettavar and move at first light.
+
+And Harven is still on the open frequency, waiting.
+
+**What do you do?**
+
+Prompt 14:
+"Alright, looks like we'll be in good company on our way to Pell's Draw. Let's roll out."
+
+I make my way back to the command bridge and establish communication with the Ironback: "Captain Gus of the Iron Maiden speaking. We are ready to head out southwest to Pell's Draw. If the contract still has your interest, the Iron Maiden will gladly travel alongside you."
+
+Answer 14:
+Harven comes back within seconds.
+
+*"Ironback is ready. We'll follow your lead, Captain Gus."*
+
+Short. Businesslike.
+
+---
+
+The two crawlers roll out of Kettavar's berths as the sun begins its descent, long shadows stretching east across the hardpan. The *Ironback* falls in behind you at a comfortable distance — close enough to maintain easy radio contact, far enough that a single artillery shell couldn't bracket both of you.
+
+You watch them in the rear periscope for a moment. They hold formation cleanly. Professional.
+
+The town shrinks behind you. The desert opens up.
+
+Sera plots the bearing for Pell's Draw and hands it to the navigator. Two days at cruise speed, barring trouble. The hardpan is flat and firm here, good going. The temperature is already beginning to drop as the sun lowers.
+
+After about an hour Dav speaks up.
+
+"We'll lose the light in forty minutes, Captain. Standard procedure would be to find a rock formation for a night camp — shields against wind and hides the heat signature somewhat." He pauses. "Or we push through the night on running lights. Slower going, and we announce ourselves to anyone watching."
+
+Behind you the *Ironback* rumbles steadily, waiting on whatever you decide.
+
+**What do you do?**
+
+Prompt 15:
+"We keep going Dav, if the convoy is in trouble, each day counts."
+
+Turning to Sara, I say: "Keep the radar going, if this was a raid on the caravan, any stragglers may be still be in ambush waiting, no reason to keep low if we're expected."
+
+Turning to Dav: "Open up a channel to the Ironback."
+
+Answer 15:
+Sera nods and leans toward the radar operator. "Active sweep. Full range."
+
+Dav opens the channel. "*Ironback*, you're on."
+
+You key the mic.
+
+**What do you do/say?**
+
+Prompt 16:
+"I see some fresh wounds on your hull, what happened?"
+
+Answer 16:
+A longer pause than usual. The hardpan scrolls past in the darkening light. Running lamps flicker on across both crawlers.
+
+When Harven speaks, something in his voice has shifted. Not hostile. More like a man choosing his words.
+
+*"Ran into trouble about five days out of Duskholm. Three sand bikes, fast movers, came at us from the east at dusk. Probing run — they didn't press it when we returned fire. Scraped our port side before we drove them off."*
+
+Another beat.
+
+*"No markings. Didn't try to hail us first, didn't make demands. Just came in fast and then pulled back."* His voice is measured. *"In my experience, that's either amateurs who lost their nerve, or professionals checking our response time and weapons."*
+
+The implication of the second option hangs on the frequency.
+
+*"I didn't mention it earlier because I didn't know if you were connected to it."* A pause that might be an apology, or might not be. *"I'm mentioning it now because if someone probed us on the way here, they may already know two crawlers are heading southwest."*
+
+The radar console behind you sweeps steadily. Clean so far.
+
+Dav is watching you. Sera is watching the dark hardpan ahead.
+
+**What do you do?**
+
+Prompt 17:
+"Did you catch their heading as they retreated?"
+
+Answer 17:
+*"East,"* Harven says. *"Back the way they came. We tracked them on passive for about ten minutes before they dropped off range."*
+
+A pause.
+
+*"East puts them between us and Kettavar, or curving north toward the main transit routes."* His tone is careful, professional. *"Not southwest toward Pell's Draw. Though that could mean anything — circling wide, reporting back to someone, or nothing to do with this at all."*
+
+The night is settling in fully now. The temperature has dropped sharply, the way it always does on the hardpan once the sun is gone. The running lamps cast pale cones of light ahead of the *Iron Maiden*. Behind you the *Ironback's* lights are a steady presence.
+
+The radar sweeps. Still clean.
+
+*"Captain Gus,"* Harven adds, quieter. *"If someone hit the convoy at Pell's Draw, they had to know the convoy was there, know the timing, know the route."* Another pause. *"That kind of information comes from a broker."*
+
+He doesn't finish the thought. He doesn't need to.
+
+Somewhere ahead in the dark, two days southwest, Pell's Draw is silent.
+
+**What do you do?**
+
+Prompt 18:
+I ask Dav: "When we were in town, there was no long range comms coming from Pell's Draw, was there?"
+
+Answer 18:
+Dav shakes his head.
+
+"Nothing on any frequency I swept, Captain. And I was thorough." He taps the side of his headset. "Pell's Draw should have routine traffic — market prices, water reports, weather calls. Small oasis towns check in regular. Four days of nothing isn't equipment failure."
+
+He hesitates.
+
+"A sandstorm could knock out radio for a day, maybe two. But skies have been clear the whole stretch." He looks at his instruments rather than at you. "Four days of silence on a clear sky is people not transmitting. Either they can't, or they've been told not to, or..."
+
+He doesn't finish the third option.
+
+The radar sweeps clean again. The hardpan ahead is dark and flat and empty. The *Ironback* hums steadily behind you.
+
+Whatever happened at Pell's Draw happened at least four days ago. The convoy was supposed to leave around that time. The broker went quiet. The scout bike Harven sent yesterday morning hasn't returned.
+
+You have maybe thirty six hours of travel ahead of you before you find out what's waiting at the end of it.
+
+**What do you do?**
+
+Prompt 19:
+I ask, not anyone is particular: "Do we have info on the defenses at Pell's Draw? The site's size, population? It usually takes more than a few bandits to capture a town. What drives Pell's Draw economy, is it an oasis or a mining colony?"
+
+Answer 19:
+Sera answers first, pulling a worn regional reference from the navigation shelf and cracking it open.
+
+"Oasis town. Small one." She runs her finger down the page. "Population maybe four, five hundred. The aquifer there is modest — enough to support the settlement and export some water, but nothing that would make it a major prize on its own." She pauses, reading. "Main export is actually the convoy trade itself — Pell's Draw sits on a natural waypoint between three larger settlements. They make their living facilitating transit. Water haulers, fuel convoys, mercenary resupply."
+
+She closes the book.
+
+"Defenses would be modest. A town that size might have a wall, a few fixed gun emplacements, maybe one or two allied crawlers at any given time depending on who's passing through." She shrugs. "Nothing that would hold against a serious military force. They'd rely on not being worth the trouble."
+
+Cross, who has apparently drifted up to the control deck without anyone noticing, speaks from the back of the room.
+
+"Someone decided they were worth the trouble."
+
+Nobody contradicts him.
+
+The radar sweeps. Clean.
+
+**What do you do?**
+
+Prompt 20:
+Talking back on the radio: "My guess is probably some small to decent sized bandit raid - the town's small enough for a well organized band to invade. Why they would do so knowing they'd attract the attention of neighbors, I don't know but I guess we'll find out. Ironback, what are your armaments and ammunition situation?"
+
+Answer 20:
+Harven responds without hesitation. Professional courtesy between captains heading into potential trouble.
+
+*"Two forward-mounted heavy machine guns, one light deck cannon on a swivel mount amidships. Full ammunition load — we resupplied in Duskholm before departure."* A brief pause. *"We carry one boarding truck and four sand bikes. Crew of twelve, eight of whom are combat rated."*
+
+A moment, then:
+
+*"What are you running, Captain Gus?"*
+
+The question is reasonable. You're asking him to coordinate. He needs to know what he's coordinating with.
+
+Sera is already looking at you, ready to confirm whatever you tell him against actual inventory. Renika is still on the control deck, leaning against the rear bulkhead with her arms crossed, listening to all of this with the quiet attention of someone who expects to be shooting at something within forty eight hours.
+
+The radar sweeps. Clean.
+
+Outside, the desert night is absolute beyond the running lamps. Stars overhead, brilliant and indifferent. The temperature is still dropping.
+
+**What do you do?**
+
+Prompt 21:
+I answer, truthfully: "76mm HE, port and starboard, 60mm mortar, static defensive positions for anything fast. Our armor seems heavier than yours, in case of combat, let us draw the enemy's fire. We have two bikes and a buggy, lightly armed."
+
+I pause. "Why do you reckon Holt would hire two mercenaries for the same job and then disappear?"
+
+Answer 21:
+*"Noted. We'll stay mobile on your flanks."*
+
+Then Harven goes quiet for a moment. When he comes back his voice is slower, thinking out loud.
+
+*"Two possibilities as I see it. First — he hired us both by mistake. Disorganized, maybe dealing with multiple clients, crossed his wires. Except brokers don't stay in business making mistakes like that, and a man who runs clean enough to have offices in two cities doesn't forget he already hired someone."*
+
+A pause.
+
+*"Second possibility. He hired two crews deliberately. Maybe the convoy clients demanded extra security and Holt didn't tell either of us about the other. Keeps both crews cheaper if neither knows they could have negotiated harder."* Another pause. *"But then why disappear when the convoy goes silent? A broker with nothing to hide goes to his clients, reports the problem, tries to salvage the contract."*
+
+Static for a moment.
+
+*"A broker who disappears when things go wrong either knew things were going to go wrong, or he's scared of whoever made them go wrong."* Harven's voice is flat. *"Neither option reflects well on the man."*
+
+Renika uncrosses her arms quietly in the back of the deck.
+
+Sera says nothing but her jaw is set.
+
+**What do you do?**
+
+Prompt 22:
+"It's particularly strange he didn't send either of us to Pell's Draw."
+
+Answer 22:
+Silence on the frequency for a moment. Then Harven lets out a short sound — not quite a laugh.
+
+*"You're right. That's the part that doesn't fit."*
+
+Another pause. You can almost hear him thinking.
+
+*"A broker sets up a convoy escort job. Convoy goes silent. His hired guns are sitting at the rendezvous point doing nothing. Normal play is you redirect us — send us to investigate, send us to Pell's Draw, something. Instead he goes quiet and locks up his office."*
+
+A beat.
+
+*"He didn't want us going to Pell's Draw."*
+
+The words sit on the frequency.
+
+*"Which means either he knew what we'd find there and didn't want us finding it. Or he knew what was there and didn't want it finding us."* Harven's voice has dropped. *"I'm not sure which of those I prefer."*
+
+The radar sweeps. Still clean. The *Ironback's* running lights hold steady behind you.
+
+Sera speaks quietly, not on the radio. Just to you.
+
+"If he didn't want us going there, Captain, we're now doing exactly what he didn't want." She pauses. "Could be that matters to someone."
+
+The hardpan ahead is dark and empty.
+
+**What do you do?**
+
+Prompt 23:
+I say on the radio: "Tomorrow we'll deploy our scout vehicles. Yours are welcome to join us if you deem it fit."
+
+I simply sit down in a nearby seat to contemplate the day and get some little sleep during the calm of the night.
+
+Answer 23:
+*"Agreed. We'll coordinate at first light."*
+
+Harven clicks off.
+
+---
+
+Sera takes the conn without being asked. She knows the drill.
+
+You settle into the worn captain's chair in the corner of the control deck — not comfortable exactly, but familiar. The engine hum is steady. The radar sweeps its slow circle. Dav keeps a passive ear on the frequencies, headset loose around his neck.
+
+The stars through the viewport slits are extraordinary out here, away from any town's light. The desert at night is its own kind of silence beneath the crawler noise.
+
+Your mind turns over what you know.
+
+A small oasis town, silent for four days. A broker who set up two escorts and then vanished before either could be redirected. A scout bike that didn't come back. Fresh scrape damage on the *Ironback* from a probing attack out of the east.
+
+Someone planned something. Whether Holt was the architect or just a frightened middleman is still an open question.
+
+You sleep lightly, the revolver on your hip, the engine a steady presence beneath you.
+
+---
+
+You wake to grey pre-dawn light and Sera's hand on your shoulder.
+
+"Four hours out from Pell's Draw, Captain. Time to deploy scouts."
+
+**What do you do?**
+
+Prompt 24:
+I wake up with a slight startle: "Good. Good. Get the scouts out on the sands."
+
+I contact the Ironback to start putting our combined forces into a more combat ready formation: scouts leading far ahead but still within sight and radio, the Iron Maiden grumbling ahead, the Ironback following off to the side at a reasonable distance with the boarding truck snaking nearby.
+
+The crew is alert and watches for any signs of enemies, of the convoy or the town.
+
+Answer 24:
+Harven acknowledges immediately — he's been awake.
+
+The formation takes shape over the next twenty minutes. Your two bikes roar down the ramp and fan out ahead, pushing maybe eight hundred meters forward, keeping just within visual range in the early grey light. The *Ironback's* bikes mirror them on the flanks. The boarding truck tucks in close to the *Ironback*, ready.
+
+The *Iron Maiden* leads the main line. The *Ironback* rolls off your starboard quarter, maybe two hundred meters out. Clean fields of fire for both crawlers without risk of crossing shots.
+
+Renika has her combat crew at the gun stations. The 76mm crews are standing by. The mortar team is prepped.
+
+The desert lightens as the sun climbs. Flat hardpan gives way gradually to rougher ground — low rock outcroppings, wind-carved formations. The terrain around a small oasis tends to be more broken as ancient water erosion shaped the land differently here centuries ago.
+
+An hour passes. Two.
+
+Then one of your bike scouts — **Joben's** voice, tight and controlled — comes over the radio.
+
+*"Captain. Bearing two-seven-zero, maybe four hundred meters. There's a sand bike on its side in the dirt. Nobody on it."*
+
+A pause.
+
+*"It's got Ironback colors."*
+
+**What do you do?**
+
+Prompt 25:
+Survey the horizon for any cover that could harbor an ambush.
+
+Answer 25:
+You step to the periscope and sweep methodically. Sera moves to the starboard viewport slit without being asked, shading her eyes.
+
+The terrain here is broken enough to be concerning. Two low rock formations sit to the southwest, maybe six hundred meters out — not large but enough to hide bikes behind. A shallow depression runs roughly parallel to your heading to the north, following an old erosion channel. Could conceal infantry or light vehicles lying flat.
+
+Nothing is moving. No dust trails. No glint of metal in the early sun.
+
+But the rock formations are the obvious problem. Anyone with sense and hostile intent would be behind those rocks.
+
+Dav speaks quietly. "Passive sweep is clean. No active radio transmissions in range."
+
+Which means either nobody is out there, or they're maintaining radio silence.
+
+Joben's bike is sitting stationary four hundred meters ahead, engine off, waiting on your order. The second scout has drifted wide left instinctively, putting distance between himself and his partner. Good instinct.
+
+The *Ironback* comes up on the radio. Harven's voice is controlled but you can hear something underneath it.
+
+*"That's our man's bike. Rennow. He's been out there since yesterday morning."*
+
+The rock formations sit silent in the morning light.
+
+**What do you do?**
+
+Prompt 26:
+"Joben, scout these rocks to the southwest, stay wide. Cross, check the old channel north of us."
+
+"Ironback, unless there's enemies, we'll stop ahead of your man's bike."
+
+Answer 26:
+*"Understood,"* Harven says. *"Appreciated."*
+
+Joben's bike swings wide in a long arc, giving the rock formations a healthy berth, kicking up a thin dust trail as he circles south to approach from the flank. Cross guns his engine and angles north toward the depression, disappearing below the lip of the erosion channel.
+
+You hold the formation at slow advance, watching.
+
+Two minutes. Three.
+
+Joben's voice: *"Rocks are clear. Nobody here. There's tracks though — bike tracks, several sets, coming from the southwest. Old ones, day or two maybe. And one set of boot prints leading away from the rocks toward the depression."*
+
+A beat.
+
+Cross comes on immediately after: *"Captain. I've got the scout. He's alive."*
+
+A pause that lasts just long enough to tell you something.
+
+*"He's in a bad way."*
+
+Harven is already on the frequency before you can respond, his voice stripped down to nothing but the question. *"How bad?"*
+
+Cross answers carefully. *"Breathing. Conscious. He's been out here all night."*
+
+The rock formations are clear. The depression is where your medic needs to be. Pell's Draw is still two hours southwest, past those rocks, along whatever trail those bike tracks came from.
+
+**What do you do?**
+
+Prompt 27:
+Since the area is clear, we halt and let the Ironback's scouts tend their crew member and pick up the bike. The rest of the scouts use the opportunity to refuel and rehydrate while we wait for news from the Ironback.
+
+Answer 27:
+The formation halts. Engines drop to idle.
+
+The *Ironback's* bikes converge on the depression. Your scouts pull back to the crawlers, engines ticking as they cool. Joben accepts a water canteen from someone on the ramp without dismounting, drinking deep.
+
+Fass appears at your elbow — your medic, apparently anticipating the situation. He looks toward the depression.
+
+"Should I go out?"
+
+**You decide.**
+
+Five minutes later Harven comes on the radio, voice flat and controlled.
+
+*"Rennow is dehydrated, one broken arm, took a beating. He'll live."* A pause. *"He says he found the convoy."*
+
+Static.
+
+*"Two of the six water tankers are abandoned about forty minutes southwest of here. Stripped. Cargo gone, engines pulled. No bodies at the vehicles."* Another pause. *"He says Pell's Draw is still standing. He could see the walls from a distance. But the gates were open and he saw no movement. No smoke from cook fires. No activity."*
+
+The morning sun is climbing. It's going to be a hot day.
+
+*"He turned back to report and three bikes ran him down. Ran him off his vehicle and left him. Didn't finish the job."*
+
+Harven lets that sit for a moment.
+
+*"They left him alive on purpose, Captain."*
+
+**What do you do?**
+
+Prompt 28:
+end session
+
+Answer 28:
+# Session 1 — The Silence at Pell's Draw
+Date (in-fiction): Day 1–2 of the contract (exact calendar not established)
+Location at end: Open hardpan, approximately 2 hours northeast of Pell's Draw
+
+## Recap
+- Captain Gus of the mercenary crawler *Iron Maiden* (crew of 20) was waiting outside Kettavar on a stalled escort contract arranged by broker Holt — a water convoy from Pell's Draw to Duskholm that never materialized.
+- In Kettavar, Gus discovered Holt's office shuttered and abandoned 2-3 days prior, following a visit from an unknown man. A neighbor reported Holt left busy rather than frightened.
+- Gus made contact with the *Ironback* (Captain Harven, crew of 12, out of Duskholm), who had been hired on the same contract from the Duskholm end. The *Ironback* carried fresh hull damage from a probing attack by unmarked sand bikes five days out of Duskholm.
+- Both crawlers departed Kettavar in the evening, traveling through the night in coordinated formation toward Pell's Draw.
+- At dawn, scouts located the *Ironback's* missing scout (Rennow) alive in an erosion channel — beaten, dehydrated, with a broken arm. He had found two stripped and abandoned water tankers southwest, and observed Pell's Draw standing but silent, gates open, no activity. He was run down by three bikes on his return but left alive deliberately.
+
+## Lore Delta
+* **Iron Maiden:** Small mercenary sandcrawler captained by Gus. Crew of 20. Armed with twin 76mm HE guns (port and starboard) and a 60mm mortar in static defensive positions. Carries two sand bikes and one lightly armed buggy. Heavier armor than the *Ironback*.
+* **Ironback:** Small mercenary sandcrawler out of Duskholm, captained by Harven. Crew of 12, eight combat-rated. Armed with two forward heavy machine guns and one amidships swivel deck cannon. Carries one boarding truck and four sand bikes. Recently sustained hull scrape damage from an unmarked probing attack.
+* **Holt:** A logistics broker operating out of Kettavar who arranged the Pell's Draw convoy escort contract. Hired both the *Iron Maiden* and *Ironback* for the same job without informing either. Abandoned his Kettavar office 2-3 days ago following a visit from an unknown individual. Whereabouts unknown.
+* **Pell's Draw:** Small oasis town, population ~400-500. Economy based on facilitating transit trade between larger settlements. Modest defenses. Has been silent on all radio frequencies for at least four days. Gates observed open, no activity visible from a distance. Status unknown.
+
+## Open Threads
+- Pell's Draw is silent and apparently abandoned — cause unknown.
+- Two of six convoy water tankers found stripped and abandoned southwest of current position.
+- The three bikes that attacked Rennow left him alive deliberately — unknown significance.
+- Holt's disappearance and his motive for hiring two crews without disclosure remain unexplained.
+- The unmarked bikes that probed the *Ironback* east of Kettavar may be connected to the broader situation.
+- Rennow found no bodies at the abandoned tankers — fate of convoy crew and town population unknown.

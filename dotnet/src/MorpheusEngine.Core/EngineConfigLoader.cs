@@ -25,7 +25,7 @@ public sealed class EnginePortMap
     private readonly IReadOnlyDictionary<string, int> _mapping; // Port identifier to int: example: "router" -> 1234
 
     /// <summary>Keys that must appear under JSON <c>ports</c> (and must not include extra keys).</summary>
-    public static readonly string[] RequiredPortKeys = ["router", "llm_provider_qwen", "intent_extractor", "session_store"]; // TODO: a "generic_llm_provider" module should be required instead of the "llm_provider_qwen". It should be up to the engine to resolve the abstract generic_llm_provider into a concrete llm provider module like llm_provider_qwen.
+    public static readonly string[] RequiredPortKeys = ["router", "llm_provider_qwen", "intent_extractor", "director", "session_store"]; // TODO: a "generic_llm_provider" module should be required instead of the "llm_provider_qwen". It should be up to the engine to resolve the abstract generic_llm_provider into a concrete llm provider module like llm_provider_qwen.
     /// <summary>Set of <see cref="RequiredPortKeys"/> for fast membership checks (case-insensitive).</summary>
     public static readonly HashSet<string> RequiredPortKeySet = new(RequiredPortKeys, StringComparer.OrdinalIgnoreCase);
 
@@ -492,10 +492,11 @@ public static class EngineConfigLoader
         if (!Has(list, "router")
             || !Has(list, "llm_provider_qwen")
             || !Has(list, "intent_extractor")
+            || !Has(list, "director")
             || !Has(list, "session_store"))
         {
             throw new EngineConfigurationException(
-                $"modules in '{path}' must include router, llm_provider_qwen, intent_extractor, and session_store.");
+                $"modules in '{path}' must include router, llm_provider_qwen, intent_extractor, director, and session_store.");
         }
     }
 

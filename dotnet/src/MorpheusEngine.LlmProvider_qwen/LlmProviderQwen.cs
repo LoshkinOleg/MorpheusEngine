@@ -118,6 +118,14 @@ namespace MorpheusEngine
                     return;
                 }
 
+                // /chat endpoint: Ollama /api/chat with explicit messages[] (Director and future chat flows).
+                if (path.Equals("/chat", StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.WriteLine("LlmProvider_qwen/chat called.");
+                    await ProcessRequest_chat(context);
+                    return;
+                }
+
                 // Invalid endpoint specified.
                 Console.WriteLine("LlmProvider_qwen called with an unknown path: " + path);
                 await Respond(context, 404, new ErrorResponse(false, "Not found: " + path));
@@ -266,6 +274,106 @@ namespace MorpheusEngine
 
             // Relay the successful ollama response back to the caller.
             await Respond(context, 200, new LlmProviderGenerateResponse(true, model, responseText, ollamaBody));
+        }
+
+        // Intentional single use method: mirrors ProcessRequest_generate but targets Ollama /api/chat.
+        private async Task ProcessRequest_chat(HttpListenerContext context)
+        {
+            string body;
+            using (var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding))
+            {
+                body = await reader.ReadToEndAsync();
+            }
+
+            ChatGenerateRequest? request;
+            try
+            {
+                request = JsonSerializer.Deserialize<ChatGenerateRequest>(body, _jsonOptions);
+            }
+            catch (JsonException e)
+            {
+                await Respond(context, 400, new ErrorResponse(false, "Invalid JSON payload.", e.Message));
+                return;
+            }
+
+            if (request is null || request.Messages is null || request.Messages.Count == 0)
+            {
+                await Respond(context, 400, new ErrorResponse(false, "Request must include a non-empty 'messages' array."));
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(request.Model))
+            {
+                await Respond(context, 400, new ErrorResponse(false, "Request must include a non-empty 'model' field."));
+                return;
+            }
+
+            var model = request.Model.Trim();
+
+            // Ollama /api/chat expects { model, messages: [{role,content},...], stream }.
+            var ollamaPayload = new
+            {
+                model,
+                messages = request.Messages,
+                stream = false
+            };
+            Console.WriteLine("OLLAMA_IO CHAT_REQUEST " + JsonSerializer.Serialize(ollamaPayload));
+
+            var content = new StringContent(
+                JsonSerializer.Serialize(ollamaPayload),
+                Encoding.UTF8,
+                "application/json");
+
+            var ollamaPort = EngineConfigLoader.GetConfiguration().LlmProviderOllamaListenPort;
+            HttpResponseMessage ollamaResponse;
+            try
+            {
+                ollamaResponse = await _httpClient.PostAsync($"http://127.0.0.1:{ollamaPort}/api/chat", content);
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine("OLLAMA_IO ERROR Failed to reach Ollama (chat): " + e.Message);
+                await Respond(context, 502, new
+                {
+                    ok = false,
+                    error = $"Failed to reach Ollama. Ensure Ollama is running locally on port {ollamaPort}.",
+                    details = e.Message
+                });
+                return;
+            }
+
+            var ollamaBody = await ollamaResponse.Content.ReadAsStringAsync();
+            Console.WriteLine($"OLLAMA_IO CHAT_RESPONSE status={(int)ollamaResponse.StatusCode} body={ollamaBody}");
+            if (!ollamaResponse.IsSuccessStatusCode)
+            {
+                await Respond(context, (int)ollamaResponse.StatusCode, new
+                {
+                    ok = false,
+                    error = "Ollama returned an error.",
+                    model,
+                    ollama_status = (int)ollamaResponse.StatusCode,
+                    ollama_response = ollamaBody
+                });
+                return;
+            }
+
+            // Successful /api/chat: assistant text is under message.content (not "response" like /api/generate).
+            string? assistantText = null;
+            try
+            {
+                using var doc = JsonDocument.Parse(ollamaBody);
+                if (doc.RootElement.TryGetProperty("message", out var messageElement)
+                    && messageElement.TryGetProperty("content", out var contentElement))
+                {
+                    assistantText = contentElement.GetString();
+                }
+            }
+            catch (JsonException)
+            {
+                // keep assistantText null; raw body still returned
+            }
+
+            await Respond(context, 200, new ChatGenerateResponse(true, model, assistantText, ollamaBody));
         }
         #endregion
 

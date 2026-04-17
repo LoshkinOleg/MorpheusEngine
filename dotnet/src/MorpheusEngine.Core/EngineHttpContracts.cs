@@ -50,6 +50,31 @@ public sealed record LlmGenerateRequest(
 public sealed record IntentRequest(
     [property: JsonPropertyName("playerInput")] string PlayerInput);
 
+/// <summary>Router forwards <see cref="TurnRequest"/>-shaped JSON to <c>director</c> <c>POST /message</c> (same field names as <see cref="TurnRequest"/>).</summary>
+public sealed record DirectorMessageRequest(
+    [property: JsonPropertyName("runId")] string RunId,
+    [property: JsonPropertyName("gameProjectId")] string GameProjectId,
+    [property: JsonPropertyName("turn")] int Turn,
+    [property: JsonPropertyName("playerId")] string PlayerId,
+    [property: JsonPropertyName("playerInput")] string PlayerInput);
+
+/// <summary>One chat message for <c>llm_provider_qwen</c> <c>POST /chat</c> (Ollama <c>/api/chat</c> message shape).</summary>
+public sealed record ChatMessageDto(
+    [property: JsonPropertyName("role")] string Role,
+    [property: JsonPropertyName("content")] string Content);
+
+/// <summary>Request to <c>llm_provider_qwen</c> <c>POST /chat</c>: full message list (system + history + latest user).</summary>
+public sealed record ChatGenerateRequest(
+    [property: JsonPropertyName("model")] string Model,
+    [property: JsonPropertyName("messages")] IReadOnlyList<ChatMessageDto> Messages);
+
+/// <summary>JSON envelope returned by <c>llm_provider_qwen</c> on successful <c>/chat</c> (<see cref="Response"/> is assistant text).</summary>
+public sealed record ChatGenerateResponse(
+    [property: JsonPropertyName("ok")] bool Ok,
+    [property: JsonPropertyName("model")] string? Model,
+    [property: JsonPropertyName("response")] string? Response,
+    [property: JsonPropertyName("raw_response")] string? RawResponse);
+
 public sealed record ModuleProxyRequest(
     [property: JsonPropertyName("source_module")] string SourceModule,
     [property: JsonPropertyName("target_module")] string TargetModule,
@@ -116,6 +141,19 @@ public static class EngineContractExamples
             "{\"ok\":true,\"intent\":\"wait\",\"params\":{}}")),
         "qwen_generate_request" => Serialize(new LlmGenerateRequest("Write a short response.", "qwen2.5:7b-instruct")),
         "intent_request" => Serialize(new IntentRequest("look around")),
+        "director_message_request" => Serialize(new DirectorMessageRequest(
+            "00000000-0000-0000-0000-000000000001",
+            "sandcrawler",
+            1,
+            "player",
+            "Look around.")),
+        "chat_generate_request" => Serialize(new ChatGenerateRequest(
+            "qwen2.5:7b-instruct",
+            new ChatMessageDto[]
+            {
+                new("system", "You are the GM."),
+                new("user", "Look around.")
+            })),
         "module_proxy_request" => Serialize(new ModuleProxyRequest(
             "intent_extractor",
             "generic_llm_provider",

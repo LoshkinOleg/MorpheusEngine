@@ -6,6 +6,7 @@
     "router": 8790,
     "llm_provider_qwen": 8791,
     "intent_extractor": 8792,
+    "director": 8794,
     "session_store": 8793
   },
   "modules": [
@@ -67,6 +68,12 @@
           "description": "LLM generate",
           "method": "POST",
           "request_contract": "qwen_generate_request"
+        },
+        {
+          "path": "/chat",
+          "description": "LLM chat (Ollama /api/chat)",
+          "method": "POST",
+          "request_contract": "chat_generate_request"
         }
       ]
     },
@@ -95,6 +102,33 @@
           "description": "Extract player intent",
           "method": "POST",
           "request_contract": "intent_request"
+        }
+      ]
+    },
+    {
+      "port_key": "director",
+      "display_name": "Director",
+      "required": true,
+      "launch": {
+        "artifact": "dotnet/src/MorpheusEngine.Director/bin/Debug/net9.0/MorpheusEngine.Director.exe",
+        "dev_project": "dotnet/src/MorpheusEngine.Director/MorpheusEngine.Director.csproj"
+      },
+      "endpoints": [
+        {
+          "path": "/info",
+          "description": "Module metadata",
+          "method": "GET"
+        },
+        {
+          "path": "/health",
+          "description": "Health check",
+          "method": "GET"
+        },
+        {
+          "path": "/message",
+          "description": "Send a player message to the Director",
+          "method": "POST",
+          "request_contract": "director_message_request"
         }
       ]
     },

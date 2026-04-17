@@ -1,0 +1,20 @@
+https://arxiv.org/html/2603.05890v1
+https://arxiv.org/html/2506.10161v1
+https://blog.apiad.net/p/ai-driven-storytelling-with-multi-3ed
+Director-Actor (or Director-Global-Actor in Open-Theatre's variant)
+https://dl.acm.org/doi/10.1145/3649921.3656987
+https://arxiv.org/html/2509.16713
+Open-Theatre, HAMLET, ProTriPlay, GamePlot
+TattleTale, Glaive: use symbolic planners
+https://arxiv.org/html/2503.23512v1
+
+Alexander's "Don't Prep Plots" essay
+Ironsworn SRD - Shawn Tomkin
+Apocalypse World - Vincent Baker
+Powered by the Apocalypse (PbtA)
+
+LLM generates the planning domain, symbolic planner solves it (Kelly et al.)
+LLM runs inside the planner as a heuristic, guiding the search (Farrell & Ware)
+
+GOAP, HTN and STRIPS implementaion
+
