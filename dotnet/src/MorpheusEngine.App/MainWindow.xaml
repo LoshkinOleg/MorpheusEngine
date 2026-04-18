@@ -17,8 +17,6 @@
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="8" />
-                <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
 
             <StackPanel Grid.Column="0">
@@ -31,19 +29,27 @@
                            Foreground="#AEB5C4" />
             </StackPanel>
 
-            <Button x:Name="StartButton"
-                    Grid.Column="1"
-                    Width="92"
-                    Height="30"
-                    Content="Start Engine"
-                    Click="StartButton_Click" />
-
-            <Button x:Name="StopButton"
-                    Grid.Column="3"
-                    Width="92"
-                    Height="30"
-                    Content="Stop Engine"
-                    Click="StopButton_Click" />
+            <StackPanel Grid.Column="1"
+                        Orientation="Horizontal"
+                        VerticalAlignment="Center">
+                <Button x:Name="StartButton"
+                        Width="92"
+                        Height="30"
+                        Content="Start Engine"
+                        Click="StartButton_Click" />
+                <Ellipse x:Name="EngineStatusEllipse"
+                         Width="12"
+                         Height="12"
+                         Margin="12,0"
+                         VerticalAlignment="Center"
+                         Fill="#5A5F6A"
+                         ToolTip="Engine stopped" />
+                <Button x:Name="StopButton"
+                        Width="92"
+                        Height="30"
+                        Content="Stop Engine"
+                        Click="StopButton_Click" />
+            </StackPanel>
         </Grid>
 
         <TabControl Grid.Row="2">
@@ -53,8 +59,6 @@
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="8" />
                         <RowDefinition Height="*" />
-                        <RowDefinition Height="8" />
-                        <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
 
                     <Border Grid.Row="0"
@@ -68,87 +72,99 @@
                                        FontSize="18"
                                        FontWeight="SemiBold"
                                        Foreground="White" />
-                            <TextBlock Margin="0,4,0,0"
+                            <TextBlock x:Name="GameTurnHeaderTextBlock"
+                                       Margin="0,4,0,0"
                                        Foreground="#B7C4D9"
-                                       Text="Submit player input here. For now, the engine reply is the intent returned from router /turn." />
+                                       Text="Current turn: 1" />
                             <TextBlock x:Name="GameStatusTextBlock"
                                        Margin="0,8,0,0"
                                        Foreground="#B0C4DE"
-                                       Text="Ready." />
+                                       Text="" />
                         </StackPanel>
                     </Border>
 
-                    <Border Grid.Row="2"
-                            Padding="10"
-                            Background="#0F131B"
-                            BorderBrush="#2B3444"
-                            BorderThickness="1"
-                            CornerRadius="10">
-                        <ListBox x:Name="GameMessagesListBox"
-                                 Background="Transparent"
-                                 BorderThickness="0"
-                                 HorizontalContentAlignment="Stretch"
-                                 ScrollViewer.VerticalScrollBarVisibility="Auto"
-                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled">
-                            <ListBox.ItemContainerStyle>
-                                <Style TargetType="ListBoxItem">
-                                    <Setter Property="BorderThickness" Value="0" />
-                                    <Setter Property="Padding" Value="0" />
-                                    <Setter Property="Margin" Value="0,0,0,12" />
-                                    <Setter Property="Background" Value="Transparent" />
-                                    <Setter Property="Focusable" Value="False" />
-                                </Style>
-                            </ListBox.ItemContainerStyle>
-                            <ListBox.ItemTemplate>
-                                <DataTemplate>
-                                    <StackPanel HorizontalAlignment="{Binding BubbleAlignment}">
-                                        <TextBlock Text="{Binding SpeakerLabel}"
-                                                   Margin="4,0,4,4"
-                                                   Foreground="#93A4BC"
-                                                   FontSize="11"
-                                                   FontWeight="SemiBold" />
-                                        <Border MaxWidth="560"
-                                                Padding="12,10"
-                                                Background="{Binding BubbleBackground}"
-                                                BorderBrush="{Binding BubbleBorderBrush}"
-                                                BorderThickness="1"
-                                                CornerRadius="14">
-                                            <TextBlock Text="{Binding Text}"
-                                                       Foreground="{Binding BubbleForeground}"
-                                                       TextWrapping="Wrap"
-                                                       FontSize="13" />
-                                        </Border>
-                                    </StackPanel>
-                                </DataTemplate>
-                            </ListBox.ItemTemplate>
-                        </ListBox>
-                    </Border>
+                    <Grid x:Name="GameChatInteractionRoot"
+                          Grid.Row="2">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="8" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
 
-                    <Grid Grid.Row="4">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="10" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
+                        <Border Grid.Row="0"
+                                Padding="10"
+                                Background="#0F131B"
+                                BorderBrush="#2B3444"
+                                BorderThickness="1"
+                                CornerRadius="10">
+                            <ScrollViewer x:Name="GameMessagesScrollViewer"
+                                          VerticalScrollBarVisibility="Auto"
+                                          HorizontalScrollBarVisibility="Disabled"
+                                          CanContentScroll="False"
+                                          Padding="0,0,0,12">
+                                <ItemsControl x:Name="GameMessagesItemsControl"
+                                              Background="Transparent">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <StackPanel Margin="0,0,0,12"
+                                                        HorizontalAlignment="{Binding BubbleAlignment}">
+                                                <TextBlock Text="{Binding SpeakerHeading}"
+                                                           Margin="4,0,4,4"
+                                                           Foreground="#93A4BC"
+                                                           FontSize="11"
+                                                           FontWeight="SemiBold" />
+                                                <Border MaxWidth="560"
+                                                        Padding="12,10"
+                                                        Background="{Binding BubbleBackground}"
+                                                        BorderBrush="{Binding BubbleBorderBrush}"
+                                                        BorderThickness="1"
+                                                        CornerRadius="14">
+                                                    <TextBox Text="{Binding Text, Mode=OneWay}"
+                                                             Foreground="{Binding BubbleForeground}"
+                                                             CaretBrush="{Binding BubbleForeground}"
+                                                             FontSize="13"
+                                                             TextWrapping="Wrap"
+                                                             AcceptsReturn="True"
+                                                             IsReadOnly="True"
+                                                             IsTabStop="False"
+                                                             Focusable="True"
+                                                             BorderThickness="0"
+                                                             Background="Transparent"
+                                                             Padding="0" />
+                                                </Border>
+                                            </StackPanel>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </ScrollViewer>
+                        </Border>
 
-                        <TextBox x:Name="GameInputTextBox"
-                                 Grid.Column="0"
-                                 Height="42"
-                                 VerticalContentAlignment="Center"
-                                 Padding="12,0"
-                                 FontSize="14"
-                                 Background="#171C26"
-                                 Foreground="White"
-                                 BorderBrush="#324055"
-                                 BorderThickness="1"
-                                 KeyDown="GameInputTextBox_KeyDown" />
+                        <Grid Grid.Row="2">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="10" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
 
-                        <Button x:Name="GameSendButton"
-                                Grid.Column="2"
-                                Width="92"
-                                Height="42"
-                                Content="Send"
-                                Click="GameSendButton_Click" />
+                            <TextBox x:Name="GameInputTextBox"
+                                     Grid.Column="0"
+                                     Height="42"
+                                     VerticalContentAlignment="Center"
+                                     Padding="12,0"
+                                     FontSize="14"
+                                     Background="#171C26"
+                                     Foreground="White"
+                                     BorderBrush="#324055"
+                                     BorderThickness="1"
+                                     KeyDown="GameInputTextBox_KeyDown" />
+
+                            <Button x:Name="GameSendButton"
+                                    Grid.Column="2"
+                                    Width="92"
+                                    Height="42"
+                                    Content="Send"
+                                    Click="GameSendButton_Click" />
+                        </Grid>
                     </Grid>
                 </Grid>
             </TabItem>
@@ -279,22 +295,35 @@
 
                     <TabControl Grid.Row="2">
                         <TabItem Header="Console">
-                            <Border Margin="6"
-                                    BorderThickness="1"
-                                    BorderBrush="#4A4A4A"
-                                    CornerRadius="4">
-                                <TextBox x:Name="ConsolePane"
-                                         FontFamily="Consolas"
-                                         FontSize="13"
-                                         IsReadOnly="True"
-                                         AcceptsReturn="True"
-                                         VerticalScrollBarVisibility="Auto"
-                                         HorizontalScrollBarVisibility="Auto"
-                                         TextWrapping="NoWrap"
-                                         Background="#111111"
-                                         Foreground="#DDDDDD"
-                                         Padding="8" />
-                            </Border>
+                            <Grid Margin="6">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="8" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+                                <Button Grid.Row="0"
+                                        Width="72"
+                                        Height="26"
+                                        HorizontalAlignment="Right"
+                                        Content="Copy"
+                                        Click="CopyConsoleToClipboardButton_Click" />
+                                <Border Grid.Row="2"
+                                        BorderThickness="1"
+                                        BorderBrush="#4A4A4A"
+                                        CornerRadius="4">
+                                    <TextBox x:Name="ConsolePane"
+                                             FontFamily="Consolas"
+                                             FontSize="13"
+                                             IsReadOnly="True"
+                                             AcceptsReturn="True"
+                                             VerticalScrollBarVisibility="Auto"
+                                             HorizontalScrollBarVisibility="Auto"
+                                             TextWrapping="NoWrap"
+                                             Background="#111111"
+                                             Foreground="#DDDDDD"
+                                             Padding="8" />
+                                </Border>
+                            </Grid>
                         </TabItem>
                         <TabItem Header="Qwen Monitor">
                             <Grid Margin="6">
@@ -315,12 +344,19 @@
                                            FontWeight="SemiBold"
                                            Text="Qwen Monitor" />
 
-                                <Button Grid.Row="0"
-                                        Grid.Column="1"
-                                        Width="72"
-                                        Height="26"
-                                        Content="Clear"
-                                        Click="ClearQwenMonitorButton_Click" />
+                                <StackPanel Grid.Row="0"
+                                            Grid.Column="1"
+                                            Orientation="Horizontal">
+                                    <Button Width="72"
+                                            Height="26"
+                                            Content="Copy"
+                                            Click="CopyQwenMonitorToClipboardButton_Click" />
+                                    <Button Width="72"
+                                            Height="26"
+                                            Margin="8,0,0,0"
+                                            Content="Clear"
+                                            Click="ClearQwenMonitorButton_Click" />
+                                </StackPanel>
 
                                 <Border Grid.Row="2"
                                         Grid.ColumnSpan="2"

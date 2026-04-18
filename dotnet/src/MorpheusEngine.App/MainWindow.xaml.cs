@@ -7,6 +7,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Threading;
 using MorpheusEngine;
 
 namespace MorpheusEngine.App;
@@ -45,7 +46,7 @@ public partial class MainWindow : Window
         string Body);
 
     private sealed record GameChatMessage(
-        string SpeakerLabel,
+        string SpeakerHeading,
         string Text,
         HorizontalAlignment BubbleAlignment,
         Brush BubbleBackground,
@@ -127,13 +128,13 @@ public partial class MainWindow : Window
                 .ToArray();
         }
 
-        GameMessagesListBox.ItemsSource = _gameMessages;
-        AppendSystemGameMessage(
-            "Game tab ready. First send starts a run (router POST /initialize → session_store), then each message goes to router /turn with sequencing and SQLite persistence.");
+        GameMessagesItemsControl.ItemsSource = _gameMessages;
+        AppendSystemGameMessage(string.Empty);
+        RefreshGameTurnHeader();
         SetGameStatus(
             _config is null
                 ? "Fix engine_config.json and restart the application."
-                : "Ready to send player input through the router.",
+                : string.Empty,
             isError: _config is null);
 
         PopulatePortComboBox();
@@ -240,6 +241,33 @@ public partial class MainWindow : Window
         QwenMonitorPane.Clear();
     }
 
+    private void CopyConsoleToClipboardButton_Click(object sender, RoutedEventArgs e)
+    {
+        CopyTextToClipboardOrWarn(ConsolePane.Text, "Console");
+    }
+
+    private void CopyQwenMonitorToClipboardButton_Click(object sender, RoutedEventArgs e)
+    {
+        CopyTextToClipboardOrWarn(QwenMonitorPane.Text, "Qwen Monitor");
+    }
+
+    /// <summary>Writes the full pane text to the clipboard; surfaces failures so the user is not left guessing.</summary>
+    private static void CopyTextToClipboardOrWarn(string text, string paneDisplayName)
+    {
+        try
+        {
+            Clipboard.SetText(text);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                $"Could not copy {paneDisplayName} to the clipboard:\n{ex.Message}",
+                "MorpheusEngine",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
+    }
+
     private void EndpointTextBox_TextChanged(object sender, TextChangedEventArgs e)
     {
         if (_applyingEndpointFromPreset)
@@ -344,17 +372,33 @@ public partial class MainWindow : Window
 
     private void UpdateButtonState()
     {
-        StartButton.IsEnabled = !IsEngineRunning() && !_shutdownInProgress && _config is not null;
-        StopButton.IsEnabled = IsEngineRunning() && !_shutdownInProgress;
+        var running = IsEngineRunning();
+        StartButton.IsEnabled = !running && !_shutdownInProgress && _config is not null;
+        StopButton.IsEnabled = running && !_shutdownInProgress;
+
+        if (EngineStatusEllipse is not null)
+        {
+            // Running: green; stopped: dim gray (fail loud in UI, no ambiguous yellow).
+            EngineStatusEllipse.Fill = running
+                ? new SolidColorBrush(Color.FromRgb(61, 204, 119))
+                : new SolidColorBrush(Color.FromRgb(90, 95, 106));
+            EngineStatusEllipse.ToolTip = running ? "Engine running" : "Engine stopped";
+        }
+
+        if (GameChatInteractionRoot is not null)
+        {
+            // Transcript + composer stay inactive until the engine is started.
+            GameChatInteractionRoot.IsEnabled = running;
+        }
 
         if (GameSendButton is not null)
         {
-            GameSendButton.IsEnabled = !_shutdownInProgress && !_gameRequestInFlight;
+            GameSendButton.IsEnabled = running && !_shutdownInProgress && !_gameRequestInFlight;
         }
 
         if (GameInputTextBox is not null)
         {
-            GameInputTextBox.IsEnabled = !_shutdownInProgress && !_gameRequestInFlight;
+            GameInputTextBox.IsEnabled = running && !_shutdownInProgress && !_gameRequestInFlight;
         }
     }
 
@@ -584,6 +628,7 @@ public partial class MainWindow : Window
         }
 
         _nextTurn = 1;
+        RefreshGameTurnHeader();
         return true;
     }
 
@@ -607,7 +652,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        AppendPlayerGameMessage(playerInput.Trim());
+        AppendPlayerGameMessage(playerInput.Trim(), _nextTurn);
         GameInputTextBox.Clear();
         _gameRequestInFlight = true;
         SetGameStatus("Preparing run / sending player input to router /turn...");
@@ -630,14 +675,17 @@ public partial class MainWindow : Window
             {
                 if (TryParseIntentResponse(result.Body, out var intentResponse))
                 {
-                    AppendEngineGameMessage(FormatIntentResponse(intentResponse));
-                    SetGameStatus($"Turn {_nextTurn}: intent {intentResponse.Intent} (persisted to session DB).");
+                    AppendEngineGameMessage(FormatIntentResponse(intentResponse), _nextTurn);
+                    SetGameStatus(string.Empty);
                     _nextTurn++;
+                    RefreshGameTurnHeader();
                 }
                 else
                 {
-                    AppendEngineGameMessage(result.Body);
-                    SetGameStatus("Router /turn responded with non-standard JSON. Showing raw response.");
+                    AppendEngineGameMessage(result.Body, _nextTurn);
+                    SetGameStatus(string.Empty);
+                    _nextTurn++;
+                    RefreshGameTurnHeader();
                 }
             }
             else
@@ -705,19 +753,37 @@ public partial class MainWindow : Window
         GameStatusTextBlock.Foreground = isError
             ? Brushes.Salmon
             : Brushes.LightSteelBlue;
+        // Avoid a blank status row consuming vertical space when there is nothing to show.
+        GameStatusTextBlock.Visibility = string.IsNullOrWhiteSpace(text) && !isError
+            ? Visibility.Collapsed
+            : Visibility.Visible;
     }
 
-    private void AppendPlayerGameMessage(string text) =>
-        AppendGameMessage("You", text, HorizontalAlignment.Right, "#365CA8", "#4C74C2", Brushes.White);
+    private void AppendPlayerGameMessage(string text, int turnNumber) =>
+        AppendGameMessage("You", turnNumber, text, HorizontalAlignment.Right, "#365CA8", "#4C74C2", Brushes.White);
 
-    private void AppendEngineGameMessage(string text) =>
-        AppendGameMessage("Engine", text, HorizontalAlignment.Left, "#1E2837", "#304057", Brushes.WhiteSmoke);
+    private void AppendEngineGameMessage(string text, int turnNumber) =>
+        AppendGameMessage("Engine", turnNumber, text, HorizontalAlignment.Left, "#1E2837", "#304057", Brushes.WhiteSmoke);
 
     private void AppendSystemGameMessage(string text) =>
-        AppendGameMessage("System", text, HorizontalAlignment.Left, "#302534", "#5B456D", Brushes.WhiteSmoke);
+        AppendGameMessage("System", null, text, HorizontalAlignment.Left, "#302534", "#5B456D", Brushes.WhiteSmoke);
+
+    private static string BuildSpeakerHeading(string speaker, int? turnNumber) =>
+        turnNumber is int t ? $"{speaker} · Turn {t}" : speaker;
+
+    private void RefreshGameTurnHeader()
+    {
+        if (GameTurnHeaderTextBlock is null)
+        {
+            return;
+        }
+
+        GameTurnHeaderTextBlock.Text = $"Current turn: {_nextTurn}";
+    }
 
     private void AppendGameMessage(
         string speaker,
+        int? turnNumber,
         string text,
         HorizontalAlignment alignment,
         string backgroundColor,
@@ -725,17 +791,27 @@ public partial class MainWindow : Window
         Brush foreground)
     {
         _gameMessages.Add(new GameChatMessage(
-            speaker,
+            BuildSpeakerHeading(speaker, turnNumber),
             text,
             alignment,
             (Brush)new BrushConverter().ConvertFromString(backgroundColor)!,
             (Brush)new BrushConverter().ConvertFromString(borderColor)!,
             foreground));
 
-        if (_gameMessages.Count > 0)
-        {
-            GameMessagesListBox.ScrollIntoView(_gameMessages[^1]);
-        }
+        ScheduleScrollGameMessagesToEnd();
+    }
+
+    private void ScheduleScrollGameMessagesToEnd()
+    {
+        // Defer until layout so ExtentHeight reflects the new item; pixel scroll avoids clipped tails from item-based scrolling.
+        _ = Dispatcher.BeginInvoke(
+            () =>
+            {
+                GameMessagesScrollViewer.UpdateLayout();
+                var maxOffset = Math.Max(0, GameMessagesScrollViewer.ExtentHeight - GameMessagesScrollViewer.ViewportHeight);
+                GameMessagesScrollViewer.ScrollToVerticalOffset(maxOffset);
+            },
+            DispatcherPriority.Loaded);
     }
 
     private void AppendQwenMonitorEntry(string text)

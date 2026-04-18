@@ -19,3 +19,5 @@
     - The Director should then be able to rely on that plot document to decide where to move the narrative in the following answers to prompts.
 
 - get rid of the TS implementation
+
+- filter console by module
