@@ -6,8 +6,8 @@ using Microsoft.Data.Sqlite;
 namespace MorpheusEngine;
 
 /// <summary>
-/// Per-run SQLite file under <c>game_projects/&lt;gameProjectId&gt;/saved/&lt;runId&gt;/world_state.db</c>.
-/// Mirrors the TypeScript <c>sessionStore</c> schema and bootstrap rules (WAL, idempotent DDL, turn-0 snapshot, optional lore seed from CSV only).
+/// Per-run SQLite file under game_projects/&lt;gameProjectId&gt;/saved/&lt;runId&gt;/world_state.db.
+/// Mirrors the TypeScript sessionStore schema and bootstrap rules (WAL, idempotent DDL, turn-0 snapshot, optional lore seed from CSV only).
 /// </summary>
 internal sealed class RunPersistence
 {
@@ -21,10 +21,10 @@ internal sealed class RunPersistence
 
     #region Public methods
     /// <summary>
-    /// Creates session directory, opens DB, applies schema, meta, turn-0 snapshot, and optional lore seed from <c>lore/default_lore_entries.csv</c> only.
-    /// Called from <c>SessionStoreHost</c> on <c>POST /initialize</c> when the run folder/DB does not exist yet (router exposes the same path and forwards to this module).
+    /// Creates session directory, opens DB, applies schema, meta, turn-0 snapshot, and optional lore seed from lore/default_lore_entries.csv only.
+    /// Called from SessionStoreHost on POST /initialize when the run folder/DB does not exist yet (router exposes the same path and forwards to this module).
     /// </summary>
-    public RunStartResponse InitializeRun(string gameProjectId, string runId)
+    public InitializeModuleResponse InitializeRun(string gameProjectId, string runId)
     {
         RequireSafePathSegment(nameof(gameProjectId), gameProjectId);
         RequireSafePathSegment(nameof(runId), runId);
@@ -118,58 +118,23 @@ internal sealed class RunPersistence
             Console.WriteLine($"[SessionStore] Lore CSV seed failed: {ex.Message}");
         }
 
-        return new RunStartResponse(true, runId, gameProjectId);
-    }
-
-    /// <summary>Computes expected next turn from <c>MAX(snapshots.turn)</c> and compares to the client-supplied turn.</summary>
-    public TurnValidateResponse ValidateTurn(string gameProjectId, string runId, int turn)
-    {
-        RequireSafePathSegment(nameof(gameProjectId), gameProjectId);
-        RequireSafePathSegment(nameof(runId), runId);
-
-        var dbPath = GetDbPath(gameProjectId, runId);
-        if (!File.Exists(dbPath))
-        {
-            return new TurnValidateResponse(
-                false,
-                1,
-                0,
-                "Run database not found; call router POST /initialize first (forwards to session_store).");
-        }
-
-        if (turn < 1)
-        {
-            return new TurnValidateResponse(false, 0, 0, "Turn must be >= 1.");
-        }
-
-        // Q (answered): We do not hold one long-lived connection from /initialize. Each HTTP request opens SQLite, does work, and disposes —
-        // avoids leaking handles across requests, matches WAL expectations for short transactions, and keeps validate/persist independent
-        // (router may call validate then intent then persist; a single global connection would serialize poorly and outlive request scope).
-        using var connection = OpenConnection(dbPath);
-        InitializeSessionSchema(connection);
-        var maxSnapshotTurn = ReadMaxSnapshotTurn(connection);
-        var expectedTurn = maxSnapshotTurn + 1;
-        var ok = turn == expectedTurn;
-        var error = ok
-            ? null
-            : $"Turn sequencing violation: client sent turn {turn} but expected {expectedTurn} (max snapshot turn is {maxSnapshotTurn}).";
-        return new TurnValidateResponse(ok, expectedTurn, maxSnapshotTurn, error);
+        return new InitializeModuleResponse(true);
     }
 
     /// <summary>
-    /// Inserts <c>player_input</c> and <c>module_trace</c> events plus a snapshot row for this turn.
+    /// Inserts player_input and module_trace events plus a snapshot row for this turn.
     /// Re-checks sequencing inside the transaction (fail fast).
     /// </summary>
-    public TurnPersistResponse PersistTurn(TurnPersistRequest request)
+    public TurnPersistResponse PersistTurn(string gameProjectId, string runId, TurnPersistRequest request)
     {
-        RequireSafePathSegment(nameof(request.GameProjectId), request.GameProjectId);
-        RequireSafePathSegment(nameof(request.RunId), request.RunId);
-        if (string.IsNullOrWhiteSpace(request.PlayerId))
+        RequireSafePathSegment(nameof(gameProjectId), gameProjectId);
+        RequireSafePathSegment(nameof(runId), runId);
+        if (request.Turn < 1)
         {
-            throw new ArgumentException("playerId must be non-empty.", nameof(request));
+            throw new InvalidOperationException("Turn must be >= 1.");
         }
 
-        var dbPath = GetDbPath(request.GameProjectId, request.RunId);
+        var dbPath = GetDbPath(gameProjectId, runId);
         if (!File.Exists(dbPath))
         {
             throw new InvalidOperationException(
@@ -467,7 +432,7 @@ internal sealed class RunPersistence
             return JsonSerializer.Serialize(new { intentExtractorRawText = intentResponseBody });
         }
     }
-    /// <summary>Minimal CSV line parser mirroring TS <c>parseCsvLine</c> (quoted fields, doubled quotes).</summary>
+    /// <summary>Minimal CSV line parser mirroring TS parseCsvLine (quoted fields, doubled quotes).</summary>
     private static List<string> ParseCsvLine(string line)
     {
         var values = new List<string>();

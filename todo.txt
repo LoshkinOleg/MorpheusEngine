@@ -17,3 +17,5 @@
   - called regularly by the Director to consolidate the new story diff:
     - upsert a global plot document, hidden from the player, to explain most of the inconsistencies that have happened.
     - The Director should then be able to rely on that plot document to decide where to move the narrative in the following answers to prompts.
+
+- get rid of the TS implementation

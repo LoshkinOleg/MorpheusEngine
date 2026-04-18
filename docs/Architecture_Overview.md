@@ -29,7 +29,7 @@ flowchart LR
   end
 ```
 
-The **router** is the only module the UI is required to hit for normal play (`/initialize`, `/turn`). Internal modules may call **`router /proxy`** to reach other modules on an **allowlisted** `(target_module, path, method)` triple from `engine_config.json`.
+The **router** is the only module the UI is required to hit for normal play (`/initialize`, `/turn`). Internal modules may call **`router /proxy`** to reach other modules on an **allowlisted** `(targetModule, path, method)` triple from `engine_config.json`.
 
 ## Repository layout (conceptual)
 

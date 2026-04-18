@@ -3,118 +3,113 @@ using System.Text.Json.Serialization;
 
 namespace MorpheusEngine;
 
-/// <summary>Player-facing turn envelope: identifies the run and turn index before the router forwards <see cref="IntentRequest"/> downstream.</summary>
+// Note: C# members use PascalCase; JSON wire names on these contracts use camelCase (JsonPropertyName). "params" stays as one word (not snake_case).
+
+#region Module lifecycle (GET /info, /health; POST /shutdown)
+public sealed record ModuleInfoResponse(
+    [property: JsonPropertyName("ok")] bool Ok,
+    [property: JsonPropertyName("moduleName")] string ModuleName);
+
+public sealed record ModuleHealthResponse(
+    [property: JsonPropertyName("ok")] bool Ok,
+    [property: JsonPropertyName("status")] string Status);
+
+public sealed record ModuleShutdownResponse(
+    [property: JsonPropertyName("ok")] bool Ok,
+    [property: JsonPropertyName("message")] string Message);
+#endregion
+
+#region Errors (common JSON error envelope)
+public sealed record ErrorResponse(
+    [property: JsonPropertyName("ok")] bool Ok,
+    [property: JsonPropertyName("error")] string Error, // Short msg, not HTTP response code.
+    [property: JsonPropertyName("details")] string? Details = null);
+#endregion
+
+#region POST /initialize (director and session_store)
+public sealed record InitializeModuleRequest(
+    [property: JsonPropertyName("gameProjectId")] string GameProjectId, // Needed.
+    [property: JsonPropertyName("runId")] string RunId); // Needed.
+
+public sealed record InitializeModuleResponse([property: JsonPropertyName("ok")] bool Ok);
+#endregion
+
+#region Turn pipeline (router POST /turn; director POST /message; session_store POST /persist_turn)
+/// <summary>Player-facing turn envelope: identifies the run and turn index before the router forwards downstream.</summary>
 public sealed record TurnRequest(
-    [property: JsonPropertyName("runId")] string RunId,
-    [property: JsonPropertyName("gameProjectId")] string GameProjectId,
+    [property: JsonPropertyName("runId")] string RunId, // Needed, used by SessionStore module.
+    [property: JsonPropertyName("gameProjectId")] string GameProjectId, // Needed, used by SessionStore module.
     [property: JsonPropertyName("turn")] int Turn,
-    [property: JsonPropertyName("playerId")] string PlayerId,
     [property: JsonPropertyName("playerInput")] string PlayerInput);
 
-public sealed record RunStartRequest(
-    [property: JsonPropertyName("gameProjectId")] string GameProjectId,
-    [property: JsonPropertyName("runId")] string RunId);
-
-public sealed record RunStartResponse(
-    [property: JsonPropertyName("ok")] bool Ok,
-    [property: JsonPropertyName("runId")] string RunId,
-    [property: JsonPropertyName("gameProjectId")] string GameProjectId);
-
-public sealed record TurnValidateRequest(
-    [property: JsonPropertyName("gameProjectId")] string GameProjectId,
-    [property: JsonPropertyName("runId")] string RunId,
-    [property: JsonPropertyName("turn")] int Turn);
-
-public sealed record TurnValidateResponse(
-    [property: JsonPropertyName("ok")] bool Ok,
-    [property: JsonPropertyName("expectedTurn")] int ExpectedTurn,
-    [property: JsonPropertyName("maxSnapshotTurn")] int MaxSnapshotTurn,
-    [property: JsonPropertyName("error")] string? Error = null);
-
-public sealed record TurnPersistRequest(
-    [property: JsonPropertyName("gameProjectId")] string GameProjectId,
-    [property: JsonPropertyName("runId")] string RunId,
+/// <summary>Router forwards to director POST /message after POST /initialize (single bound run per Director process).</summary>
+public sealed record DirectorMessageRequest(
     [property: JsonPropertyName("turn")] int Turn,
-    [property: JsonPropertyName("playerId")] string PlayerId,
+    [property: JsonPropertyName("playerInput")] string PlayerInput);
+
+/// <summary>Body for session_store POST /persist_turn; run identity comes from the last successful POST /initialize on that module process.</summary>
+public sealed record TurnPersistRequest(
+    [property: JsonPropertyName("turn")] int Turn,
     [property: JsonPropertyName("playerInput")] string PlayerInput,
     [property: JsonPropertyName("intentResponseBody")] string IntentResponseBody);
 
 public sealed record TurnPersistResponse(
     [property: JsonPropertyName("ok")] bool Ok);
+#endregion
 
-public sealed record LlmGenerateRequest(
-    [property: JsonPropertyName("prompt")] string Prompt,
-    [property: JsonPropertyName("model")] string Model,
-    [property: JsonPropertyName("system")] string System = "You are a helpful assistant.");
+#region Router POST /proxy
+public sealed record ModuleProxyRequest(
+    [property: JsonPropertyName("sourceModule")] string SourceModule,
+    [property: JsonPropertyName("targetModule")] string TargetModule,
+    [property: JsonPropertyName("targetPath")] string TargetPath, // Endpoint name like /initialize
+    [property: JsonPropertyName("method")] string Method, // GET, POST
+    [property: JsonPropertyName("body")] JsonElement? Body);
+#endregion
 
+#region Intent catalog (intent_extractor POST /intent; director POST /message returns this shape as narration shim)
 public sealed record IntentRequest(
     [property: JsonPropertyName("playerInput")] string PlayerInput);
-
-/// <summary>Router forwards <see cref="TurnRequest"/>-shaped JSON to <c>director</c> <c>POST /message</c> (same field names as <see cref="TurnRequest"/>).</summary>
-public sealed record DirectorMessageRequest(
-    [property: JsonPropertyName("runId")] string RunId,
-    [property: JsonPropertyName("gameProjectId")] string GameProjectId, // Q: do we need that?
-    [property: JsonPropertyName("turn")] int Turn,
-    [property: JsonPropertyName("playerId")] string PlayerId, // Q: do we need that?
-    [property: JsonPropertyName("playerInput")] string PlayerInput);
-
-/// <summary>One chat message for <c>llm_provider_qwen</c> <c>POST /chat</c> (Ollama <c>/api/chat</c> message shape).</summary>
-public sealed record ChatMessageDto(
-    [property: JsonPropertyName("role")] string Role,
-    [property: JsonPropertyName("content")] string Content);
-
-/// <summary>Request to <c>llm_provider_qwen</c> <c>POST /chat</c>: full message list (system + history + latest user).</summary>
-public sealed record ChatGenerateRequest(
-    [property: JsonPropertyName("model")] string Model, // Q: do we need this?
-    [property: JsonPropertyName("messages")] IReadOnlyList<ChatMessageDto> Messages);
-
-/// <summary>JSON envelope returned by <c>llm_provider_qwen</c> on successful <c>/chat</c> (<see cref="Response"/> is assistant text).</summary>
-public sealed record ChatGenerateResponse(
-    [property: JsonPropertyName("ok")] bool Ok,
-    [property: JsonPropertyName("model")] string? Model,
-    [property: JsonPropertyName("response")] string? Response,
-    [property: JsonPropertyName("raw_response")] string? RawResponse);
-
-public sealed record ModuleProxyRequest(
-    [property: JsonPropertyName("source_module")] string SourceModule,
-    [property: JsonPropertyName("target_module")] string TargetModule,
-    [property: JsonPropertyName("target_path")] string TargetPath,
-    [property: JsonPropertyName("method")] string Method,
-    [property: JsonPropertyName("body")] JsonElement? Body);
-
-public sealed record ModuleInfoResponse(
-    [property: JsonPropertyName("ok")] bool Ok,
-    [property: JsonPropertyName("module_name")] string ModuleName);
-
-public sealed record ModuleHealthResponse(
-    [property: JsonPropertyName("ok")] bool Ok,
-    [property: JsonPropertyName("module_name")] string ModuleName,
-    [property: JsonPropertyName("status")] string Status);
-
-public sealed record ModuleShutdownResponse(
-    [property: JsonPropertyName("ok")] bool Ok,
-    [property: JsonPropertyName("module_name")] string ModuleName,
-    [property: JsonPropertyName("message")] string Message);
-
-public sealed record ErrorResponse(
-    [property: JsonPropertyName("ok")] bool Ok,
-    [property: JsonPropertyName("error")] string Error,
-    [property: JsonPropertyName("details")] string? Details = null);
-
-/// <summary>
-/// JSON envelope returned by an LLM provider module (e.g. <c>llm_provider_qwen</c>) on successful <c>/generate</c>.
-/// </summary>
-public sealed record LlmProviderGenerateResponse(
-    [property: JsonPropertyName("ok")] bool Ok,
-    [property: JsonPropertyName("model")] string? Model,
-    [property: JsonPropertyName("response")] string? Response,
-    [property: JsonPropertyName("raw_response")] string? RawResponse);
 
 public sealed record IntentResponse(
     [property: JsonPropertyName("ok")] bool Ok,
     [property: JsonPropertyName("intent")] string Intent,
     [property: JsonPropertyName("params")] IReadOnlyDictionary<string, string> Parameters);
+#endregion
 
+#region LLM provider (llm_provider_qwen POST /generate and POST /chat)
+/// <summary>POST /generate on an LLM provider: prompt and optional system text only; the provider picks the backing model from its own configuration.</summary>
+public sealed record LlmGenerateRequest(
+    [property: JsonPropertyName("prompt")] string Prompt,
+    [property: JsonPropertyName("system")] string System = "You are a helpful assistant.");
+
+/// <summary>
+/// JSON envelope returned by an LLM provider module (e.g. llm_provider_qwen) on successful /generate.
+/// </summary>
+public sealed record LlmProviderGenerateResponse(
+    [property: JsonPropertyName("ok")] bool Ok,
+    [property: JsonPropertyName("response")] string? Response,
+    [property: JsonPropertyName("rawResponse")] string? RawResponse);
+
+/// <summary>Request to llm_provider_qwen POST /chat: message list only; Ollama model comes from engine_config.json on the provider module.</summary>
+public sealed record ChatGenerateRequest
+{
+    /// <summary>One chat message (Ollama /api/chat message shape).</summary>
+    public sealed record ChatMessageDto(
+        [property: JsonPropertyName("role")] string Role,
+        [property: JsonPropertyName("content")] string Content);
+
+    [property: JsonPropertyName("messages")]
+    public IReadOnlyList<ChatMessageDto> Messages { get; init; } = Array.Empty<ChatMessageDto>();
+}
+
+/// <summary>JSON envelope returned by llm_provider_qwen on successful /chat (<see cref="Response"/> is assistant text).</summary>
+public sealed record ChatGenerateResponse(
+    [property: JsonPropertyName("ok")] bool Ok,
+    [property: JsonPropertyName("response")] string? Response,
+    [property: JsonPropertyName("rawResponse")] string? RawResponse);
+#endregion
+
+#region Contract examples (engine_config request_contract tooling)
 public static class EngineContractExamples
 {
     private static readonly JsonSerializerOptions TemplateOptions = new()
@@ -128,41 +123,33 @@ public static class EngineContractExamples
             "00000000-0000-0000-0000-000000000001",
             "sandcrawler",
             1,
-            "player",
             "look around")),
-        "initialize_request" => Serialize(new RunStartRequest("sandcrawler", "00000000-0000-0000-0000-000000000001")),
-        "session_turn_validate_request" => Serialize(new TurnValidateRequest("sandcrawler", "00000000-0000-0000-0000-000000000001", 1)),
+        "initialize_request" => Serialize(new InitializeModuleRequest("sandcrawler", "00000000-0000-0000-0000-000000000001")),
         "session_turn_persist_request" => Serialize(new TurnPersistRequest(
-            "sandcrawler",
-            "00000000-0000-0000-0000-000000000001",
             1,
-            "player",
             "look around",
             "{\"ok\":true,\"intent\":\"wait\",\"params\":{}}")),
-        "qwen_generate_request" => Serialize(new LlmGenerateRequest("Write a short response.", "qwen2.5:7b-instruct")),
+        "qwen_generate_request" => Serialize(new LlmGenerateRequest("Write a short response.")),
         "intent_request" => Serialize(new IntentRequest("look around")),
-        "director_message_request" => Serialize(new DirectorMessageRequest(
-            "00000000-0000-0000-0000-000000000001",
-            "sandcrawler",
-            1,
-            "player",
-            "Look around.")),
-        "chat_generate_request" => Serialize(new ChatGenerateRequest(
-            "qwen2.5:7b-instruct",
-            new ChatMessageDto[]
-            {
-                new("system", "You are the GM."),
-                new("user", "Look around.")
-            })),
+        "director_message_request" => Serialize(new DirectorMessageRequest(1, "Look around.")),
+        "chat_generate_request" => Serialize(new ChatGenerateRequest
+        {
+            Messages =
+            [
+                new ChatGenerateRequest.ChatMessageDto("system", "You are the GM."),
+                new ChatGenerateRequest.ChatMessageDto("user", "Look around.")
+            ]
+        }),
         "module_proxy_request" => Serialize(new ModuleProxyRequest(
             "intent_extractor",
             "generic_llm_provider",
             "/generate",
             "POST",
-            JsonSerializer.SerializeToElement(new LlmGenerateRequest("Write a short response.", "qwen2.5:7b-instruct")))),
+            JsonSerializer.SerializeToElement(new LlmGenerateRequest("Write a short response.")))),
         _ => null
     };
 
     private static string Serialize<T>(T payload) =>
         JsonSerializer.Serialize(payload, TemplateOptions);
 }
+#endregion

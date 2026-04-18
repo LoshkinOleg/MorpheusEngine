@@ -48,9 +48,9 @@ Frontend defaults to `http://localhost:5173`.
 ```json
 {
   "runId": "uuid",
+  "gameProjectId": "sandcrawler",
   "turn": 1,
-  "playerInput": "I order the crew to seal the hull breach.",
-  "playerId": "player.captain"
+  "playerInput": "I order the crew to seal the hull breach."
 }
 ```
 

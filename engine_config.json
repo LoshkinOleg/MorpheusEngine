@@ -48,6 +48,7 @@
       "display_name": "LlmProvider_qwen",
       "required": true,
       "ollama_port": 11434,
+      "default_chat_model": "qwen2.5:7b-instruct",
       "launch": {
         "artifact": "dotnet/src/MorpheusEngine.LlmProvider_qwen/bin/Debug/net9.0/MorpheusEngine.LlmProvider_qwen.exe",
         "dev_project": "dotnet/src/MorpheusEngine.LlmProvider_qwen/MorpheusEngine.LlmProvider_qwen.csproj"
@@ -65,7 +66,7 @@
         },
         {
           "path": "/generate",
-          "description": "LLM generate",
+          "description": "LLM generate (Ollama model from default_chat_model)",
           "method": "POST",
           "request_contract": "qwen_generate_request"
         },
@@ -81,7 +82,6 @@
       "port_key": "intent_extractor",
       "display_name": "IntentExtractor",
       "required": true,
-      "default_llm_model": "qwen2.5:7b-instruct",
       "launch": {
         "artifact": "dotnet/src/MorpheusEngine.IntentExtractor/bin/Debug/net9.0/MorpheusEngine.IntentExtractor.exe",
         "dev_project": "dotnet/src/MorpheusEngine.IntentExtractor/MorpheusEngine.IntentExtractor.csproj"
@@ -164,14 +164,8 @@
           "request_contract": "initialize_request"
         },
         {
-          "path": "/validate_turn",
-          "description": "Validate turn sequencing against snapshots",
-          "method": "POST",
-          "request_contract": "session_turn_validate_request"
-        },
-        {
           "path": "/persist_turn",
-          "description": "Persist events + snapshot for a validated turn",
+          "description": "Persist events + snapshot for the run bound by last POST /initialize on this process (enforces sequencing in a transaction)",
           "method": "POST",
           "request_contract": "session_turn_persist_request"
         }

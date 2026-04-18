@@ -5,13 +5,13 @@ using System.Text.Json;
 namespace MorpheusEngine;
 
 /// <summary>
-/// HTTP host for the <c>director</c> module: one in-process run at a time, system prompt from game project files, LLM via router proxy to <c>generic_llm_provider /chat</c>.
+/// HTTP host for the director module: one in-process run at a time, system prompt from game project files, LLM via router proxy to generic_llm_provider /chat.
 /// </summary>
 public sealed class Director
 {
     #region Nested types
 
-    /// <summary>One in-memory chat message (mirrors Ollama roles used in <see cref="ChatMessageDto"/>).</summary>
+    /// <summary>One in-memory chat message (mirrors Ollama roles used in <see cref="ChatGenerateRequest.ChatMessageDto"/>).</summary>
     private sealed record ChatMessage(string Role, string Content);
 
     #endregion
@@ -33,16 +33,13 @@ public sealed class Director
     private readonly HttpListener _listener = new();
     private bool _shutdownRequested = false;
 
-    /// <summary>Single-flight gate for <c>/initialize</c> and <c>/message</c> (one active run per Director process).</summary>
+    /// <summary>Single-flight gate for /initialize and /message (one active run per Director process).</summary>
     private readonly SemaphoreSlim _sessionGate = new(1, 1);
 
-    /// <summary>Set after successful <c>POST /initialize</c>; cleared only when the process restarts.</summary>
+    /// <summary>Set after successful POST /initialize; cleared only when the process restarts.</summary>
     private bool _initialized = false;
 
-    private string _boundRunId = "";
-    private string _boundGameProjectId = "";
-
-    /// <summary>Conversation for the bound run; first entry is always <c>system</c> after <c>/initialize</c>.</summary>
+    /// <summary>Conversation for the bound run; first entry is always system after /initialize.</summary>
     private List<ChatMessage>? _history = null;
 
     #endregion
@@ -116,7 +113,7 @@ public sealed class Director
 
             if (path.Equals("/health", StringComparison.OrdinalIgnoreCase))
             {
-                await Respond(context, 200, new ModuleHealthResponse(true, "director", "healthy"));
+                await Respond(context, 200, new ModuleHealthResponse(true, "healthy"));
                 return;
             }
 
@@ -152,7 +149,7 @@ public sealed class Director
 
     private async Task ProcessRequest_shutdown(HttpListenerContext context)
     {
-        await Respond(context, 200, new ModuleShutdownResponse(true, "director", "Shutdown requested."));
+        await Respond(context, 200, new ModuleShutdownResponse(true, "Shutdown requested."));
         _shutdownRequested = true;
 
         try
@@ -168,7 +165,7 @@ public sealed class Director
     }
 
     /// <summary>
-    /// Accepts <see cref="RunStartRequest"/>, loads system prompt from disk once, seeds in-memory history; returns <see cref="RunStartResponse"/> on success. Second call without process restart yields 409 (fail-fast).
+    /// Accepts <see cref="InitializeModuleRequest"/>, loads system prompt from disk once, seeds in-memory history; returns <see cref="InitializeModuleResponse"/> on success. Second call without process restart yields 409 (fail-fast).
     /// </summary>
     private async Task ProcessRequest_initialize(HttpListenerContext context)
     {
@@ -184,10 +181,10 @@ public sealed class Director
             body = await reader.ReadToEndAsync();
         }
 
-        RunStartRequest? request;
+        InitializeModuleRequest? request;
         try
         {
-            request = JsonSerializer.Deserialize<RunStartRequest>(body, JsonOptions);
+            request = JsonSerializer.Deserialize<InitializeModuleRequest>(body, JsonOptions);
         }
         catch (JsonException e)
         {
@@ -240,11 +237,9 @@ public sealed class Director
             }
 
             _history = new List<ChatMessage> { new ChatMessage("system", systemContent) };
-            _boundRunId = runId;
-            _boundGameProjectId = gameProjectId;
             _initialized = true;
 
-            await Respond(context, 200, new RunStartResponse(true, runId, gameProjectId));
+            await Respond(context, 200, new InitializeModuleResponse(true));
         }
         finally
         {
@@ -253,7 +248,7 @@ public sealed class Director
     }
 
     /// <summary>
-    /// Deserializes <see cref="DirectorMessageRequest"/>; requires prior <c>POST /initialize</c> with matching ids; builds chat messages for Ollama, proxies to LLM, appends user+assistant to history on success, returns <see cref="IntentResponse"/> shim for router/UI.
+    /// Deserializes <see cref="DirectorMessageRequest"/>; requires prior POST /initialize; builds chat messages for Ollama, proxies to LLM, appends user+assistant to history on success, returns <see cref="IntentResponse"/> shim for router/UI.
     /// </summary>
     private async Task ProcessRequest_message(HttpListenerContext context)
     {
@@ -280,16 +275,12 @@ public sealed class Director
             return;
         }
 
-        if (request is null
-            || string.IsNullOrWhiteSpace(request.RunId)
-            || string.IsNullOrWhiteSpace(request.GameProjectId)
-            || string.IsNullOrWhiteSpace(request.PlayerId)
-            || string.IsNullOrWhiteSpace(request.PlayerInput))
+        if (request is null || string.IsNullOrWhiteSpace(request.PlayerInput))
         {
             await Respond(
                 context,
                 400,
-                new ErrorResponse(false, "Request must include non-empty runId, gameProjectId, playerId, and playerInput."));
+                new ErrorResponse(false, "Request must include non-empty playerInput."));
             return;
         }
 
@@ -299,8 +290,6 @@ public sealed class Director
             return;
         }
 
-        var runId = request.RunId.Trim();
-        var gameProjectId = request.GameProjectId.Trim();
         var playerInput = request.PlayerInput.Trim();
 
         await _sessionGate.WaitAsync();
@@ -311,36 +300,22 @@ public sealed class Director
                 await Respond(
                     context,
                     400,
-                    new ErrorResponse(false, "Director is not initialized; call POST /initialize with this runId and gameProjectId first."));
-                return;
-            }
-
-            if (!string.Equals(runId, _boundRunId, StringComparison.Ordinal)
-                || !string.Equals(gameProjectId, _boundGameProjectId, StringComparison.Ordinal))
-            {
-                await Respond(
-                    context,
-                    409,
-                    new ErrorResponse(
-                        false,
-                        "runId/gameProjectId do not match the initialized run.",
-                        $"expected runId='{_boundRunId}', gameProjectId='{_boundGameProjectId}'."));
+                    new ErrorResponse(false, "Director is not initialized; call POST /initialize first."));
                 return;
             }
 
             var history = _history;
 
             // Build outbound messages without mutating history until the LLM call succeeds (avoids orphan user rows on failure).
-            var messagesForApi = new List<ChatMessageDto>(history.Count + 1);
+            var messagesForApi = new List<ChatGenerateRequest.ChatMessageDto>(history.Count + 1);
             foreach (var row in history)
             {
-                messagesForApi.Add(new ChatMessageDto(row.Role, row.Content));
+                messagesForApi.Add(new ChatGenerateRequest.ChatMessageDto(row.Role, row.Content));
             }
 
-            messagesForApi.Add(new ChatMessageDto("user", playerInput)); // Add new player input.
+            messagesForApi.Add(new ChatGenerateRequest.ChatMessageDto("user", playerInput)); // Add new player input.
 
-            var model = _configuration.IntentDefaultLlmModel; // TODO: I feel like this should be determined by the Router, not the Director.
-            var chatRequest = new ChatGenerateRequest(model, messagesForApi);
+            var chatRequest = new ChatGenerateRequest { Messages = messagesForApi };
             var proxyRequest = new ModuleProxyRequest(
                 "director",
                 "generic_llm_provider",
@@ -432,7 +407,7 @@ public sealed class Director
     }
 
     /// <summary>
-    /// Reads <c>game_projects/&lt;gameProjectId&gt;/system/instructions.md</c> and lore CSV; throws if required files are absent (caller maps to HTTP 500/400).
+    /// Reads game_projects/&lt;gameProjectId&gt;/system/instructions.md and lore CSV; throws if required files are absent (caller maps to HTTP 500/400).
     /// </summary>
     private static string BuildSystemPromptFromDisk(string repositoryRoot, string gameProjectId)
     {
@@ -458,7 +433,7 @@ public sealed class Director
     }
 
     /// <summary>
-    /// Parses <c>default_lore_entries.csv</c> (subject + data columns) into a markdown bullet list under <c>## Canon Lore</c>.
+    /// Parses default_lore_entries.csv (subject + data columns) into a markdown bullet list under ## Canon Lore.
     /// </summary>
     private static string BuildCanonLoreSectionFromCsv(string csvPath)
     {
@@ -512,7 +487,7 @@ public sealed class Director
         return sb.ToString().TrimEnd();
     }
 
-    /// <summary>Minimal CSV line parser mirroring <c>RunPersistence.ParseCsvLine</c> (quoted fields, doubled quotes).</summary>
+    /// <summary>Minimal CSV line parser mirroring RunPersistence.ParseCsvLine (quoted fields, doubled quotes).</summary>
     private static List<string> ParseCsvLine(string line)
     {
         var values = new List<string>();

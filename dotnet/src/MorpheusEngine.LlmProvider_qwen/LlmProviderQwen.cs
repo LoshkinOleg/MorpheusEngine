@@ -6,10 +6,6 @@ namespace MorpheusEngine
 {
     public class LlmProviderQwen
     {
-        #region Public data
-        public const string DEFAULT_MODEL = "qwen2.5:7b-instruct";
-        #endregion
-
         #region Private data
         private static readonly JsonSerializerOptions _jsonOptions = new JsonSerializerOptions
         {
@@ -24,6 +20,9 @@ namespace MorpheusEngine
 
         private readonly HttpListener _listener = new HttpListener(); // Inbound listener for responding to http messages.
         private bool _shutdownRequested = false;
+
+        /// <summary>Ollama model for /api/chat and /api/generate; resolved once in <see cref="Initialize"/> from engine_config.json (llm_provider_qwen.default_chat_model).</summary>
+        private string _chatModel = "";
         #endregion
 
         #region Public methods
@@ -59,11 +58,20 @@ namespace MorpheusEngine
         // Intentional single use method.
         private void Initialize()
         {
-            var ports = EngineConfigLoader.GetPorts();
+            var configuration = EngineConfigLoader.GetConfiguration();
+            _chatModel = configuration.LlmProviderDefaultChatModel.Trim();
+            if (string.IsNullOrWhiteSpace(_chatModel))
+            {
+                throw new InvalidOperationException(
+                    "llm_provider_qwen: LlmProviderDefaultChatModel from engine configuration is empty (check default_chat_model in engine_config.json).");
+            }
+
+            var ports = configuration.PortMap;
             var qwenListen = ports.GetRequiredPort("llm_provider_qwen");
             _listener.Prefixes.Add($"http://127.0.0.1:{qwenListen}/");
             _listener.Start();
             Console.WriteLine($"LlmProvider_qwen listening on http://127.0.0.1:{qwenListen}/");
+            Console.WriteLine($"LlmProvider_qwen Ollama model for /chat and /generate (from engine config): {_chatModel}");
             Console.WriteLine("LlmProvider_qwen initialized.");
         }
 
@@ -89,9 +97,9 @@ namespace MorpheusEngine
                     await Respond(context, 200, new
                     {
                         ok = true,
-                        module_name = "llm_provider_qwen",
+                        moduleName = "llm_provider_qwen",
                         provider = "ollama",
-                        model = DEFAULT_MODEL
+                        model = _chatModel
                     });
                     return;
                 }
@@ -99,7 +107,7 @@ namespace MorpheusEngine
                 // /health endpoint
                 if (path.Equals("/health", StringComparison.OrdinalIgnoreCase))
                 {
-                    await Respond(context, 200, new ModuleHealthResponse(true, "llm_provider_qwen", "healthy"));
+                    await Respond(context, 200, new ModuleHealthResponse(true, "healthy"));
                     return;
                 }
 
@@ -152,7 +160,7 @@ namespace MorpheusEngine
         // Exception to "extract only when >1 use": kept as a named handler parallel to ProcessRequest_generate for /shutdown routing clarity.
         private async Task ProcessRequest_shutdown(HttpListenerContext context)
         {
-            await Respond(context, 200, new ModuleShutdownResponse(true, "llm_provider_qwen", "Shutdown requested."));
+            await Respond(context, 200, new ModuleShutdownResponse(true, "Shutdown requested."));
             _shutdownRequested = true;
 
             try
@@ -195,14 +203,8 @@ namespace MorpheusEngine
             }
             // Request validated.
 
-            // No default model: caller must supply model explicitly (fail fast).
-            if (string.IsNullOrWhiteSpace(request.Model))
-            {
-                await Respond(context, 400, new ErrorResponse(false, "Request must include a non-empty 'model' field."));
-                return;
-            }
-
-            var model = request.Model.Trim();
+            // Model is owned by this provider (engine_config llm_provider_qwen.default_chat_model), not the HTTP caller.
+            var model = _chatModel;
 
             // Construct an ollama payload from the internal generic payload.
             var ollamaPayload = new
@@ -273,7 +275,7 @@ namespace MorpheusEngine
             }
 
             // Relay the successful ollama response back to the caller.
-            await Respond(context, 200, new LlmProviderGenerateResponse(true, model, responseText, ollamaBody));
+            await Respond(context, 200, new LlmProviderGenerateResponse(true, responseText, ollamaBody));
         }
 
         // Intentional single use method: mirrors ProcessRequest_generate but targets Ollama /api/chat.
@@ -302,18 +304,10 @@ namespace MorpheusEngine
                 return;
             }
 
-            if (string.IsNullOrWhiteSpace(request.Model))
-            {
-                await Respond(context, 400, new ErrorResponse(false, "Request must include a non-empty 'model' field."));
-                return;
-            }
-
-            var model = request.Model.Trim();
-
-            // Ollama /api/chat expects { model, messages: [{role,content},...], stream }.
+            // Ollama /api/chat expects { model, messages: [{role,content},...], stream }; model is fixed at provider Initialize() from engine_config.json.
             var ollamaPayload = new
             {
-                model,
+                model = _chatModel,
                 messages = request.Messages,
                 stream = false
             };
@@ -350,9 +344,9 @@ namespace MorpheusEngine
                 {
                     ok = false,
                     error = "Ollama returned an error.",
-                    model,
-                    ollama_status = (int)ollamaResponse.StatusCode,
-                    ollama_response = ollamaBody
+                    model = _chatModel,
+                    ollamaStatus = (int)ollamaResponse.StatusCode,
+                    ollamaResponse = ollamaBody
                 });
                 return;
             }
@@ -373,7 +367,7 @@ namespace MorpheusEngine
                 // keep assistantText null; raw body still returned
             }
 
-            await Respond(context, 200, new ChatGenerateResponse(true, model, assistantText, ollamaBody));
+            await Respond(context, 200, new ChatGenerateResponse(true, assistantText, ollamaBody));
         }
         #endregion
 

@@ -66,13 +66,12 @@ public partial class MainWindow : Window
     private bool _suppressEndpointPresetEvents;
     private bool _applyingEndpointFromPreset;
     private bool _gameRequestInFlight;
-    /// <summary>Logical game project folder under <c>game_projects/</c> (mirrors TS layout). Must match an on-disk project; no silent fallback.</summary>
+    /// <summary>Logical game project folder under game_projects/ (mirrors TS layout). Must match an on-disk project; no silent fallback.</summary>
     private string _gameProjectId = "sandcrawler";
     /// <summary>Per-run id; empty until <see cref="EnsureRunStartedAsync"/> succeeds.</summary>
     private string _runId = string.Empty;
-    /// <summary>Next turn index to send (1-based; must match <c>MAX(snapshots.turn)+1</c>).</summary>
+    /// <summary>Next turn index to send (1-based; must match MAX(snapshots.turn)+1).</summary>
     private int _nextTurn = 1;
-    private const string PlayerId = "player";
     private string[] _qwenMonitorModuleNames = ["Qwen", "LlmProvider_qwen"];
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -560,7 +559,7 @@ public partial class MainWindow : Window
             body);
     }
 
-    /// <summary>POST router <c>/initialize</c> once per UI session so <c>world_state.db</c> exists before the first <c>/turn</c>.</summary>
+    /// <summary>POST router /initialize once per UI session so world_state.db exists before the first /turn.</summary>
     private async Task<bool> EnsureRunStartedAsync()
     {
         if (_config is null)
@@ -574,7 +573,7 @@ public partial class MainWindow : Window
         }
 
         _runId = Guid.NewGuid().ToString("D");
-        var startBody = JsonSerializer.Serialize(new RunStartRequest(_gameProjectId, _runId), JsonOptions);
+        var startBody = JsonSerializer.Serialize(new InitializeModuleRequest(_gameProjectId, _runId), JsonOptions);
         var startResult = await SendRequestAsync(_config.GetRequiredListenPort("router"), "/initialize", startBody, "POST");
         if (startResult.StatusCode is not (>= 200 and < 300))
         {
@@ -623,7 +622,7 @@ public partial class MainWindow : Window
             }
 
             var body = JsonSerializer.Serialize(
-                new TurnRequest(_runId, _gameProjectId, _nextTurn, PlayerId, playerInput.Trim()),
+                new TurnRequest(_runId, _gameProjectId, _nextTurn, playerInput.Trim()),
                 JsonOptions);
             var result = await SendRequestAsync(_config.GetRequiredListenPort("router"), "/turn", body, "POST");
 

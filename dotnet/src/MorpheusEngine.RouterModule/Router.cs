@@ -35,7 +35,7 @@ namespace MorpheusEngine
 
         private readonly EngineConfiguration _configuration = EngineConfigLoader.GetConfiguration();
 
-        /// <summary>Set when <c>/shutdown</c> is received or <see cref="RequestShutdown"/> is called; exits the accept loop.</summary>
+        /// <summary>Set when /shutdown is received or <see cref="RequestShutdown"/> is called; exits the accept loop.</summary>
         private bool _shutdownRequested;
 
         private static readonly JsonSerializerOptions _jsonOptions = new()
@@ -113,13 +113,13 @@ namespace MorpheusEngine
 
                 if (path.Equals("/health", StringComparison.OrdinalIgnoreCase))
                 {
-                    await RespondAsync(context, 200, new ModuleHealthResponse(true, "router", "healthy"));
+                    await RespondAsync(context, 200, new ModuleHealthResponse(true, "healthy"));
                     return;
                 }
 
                 if (path.Equals("/shutdown", StringComparison.OrdinalIgnoreCase))
                 {
-                    await RespondAsync(context, 200, new ModuleShutdownResponse(true, "router", "Shutdown requested."));
+                    await RespondAsync(context, 200, new ModuleShutdownResponse(true, "Shutdown requested."));
                     _shutdownRequested = true;
                     try
                     {
@@ -176,7 +176,7 @@ namespace MorpheusEngine
         }
 
         /// <summary>
-        /// Initializes the Director in-memory run (system prompt + history) then creates the per-run SQLite session via <c>session_store POST /initialize</c>.
+        /// Initializes the Director in-memory run (system prompt + history) then creates the per-run SQLite session via session_store POST /initialize.
         /// Director runs first so missing game project files fail before the database is created.
         /// </summary>
         private async Task ProcessRequest_initialize(HttpListenerContext context)
@@ -189,10 +189,10 @@ namespace MorpheusEngine
 
             var body = await ReadRequestBodyAsync(context);
 
-            RunStartRequest? parsed;
+            InitializeModuleRequest? parsed;
             try
             {
-                parsed = JsonSerializer.Deserialize<RunStartRequest>(body, _jsonOptions);
+                parsed = JsonSerializer.Deserialize<InitializeModuleRequest>(body, _jsonOptions);
             }
             catch (JsonException e)
             {
@@ -230,8 +230,8 @@ namespace MorpheusEngine
         }
 
         /// <summary>
-        /// Player turn: validate <see cref="TurnRequest"/> against <c>session_store</c> sequencing, call <c>director</c> with <see cref="DirectorMessageRequest"/>,
-        /// then persist events + snapshot through <c>session_store</c>. Returns the Director response body (IntentResponse-shaped) on success.
+        /// Player turn: call director with <see cref="DirectorMessageRequest"/>, then persist events + snapshot through session_store
+        /// (which enforces sequencing). Returns the Director response body (IntentResponse-shaped) on success.
         /// </summary>
         private async Task ProcessRequest_turn(HttpListenerContext context)
         {
@@ -251,13 +251,12 @@ namespace MorpheusEngine
             if (request is null
                 || string.IsNullOrWhiteSpace(request.RunId)
                 || string.IsNullOrWhiteSpace(request.GameProjectId)
-                || string.IsNullOrWhiteSpace(request.PlayerId)
                 || string.IsNullOrWhiteSpace(request.PlayerInput))
             {
                 await RespondAsync(
                     context,
                     400,
-                    new ErrorResponse(false, "Turn request must include non-empty runId, gameProjectId, playerId, and playerInput."));
+                    new ErrorResponse(false, "Turn request must include non-empty runId, gameProjectId, and playerInput."));
                 return;
             }
 
@@ -267,49 +266,8 @@ namespace MorpheusEngine
                 return;
             }
 
-            var validateJson = JsonSerializer.Serialize(
-                new TurnValidateRequest(request.GameProjectId.Trim(), request.RunId.Trim(), request.Turn));
-            var validateResult = await ForwardModuleCallAsync(
-                "router",
-                "session_store",
-                "/validate_turn",
-                "POST",
-                validateJson);
-
-            if (validateResult.StatusCode != 200)
-            {
-                await WriteForwardedResultAsync(context, validateResult);
-                return;
-            }
-
-            TurnValidateResponse? validateBody;
-            try
-            {
-                validateBody = JsonSerializer.Deserialize<TurnValidateResponse>(validateResult.Body, _jsonOptions);
-            }
-            catch (JsonException e)
-            {
-                await RespondAsync(
-                    context,
-                    502,
-                    new ErrorResponse(false, "Session store returned invalid JSON for turn validation.", e.Message));
-                return;
-            }
-
-            if (validateBody is null || !validateBody.Ok)
-            {
-                var detail = validateBody?.Error ?? "Turn validation failed.";
-                await RespondAsync(context, 409, new ErrorResponse(false, detail));
-                return;
-            }
-
             var directorPayload = JsonSerializer.Serialize(
-                new DirectorMessageRequest(
-                    request.RunId.Trim(),
-                    request.GameProjectId.Trim(),
-                    request.Turn,
-                    request.PlayerId.Trim(),
-                    request.PlayerInput.Trim()));
+                new DirectorMessageRequest(request.Turn, request.PlayerInput.Trim()));
             var directorResult = await ForwardModuleCallAsync(
                 "router",
                 "director",
@@ -342,10 +300,7 @@ namespace MorpheusEngine
 
             var persistJson = JsonSerializer.Serialize(
                 new TurnPersistRequest(
-                    request.GameProjectId.Trim(),
-                    request.RunId.Trim(),
                     request.Turn,
-                    request.PlayerId.Trim(),
                     request.PlayerInput.Trim(),
                     directorResult.Body));
 
@@ -358,13 +313,10 @@ namespace MorpheusEngine
 
             if (persistResult.StatusCode != 200)
             {
-                await RespondAsync(
-                    context,
-                    500,
-                    new ErrorResponse(
-                        false,
-                        "Director succeeded but session persistence failed (fail-fast).",
-                        persistResult.Body));
+                Console.WriteLine(
+                    "[Router] session_store /persist_turn failed after director /message succeeded; "
+                    + "Director in-memory history may be ahead of SQLite.");
+                await WriteForwardedResultAsync(context, persistResult);
                 return;
             }
 
@@ -396,7 +348,7 @@ namespace MorpheusEngine
 
         /// <summary>
         /// Generic proxy: caller supplies target module key, path, HTTP method, and optional JSON body.
-        /// Only pairs (path, method) that appear on that module in <c>engine_config.json</c> are allowed.
+        /// Only pairs (path, method) that appear on that module in engine_config.json are allowed.
         /// </summary>
         private async Task ProcessRequest_proxy(HttpListenerContext context)
         {
@@ -418,7 +370,7 @@ namespace MorpheusEngine
                 || string.IsNullOrWhiteSpace(request.TargetModule)
                 || string.IsNullOrWhiteSpace(request.TargetPath))
             {
-                await RespondAsync(context, 400, new ErrorResponse(false, "Proxy request must include source_module, target_module, and target_path."));
+                await RespondAsync(context, 400, new ErrorResponse(false, "Proxy request must include sourceModule, targetModule, and targetPath."));
                 return;
             }
 
@@ -449,9 +401,9 @@ namespace MorpheusEngine
         /// <summary>
         /// Performs an allowlisted HTTP call to another module and returns its response for re-sending to the original client.
         /// </summary>
-        /// <param name="sourceModule">Label for audit logs only (e.g. <c>intent_extractor</c>, <c>player_ui</c>).</param>
-        /// <param name="targetModuleKey"><c>port_key</c> from config, e.g. <c>llm_provider_qwen</c>.</param>
-        /// <param name="targetPath">Path on the target, e.g. <c>/generate</c>.</param>
+        /// <param name="sourceModule">Label for audit logs only (e.g. intent_extractor, player_ui).</param>
+        /// <param name="targetModuleKey">port_key from config, e.g. llm_provider_qwen.</param>
+        /// <param name="targetPath">Path on the target, e.g. /generate.</param>
         /// <param name="method">GET or POST (already normalized by callers).</param>
         /// <param name="requestBody">JSON string for POST; may be null/empty for POST with empty body.</param>
         private async Task<ForwardedModuleResult> ForwardModuleCallAsync(
@@ -554,7 +506,7 @@ namespace MorpheusEngine
         }
 
         /// <summary>
-        /// Router-native JSON responses: serializes a CLR object to JSON and always sets <c>application/json</c>.
+        /// Router-native JSON responses: serializes a CLR object to JSON and always sets application/json.
         /// Used for /info, /health, errors, etc. — not for pass-through of another module's raw body.
         /// </summary>
         private async Task RespondAsync(HttpListenerContext context, int statusCode, object payload)

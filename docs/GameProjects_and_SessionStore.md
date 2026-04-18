@@ -15,11 +15,11 @@ game_projects/<gameProjectId>/
     world_state.db           # Created by session_store POST /initialize
 ```
 
-The WPF app’s default `gameProjectId` is **`sandcrawler`** (`MainWindow.xaml.cs`). Every `initialize` / `turn` request carries the client-chosen id; **`RunPersistence`** and **`Director`** resolve paths as `game_projects/<gameProjectId>/...` with **no** engine-level fallback to another folder if files are missing (Director fails fast on missing `system/instructions.md` or lore CSV; session store logs a warning if the lore CSV is absent on initialize).
+The WPF app’s default `gameProjectId` is **`sandcrawler`** (`MainWindow.xaml.cs`). **`InitializeModuleRequest`** carries `gameProjectId` / `runId` for **`POST /initialize`**. **`TurnRequest`** still carries those fields for router **`POST /turn`**; **`session_store` `POST /persist_turn`** does not — it writes to the run established by the **last successful `POST /initialize` on that session_store process** (the router always initializes session_store right after director with the same body). **`RunPersistence`** and **`Director`** resolve paths as `game_projects/<gameProjectId>/...` with **no** engine-level fallback to another folder if files are missing (Director fails fast on missing `system/instructions.md` or lore CSV; session store logs a warning if the lore CSV is absent on initialize).
 
 ## SQLite (`world_state.db`)
 
-Created by **`RunPersistence.InitializeRun`** when the router forwards **`POST /initialize`** with **`RunStartRequest`**.
+Created by **`RunPersistence.InitializeRun`** when the router forwards **`POST /initialize`** with **`InitializeModuleRequest`**.
 
 Notable tables (see `RunPersistence.InitializeSessionSchema`):
 
@@ -38,7 +38,7 @@ If the CSV is missing, initialization still succeeds; lore simply stays empty (D
 
 ## Turn sequencing
 
-- **`/validate_turn`** and **`/persist_turn`** both enforce: next persisted turn must equal **`MAX(snapshots.turn) + 1`**.
+- **`/persist_turn`** applies to the **bound** run (see above) and enforces: next persisted turn must equal **`MAX(snapshots.turn) + 1`**, and **`turn >= 1`**.
 - Turn **0** snapshot is inserted at initialize (bootstrap empty world/view JSON).
 - Player turns start at **1** from the UI (`_nextTurn` in `MainWindow`).
 

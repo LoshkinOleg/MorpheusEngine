@@ -23,9 +23,6 @@ namespace MorpheusEngine
             "inspect", "move_self", "wait", "attack", "take", "talk", "freeform_action"
         ];
 
-        // Resolved once: ports, module list, intent default model, and router proxy aliases (e.g. generic_llm_provider -> llm_provider_qwen).
-        private readonly EngineConfiguration _configuration = EngineConfigLoader.GetConfiguration();
-
         // Instance-owned HttpClient: we dispose it in Shutdown() after the listener stops so sockets are released cleanly for this process.
         private readonly HttpClient _httpClient = new()
         {
@@ -119,7 +116,7 @@ namespace MorpheusEngine
                 // /health endpoint.
                 if (path.Equals("/health", StringComparison.OrdinalIgnoreCase))
                 {
-                    await Respond(context, 200, new ModuleHealthResponse(true, "intent_extractor", "healthy"));
+                    await Respond(context, 200, new ModuleHealthResponse(true, "healthy"));
                     return;
                 }
 
@@ -186,13 +183,10 @@ namespace MorpheusEngine
             }
             // IntentRequest validated.
 
-            // Model comes from engine_config (intent_extraction.default_llm_model), not from this module.
-            var model = _configuration.IntentDefaultLlmModel;
-
             // Assemble the generic LLM payload; router resolves generic_llm_provider to the configured provider module.
+            // Model is chosen by the provider from its own engine_config (callers do not pass a model name).
             var qwenRequest = new LlmGenerateRequest(
                 BuildIntentPrompt(request.PlayerInput),
-                model,
                 BuildIntentSystemPrompt());
 
             var proxyRequest = new ModuleProxyRequest(
@@ -300,7 +294,7 @@ namespace MorpheusEngine
         // Exception to "extract only when >1 use": kept as a named handler parallel to ProcessRequest_intent for /shutdown routing clarity.
         private async Task ProcessRequest_shutdown(HttpListenerContext context)
         {
-            await Respond(context, 200, new ModuleShutdownResponse(true, "intent_extractor", "Shutdown requested."));
+            await Respond(context, 200, new ModuleShutdownResponse(true, "Shutdown requested."));
             _shutdownRequested = true;
 
             try

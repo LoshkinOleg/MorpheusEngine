@@ -24,8 +24,8 @@ Loaded by **`EngineConfigLoader.GetConfiguration()`**. The loader walks upward f
 
 ### Module-specific optional fields
 
-- **`llm_provider_qwen`**: **`ollama_port`** (required on that row only).
-- **`intent_extractor`**: **`default_llm_model`** (required on that row only; also used as the Director’s chat model today via `EngineConfiguration.IntentDefaultLlmModel`).
+- **`llm_provider_qwen`**: **`ollama_port`** (required on that row only); **`default_chat_model`** (required on that row only; Ollama model for **`POST /chat`** and **`POST /generate`**).
+- **`intent_extractor`**: optional **`default_llm_model`** (stored as **`EngineConfiguration.IntentDefaultLlmModel`** if present; not sent on proxied **`/generate`** — the Qwen module uses **`default_chat_model`**).
 
 ## Environment variables
 
@@ -41,7 +41,7 @@ Built once; exposes:
 - **`PortMap` / `GetRequiredListenPort(portKey)`**
 - **`ModulesInfos`** — Full module metadata including endpoints.
 - **`ModuleAliases`** — Merged defaults + file overrides.
-- **`IntentDefaultLlmModel`**, **`LlmProviderOllamaListenPort`** — Derived from the special module rows above.
+- **`IntentDefaultLlmModel`** (optional legacy), **`LlmProviderOllamaListenPort`**, **`LlmProviderDefaultChatModel`** — Derived from the **`intent_extractor`** and **`llm_provider_qwen`** module rows.
 
 ## Contract examples and UI
 
