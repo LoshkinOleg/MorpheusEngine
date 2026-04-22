@@ -35,6 +35,7 @@ The **router** is the only module the UI is required to hit for normal play (`/i
 
 ```
 engine_config.json          # Module list, ports, endpoints, aliases
+third_party/ollama/         # Bundled Ollama.exe + support files; models/ under here (see docs/Configuration_Reference.md)
 game_projects/              # Per-game data and per-run SQLite under saved/
 dotnet/
   MorpheusEngine.sln
