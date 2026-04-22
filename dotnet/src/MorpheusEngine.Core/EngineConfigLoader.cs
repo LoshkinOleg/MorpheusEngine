@@ -83,7 +83,11 @@ public sealed record EngineModuleInfo(
     /// <summary>Optional legacy field on intent_extractor only; not passed to the provider on /generate.</summary>
     string? DefaultIntentLlmModel = null,
     /// <summary>Ollama model name for llm_provider_qwen POST /chat and POST /generate; required only for llm_provider_qwen.</summary>
-    string? DefaultChatModel = null);
+    string? DefaultChatModel = null,
+    /// <summary>Context window size for llm_provider_qwen requests (forwarded as Ollama options.num_ctx).</summary>
+    int? NumCtx = null,
+    /// <summary>Game project folder under game_projects/ used to build narration system prompt during LLM provider Ollama warm-up; required only for llm_provider_qwen.</summary>
+    string? WarmupGameProjectId = null);
 
 /// <summary>Loaded engine configuration: repository layout, listen ports, module list, proxy aliases, and module-derived settings (optional intent legacy model string, Ollama port, Qwen default Ollama model).</summary>
 public sealed class EngineConfiguration
@@ -108,6 +112,12 @@ public sealed class EngineConfiguration
     /// <summary>From the llm_provider_qwen module's default_chat_model in JSON (Ollama model for /api/chat and /api/generate).</summary>
     public string LlmProviderDefaultChatModel { get; }
 
+    /// <summary>From the llm_provider_qwen module's num_ctx in JSON (forwarded as Ollama options.num_ctx).</summary>
+    public int LlmProviderNumCtx { get; }
+
+    /// <summary>From the llm_provider_qwen module's warmup_game_project_id in JSON (Director narration files for Ollama warm-up).</summary>
+    public string LlmProviderWarmupGameProjectId { get; }
+
     public EngineConfiguration(
         string repositoryRoot,
         EnginePortMap portMap,
@@ -115,7 +125,9 @@ public sealed class EngineConfiguration
         IReadOnlyDictionary<string, string> moduleAliases,
         string intentDefaultLlmModel,
         int llmProviderOllamaListenPort,
-        string llmProviderDefaultChatModel)
+        string llmProviderDefaultChatModel,
+        int llmProviderNumCtx,
+        string llmProviderWarmupGameProjectId)
     {
         RepositoryRoot = repositoryRoot;
         PortMap = portMap;
@@ -124,6 +136,8 @@ public sealed class EngineConfiguration
         IntentDefaultLlmModel = intentDefaultLlmModel;
         LlmProviderOllamaListenPort = llmProviderOllamaListenPort;
         LlmProviderDefaultChatModel = llmProviderDefaultChatModel;
+        LlmProviderNumCtx = llmProviderNumCtx;
+        LlmProviderWarmupGameProjectId = llmProviderWarmupGameProjectId;
     }
 
     /// <summary>
@@ -251,6 +265,12 @@ public static class EngineConfigLoader
 
         [JsonPropertyName("default_chat_model")]
         public string? DefaultChatModel { get; set; }
+
+        [JsonPropertyName("num_ctx")]
+        public int? NumCtx { get; set; }
+
+        [JsonPropertyName("warmup_game_project_id")]
+        public string? WarmupGameProjectId { get; set; }
     }
 
     private sealed class ModuleLaunchDto
@@ -364,9 +384,20 @@ public static class EngineConfigLoader
         var intentModel = ResolveIntentDefaultLlmModel(modules, path);
         var ollamaPort = RequireLlmProviderOllamaPort(modules, path);
         var qwenChatModel = RequireLlmProviderDefaultChatModel(modules, path);
+        var qwenNumCtx = RequireLlmProviderNumCtx(modules, path);
+        var qwenWarmupGameProjectId = RequireLlmProviderWarmupGameProjectId(modules, path);
 
         Console.WriteLine($"Loaded engine configuration from {path}.");
-        return new EngineConfiguration(repositoryRoot, portMap, modules, moduleAliases, intentModel, ollamaPort, qwenChatModel);
+        return new EngineConfiguration(
+            repositoryRoot,
+            portMap,
+            modules,
+            moduleAliases,
+            intentModel,
+            ollamaPort,
+            qwenChatModel,
+            qwenNumCtx,
+            qwenWarmupGameProjectId);
     }
 
     /// <summary>Intentional single call site: kept extracted so <see cref="LoadConfigurationUncached"/> stays readable (CodingStyle documented exception).</summary>
@@ -438,7 +469,14 @@ public static class EngineConfigLoader
             var launch = MergeLaunch(module.Launch, portKey, path);
             var endpoints = MergeEndpoints(module.Endpoints, portKey, path);
 
-            ValidateModuleScopedOptions(portKey, module.OllamaPort, module.DefaultLlmModel, module.DefaultChatModel, path);
+            ValidateModuleScopedOptions(
+                portKey,
+                module.OllamaPort,
+                module.DefaultLlmModel,
+                module.DefaultChatModel,
+                module.NumCtx,
+                module.WarmupGameProjectId,
+                path);
 
             list.Add(new EngineModuleInfo(
                 portKey,
@@ -452,6 +490,10 @@ public static class EngineConfigLoader
                     : null,
                 string.Equals(portKey, "llm_provider_qwen", StringComparison.OrdinalIgnoreCase)
                     ? module.DefaultChatModel?.Trim()
+                    : null,
+                string.Equals(portKey, "llm_provider_qwen", StringComparison.OrdinalIgnoreCase) ? module.NumCtx : null,
+                string.Equals(portKey, "llm_provider_qwen", StringComparison.OrdinalIgnoreCase)
+                    ? module.WarmupGameProjectId?.Trim()
                     : null));
         }
 
@@ -469,6 +511,8 @@ public static class EngineConfigLoader
         int? ollamaPort,
         string? defaultLlmModel,
         string? defaultChatModel,
+        int? numCtx,
+        string? warmupGameProjectId,
         string path)
     {
         var isQwen = string.Equals(portKey, "llm_provider_qwen", StringComparison.OrdinalIgnoreCase);
@@ -486,6 +530,12 @@ public static class EngineConfigLoader
                 throw new EngineConfigurationException(
                     $"Module 'llm_provider_qwen' in '{path}' must set default_chat_model to a non-empty string.");
             }
+
+            if (numCtx is null or < 512 or > 131072)
+            {
+                throw new EngineConfigurationException(
+                    $"Module 'llm_provider_qwen' in '{path}' must set num_ctx to an integer between 512 and 131072.");
+            }
         }
         else if (ollamaPort is not null)
         {
@@ -497,6 +547,18 @@ public static class EngineConfigLoader
         {
             throw new EngineConfigurationException(
                 $"Module '{portKey}' in '{path}' must not set default_chat_model (only llm_provider_qwen may).");
+        }
+
+        if (!isQwen && numCtx is not null)
+        {
+            throw new EngineConfigurationException(
+                $"Module '{portKey}' in '{path}' must not set num_ctx (only llm_provider_qwen may).");
+        }
+
+        if (!isQwen && !string.IsNullOrWhiteSpace(warmupGameProjectId))
+        {
+            throw new EngineConfigurationException(
+                $"Module '{portKey}' in '{path}' must not set warmup_game_project_id (only llm_provider_qwen may).");
         }
 
         if (!string.Equals(portKey, "intent_extractor", StringComparison.OrdinalIgnoreCase)
@@ -557,6 +619,40 @@ public static class EngineConfigLoader
 
         Console.WriteLine($"Engine llm_provider_qwen default_chat_model={model} ({path}) (used for Ollama /api/chat and /api/generate).");
         return model;
+    }
+
+    private static int RequireLlmProviderNumCtx(IReadOnlyList<EngineModuleInfo> modules, string path)
+    {
+        var m = modules.FirstOrDefault(x => string.Equals(x.PortKey, "llm_provider_qwen", StringComparison.OrdinalIgnoreCase));
+        if (m?.NumCtx is not int numCtx)
+        {
+            throw new EngineConfigurationException($"llm_provider_qwen.num_ctx missing or invalid in '{path}'.");
+        }
+
+        Console.WriteLine($"Engine llm_provider_qwen num_ctx={numCtx} ({path}) (forwarded to Ollama options.num_ctx).");
+        return numCtx;
+    }
+
+    private static string RequireLlmProviderWarmupGameProjectId(IReadOnlyList<EngineModuleInfo> modules, string path)
+    {
+        var m = modules.FirstOrDefault(x => string.Equals(x.PortKey, "llm_provider_qwen", StringComparison.OrdinalIgnoreCase));
+        if (m?.WarmupGameProjectId is not { } id || string.IsNullOrWhiteSpace(id))
+        {
+            throw new EngineConfigurationException(
+                $"llm_provider_qwen.warmup_game_project_id missing or empty in '{path}' (required for Ollama narration warm-up).");
+        }
+
+        var trimmed = id.Trim();
+        if (trimmed.Contains("..", StringComparison.Ordinal)
+            || trimmed.Contains('/', StringComparison.Ordinal)
+            || trimmed.Contains('\\', StringComparison.Ordinal))
+        {
+            throw new EngineConfigurationException(
+                $"llm_provider_qwen.warmup_game_project_id in '{path}' must not contain path separators or '..'.");
+        }
+
+        Console.WriteLine($"Engine llm_provider_qwen warmup_game_project_id={trimmed} ({path})");
+        return trimmed;
     }
 
     /// <summary>Intentional single call site: kept extracted for readability (CodingStyle documented exception).</summary>

@@ -43,6 +43,7 @@ namespace MorpheusEngine
             PropertyNameCaseInsensitive = true
         };
 
+        // Proxied module calls include LLM /chat; same ceiling as LlmProvider_qwen outbound calls (warm-up runs at provider startup).
         private static readonly HttpClient _httpClient = new()
         {
             Timeout = TimeSpan.FromSeconds(30)

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Text;
 using System.Text.Json;
@@ -6,37 +7,93 @@ namespace MorpheusEngine
 {
     public class LlmProviderQwen
     {
+        #region Nested types
+        private sealed record OllamaOptionsPayload(int num_ctx, int num_keep);
+        #endregion
+
         #region Private data
         private static readonly JsonSerializerOptions _jsonOptions = new JsonSerializerOptions
         {
             PropertyNameCaseInsensitive = true // Allows either casing for json fields.
         };
 
-        // Instance-owned HttpClient: we dispose it in Shutdown() after the listener stops so sockets are released cleanly for this process.
+        // Wall-clock budget for bundled ollama.exe to start answering GET /; independent of per-request HttpClient timeout.
+        private static readonly TimeSpan OllamaReadyTimeout = TimeSpan.FromSeconds(90);
+        private static readonly TimeSpan OllamaReadyPollInterval = TimeSpan.FromMilliseconds(200);
+        private static readonly TimeSpan OllamaRestartBackoff = TimeSpan.FromMilliseconds(500);
+        /// <summary>Every outbound call to the bundled Ollama process (probe, warm-up, inference) uses this ceiling.</summary>
+        private static readonly TimeSpan OllamaHttpTimeout = TimeSpan.FromSeconds(30);
+        private const int MaxOllamaRestartAttempts = 3;
+        private const int MaxCapturedOllamaErrorLines = 20;
+        private const int OllamaRequestNumKeep = -1;
+
+        /// <summary>Minimal user turn for Ollama warm-up only; not shown to players.</summary>
+        private const string OllamaWarmupUserContent = "[morpheus_engine_warmup]";
+
+        private const int WarmupResponseLogMaxChars = 500;
+
+        // Instance-owned HttpClient for Ollama (GET /, warm-up, /api/chat, /api/generate); disposed in Shutdown().
+        // Model load is handled during InitializeAsync (warm-up) so normal inference stays within this bound.
         private readonly HttpClient _httpClient = new()
         {
-            Timeout = TimeSpan.FromSeconds(30)
+            Timeout = OllamaHttpTimeout
         };
 
         private readonly HttpListener _listener = new HttpListener(); // Inbound listener for responding to http messages.
+        private readonly SemaphoreSlim _ollamaRestartGate = new(1, 1);
+        private readonly object _ollamaStateSync = new();
+        private readonly Queue<string> _recentOllamaErrorLines = [];
         private bool _shutdownRequested = false;
+        private bool _ollamaReady = false;
+        private bool _ollamaStopping = false;
+        private int _ollamaRestartAttempts = 0;
+        private Process? _ollamaProcess;
+        private WindowsJobObject? _ollamaJobObject;
 
-        /// <summary>Ollama model for /api/chat and /api/generate; resolved once in <see cref="Initialize"/> from engine_config.json (llm_provider_qwen.default_chat_model).</summary>
+        /// <summary>Repository root resolved once at startup for locating bundled Ollama assets.</summary>
+        private string _repositoryRoot = "";
+
+        /// <summary>Qwen module-owned Ollama port from engine configuration.</summary>
+        private int _ollamaPort = 0;
+
+        /// <summary>Ollama model for /api/chat and /api/generate; resolved once in <see cref="InitializeAsync"/> from engine_config.json.</summary>
         private string _chatModel = "";
+
+        /// <summary>Forwarded on every Ollama /api/chat and /api/generate request as options.num_ctx.</summary>
+        private int _ollamaNumCtx = 0;
+
+        /// <summary>Director narration system text (instructions + lore) for Ollama warm-up; built once per process.</summary>
+        private string _narrationWarmupSystemContent = "";
+
+        /// <summary>Configured game project id used to build <see cref="_narrationWarmupSystemContent"/> (logging only).</summary>
+        private string _warmupGameProjectId = "";
         #endregion
 
         #region Public methods
         public async Task Run()
         {
-            // Bind and start listening before entering the accept loop.
-            Initialize();
-
             try
             {
+                // Start the bundled Ollama child first so /health only becomes reachable after inference is actually ready.
+                await InitializeAsync();
+
                 // Block until a request arrives, then handle it without awaiting (concurrent requests).
                 while (!_shutdownRequested)
                 {
-                    var context = await _listener.GetContextAsync();
+                    HttpListenerContext context;
+                    try
+                    {
+                        context = await _listener.GetContextAsync();
+                    }
+                    catch (HttpListenerException) when (_shutdownRequested)
+                    {
+                        break;
+                    }
+                    catch (ObjectDisposedException) when (_shutdownRequested)
+                    {
+                        break;
+                    }
+
                     _ = ProcessQuery(context);
                 }
             }
@@ -44,9 +101,13 @@ namespace MorpheusEngine
             {
                 Console.WriteLine("LlmProvider_qwen error encountered: " + e.Message);
             }
+            catch (Exception e)
+            {
+                Console.WriteLine("LlmProvider_qwen fatal startup/runtime error: " + e.Message);
+            }
             finally
             {
-                // Always release listener and outbound HTTP resources when the loop ends or faults.
+                // Always release listener, child process, and outbound HTTP resources when the loop ends or faults.
                 Shutdown();
             }
         }
@@ -56,22 +117,33 @@ namespace MorpheusEngine
 
         #region Private methods
         // Intentional single use method.
-        private void Initialize()
+        private async Task InitializeAsync()
         {
             var configuration = EngineConfigLoader.GetConfiguration();
+            _repositoryRoot = configuration.RepositoryRoot;
             _chatModel = configuration.LlmProviderDefaultChatModel.Trim();
+            _ollamaPort = configuration.LlmProviderOllamaListenPort;
+            _ollamaNumCtx = configuration.LlmProviderNumCtx;
             if (string.IsNullOrWhiteSpace(_chatModel))
             {
                 throw new InvalidOperationException(
                     "llm_provider_qwen: LlmProviderDefaultChatModel from engine configuration is empty (check default_chat_model in engine_config.json).");
             }
 
-            var ports = configuration.PortMap;
-            var qwenListen = ports.GetRequiredPort("llm_provider_qwen");
+            // Same disk contract as Director POST /initialize so the first real player /chat does not pay first-time context load alone.
+            _warmupGameProjectId = configuration.LlmProviderWarmupGameProjectId;
+            _narrationWarmupSystemContent = DirectorNarrationSystemPrompt.Build(_repositoryRoot, _warmupGameProjectId);
+
+            _ollamaJobObject = new WindowsJobObject();
+            await StartManagedOllamaAsync("initial startup");
+
+            var qwenListen = configuration.PortMap.GetRequiredPort("llm_provider_qwen");
             _listener.Prefixes.Add($"http://127.0.0.1:{qwenListen}/");
             _listener.Start();
             Console.WriteLine($"LlmProvider_qwen listening on http://127.0.0.1:{qwenListen}/");
             Console.WriteLine($"LlmProvider_qwen Ollama model for /chat and /generate (from engine config): {_chatModel}");
+            Console.WriteLine($"LlmProvider_qwen Ollama child endpoint: http://127.0.0.1:{_ollamaPort}/");
+            Console.WriteLine($"LlmProvider_qwen Ollama num_ctx={_ollamaNumCtx}");
             Console.WriteLine("LlmProvider_qwen initialized.");
         }
 
@@ -104,10 +176,11 @@ namespace MorpheusEngine
                     return;
                 }
 
-                // /health endpoint
+                // /health endpoint mirrors whether the bundled Ollama child is currently ready to accept inference.
                 if (path.Equals("/health", StringComparison.OrdinalIgnoreCase))
                 {
-                    await Respond(context, 200, new ModuleHealthResponse(true, "healthy"));
+                    var isHealthy = IsOllamaReady();
+                    await Respond(context, isHealthy ? 200 : 503, new ModuleHealthResponse(isHealthy, isHealthy ? "healthy" : "ollama_unavailable"));
                     return;
                 }
 
@@ -151,8 +224,31 @@ namespace MorpheusEngine
         // Intentional single use method.
         private void Shutdown()
         {
-            _listener.Stop(); // Technically redundant as it's included in _listener.Close().
-            _listener.Close();
+            _shutdownRequested = true;
+
+            // Stop taking new requests before tearing down the child process.
+            try
+            {
+                _listener.Stop(); // Technically redundant as it's included in _listener.Close().
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+            catch (HttpListenerException)
+            {
+            }
+
+            try
+            {
+                _listener.Close();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+
+            StopCurrentOllamaProcess("provider shutdown");
+            _ollamaJobObject?.Dispose();
+            _ollamaJobObject = null;
             _httpClient.Dispose();
             Console.WriteLine("LlmProvider_qwen shut down.");
         }
@@ -201,18 +297,24 @@ namespace MorpheusEngine
                 await Respond(context, 400, new ErrorResponse(false, "Request must include a non-empty 'prompt' field."));
                 return;
             }
-            // Request validated.
+
+            if (!await RespondIfOllamaUnavailableAsync(context))
+            {
+                return;
+            }
 
             // Model is owned by this provider (engine_config llm_provider_qwen.default_chat_model), not the HTTP caller.
             var model = _chatModel;
 
-            // Construct an ollama payload from the internal generic payload.
+            // Construct an Ollama payload from the internal generic payload (shape matches Ollama /api/generate expectations).
             var ollamaPayload = new
             {
                 model,
                 prompt = request.Prompt,
                 system = request.System,
-                stream = false // Generate whole response in one go and return it.
+                stream = false, // Generate whole response in one go and return it.
+                truncate = false,
+                options = BuildOllamaOptionsPayload()
             };
             Console.WriteLine("OLLAMA_IO REQUEST " + JsonSerializer.Serialize(ollamaPayload));
 
@@ -222,30 +324,26 @@ namespace MorpheusEngine
                 Encoding.UTF8,
                 "application/json");
 
-            // Send message to ollama.
-            var ollamaPort = EngineConfigLoader.GetConfiguration().LlmProviderOllamaListenPort;
+            // Send message to the bundled Ollama child.
             HttpResponseMessage ollamaResponse;
             try
             {
-                ollamaResponse = await _httpClient.PostAsync($"http://127.0.0.1:{ollamaPort}/api/generate", content);
+                ollamaResponse = await _httpClient.PostAsync(BuildOllamaUri("/api/generate"), content);
             }
             catch (Exception e)
             {
                 Console.WriteLine("OLLAMA_IO ERROR Failed to reach Ollama: " + e.Message);
-                await Respond(context, 502, new
-                {
-                    ok = false,
-                    error = $"Failed to reach Ollama. Ensure Ollama is running locally on port {ollamaPort}.",
-                    details = e.Message
-                });
+                await Respond(
+                    context,
+                    IsOllamaReady() ? 502 : 503,
+                    new ErrorResponse(false, "Bundled Ollama is unavailable.", BuildOllamaUnavailableDetails(e.Message)));
                 return;
             }
-            // Received response from ollama / errored out.
 
-            // Relay the ollama response back to caller.
+            // Relay the Ollama response back to caller.
             var ollamaBody = await ollamaResponse.Content.ReadAsStringAsync();
             Console.WriteLine($"OLLAMA_IO RESPONSE status={(int)ollamaResponse.StatusCode} body={ollamaBody}");
-            if (!ollamaResponse.IsSuccessStatusCode) // Ollama errored out, relay message to caller.
+            if (!ollamaResponse.IsSuccessStatusCode)
             {
                 await Respond(context, (int)ollamaResponse.StatusCode, new
                 {
@@ -255,11 +353,10 @@ namespace MorpheusEngine
                     ollama_status = (int)ollamaResponse.StatusCode,
                     ollama_response = ollamaBody
                 });
-                return; // End of method execution if ollama errored out.
+                return;
             }
 
-            // Call to ollama was successful.
-            // Parse ollama response.
+            // Successful /api/generate: text is under "response".
             string? responseText = null;
             try
             {
@@ -274,7 +371,6 @@ namespace MorpheusEngine
                 // keep raw body when parsing fails
             }
 
-            // Relay the successful ollama response back to the caller.
             await Respond(context, 200, new LlmProviderGenerateResponse(true, responseText, ollamaBody));
         }
 
@@ -304,12 +400,19 @@ namespace MorpheusEngine
                 return;
             }
 
-            // Ollama /api/chat expects { model, messages: [{role,content},...], stream }; model is fixed at provider Initialize() from engine_config.json.
+            if (!await RespondIfOllamaUnavailableAsync(context))
+            {
+                return;
+            }
+
+            // Ollama /api/chat expects { model, messages, stream, truncate, options }; model is fixed at provider InitializeAsync() from engine_config.json.
             var ollamaPayload = new
             {
                 model = _chatModel,
                 messages = request.Messages,
-                stream = false
+                stream = false,
+                truncate = false,
+                options = BuildOllamaOptionsPayload()
             };
             Console.WriteLine("OLLAMA_IO CHAT_REQUEST " + JsonSerializer.Serialize(ollamaPayload));
 
@@ -318,21 +421,18 @@ namespace MorpheusEngine
                 Encoding.UTF8,
                 "application/json");
 
-            var ollamaPort = EngineConfigLoader.GetConfiguration().LlmProviderOllamaListenPort;
             HttpResponseMessage ollamaResponse;
             try
             {
-                ollamaResponse = await _httpClient.PostAsync($"http://127.0.0.1:{ollamaPort}/api/chat", content);
+                ollamaResponse = await _httpClient.PostAsync(BuildOllamaUri("/api/chat"), content);
             }
             catch (Exception e)
             {
                 Console.WriteLine("OLLAMA_IO ERROR Failed to reach Ollama (chat): " + e.Message);
-                await Respond(context, 502, new
-                {
-                    ok = false,
-                    error = $"Failed to reach Ollama. Ensure Ollama is running locally on port {ollamaPort}.",
-                    details = e.Message
-                });
+                await Respond(
+                    context,
+                    IsOllamaReady() ? 502 : 503,
+                    new ErrorResponse(false, "Bundled Ollama is unavailable.", BuildOllamaUnavailableDetails(e.Message)));
                 return;
             }
 
@@ -369,9 +469,397 @@ namespace MorpheusEngine
 
             await Respond(context, 200, new ChatGenerateResponse(true, assistantText, ollamaBody));
         }
+
+        // Intentional extraction: this sequence is used by initial startup and restart recovery.
+        private async Task StartManagedOllamaAsync(string reason)
+        {
+            var ollamaExecutable = GetBundledOllamaExecutablePath();
+            var ollamaModelsDirectory = GetBundledOllamaModelsDirectory();
+            Directory.CreateDirectory(ollamaModelsDirectory);
+
+            if (!File.Exists(ollamaExecutable))
+            {
+                throw new FileNotFoundException(
+                    $"Bundled Ollama executable not found at '{ollamaExecutable}'.",
+                    ollamaExecutable);
+            }
+
+            var processStartInfo = new ProcessStartInfo
+            {
+                FileName = ollamaExecutable,
+                Arguments = "serve",
+                WorkingDirectory = Path.GetDirectoryName(ollamaExecutable) ?? _repositoryRoot,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            processStartInfo.Environment["OLLAMA_HOST"] = $"127.0.0.1:{_ollamaPort}";
+            processStartInfo.Environment["OLLAMA_FLASH_ATTENTION"] = "1";
+            processStartInfo.Environment["OLLAMA_MODELS"] = ollamaModelsDirectory;
+
+            Console.WriteLine($"OLLAMA_IO Starting bundled Ollama child ({reason}) on 127.0.0.1:{_ollamaPort}.");
+            var process = Process.Start(processStartInfo)
+                ?? throw new InvalidOperationException("Failed to start bundled Ollama child process.");
+            process.EnableRaisingEvents = true;
+            process.OutputDataReceived += OnOllamaOutputDataReceived;
+            process.ErrorDataReceived += OnOllamaErrorDataReceived;
+            process.Exited += OnOllamaExited;
+            _ollamaJobObject?.AssignProcess(process);
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+
+            // Replace any exited handle we were keeping before exposing the new process as the current child.
+            Process? staleProcessToDispose = null;
+            lock (_ollamaStateSync)
+            {
+                if (_ollamaProcess is not null && !_ollamaProcess.HasExited)
+                {
+                    throw new InvalidOperationException("Attempted to start a new Ollama child while the previous child is still running.");
+                }
+
+                staleProcessToDispose = _ollamaProcess;
+                _ollamaProcess = process;
+                _ollamaReady = false;
+                _ollamaStopping = false;
+            }
+
+            DisposeProcessHandle(staleProcessToDispose);
+
+            try
+            {
+                await WaitForOllamaReadyAsync(process);
+                // GET / only proves the HTTP server is up; the first real request still loads the GGUF into VRAM/RAM and can take tens of seconds.
+                await WarmUpBundledOllamaModelAsync();
+                lock (_ollamaStateSync)
+                {
+                    if (ReferenceEquals(_ollamaProcess, process))
+                    {
+                        _ollamaReady = true;
+                        _ollamaStopping = false;
+                        _ollamaRestartAttempts = 0;
+                    }
+                }
+
+                Console.WriteLine($"OLLAMA_IO (ollama) Ready on http://127.0.0.1:{_ollamaPort}/");
+            }
+            catch (Exception e)
+            {
+                lock (_ollamaStateSync)
+                {
+                    if (ReferenceEquals(_ollamaProcess, process))
+                    {
+                        _ollamaStopping = true;
+                        _ollamaReady = false;
+                        _ollamaProcess = null;
+                    }
+                }
+
+                StopOllamaProcess(process, "startup failure");
+                throw new InvalidOperationException(
+                    $"Bundled Ollama failed to become ready on port {_ollamaPort}. {e.Message}{DescribeRecentOllamaErrors()}");
+            }
+        }
+
+        /// <summary>
+        /// Forces Ollama to load the configured model and the Director-grade system context (instructions + lore) before the module listens.
+        /// </summary>
+        private async Task WarmUpBundledOllamaModelAsync()
+        {
+            var sharedOptions = BuildOllamaOptionsPayload();
+            var warmupPayload = new
+            {
+                model = _chatModel,
+                messages = new object[]
+                {
+                    new { role = "system", content = _narrationWarmupSystemContent },
+                    new { role = "user", content = OllamaWarmupUserContent }
+                },
+                stream = false,
+                truncate = false,
+                options = new { num_ctx = sharedOptions.num_ctx, num_keep = sharedOptions.num_keep, num_predict = 1 }
+            };
+
+            Console.WriteLine(
+                $"OLLAMA_IO WARMUP_REQUEST model={_chatModel} warmup_game_project_id={_warmupGameProjectId} systemChars={_narrationWarmupSystemContent.Length} userToken={OllamaWarmupUserContent}");
+
+            var json = JsonSerializer.Serialize(warmupPayload);
+            var content = new StringContent(json, Encoding.UTF8, "application/json");
+            using var response = await _httpClient.PostAsync(BuildOllamaUri("/api/chat"), content);
+            var body = await response.Content.ReadAsStringAsync();
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new InvalidOperationException(
+                    $"Bundled Ollama model warm-up failed: {(int)response.StatusCode} {response.ReasonPhrase}. Body: {body}");
+            }
+
+            var bodyForLog = body.Length <= WarmupResponseLogMaxChars
+                ? body
+                : body[..WarmupResponseLogMaxChars] + "…";
+            Console.WriteLine($"OLLAMA_IO WARMUP_RESPONSE status={(int)response.StatusCode} bodySnippet={bodyForLog}");
+        }
+
+        // Intentional extraction: shared by startup and crash-recovery restart paths.
+        private async Task WaitForOllamaReadyAsync(Process process)
+        {
+            Exception? lastError = null;
+            var deadline = DateTime.UtcNow + OllamaReadyTimeout;
+
+            while (DateTime.UtcNow < deadline)
+            {
+                if (process.HasExited)
+                {
+                    throw new InvalidOperationException($"Bundled Ollama exited before becoming ready (exit code {process.ExitCode}).");
+                }
+
+                try
+                {
+                    using var response = await _httpClient.GetAsync(BuildOllamaUri("/"));
+                    if (response.IsSuccessStatusCode)
+                    {
+                        return;
+                    }
+
+                    lastError = new InvalidOperationException($"Health probe returned {(int)response.StatusCode}.");
+                }
+                catch (Exception e)
+                {
+                    lastError = e;
+                }
+
+                await Task.Delay(OllamaReadyPollInterval);
+            }
+
+            throw new TimeoutException($"Timed out waiting for bundled Ollama readiness. {lastError?.Message}");
+        }
+
+        // Intentional extraction: one place manages retry limits and keeps only a single restart loop active.
+        private async Task RestartOllamaAfterUnexpectedExitAsync()
+        {
+            await _ollamaRestartGate.WaitAsync();
+            try
+            {
+                if (_shutdownRequested || IsOllamaReady())
+                {
+                    return;
+                }
+
+                while (!_shutdownRequested && !IsOllamaReady())
+                {
+                    int attemptNumber;
+                    lock (_ollamaStateSync)
+                    {
+                        if (_ollamaRestartAttempts >= MaxOllamaRestartAttempts)
+                        {
+                            Console.WriteLine($"OLLAMA_IO (ollama:ERR) Restart limit reached ({MaxOllamaRestartAttempts}); leaving provider unavailable.");
+                            return;
+                        }
+
+                        _ollamaRestartAttempts++;
+                        attemptNumber = _ollamaRestartAttempts;
+                    }
+
+                    Console.WriteLine($"OLLAMA_IO Restarting bundled Ollama child ({attemptNumber}/{MaxOllamaRestartAttempts}).");
+                    try
+                    {
+                        await Task.Delay(OllamaRestartBackoff);
+                        await StartManagedOllamaAsync($"restart {attemptNumber}/{MaxOllamaRestartAttempts}");
+                        Console.WriteLine("OLLAMA_IO (ollama) Restart succeeded.");
+                        return;
+                    }
+                    catch (Exception e)
+                    {
+                        Console.WriteLine($"OLLAMA_IO (ollama:ERR) Restart {attemptNumber}/{MaxOllamaRestartAttempts} failed: {e.Message}");
+                    }
+                }
+            }
+            finally
+            {
+                _ollamaRestartGate.Release();
+            }
+        }
         #endregion
 
         #region Helper methods
+        private async Task<bool> RespondIfOllamaUnavailableAsync(HttpListenerContext context)
+        {
+            if (IsOllamaReady())
+            {
+                return true;
+            }
+
+            await Respond(context, 503, new ErrorResponse(false, "Bundled Ollama is not ready.", BuildOllamaUnavailableDetails()));
+            return false;
+        }
+
+        private static void DisposeProcessHandle(Process? process)
+        {
+            if (process is null)
+            {
+                return;
+            }
+
+            try
+            {
+                process.Dispose();
+            }
+            catch (Exception)
+            {
+            }
+        }
+
+        private void StopCurrentOllamaProcess(string reason)
+        {
+            Process? processToStop;
+            lock (_ollamaStateSync)
+            {
+                _ollamaReady = false;
+                _ollamaStopping = true;
+                processToStop = _ollamaProcess;
+                _ollamaProcess = null;
+            }
+
+            StopOllamaProcess(processToStop, reason);
+        }
+
+        private void StopOllamaProcess(Process? process, string reason)
+        {
+            if (process is null)
+            {
+                return;
+            }
+
+            try
+            {
+                if (!process.HasExited)
+                {
+                    // A hard kill is acceptable here: Ollama does not own engine-critical persisted state.
+                    Console.WriteLine($"OLLAMA_IO Stopping bundled Ollama child ({reason}).");
+                    process.Kill(entireProcessTree: true);
+                    process.WaitForExit(3000);
+                }
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"OLLAMA_IO (ollama:ERR) Error while stopping child process: {e.Message}");
+            }
+            finally
+            {
+                DisposeProcessHandle(process);
+            }
+        }
+
+        private bool IsOllamaReady()
+        {
+            lock (_ollamaStateSync)
+            {
+                return _ollamaReady && _ollamaProcess is not null && !_ollamaProcess.HasExited;
+            }
+        }
+
+        private void RememberOllamaErrorLine(string line)
+        {
+            lock (_ollamaStateSync)
+            {
+                _recentOllamaErrorLines.Enqueue(line);
+                while (_recentOllamaErrorLines.Count > MaxCapturedOllamaErrorLines)
+                {
+                    _recentOllamaErrorLines.Dequeue();
+                }
+            }
+        }
+
+        private string DescribeRecentOllamaErrors()
+        {
+            lock (_ollamaStateSync)
+            {
+                if (_recentOllamaErrorLines.Count == 0)
+                {
+                    return string.Empty;
+                }
+
+                return " Recent Ollama stderr: " + string.Join(" | ", _recentOllamaErrorLines);
+            }
+        }
+
+        private void OnOllamaOutputDataReceived(object sender, DataReceivedEventArgs e)
+        {
+            if (!string.IsNullOrWhiteSpace(e.Data))
+            {
+                // Keep the OLLAMA_IO prefix so the WPF monitor continues to pick up these lines.
+                Console.WriteLine("OLLAMA_IO (ollama) " + e.Data);
+            }
+        }
+
+        private void OnOllamaErrorDataReceived(object sender, DataReceivedEventArgs e)
+        {
+            if (!string.IsNullOrWhiteSpace(e.Data))
+            {
+                RememberOllamaErrorLine(e.Data);
+                Console.WriteLine("OLLAMA_IO (ollama:ERR) " + e.Data);
+            }
+        }
+
+        private void OnOllamaExited(object? sender, EventArgs e)
+        {
+            if (sender is not Process exitedProcess)
+            {
+                return;
+            }
+
+            int exitCode;
+            try
+            {
+                exitCode = exitedProcess.ExitCode;
+            }
+            catch (Exception)
+            {
+                exitCode = int.MinValue;
+            }
+
+            var shouldRestart = false;
+            lock (_ollamaStateSync)
+            {
+                if (!ReferenceEquals(_ollamaProcess, exitedProcess))
+                {
+                    return;
+                }
+
+                _ollamaReady = false;
+                shouldRestart = !_shutdownRequested && !_ollamaStopping;
+            }
+
+            Console.WriteLine($"OLLAMA_IO (ollama:ERR) Child process exited with code {exitCode}.");
+            if (shouldRestart)
+            {
+                _ = RestartOllamaAfterUnexpectedExitAsync();
+            }
+        }
+
+        private string GetBundledOllamaExecutablePath() =>
+            Path.Combine(_repositoryRoot, "third_party", "ollama", "ollama.exe");
+
+        private string GetBundledOllamaModelsDirectory() =>
+            Path.Combine(_repositoryRoot, "third_party", "ollama", "models");
+
+        private string BuildOllamaUri(string path) =>
+            $"http://127.0.0.1:{_ollamaPort}{EngineConfiguration.NormalizePath(path)}";
+
+        private OllamaOptionsPayload BuildOllamaOptionsPayload() =>
+            new(_ollamaNumCtx, OllamaRequestNumKeep);
+
+        private string BuildOllamaUnavailableDetails(string? extraDetail = null)
+        {
+            var baseDetail = $"LlmProvider_qwen is waiting for its bundled Ollama child on port {_ollamaPort}.";
+            var recentErrors = DescribeRecentOllamaErrors();
+            if (string.IsNullOrWhiteSpace(extraDetail))
+            {
+                return baseDetail + recentErrors;
+            }
+
+            return $"{baseDetail} {extraDetail}{recentErrors}";
+        }
+
         private async Task Respond(HttpListenerContext context, int statusCode, object payload)
         {
             var response = context.Response;

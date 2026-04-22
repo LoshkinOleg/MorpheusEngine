@@ -24,6 +24,7 @@ namespace MorpheusEngine
         ];
 
         // Instance-owned HttpClient: we dispose it in Shutdown() after the listener stops so sockets are released cleanly for this process.
+        // Intent extraction hits the LLM provider; same ceiling as provider outbound HttpClient (model load is warmed at provider init).
         private readonly HttpClient _httpClient = new()
         {
             Timeout = TimeSpan.FromSeconds(30)

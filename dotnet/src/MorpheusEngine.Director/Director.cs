@@ -25,6 +25,7 @@ public sealed class Director
 
     private readonly EngineConfiguration _configuration = EngineConfigLoader.GetConfiguration();
 
+    // LLM calls are bounded by the same ceiling as LlmProvider_qwen's outbound HttpClient; model load happens during provider init (warm-up).
     private readonly HttpClient _httpClient = new()
     {
         Timeout = TimeSpan.FromSeconds(30)
@@ -223,7 +224,7 @@ public sealed class Director
             string systemContent;
             try
             {
-                systemContent = BuildSystemPromptFromDisk(_configuration.RepositoryRoot, gameProjectId);
+                systemContent = DirectorNarrationSystemPrompt.Build(_configuration.RepositoryRoot, gameProjectId);
             }
             catch (FileNotFoundException e)
             {
@@ -404,134 +405,6 @@ public sealed class Director
         {
             _sessionGate.Release();
         }
-    }
-
-    /// <summary>
-    /// Reads game_projects/&lt;gameProjectId&gt;/system/instructions.md and lore CSV; throws if required files are absent (caller maps to HTTP 500/400).
-    /// </summary>
-    private static string BuildSystemPromptFromDisk(string repositoryRoot, string gameProjectId)
-    {
-        // TODO: I feel like this should be part of EngineConfigLoader instead.
-
-        var instructionsPath = Path.Combine(repositoryRoot, "game_projects", gameProjectId, "system", "instructions.md");
-        var loreCsvPath = Path.Combine(repositoryRoot, "game_projects", gameProjectId, "lore", "default_lore_entries.csv");
-
-        if (!File.Exists(instructionsPath))
-        {
-            throw new FileNotFoundException($"Director requires instructions at '{instructionsPath}'.");
-        }
-
-        if (!File.Exists(loreCsvPath))
-        {
-            throw new FileNotFoundException($"Director requires lore CSV at '{loreCsvPath}'.");
-        }
-
-        var instructions = File.ReadAllText(instructionsPath).Trim();
-        var loreSection = BuildCanonLoreSectionFromCsv(loreCsvPath);
-
-        return instructions + Environment.NewLine + Environment.NewLine + loreSection;
-    }
-
-    /// <summary>
-    /// Parses default_lore_entries.csv (subject + data columns) into a markdown bullet list under ## Canon Lore.
-    /// </summary>
-    private static string BuildCanonLoreSectionFromCsv(string csvPath)
-    {
-        var lines = File.ReadAllLines(csvPath)
-            .Select(static line => line.Trim())
-            .Where(static line => line.Length > 0 && !line.StartsWith("#", StringComparison.Ordinal))
-            .ToArray();
-
-        if (lines.Length == 0)
-        {
-            throw new InvalidOperationException($"Lore CSV at '{csvPath}' is empty.");
-        }
-
-        var headers = ParseCsvLine(lines[0]).Select(static h => h.ToLowerInvariant()).ToArray();
-        var subjectIndex = Array.IndexOf(headers, "subject");
-        var dataIndex = Array.FindIndex(
-            headers,
-            static h => h is "data" or "description" or "entry");
-        if (subjectIndex < 0 || dataIndex < 0)
-        {
-            throw new InvalidOperationException(
-                $"Lore CSV at '{csvPath}' must declare 'subject' and 'data' (or description/entry) columns.");
-        }
-
-        var sb = new StringBuilder();
-        sb.AppendLine("## Canon Lore");
-        sb.AppendLine();
-
-        for (var i = 1; i < lines.Length; i++)
-        {
-            var columns = ParseCsvLine(lines[i]);
-            if (subjectIndex >= columns.Count || dataIndex >= columns.Count)
-            {
-                continue;
-            }
-
-            var subject = columns[subjectIndex].Trim();
-            var data = columns[dataIndex].Trim();
-            if (subject.Length == 0 || data.Length == 0)
-            {
-                continue;
-            }
-
-            sb.Append("- **");
-            sb.Append(subject);
-            sb.Append(":** ");
-            sb.Append(data);
-            sb.AppendLine();
-        }
-
-        return sb.ToString().TrimEnd();
-    }
-
-    /// <summary>Minimal CSV line parser mirroring RunPersistence.ParseCsvLine (quoted fields, doubled quotes).</summary>
-    private static List<string> ParseCsvLine(string line)
-    {
-        var values = new List<string>();
-        var current = new StringBuilder();
-        var inQuotes = false;
-        for (var i = 0; i < line.Length; i++)
-        {
-            var ch = line[i];
-            if (ch == '"')
-            {
-                if (inQuotes && i + 1 < line.Length && line[i + 1] == '"')
-                {
-                    current.Append('"');
-                    i++;
-                }
-                else
-                {
-                    inQuotes = !inQuotes;
-                }
-
-                continue;
-            }
-
-            if (ch == ',' && !inQuotes)
-            {
-                values.Add(current.ToString().Trim());
-                current.Clear();
-                continue;
-            }
-
-            current.Append(ch);
-        }
-
-        values.Add(current.ToString().Trim());
-        for (var v = 0; v < values.Count; v++)
-        {
-            var s = values[v];
-            if (s.Length >= 2 && s[0] == '"' && s[^1] == '"')
-            {
-                values[v] = s.Substring(1, s.Length - 2).Trim();
-            }
-        }
-
-        return values;
     }
 
     private static string? TruncateDetails(string? text, int maxLen = 2000)

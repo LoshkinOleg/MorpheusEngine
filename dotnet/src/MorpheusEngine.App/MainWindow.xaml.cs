@@ -62,6 +62,9 @@ public partial class MainWindow : Window
     private MorpheusEngine? _engine;
 
     private Task _engineTask = Task.CompletedTask;
+
+    /// <summary>True only after required modules (including warmed LLM provider) report healthy; avoids sending game traffic during boot.</summary>
+    private bool _engineModulesReadyForGame = false;
     private bool _allowClose;
     private bool _shutdownInProgress;
     private bool _suppressEndpointPresetEvents;
@@ -337,6 +340,7 @@ public partial class MainWindow : Window
 
         var engine = new MorpheusEngine();
         _engine = engine;
+        _engineModulesReadyForGame = false;
 
         _engineTask = Task.Run(() =>
         {
@@ -344,11 +348,46 @@ public partial class MainWindow : Window
             Dispatcher.BeginInvoke(() =>
             {
                 _engineTask = Task.CompletedTask;
+                _engineModulesReadyForGame = false;
                 UpdateButtonState();
             });
         });
 
+        _ = ObserveEngineInitializationAsync(engine);
+
         UpdateButtonState();
+    }
+
+    private async Task ObserveEngineInitializationAsync(MorpheusEngine engine)
+    {
+        try
+        {
+            await engine.InitializationCompleted.ConfigureAwait(false);
+            await Dispatcher.InvokeAsync(() =>
+            {
+                // Ignore completion if the user stopped this run before we got back to the UI thread.
+                if (!ReferenceEquals(_engine, engine))
+                {
+                    return;
+                }
+
+                _engineModulesReadyForGame = true;
+                UpdateButtonState();
+            });
+        }
+        catch
+        {
+            await Dispatcher.InvokeAsync(() =>
+            {
+                if (!ReferenceEquals(_engine, engine))
+                {
+                    return;
+                }
+
+                _engineModulesReadyForGame = false;
+                UpdateButtonState();
+            });
+        }
     }
 
     private async Task StopEngineAsync()
@@ -358,6 +397,7 @@ public partial class MainWindow : Window
             return;
         }
 
+        _engineModulesReadyForGame = false;
         _engine?.RequestShutdown();
 
         if (IsEngineRunning())
@@ -387,18 +427,18 @@ public partial class MainWindow : Window
 
         if (GameChatInteractionRoot is not null)
         {
-            // Transcript + composer stay inactive until the engine is started.
-            GameChatInteractionRoot.IsEnabled = running;
+            // Transcript + composer stay inactive until required modules (including LLM warm-up) are ready.
+            GameChatInteractionRoot.IsEnabled = running && _engineModulesReadyForGame;
         }
 
         if (GameSendButton is not null)
         {
-            GameSendButton.IsEnabled = running && !_shutdownInProgress && !_gameRequestInFlight;
+            GameSendButton.IsEnabled = running && _engineModulesReadyForGame && !_shutdownInProgress && !_gameRequestInFlight;
         }
 
         if (GameInputTextBox is not null)
         {
-            GameInputTextBox.IsEnabled = running && !_shutdownInProgress && !_gameRequestInFlight;
+            GameInputTextBox.IsEnabled = running && _engineModulesReadyForGame && !_shutdownInProgress && !_gameRequestInFlight;
         }
     }
 

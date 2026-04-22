@@ -1,3 +1,7 @@
+- Improve logs. Time stamp. Ordering. filter console by module
+
+- UI: once engine is initialized, display "ready!"
+
 - Good start for the Director, needs polishing. UI output is wrong, mentions of intent extraction.
 
 - Make intent extractor actions data driven instead of hardcoded.
@@ -20,4 +24,16 @@
 
 - get rid of the TS implementation
 
-- filter console by module
+- implement tool capabilities for the LLM provider
+
+- change what the LLM sees to be formated more like so:
+```
+<instructions>
+You are the GM for an ongoing solo tabletop RPG...
+</instructions>
+
+<lore>
+boarding: A common tactic in crawler-versus-crawler combat...
+city_state_politics: Politics are strictly local...
+</lore>
+```

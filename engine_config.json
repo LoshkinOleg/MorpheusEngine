@@ -47,8 +47,10 @@
       "port_key": "llm_provider_qwen",
       "display_name": "LlmProvider_qwen",
       "required": true,
-      "ollama_port": 11434,
+      "ollama_port": 8795,
       "default_chat_model": "qwen2.5:7b-instruct",
+      "num_ctx": 4096,
+      "warmup_game_project_id": "sandcrawler",
       "launch": {
         "artifact": "dotnet/src/MorpheusEngine.LlmProvider_qwen/bin/Debug/net9.0/MorpheusEngine.LlmProvider_qwen.exe",
         "dev_project": "dotnet/src/MorpheusEngine.LlmProvider_qwen/MorpheusEngine.LlmProvider_qwen.csproj"
