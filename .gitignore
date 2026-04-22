@@ -2,6 +2,7 @@ node_modules/
 dist/
 build/
 tsImplementation/
+third_party/
 .DS_Store
 *.log
 LLM_*.md
