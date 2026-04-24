@@ -30,16 +30,16 @@
           "method": "GET"
         },
         {
+          "path": "/initialize",
+          "description": "Host binds run identity (game project id and run id) for this module process",
+          "method": "POST",
+          "request_contract": "initialize_request"
+        },
+        {
           "path": "/message",
           "description": "Send a player message to the Director",
           "method": "POST",
           "request_contract": "director_message_request"
-        },
-        {
-          "path": "/engine_log/activate",
-          "description": "Bind on-disk engine logs to the run folder (same JSON as bind_run)",
-          "method": "POST",
-          "request_contract": "initialize_request"
         }
       ]
     },
@@ -63,16 +63,16 @@
           "method": "GET"
         },
         {
-          "path": "/persist_turn",
-          "description": "Persist events + snapshot for the run bound by host bind_run on this process (enforces sequencing in a transaction)",
-          "method": "POST",
-          "request_contract": "session_turn_persist_request"
-        },
-        {
-          "path": "/engine_log/activate",
-          "description": "Bind on-disk engine logs to the run folder (same JSON as bind_run)",
+          "path": "/initialize",
+          "description": "Host binds run identity (game project id and run id) for this module process",
           "method": "POST",
           "request_contract": "initialize_request"
+        },
+        {
+          "path": "/persist_turn",
+          "description": "Persist events + snapshot for the run bound by host POST /initialize on this process (enforces sequencing in a transaction)",
+          "method": "POST",
+          "request_contract": "session_turn_persist_request"
         }
       ]
     },
@@ -100,6 +100,12 @@
           "method": "GET"
         },
         {
+          "path": "/initialize",
+          "description": "Host binds run identity (game project id and run id) for this module process",
+          "method": "POST",
+          "request_contract": "initialize_request"
+        },
+        {
           "path": "/generate",
           "description": "LLM generate (Ollama model from default_chat_model)",
           "method": "POST",
@@ -110,12 +116,6 @@
           "description": "LLM chat (Ollama /api/chat)",
           "method": "POST",
           "request_contract": "chat_generate_request"
-        },
-        {
-          "path": "/engine_log/activate",
-          "description": "Bind on-disk engine logs to the run folder (same JSON as bind_run)",
-          "method": "POST",
-          "request_contract": "initialize_request"
         }
       ]
     },
@@ -139,16 +139,16 @@
           "method": "GET"
         },
         {
+          "path": "/initialize",
+          "description": "Host binds run identity (game project id and run id) for this module process",
+          "method": "POST",
+          "request_contract": "initialize_request"
+        },
+        {
           "path": "/intent",
           "description": "Extract player intent",
           "method": "POST",
           "request_contract": "intent_request"
-        },
-        {
-          "path": "/engine_log/activate",
-          "description": "Bind on-disk engine logs to the run folder (same JSON as bind_run)",
-          "method": "POST",
-          "request_contract": "initialize_request"
         }
       ]
     },
@@ -172,16 +172,16 @@
           "method": "GET"
         },
         {
+          "path": "/initialize",
+          "description": "Host binds run identity (game project id and run id) for this module process",
+          "method": "POST",
+          "request_contract": "initialize_request"
+        },
+        {
           "path": "/turn",
           "description": "Submit player turn",
           "method": "POST",
           "request_contract": "turn_request"
-        },
-        {
-          "path": "/engine_log/activate",
-          "description": "Bind on-disk engine logs to the run folder (same JSON as bind_run)",
-          "method": "POST",
-          "request_contract": "initialize_request"
         }
       ]
     }

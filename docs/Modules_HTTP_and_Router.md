@@ -7,7 +7,7 @@ All backend modules are **standalone executables** that bind **`HttpListener`** 
 Nearly every module implements:
 
 - **`GET /info`** — JSON metadata (`ModuleInfoResponse`).
-- **`GET /health`** — Liveness (`ModuleHealthResponse`); used by `ManagedModule.WaitUntilReadyAsync`.
+- **`GET /health`** — Lifecycle JSON (`ModuleHealthResponse`: `ok`, `status`, **`initialized`**). Before `POST /initialize` the host expects **HTTP 200** with `initialized: false` (`status` e.g. `awaiting_initialize`); while init runs, **503** with `initialized: false`; when ready, **HTTP 200** with `initialized: true`. `ManagedModule.WaitUntilListeningAsync` waits for the first case; `WaitUntilReadyAsync` waits until `initialized` is true.
 - **`POST /shutdown`** — Graceful stop; stops the accept loop.
 
 ## Router (`MorpheusEngine.RouterModule`)

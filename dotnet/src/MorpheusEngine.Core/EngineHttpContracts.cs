@@ -10,9 +10,11 @@ public sealed record ModuleInfoResponse(
     [property: JsonPropertyName("ok")] bool Ok,
     [property: JsonPropertyName("moduleName")] string ModuleName);
 
+/// <summary>GET /health JSON. <see cref="Initialized"/> is false while awaiting or processing POST /initialize; true only when module-specific init is complete.</summary>
 public sealed record ModuleHealthResponse(
     [property: JsonPropertyName("ok")] bool Ok,
-    [property: JsonPropertyName("status")] string Status);
+    [property: JsonPropertyName("status")] string Status,
+    [property: JsonPropertyName("initialized")] bool Initialized);
 
 public sealed record ModuleShutdownResponse(
     [property: JsonPropertyName("ok")] bool Ok,
@@ -26,7 +28,7 @@ public sealed record ErrorResponse(
     [property: JsonPropertyName("details")] string? Details = null);
 #endregion
 
-#region Host bind_run payload (internal)
+#region Host POST /initialize payload (run binding)
 public sealed record InitializeModuleRequest(
     [property: JsonPropertyName("gameProjectId")] string GameProjectId, // Needed.
     [property: JsonPropertyName("runId")] string RunId); // Needed.
@@ -42,12 +44,12 @@ public sealed record TurnRequest(
     [property: JsonPropertyName("turn")] int Turn,
     [property: JsonPropertyName("playerInput")] string PlayerInput);
 
-/// <summary>Router forwards to director POST /message after the host binds the run (single bound run per Director process).</summary>
+/// <summary>Router forwards to director POST /message after the host POST /initialize (single bound run per Director process).</summary>
 public sealed record DirectorMessageRequest(
     [property: JsonPropertyName("turn")] int Turn,
     [property: JsonPropertyName("playerInput")] string PlayerInput);
 
-/// <summary>Body for session_store POST /persist_turn; run identity comes from the last successful host bind_run on that module process.</summary>
+/// <summary>Body for session_store POST /persist_turn; run identity comes from the last successful host POST /initialize on that module process.</summary>
 public sealed record TurnPersistRequest(
     [property: JsonPropertyName("turn")] int Turn,
     [property: JsonPropertyName("playerInput")] string PlayerInput,

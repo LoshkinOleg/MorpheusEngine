@@ -2,7 +2,7 @@ namespace MorpheusEngine;
 
 /// <summary>
 /// Child-process contract for host-driven run binding. The host invokes this once per process via
-/// an internal, loopback-only IPC endpoint (see <see cref="EngineInternalRoutes.BindRunPath"/>).
+/// POST /initialize (loopback-only in module implementations).
 /// </summary>
 public interface IEngineRunBinder
 {

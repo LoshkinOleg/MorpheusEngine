@@ -13,7 +13,7 @@ alwaysApply: true
 
 - The definition of a class is to be structured in this order: nested types -> public properties -> private properties -> public methods -> private methods -> helper methods. "#region ... #endregion" preprocessor directives are to be used to organize these sections if the class is large.
 
-- Compile time constants (const properties) should be public unless otherwise specified.
+- Compile time constants (const properties) should be public unless otherwise specified. Readonly data members should be grouped with the constants in the file.
 
 - When declaring properties, prefer explicitly initializing them to their default value at declaration for clarity's sake, even if they default to the expected value.
 
@@ -24,3 +24,5 @@ alwaysApply: true
 - Prefer methods over getter only properties for things that compute the return value instead of just returning a private field.
 
 - In comments, do not use the <c> tag as it makes reading of comments in the source file cumbersome.
+
+- Readonly data members initialization: POD should be declared inline, anything that requires code execution should be initialized in the constructor.

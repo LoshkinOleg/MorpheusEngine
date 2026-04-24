@@ -12,6 +12,11 @@ namespace MorpheusEngine
             Timeout = TimeSpan.FromSeconds(3)
         };
 
+        private static readonly JsonSerializerOptions HealthJsonOptions = new()
+        {
+            PropertyNameCaseInsensitive = true
+        };
+
         private readonly EngineConfiguration _configuration;
         private readonly EngineModuleInfo _definition;
         private Process _process = new Process();
@@ -61,8 +66,7 @@ namespace MorpheusEngine
         }
 
         /// <summary>
-        /// Waits until the module's HTTP listener is responding on /health (any status code).
-        /// This is distinct from <see cref="WaitUntilReadyAsync"/> which requires a 2xx /health.
+        /// Waits until GET /health returns 2xx with <see cref="ModuleHealthResponse.Initialized"/> false (pre-POST /initialize accepting state).
         /// </summary>
         public async Task WaitUntilListeningAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
         {
@@ -80,8 +84,23 @@ namespace MorpheusEngine
 
                 try
                 {
-                    using var _ = await Http.GetAsync(GetModuleUri("/health"), cancellationToken);
-                    return;
+                    using var response = await Http.GetAsync(GetModuleUri("/health"), cancellationToken);
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        lastError = new InvalidOperationException($"{DisplayName} /health returned {(int)response.StatusCode}.");
+                    }
+                    else
+                    {
+                        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+                        var health = JsonSerializer.Deserialize<ModuleHealthResponse>(body, HealthJsonOptions);
+                        if (health is not null && !health.Initialized)
+                        {
+                            return;
+                        }
+
+                        lastError = new InvalidOperationException(
+                            $"{DisplayName} /health returned 2xx but missing or unexpected body (expected initialized=false).");
+                    }
                 }
                 catch (Exception e)
                 {
@@ -95,8 +114,7 @@ namespace MorpheusEngine
         }
 
         /// <summary>
-        /// Host-driven module initialization: calls the internal bind endpoint with the run identity.
-        /// Requires the module to be listening; does not require /health to be 2xx yet.
+        /// Host-driven run binding: waits for GET /health (pre-initialize 2xx), then <see cref="PostInitializeAndBindRunAsync"/>.
         /// </summary>
         public async Task InitializeAsync(
             InitializeModuleRequest request,
@@ -109,9 +127,14 @@ namespace MorpheusEngine
             }
 
             await WaitUntilListeningAsync(timeout, cancellationToken);
+            await PostInitializeAndBindRunAsync(request, cancellationToken);
+        }
 
+        /// <summary>POST /initialize with <see cref="InitializeModuleRequest"/> JSON; throws if non-success.</summary>
+        private async Task PostInitializeAndBindRunAsync(InitializeModuleRequest request, CancellationToken cancellationToken)
+        {
             var json = JsonSerializer.Serialize(request);
-            using var httpRequest = new HttpRequestMessage(HttpMethod.Post, GetModuleUri(EngineInternalRoutes.BindRunPath))
+            using var httpRequest = new HttpRequestMessage(HttpMethod.Post, GetModuleUri("/initialize"))
             {
                 Content = new StringContent(json, Encoding.UTF8, "application/json")
             };
@@ -121,7 +144,7 @@ namespace MorpheusEngine
             if (!response.IsSuccessStatusCode)
             {
                 throw new InvalidOperationException(
-                    $"{DisplayName} {EngineInternalRoutes.BindRunPath} returned {(int)response.StatusCode} {response.ReasonPhrase}. Body: {body}");
+                    $"{DisplayName} /initialize returned {(int)response.StatusCode} {response.ReasonPhrase}. Body: {body}");
             }
         }
 
@@ -173,10 +196,20 @@ namespace MorpheusEngine
                     using var response = await Http.GetAsync(GetModuleUri("/health"), cancellationToken);
                     if (response.IsSuccessStatusCode)
                     {
-                        return;
-                    }
+                        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+                        var health = JsonSerializer.Deserialize<ModuleHealthResponse>(body, HealthJsonOptions);
+                        if (health?.Initialized == true)
+                        {
+                            return;
+                        }
 
-                    lastError = new InvalidOperationException($"{DisplayName} health check returned {(int)response.StatusCode}.");
+                        lastError = new InvalidOperationException(
+                            $"{DisplayName} /health returned 2xx but initialized=false (status={health?.Status ?? "(null)"}).");
+                    }
+                    else
+                    {
+                        lastError = new InvalidOperationException($"{DisplayName} health check returned {(int)response.StatusCode}.");
+                    }
                 }
                 catch (Exception e)
                 {

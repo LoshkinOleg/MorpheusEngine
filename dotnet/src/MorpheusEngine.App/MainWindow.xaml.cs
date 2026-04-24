@@ -81,10 +81,6 @@ public partial class MainWindow : Window
     /// <summary>Next turn index to send (1-based; must match MAX(snapshots.turn)+1).</summary>
     private int _nextTurn = 1;
     private string[] _qwenMonitorModuleNames = ["Qwen", "LlmProvider_qwen"];
-    private FileSystemWatcher? _llmLogWatcher;
-    private long _llmLogReadPosition = 0;
-    private string _llmLogRemainder = string.Empty;
-    private bool _llmLogTailingEnabled = false;
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
@@ -349,16 +345,11 @@ public partial class MainWindow : Window
             return;
         }
 
-        var projectIdText = GameProjectIdTextBox?.Text ?? string.Empty;
-        projectIdText = projectIdText.Trim();
-        try
-        {
-            GameRunLogPaths.RequireSafePathSegment(nameof(projectIdText), projectIdText);
-        }
-        catch (Exception e)
+        var projectIdText = (GameProjectIdTextBox?.Text ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(projectIdText))
         {
             MessageBox.Show(
-                $"Invalid game project id:\n{e.Message}",
+                "Game project id cannot be empty.",
                 "MorpheusEngine",
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
@@ -380,16 +371,15 @@ public partial class MainWindow : Window
             {
                 engine.Run();
             }
-            finally
-            {
-                Dispatcher.BeginInvoke(() =>
+                finally
                 {
-                    _engineRunTask = null;
-                    _engineModulesReadyForGame = false;
-                    StopLlmLogTail();
-                    UpdateButtonState();
-                });
-            }
+                    Dispatcher.BeginInvoke(() =>
+                    {
+                        _engineRunTask = null;
+                        _engineModulesReadyForGame = false;
+                        UpdateButtonState();
+                    });
+                }
         });
 
         _ = ObserveEngineInitializationAsync(engine);
@@ -401,7 +391,7 @@ public partial class MainWindow : Window
     {
         try
         {
-            await engine.InitializationCompleted.ConfigureAwait(false);
+            await engine.InitializationCompletedSource.Task.ConfigureAwait(false);
             await Dispatcher.InvokeAsync(() =>
             {
                 // Ignore completion if the user stopped this run before we got back to the UI thread.
@@ -411,7 +401,7 @@ public partial class MainWindow : Window
                 }
 
                 _engineModulesReadyForGame = true;
-                StartTrafficLogTail();
+                QwenMonitorPane.Clear();
                 UpdateButtonState();
             });
         }
@@ -439,7 +429,6 @@ public partial class MainWindow : Window
         }
 
         _engineModulesReadyForGame = false;
-        StopLlmLogTail();
         var engineRef = _engine;
         engineRef?.RequestShutdown();
 
@@ -516,8 +505,7 @@ public partial class MainWindow : Window
             ConsolePane.CaretIndex = ConsolePane.Text.Length;
             ConsolePane.ScrollToEnd();
 
-            // If we are tailing the dedicated traffic file, do not duplicate console summaries into the monitor pane.
-            if (!_llmLogTailingEnabled && TryExtractQwenLogLine(text, out var qwenLogLine))
+            if (TryExtractQwenLogLine(text, out var qwenLogLine))
             {
                 AppendQwenMonitorEntry(qwenLogLine);
             }
@@ -900,123 +888,6 @@ public partial class MainWindow : Window
             QwenMonitorPane.CaretIndex = QwenMonitorPane.Text.Length;
             QwenMonitorPane.ScrollToEnd();
         });
-    }
-
-    /// <summary>Tails <see cref="GameRunLogPaths.OllamaTrafficFileName"/> under the active run (requires <see cref="_runId"/> set).</summary>
-    private void StartTrafficLogTail()
-    {
-        if (_llmLogWatcher is not null || _config is null || string.IsNullOrEmpty(_runId))
-        {
-            return;
-        }
-
-        var llmLogPath = GameRunLogPaths.GetTrafficLogPath(_config.RepositoryRoot, _gameProjectId, _runId);
-        var llmLogDir = Path.GetDirectoryName(llmLogPath);
-        if (string.IsNullOrWhiteSpace(llmLogDir))
-        {
-            return;
-        }
-
-        Directory.CreateDirectory(llmLogDir);
-        if (!File.Exists(llmLogPath))
-        {
-            File.WriteAllText(llmLogPath, string.Empty);
-        }
-
-        // Start from the end so the monitor shows new traffic for this run only.
-        _llmLogReadPosition = new FileInfo(llmLogPath).Length;
-        _llmLogRemainder = string.Empty;
-        _llmLogTailingEnabled = true;
-        QwenMonitorPane.Clear();
-
-        var watcher = new FileSystemWatcher(llmLogDir, Path.GetFileName(llmLogPath))
-        {
-            NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.FileName
-        };
-        watcher.Changed += (_, _) => Dispatcher.BeginInvoke(() => ReadLlmLogAppends(llmLogPath));
-        watcher.Created += (_, _) => Dispatcher.BeginInvoke(() => ReadLlmLogAppends(llmLogPath));
-        watcher.Renamed += (_, _) => Dispatcher.BeginInvoke(() => ReadLlmLogAppends(llmLogPath));
-        watcher.EnableRaisingEvents = true;
-        _llmLogWatcher = watcher;
-    }
-
-    private void StopLlmLogTail()
-    {
-        _llmLogTailingEnabled = false;
-
-        if (_llmLogWatcher is not null)
-        {
-            try
-            {
-                _llmLogWatcher.EnableRaisingEvents = false;
-                _llmLogWatcher.Dispose();
-            }
-            catch
-            {
-            }
-            finally
-            {
-                _llmLogWatcher = null;
-            }
-        }
-    }
-
-    private void ReadLlmLogAppends(string llmLogPath)
-    {
-        if (!_llmLogTailingEnabled)
-        {
-            return;
-        }
-
-        try
-        {
-            using var stream = new FileStream(llmLogPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-            if (_llmLogReadPosition > stream.Length)
-            {
-                _llmLogReadPosition = 0;
-                _llmLogRemainder = string.Empty;
-            }
-
-            stream.Seek(_llmLogReadPosition, SeekOrigin.Begin);
-            using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 4096, leaveOpen: true);
-            var appended = reader.ReadToEnd();
-            _llmLogReadPosition = stream.Position;
-
-            if (string.IsNullOrEmpty(appended))
-            {
-                return;
-            }
-
-            var combined = _llmLogRemainder + appended;
-            var lines = combined.Split('\n');
-            _llmLogRemainder = combined.EndsWith("\n", StringComparison.Ordinal) ? string.Empty : lines[^1];
-
-            var lineCount = _llmLogRemainder.Length == 0 ? lines.Length : lines.Length - 1;
-            for (var i = 0; i < lineCount; i++)
-            {
-                var line = lines[i].TrimEnd('\r');
-                if (line.Length == 0)
-                {
-                    continue;
-                }
-
-                // Older builds wrote monitor separators into traffic logs; skip them when tailing so the pane matches current format.
-                var trimmed = line.Trim();
-                if (trimmed.Length >= 4 && trimmed.All(static c => c == '-'))
-                {
-                    continue;
-                }
-
-                AppendQwenMonitorEntry(line);
-            }
-        }
-        catch (IOException)
-        {
-            // Best-effort tailing: ignore transient lock/rename races.
-        }
-        catch (UnauthorizedAccessException)
-        {
-        }
     }
 
     private bool TryExtractQwenLogLine(string text, out string qwenLogLine)

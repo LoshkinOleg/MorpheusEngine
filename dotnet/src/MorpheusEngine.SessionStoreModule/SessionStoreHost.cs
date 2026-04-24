@@ -6,7 +6,7 @@ namespace MorpheusEngine;
 
 /// <summary>
 /// HTTP host for the session_store module: per-run SQLite open, schema bootstrap, run lifecycle, and turn persist.
-/// POST /persist_turn targets the run established by the last successful host bind_run on this process (one run per process).
+/// POST /persist_turn targets the run established by the last successful host POST /initialize on this process (one run per process).
 /// Essentially a wrapper for RunPersistence which does the actual work. This is just a wrapper that handles the HTTP messaging.
 /// </summary>
 public sealed class SessionStoreHost : IEngineRunBinder
@@ -16,10 +16,12 @@ public sealed class SessionStoreHost : IEngineRunBinder
     private readonly HttpListener _listener = new();
     private readonly EngineConfiguration _configuration = EngineConfigLoader.GetConfiguration();
     private readonly RunPersistence _persistence;
+    private readonly object _sessionLock = new();
+    private volatile bool _initializing;
     private bool _shutdownRequested = false;
-    /// <summary>Trimmed id from the last successful bind_run; empty until then.</summary>
+    /// <summary>Trimmed game project id from the last successful POST /initialize; empty until then.</summary>
     private string _boundGameProjectId = string.Empty;
-    /// <summary>Trimmed id from the last successful bind_run; empty until then.</summary>
+    /// <summary>Trimmed run id from the last successful POST /initialize; empty until then.</summary>
     private string _boundRunId = string.Empty;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -65,8 +67,7 @@ public sealed class SessionStoreHost : IEngineRunBinder
             while (!_shutdownRequested)
             {
                 var context = await _listener.GetContextAsync();
-                // Serialize handlers so bind_run and /persist_turn cannot race on _bound* binding.
-                await ProcessQueryAsync(context);
+                _ = ProcessQueryAsync(context);
             }
         }
         catch (HttpListenerException e)
@@ -121,8 +122,28 @@ public sealed class SessionStoreHost : IEngineRunBinder
 
             if (path.Equals("/health", StringComparison.OrdinalIgnoreCase) && method == "GET")
             {
-                var healthy = IsRunBound;
-                await RespondJsonAsync(context, healthy ? 200 : 503, new ModuleHealthResponse(healthy, healthy ? "healthy" : "run_not_bound"));
+                if (_initializing)
+                {
+                    await RespondJsonAsync(
+                        context,
+                        503,
+                        new ModuleHealthResponse(false, "initializing", false));
+                    return;
+                }
+
+                bool runBound;
+                lock (_sessionLock)
+                {
+                    runBound = IsRunBound;
+                }
+
+                if (runBound)
+                {
+                    await RespondJsonAsync(context, 200, new ModuleHealthResponse(true, "healthy", true));
+                    return;
+                }
+
+                await RespondJsonAsync(context, 200, new ModuleHealthResponse(false, "awaiting_initialize", false));
                 return;
             }
 
@@ -144,13 +165,7 @@ public sealed class SessionStoreHost : IEngineRunBinder
                 return;
             }
 
-            if (path.Equals("/engine_log/activate", StringComparison.OrdinalIgnoreCase) && method == "POST")
-            {
-                await HandleRequest_engineLogActivate(context);
-                return;
-            }
-
-            if (path.Equals(EngineInternalRoutes.BindRunPath, StringComparison.OrdinalIgnoreCase) && method == "POST")
+            if (path.Equals("/initialize", StringComparison.OrdinalIgnoreCase) && method == "POST")
             {
                 await HandleRequest_bindRun(context);
                 return;
@@ -178,7 +193,7 @@ public sealed class SessionStoreHost : IEngineRunBinder
     {
         if (!IsLoopbackRequest(context))
         {
-            await RespondJsonAsync(context, 403, new ErrorResponse(false, "bind_run is only allowed from loopback."));
+            await RespondJsonAsync(context, 403, new ErrorResponse(false, "POST /initialize is only allowed from loopback."));
             return;
         }
 
@@ -202,20 +217,33 @@ public sealed class SessionStoreHost : IEngineRunBinder
             return;
         }
 
+        _initializing = true;
         try
         {
-            var response = _persistence.InitializeRun(request.GameProjectId.Trim(), request.RunId.Trim()); // Actual initialization logic.
-            _boundGameProjectId = request.GameProjectId.Trim();
-            _boundRunId = request.RunId.Trim();
-            await RespondJsonAsync(context, 200, response);
+            try
+            {
+                InitializeModuleResponse response;
+                lock (_sessionLock)
+                {
+                    response = _persistence.InitializeRun(request.GameProjectId.Trim(), request.RunId.Trim());
+                    _boundGameProjectId = request.GameProjectId.Trim();
+                    _boundRunId = request.RunId.Trim();
+                }
+
+                await RespondJsonAsync(context, 200, response);
+            }
+            catch (ArgumentException e)
+            {
+                await RespondJsonAsync(context, 400, new ErrorResponse(false, e.Message));
+            }
+            catch (Exception e)
+            {
+                await RespondJsonAsync(context, 500, new ErrorResponse(false, "Failed to initialize run store.", e.Message));
+            }
         }
-        catch (ArgumentException e)
+        finally
         {
-            await RespondJsonAsync(context, 400, new ErrorResponse(false, e.Message));
-        }
-        catch (Exception e)
-        {
-            await RespondJsonAsync(context, 500, new ErrorResponse(false, "Failed to initialize run store.", e.Message));
+            _initializing = false;
         }
     }
 
@@ -244,21 +272,31 @@ public sealed class SessionStoreHost : IEngineRunBinder
             return;
         }
 
-        if (string.IsNullOrEmpty(_boundGameProjectId) || string.IsNullOrEmpty(_boundRunId))
-        {
-            await RespondJsonAsync(
-                context,
-                400,
-                new ErrorResponse(
-                    false,
-                    "No bound run: the host must bind the run on this session_store process before POST /persist_turn."));
-            return;
-        }
-
         try
         {
-            var response = _persistence.PersistTurn(_boundGameProjectId, _boundRunId, request); // Actual logic.
-            await RespondJsonAsync(context, 200, response);
+            TurnPersistResponse? response = null;
+            bool missingBound;
+            lock (_sessionLock)
+            {
+                missingBound = string.IsNullOrEmpty(_boundGameProjectId) || string.IsNullOrEmpty(_boundRunId);
+                if (!missingBound)
+                {
+                    response = _persistence.PersistTurn(_boundGameProjectId, _boundRunId, request);
+                }
+            }
+
+            if (missingBound)
+            {
+                await RespondJsonAsync(
+                    context,
+                    400,
+                    new ErrorResponse(
+                        false,
+                        "No bound run: the host must bind the run on this session_store process before POST /persist_turn."));
+                return;
+            }
+
+            await RespondJsonAsync(context, 200, response!);
         }
         catch (ArgumentException e)
         {
@@ -275,29 +313,6 @@ public sealed class SessionStoreHost : IEngineRunBinder
     }
 
     #endregion
-
-    private async Task HandleRequest_engineLogActivate(HttpListenerContext context)
-    {
-        if (!IsLoopbackRequest(context))
-        {
-            await RespondJsonAsync(context, 403, new ErrorResponse(false, "engine_log/activate is only allowed from loopback."));
-            return;
-        }
-
-        var body = await ReadRequestBodyAsync(context);
-        var result = EngineLogActivateCommands.TryActivateFromJsonBody(
-            body,
-            _configuration.RepositoryRoot,
-            primaryNotJoin: false,
-            JsonOptions);
-        if (!result.Ok)
-        {
-            await RespondJsonAsync(context, 400, new ErrorResponse(false, result.ErrorMessage ?? "Activation failed."));
-            return;
-        }
-
-        await RespondJsonAsync(context, 200, new InitializeModuleResponse(true));
-    }
 
     private static bool IsLoopbackRequest(HttpListenerContext context)
     {

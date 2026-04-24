@@ -5,8 +5,7 @@ using System.Threading;
 namespace MorpheusEngine;
 
 /// <summary>
-/// Lightweight console logger: prefixes each line with entry id, elapsed time, and module tag.
-/// When <see cref="GlobalLogSequence"/> is configured, ids and (with <see cref="LogSessionClock"/>) elapsed time are shared across processes.
+/// Lightweight console logger: prefixes each line with entry id, elapsed time, and module tag (per-process sequence and wall clock).
 /// Child modules launched with redirected stdout omit local console wrapping so the host can prepend a unified prefix.
 /// </summary>
 public static class EngineLog
@@ -63,7 +62,6 @@ public static class EngineLog
 
     /// <summary>
     /// Formats a prefix string that matches the console prefixing writer, while incrementing the same sequence source as the console.
-    /// Intended for non-console sinks (e.g. file logs) that must match the merged export format when global sequence is active.
     /// </summary>
     public static string FormatLinePrefix(bool isError)
     {
@@ -93,24 +91,14 @@ public static class EngineLog
             throw new ArgumentException("sourceTag must be non-empty.", nameof(sourceTag));
         }
 
-        ulong seq;
-        TimeSpan elapsed;
-        if (GlobalLogSequence.IsConfigured)
+        var n = Interlocked.Increment(ref _fallbackSequence);
+        if (n < 0)
         {
-            seq = GlobalLogSequence.AllocateNext();
-            elapsed = LogSessionClock.ElapsedSinceSessionStart;
+            throw new InvalidOperationException("EngineLog sequence overflow.");
         }
-        else
-        {
-            var n = Interlocked.Increment(ref _fallbackSequence);
-            if (n < 0)
-            {
-                throw new InvalidOperationException("EngineLog fallback sequence overflow.");
-            }
 
-            seq = (ulong)n;
-            elapsed = _stopwatch.Elapsed;
-        }
+        var seq = (ulong)n;
+        var elapsed = _stopwatch.Elapsed;
 
         var tag = isError ? $"{sourceTag}:ERR" : sourceTag;
         return $"[{seq} ; {FormatElapsedSinceStart(elapsed)}] [{tag}] ";
@@ -137,20 +125,13 @@ public static class EngineLog
     }
 
     /// <summary>
-    /// Host only: prepends one unified prefix (global id + session elapsed + logical source) then the child message body.
-    /// Requires file log activation: <see cref="GlobalLogSequence.ConfigureForDirectory"/> and a session clock on disk (see <see cref="EngineFileLogActivation"/>).
+    /// Host only: prepends one unified prefix (entry id + elapsed + logical source) then the child message body.
     /// </summary>
     public static void WriteHostedChildLine(string logicalSource, bool isError, string message)
     {
         if (!_initialized || _rawOut is null)
         {
             throw new InvalidOperationException("EngineLog is not initialized; call EngineLog.Initialize(moduleName) first.");
-        }
-
-        if (!GlobalLogSequence.IsConfigured)
-        {
-            throw new InvalidOperationException(
-                "GlobalLogSequence.ConfigureForDirectory(runSaveDir) must be called on the host after run init before WriteHostedChildLine.");
         }
 
         if (string.IsNullOrWhiteSpace(logicalSource))

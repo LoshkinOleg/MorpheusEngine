@@ -26,8 +26,15 @@ internal sealed class RunPersistence
     /// </summary>
     public InitializeModuleResponse InitializeRun(string gameProjectId, string runId)
     {
-        RequireSafePathSegment(nameof(gameProjectId), gameProjectId);
-        RequireSafePathSegment(nameof(runId), runId);
+        if (string.IsNullOrWhiteSpace(gameProjectId))
+        {
+            throw new ArgumentException("gameProjectId must be non-empty.", nameof(gameProjectId));
+        }
+
+        if (string.IsNullOrWhiteSpace(runId))
+        {
+            throw new ArgumentException("runId must be non-empty.", nameof(runId));
+        }
 
         var dbPath = GetDbPath(gameProjectId, runId);
         var sessionDir = Path.GetDirectoryName(dbPath) ?? throw new InvalidOperationException("Failed to resolve session directory.");
@@ -127,8 +134,16 @@ internal sealed class RunPersistence
     /// </summary>
     public TurnPersistResponse PersistTurn(string gameProjectId, string runId, TurnPersistRequest request)
     {
-        RequireSafePathSegment(nameof(gameProjectId), gameProjectId);
-        RequireSafePathSegment(nameof(runId), runId);
+        if (string.IsNullOrWhiteSpace(gameProjectId))
+        {
+            throw new ArgumentException("gameProjectId must be non-empty.", nameof(gameProjectId));
+        }
+
+        if (string.IsNullOrWhiteSpace(runId))
+        {
+            throw new ArgumentException("runId must be non-empty.", nameof(runId));
+        }
+
         if (request.Turn < 1)
         {
             throw new InvalidOperationException("Turn must be >= 1.");
@@ -309,29 +324,6 @@ internal sealed class RunPersistence
     #endregion
 
     #region Helpers
-    private static void RequireSafePathSegment(string name, string value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            throw new ArgumentException($"{name} must be non-empty.");
-        }
-
-        var trimmed = value.Trim();
-        if (!string.Equals(trimmed, value, StringComparison.Ordinal))
-        {
-            throw new ArgumentException($"{name} must not have leading or trailing whitespace.");
-        }
-
-        if (value.Contains("..", StringComparison.Ordinal))
-        {
-            throw new ArgumentException($"{name} must not contain '..'.");
-        }
-
-        if (value.IndexOfAny([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar, '/', '\\']) >= 0)
-        {
-            throw new ArgumentException($"{name} must not contain path separators.");
-        }
-    }
     private static int ReadMaxSnapshotTurn(SqliteConnection connection, SqliteTransaction? transaction = null)
     {
         using var cmd = connection.CreateCommand();

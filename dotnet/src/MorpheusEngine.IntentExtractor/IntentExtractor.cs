@@ -38,6 +38,7 @@ namespace MorpheusEngine
         private readonly HttpListener _listener = new HttpListener(); // Inbound listener for responding to http messages.
         private bool _shutdownRequested = false;
         private bool _runBound = false;
+        private volatile bool _initializing;
         private string _boundGameProjectId = string.Empty;
         private string _boundRunId = string.Empty;
 
@@ -143,8 +144,19 @@ namespace MorpheusEngine
                 // /health endpoint.
                 if (path.Equals("/health", StringComparison.OrdinalIgnoreCase))
                 {
-                    var healthy = _runBound;
-                    await Respond(context, healthy ? 200 : 503, new ModuleHealthResponse(healthy, healthy ? "healthy" : "run_not_bound"));
+                    if (_initializing)
+                    {
+                        await Respond(context, 503, new ModuleHealthResponse(false, "initializing", false));
+                        return;
+                    }
+
+                    if (_runBound)
+                    {
+                        await Respond(context, 200, new ModuleHealthResponse(true, "healthy", true));
+                        return;
+                    }
+
+                    await Respond(context, 200, new ModuleHealthResponse(false, "awaiting_initialize", false));
                     return;
                 }
 
@@ -155,13 +167,7 @@ namespace MorpheusEngine
                     return;
                 }
 
-                if (path.Equals("/engine_log/activate", StringComparison.OrdinalIgnoreCase))
-                {
-                    await ProcessRequest_engineLogActivate(context);
-                    return;
-                }
-
-                if (path.Equals(EngineInternalRoutes.BindRunPath, StringComparison.OrdinalIgnoreCase))
+                if (path.Equals("/initialize", StringComparison.OrdinalIgnoreCase))
                 {
                     await ProcessRequest_bindRun(context);
                     return;
@@ -197,7 +203,7 @@ namespace MorpheusEngine
 
             if (!IsLoopbackRequest(context))
             {
-                await Respond(context, 403, new ErrorResponse(false, "bind_run is only allowed from loopback."));
+                await Respond(context, 403, new ErrorResponse(false, "POST /initialize is only allowed from loopback."));
                 return;
             }
 
@@ -226,17 +232,25 @@ namespace MorpheusEngine
                 return;
             }
 
+            _initializing = true;
             try
             {
-                await BindRunAsync(request, CancellationToken.None);
-            }
-            catch (Exception e)
-            {
-                await Respond(context, 409, new ErrorResponse(false, e.Message));
-                return;
-            }
+                try
+                {
+                    await BindRunAsync(request, CancellationToken.None);
+                }
+                catch (Exception e)
+                {
+                    await Respond(context, 409, new ErrorResponse(false, e.Message));
+                    return;
+                }
 
-            await Respond(context, 200, new InitializeModuleResponse(true));
+                await Respond(context, 200, new InitializeModuleResponse(true));
+            }
+            finally
+            {
+                _initializing = false;
+            }
         }
 
         // Intentional single use method. No heuristic fallback: LLM path failures become HTTP errors (fail fast).
@@ -381,41 +395,6 @@ namespace MorpheusEngine
                     200,
                     new IntentResponse(true, validated.Intent, validated.Parameters));
             }
-        }
-
-        private async Task ProcessRequest_engineLogActivate(HttpListenerContext context)
-        {
-            if (!string.Equals(context.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase))
-            {
-                await Respond(context, 405, new ErrorResponse(false, "Method not allowed; use POST."));
-                return;
-            }
-
-            if (!IsLoopbackRequest(context))
-            {
-                await Respond(context, 403, new ErrorResponse(false, "engine_log/activate is only allowed from loopback."));
-                return;
-            }
-
-            string body;
-            using (var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding))
-            {
-                body = await reader.ReadToEndAsync();
-            }
-
-            var configuration = EngineConfigLoader.GetConfiguration();
-            var result = EngineLogActivateCommands.TryActivateFromJsonBody(
-                body,
-                configuration.RepositoryRoot,
-                primaryNotJoin: false,
-                _jsonOptions);
-            if (!result.Ok)
-            {
-                await Respond(context, 400, new ErrorResponse(false, result.ErrorMessage ?? "Activation failed."));
-                return;
-            }
-
-            await Respond(context, 200, new InitializeModuleResponse(true));
         }
 
         private static bool IsLoopbackRequest(HttpListenerContext context)

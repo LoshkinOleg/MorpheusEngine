@@ -45,6 +45,7 @@ namespace MorpheusEngine
         };
 
         private bool _runBound = false;
+        private volatile bool _initializing;
         private string _boundGameProjectId = string.Empty;
         private string _boundRunId = string.Empty;
 
@@ -119,8 +120,22 @@ namespace MorpheusEngine
 
                 if (path.Equals("/health", StringComparison.OrdinalIgnoreCase))
                 {
-                    var healthy = _runBound;
-                    await RespondAsync(context, healthy ? 200 : 503, new ModuleHealthResponse(healthy, healthy ? "healthy" : "run_not_bound"));
+                    if (_initializing)
+                    {
+                        await RespondAsync(
+                            context,
+                            503,
+                            new ModuleHealthResponse(false, "initializing", false));
+                        return;
+                    }
+
+                    if (_runBound)
+                    {
+                        await RespondAsync(context, 200, new ModuleHealthResponse(true, "healthy", true));
+                        return;
+                    }
+
+                    await RespondAsync(context, 200, new ModuleHealthResponse(false, "awaiting_initialize", false));
                     return;
                 }
 
@@ -148,15 +163,9 @@ namespace MorpheusEngine
                     return;
                 }
 
-                if (path.Equals("/engine_log/activate", StringComparison.OrdinalIgnoreCase))
+                if (path.Equals("/initialize", StringComparison.OrdinalIgnoreCase))
                 {
-                    await ProcessRequest_engineLogActivate(context);
-                    return;
-                }
-
-                if (path.Equals(EngineInternalRoutes.BindRunPath, StringComparison.OrdinalIgnoreCase))
-                {
-                    await ProcessRequest_bindRun(context);
+                    await ProcessRequest_initialize(context);
                     return;
                 }
 
@@ -210,7 +219,7 @@ namespace MorpheusEngine
             Console.WriteLine("Router shut down.");
         }
 
-        private async Task ProcessRequest_bindRun(HttpListenerContext context)
+        private async Task ProcessRequest_initialize(HttpListenerContext context)
         {
             if (!string.Equals(context.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase))
             {
@@ -222,7 +231,7 @@ namespace MorpheusEngine
 
             if (!IsLoopbackRequest(context))
             {
-                await RespondAsync(context, 403, new ErrorResponse(false, "bind_run is only allowed from loopback."));
+                await RespondAsync(context, 403, new ErrorResponse(false, "POST /initialize is only allowed from loopback."));
                 return;
             }
 
@@ -248,17 +257,25 @@ namespace MorpheusEngine
                 return;
             }
 
+            _initializing = true;
             try
             {
-                await BindRunAsync(parsed, CancellationToken.None);
-            }
-            catch (Exception e)
-            {
-                await RespondAsync(context, 409, new ErrorResponse(false, e.Message));
-                return;
-            }
+                try
+                {
+                    await BindRunAsync(parsed, CancellationToken.None);
+                }
+                catch (Exception e)
+                {
+                    await RespondAsync(context, 409, new ErrorResponse(false, e.Message));
+                    return;
+                }
 
-            await RespondAsync(context, 200, new InitializeModuleResponse(true));
+                await RespondAsync(context, 200, new InitializeModuleResponse(true));
+            }
+            finally
+            {
+                _initializing = false;
+            }
         }
 
         /// <summary>
@@ -318,23 +335,12 @@ namespace MorpheusEngine
 
             var turnStopwatch = Stopwatch.StartNew();
             var playerInputTrimmed = request.PlayerInput.Trim();
-            // One global prefix allocation for both llmLog and stdout; the host forwards stdout verbatim when already prefixed.
+            // One prefix allocation for stdout; the host forwards router stdout verbatim when already prefixed.
             var turnStartInner =
                 $"=== TURN {request.Turn} START === runId={request.RunId.Trim()} gameProjectId={request.GameProjectId.Trim()} input='{TruncateMiddle(playerInputTrimmed)}'";
             var turnStartFull = EngineLog.FormatLinePrefix(isError: false) + turnStartInner;
             // Bypass PrefixingTextWriter when present so we do not stack two prefixes; same stream as raw redirected stdout.
             EngineLog.WriteForwardedLine(turnStartFull);
-            if (!GlobalLogSequence.IsConfigured)
-            {
-                throw new InvalidOperationException(
-                    "Turn traffic file logging requires POST /engine_log/activate after run init (file log session not bound).");
-            }
-
-            var trafficPath = GameRunLogPaths.GetTrafficLogPath(
-                _configuration.RepositoryRoot,
-                request.GameProjectId.Trim(),
-                request.RunId.Trim());
-            OllamaTrafficFile.AppendLine(trafficPath, turnStartFull);
 
             var finalStatusCode = 500;
             try
@@ -432,48 +438,7 @@ namespace MorpheusEngine
                     $"=== TURN {request.Turn} END === status={finalStatusCode} elapsedMs={turnStopwatch.ElapsedMilliseconds}";
                 var turnEndFull = EngineLog.FormatLinePrefix(isError: false) + turnEndInner;
                 EngineLog.WriteForwardedLine(turnEndFull);
-                if (GlobalLogSequence.IsConfigured)
-                {
-                    var trafficPathEnd = GameRunLogPaths.GetTrafficLogPath(
-                        _configuration.RepositoryRoot,
-                        request.GameProjectId.Trim(),
-                        request.RunId.Trim());
-                    OllamaTrafficFile.AppendLine(trafficPathEnd, turnEndFull);
-                }
             }
-        }
-
-        /// <summary>
-        /// Binds this process to the on-disk log directory for the given run (same JSON as bind_run).
-        /// Loopback-only; intended to be called from the host after run bind.
-        /// </summary>
-        private async Task ProcessRequest_engineLogActivate(HttpListenerContext context)
-        {
-            if (!string.Equals(context.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase))
-            {
-                await RespondAsync(context, 405, new ErrorResponse(false, "Method not allowed; use POST."));
-                return;
-            }
-
-            if (!IsLoopbackRequest(context))
-            {
-                await RespondAsync(context, 403, new ErrorResponse(false, "engine_log/activate is only allowed from loopback."));
-                return;
-            }
-
-            var body = await ReadRequestBodyAsync(context);
-            var result = EngineLogActivateCommands.TryActivateFromJsonBody(
-                body,
-                _configuration.RepositoryRoot,
-                primaryNotJoin: false,
-                _jsonOptions);
-            if (!result.Ok)
-            {
-                await RespondAsync(context, 400, new ErrorResponse(false, result.ErrorMessage ?? "Activation failed."));
-                return;
-            }
-
-            await RespondAsync(context, 200, new InitializeModuleResponse(true));
         }
 
         private static bool IsLoopbackRequest(HttpListenerContext context)
