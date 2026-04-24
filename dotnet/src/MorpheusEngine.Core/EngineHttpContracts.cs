@@ -26,7 +26,7 @@ public sealed record ErrorResponse(
     [property: JsonPropertyName("details")] string? Details = null);
 #endregion
 
-#region POST /initialize (director and session_store)
+#region Host bind_run payload (internal)
 public sealed record InitializeModuleRequest(
     [property: JsonPropertyName("gameProjectId")] string GameProjectId, // Needed.
     [property: JsonPropertyName("runId")] string RunId); // Needed.
@@ -42,12 +42,12 @@ public sealed record TurnRequest(
     [property: JsonPropertyName("turn")] int Turn,
     [property: JsonPropertyName("playerInput")] string PlayerInput);
 
-/// <summary>Router forwards to director POST /message after POST /initialize (single bound run per Director process).</summary>
+/// <summary>Router forwards to director POST /message after the host binds the run (single bound run per Director process).</summary>
 public sealed record DirectorMessageRequest(
     [property: JsonPropertyName("turn")] int Turn,
     [property: JsonPropertyName("playerInput")] string PlayerInput);
 
-/// <summary>Body for session_store POST /persist_turn; run identity comes from the last successful POST /initialize on that module process.</summary>
+/// <summary>Body for session_store POST /persist_turn; run identity comes from the last successful host bind_run on that module process.</summary>
 public sealed record TurnPersistRequest(
     [property: JsonPropertyName("turn")] int Turn,
     [property: JsonPropertyName("playerInput")] string PlayerInput,
@@ -61,7 +61,7 @@ public sealed record TurnPersistResponse(
 public sealed record ModuleProxyRequest(
     [property: JsonPropertyName("sourceModule")] string SourceModule,
     [property: JsonPropertyName("targetModule")] string TargetModule,
-    [property: JsonPropertyName("targetPath")] string TargetPath, // Endpoint name like /initialize
+    [property: JsonPropertyName("targetPath")] string TargetPath, // Endpoint name like /chat, /generate
     [property: JsonPropertyName("method")] string Method, // GET, POST
     [property: JsonPropertyName("body")] JsonElement? Body);
 #endregion

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net.Http;
+using System.Text;
 using System.Text.Json;
 
 namespace MorpheusEngine
@@ -15,6 +16,9 @@ namespace MorpheusEngine
         private readonly EngineModuleInfo _definition;
         private Process _process = new Process();
 
+        /// <summary>True after <see cref="Start"/> successfully spawned a child; <see cref="StopAsync"/> is a no-op until then.</summary>
+        private bool _childProcessSpawned = false;
+
         public ManagedModule(EngineConfiguration configuration, EngineModuleInfo definition)
         {
             _configuration = configuration;
@@ -27,26 +31,127 @@ namespace MorpheusEngine
         public int Port { get; }
         public bool Required => _definition.Required;
 
-        public void Start()
+        /// <param name="moduleHostJob">When non-null (Windows host), the spawned module process is assigned so it cannot outlive the job handle.</param>
+        public void Start(WindowsJobObject? moduleHostJob)
         {
             var psi = CreateProcessStartInfo();
             _process = Process.Start(psi) ?? throw new InvalidOperationException($"Failed to start {DisplayName}.");
+            if (moduleHostJob is not null)
+            {
+                moduleHostJob.AssignProcess(_process);
+            }
+
             _process.OutputDataReceived += (_, e) =>
             {
                 if (!string.IsNullOrWhiteSpace(e.Data))
                 {
-                    Console.WriteLine($"[{DisplayName}] " + e.Data);
+                    ForwardChildLine(e.Data, isError: false);
                 }
             };
             _process.ErrorDataReceived += (_, e) =>
             {
                 if (!string.IsNullOrWhiteSpace(e.Data))
                 {
-                    Console.WriteLine($"[{DisplayName}:ERR] " + e.Data);
+                    ForwardChildLine(e.Data, isError: true);
                 }
             };
             _process.BeginOutputReadLine();
             _process.BeginErrorReadLine();
+            _childProcessSpawned = true;
+        }
+
+        /// <summary>
+        /// Waits until the module's HTTP listener is responding on /health (any status code).
+        /// This is distinct from <see cref="WaitUntilReadyAsync"/> which requires a 2xx /health.
+        /// </summary>
+        public async Task WaitUntilListeningAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
+        {
+            var deadline = DateTime.UtcNow + timeout;
+            Exception? lastError = null;
+
+            while (DateTime.UtcNow < deadline)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (_process.HasExited)
+                {
+                    throw new InvalidOperationException($"{DisplayName} exited before it began listening.");
+                }
+
+                try
+                {
+                    using var _ = await Http.GetAsync(GetModuleUri("/health"), cancellationToken);
+                    return;
+                }
+                catch (Exception e)
+                {
+                    lastError = e;
+                }
+
+                await Task.Delay(250, cancellationToken);
+            }
+
+            throw new TimeoutException($"Timed out waiting for {DisplayName} to begin listening. {lastError?.Message}");
+        }
+
+        /// <summary>
+        /// Host-driven module initialization: calls the internal bind endpoint with the run identity.
+        /// Requires the module to be listening; does not require /health to be 2xx yet.
+        /// </summary>
+        public async Task InitializeAsync(
+            InitializeModuleRequest request,
+            TimeSpan timeout,
+            CancellationToken cancellationToken = default)
+        {
+            if (!_childProcessSpawned)
+            {
+                throw new InvalidOperationException($"{DisplayName} is not started; call Start() first.");
+            }
+
+            await WaitUntilListeningAsync(timeout, cancellationToken);
+
+            var json = JsonSerializer.Serialize(request);
+            using var httpRequest = new HttpRequestMessage(HttpMethod.Post, GetModuleUri(EngineInternalRoutes.BindRunPath))
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json")
+            };
+
+            using var response = await Http.SendAsync(httpRequest, cancellationToken);
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new InvalidOperationException(
+                    $"{DisplayName} {EngineInternalRoutes.BindRunPath} returned {(int)response.StatusCode} {response.ReasonPhrase}. Body: {body}");
+            }
+        }
+
+        public async Task PostJsonEnsureSuccessAsync(string absolutePath, string jsonBody, CancellationToken cancellationToken = default)
+        {
+            if (!_childProcessSpawned)
+            {
+                throw new InvalidOperationException($"{DisplayName} is not started; call Start() first.");
+            }
+
+            if (string.IsNullOrWhiteSpace(absolutePath))
+            {
+                throw new ArgumentException("absolutePath must be non-empty.", nameof(absolutePath));
+            }
+
+            var normalized = EngineConfiguration.NormalizePath(absolutePath);
+            using var httpRequest = new HttpRequestMessage(HttpMethod.Post, GetModuleUri(normalized))
+            {
+                Content = string.IsNullOrWhiteSpace(jsonBody)
+                    ? new ByteArrayContent(Array.Empty<byte>())
+                    : new StringContent(jsonBody, Encoding.UTF8, "application/json")
+            };
+
+            using var response = await Http.SendAsync(httpRequest, cancellationToken);
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new InvalidOperationException(
+                    $"{DisplayName} {normalized} returned {(int)response.StatusCode} {response.ReasonPhrase}. Body: {body}");
+            }
         }
 
         public async Task WaitUntilReadyAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
@@ -84,8 +189,34 @@ namespace MorpheusEngine
             throw new TimeoutException($"Timed out waiting for {DisplayName} to become ready. {lastError?.Message}");
         }
 
+        /// <summary>Host-only escape hatch when cooperative shutdown did not finish in time (e.g. window closed during init).</summary>
+        public void ForceKillIfRunning()
+        {
+            if (!_childProcessSpawned)
+            {
+                return;
+            }
+
+            try
+            {
+                if (!_process.HasExited)
+                {
+                    ForceKillProcess();
+                }
+            }
+            finally
+            {
+                CleanupProcess();
+            }
+        }
+
         public async Task StopAsync()
         {
+            if (!_childProcessSpawned)
+            {
+                return;
+            }
+
             if (_process.HasExited)
             {
                 CleanupProcess();
@@ -184,6 +315,38 @@ namespace MorpheusEngine
             };
         }
 
+        private void ForwardChildLine(string line, bool isError)
+        {
+            // Force-env: child kept local EngineLog prefixes; relay unchanged.
+            if (ShouldRelayChildLinesVerbatim())
+            {
+                EngineLog.WriteForwardedLine(line);
+                return;
+            }
+
+            // Some lines (e.g. router turn markers) are already fully prefixed in the child so console and llmLog share one id.
+            if (LooksLikePrefixedUnifiedLogLine(line))
+            {
+                EngineLog.WriteForwardedLine(line);
+                return;
+            }
+
+            EngineLog.WriteHostedChildLine(_definition.PortKey, isError, line);
+        }
+
+        private static bool ShouldRelayChildLinesVerbatim() =>
+            string.Equals(Environment.GetEnvironmentVariable(EngineLog.ForceChildPrefixEnvVar), "1", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(Environment.GetEnvironmentVariable(EngineLog.ForceChildPrefixEnvVar), "true", StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>Detects lines emitted with <see cref="EngineLog.FormatLinePrefix"/> in the child (already include id and session time).</summary>
+        private static bool LooksLikePrefixedUnifiedLogLine(string line)
+        {
+            var t = line.TrimStart();
+            return t.StartsWith("[", StringComparison.Ordinal)
+                && t.Contains(" ; ", StringComparison.Ordinal)
+                && t.Contains("] [", StringComparison.Ordinal);
+        }
+
         private string ResolveRepositoryRelativePath(string relativePath) =>
             Path.GetFullPath(Path.Combine(_configuration.RepositoryRoot, relativePath));
 
@@ -212,6 +375,7 @@ namespace MorpheusEngine
         {
             _process.Dispose();
             _process = new Process();
+            _childProcessSpawned = false;
         }
     }
 }

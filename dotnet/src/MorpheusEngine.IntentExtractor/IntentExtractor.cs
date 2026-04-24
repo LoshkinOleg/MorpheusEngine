@@ -5,7 +5,7 @@ using System.Text.Json;
 
 namespace MorpheusEngine
 {
-    public class IntentExtractor
+    public class IntentExtractor : IEngineRunBinder
     {
         #region Nested types
 
@@ -37,10 +37,37 @@ namespace MorpheusEngine
 
         private readonly HttpListener _listener = new HttpListener(); // Inbound listener for responding to http messages.
         private bool _shutdownRequested = false;
+        private bool _runBound = false;
+        private string _boundGameProjectId = string.Empty;
+        private string _boundRunId = string.Empty;
 
         #endregion
 
         #region Public methods
+
+        public bool IsRunBound => _runBound;
+
+        public Task BindRunAsync(InitializeModuleRequest request, CancellationToken cancellationToken)
+        {
+            if (request is null
+                || string.IsNullOrWhiteSpace(request.GameProjectId)
+                || string.IsNullOrWhiteSpace(request.RunId))
+            {
+                throw new ArgumentException("Request must include non-empty gameProjectId and runId.", nameof(request));
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            if (_runBound)
+            {
+                throw new InvalidOperationException("IntentExtractor is already bound for this process; restart it to bind another run.");
+            }
+
+            _boundGameProjectId = request.GameProjectId.Trim();
+            _boundRunId = request.RunId.Trim();
+            _runBound = true;
+            Console.WriteLine($"[IntentExtractor] Bound run runId={_boundRunId} gameProjectId={_boundGameProjectId}.");
+            return Task.CompletedTask;
+        }
 
         public async Task Run()
         {
@@ -80,8 +107,7 @@ namespace MorpheusEngine
             var intentPort = ports.GetRequiredPort("intent_extractor");
             _listener.Prefixes.Add($"http://127.0.0.1:{intentPort}/");
             _listener.Start();
-            Console.WriteLine($"IntentExtractor listening on http://127.0.0.1:{intentPort}/");
-            Console.WriteLine("IntentExtractor initialized.");
+            Console.WriteLine($"ready listen=http://127.0.0.1:{intentPort}/");
         }
 
         // Intentional single use method.
@@ -117,7 +143,8 @@ namespace MorpheusEngine
                 // /health endpoint.
                 if (path.Equals("/health", StringComparison.OrdinalIgnoreCase))
                 {
-                    await Respond(context, 200, new ModuleHealthResponse(true, "healthy"));
+                    var healthy = _runBound;
+                    await Respond(context, healthy ? 200 : 503, new ModuleHealthResponse(healthy, healthy ? "healthy" : "run_not_bound"));
                     return;
                 }
 
@@ -125,6 +152,18 @@ namespace MorpheusEngine
                 if (path.Equals("/shutdown", StringComparison.OrdinalIgnoreCase))
                 {
                     await ProcessRequest_shutdown(context);
+                    return;
+                }
+
+                if (path.Equals("/engine_log/activate", StringComparison.OrdinalIgnoreCase))
+                {
+                    await ProcessRequest_engineLogActivate(context);
+                    return;
+                }
+
+                if (path.Equals(EngineInternalRoutes.BindRunPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    await ProcessRequest_bindRun(context);
                     return;
                 }
 
@@ -146,6 +185,58 @@ namespace MorpheusEngine
                     await Respond(context, 500, new ErrorResponse(false, "Unhandled intent extractor error.", e.Message));
                 }
             }
+        }
+
+        private async Task ProcessRequest_bindRun(HttpListenerContext context)
+        {
+            if (!string.Equals(context.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase))
+            {
+                await Respond(context, 405, new ErrorResponse(false, "Method not allowed; use POST."));
+                return;
+            }
+
+            if (!IsLoopbackRequest(context))
+            {
+                await Respond(context, 403, new ErrorResponse(false, "bind_run is only allowed from loopback."));
+                return;
+            }
+
+            string body;
+            using (var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding))
+            {
+                body = await reader.ReadToEndAsync();
+            }
+
+            InitializeModuleRequest? request;
+            try
+            {
+                request = JsonSerializer.Deserialize<InitializeModuleRequest>(body, _jsonOptions);
+            }
+            catch (JsonException e)
+            {
+                await Respond(context, 400, new ErrorResponse(false, "Invalid JSON payload.", e.Message));
+                return;
+            }
+
+            if (request is null
+                || string.IsNullOrWhiteSpace(request.GameProjectId)
+                || string.IsNullOrWhiteSpace(request.RunId))
+            {
+                await Respond(context, 400, new ErrorResponse(false, "Request must include non-empty gameProjectId and runId."));
+                return;
+            }
+
+            try
+            {
+                await BindRunAsync(request, CancellationToken.None);
+            }
+            catch (Exception e)
+            {
+                await Respond(context, 409, new ErrorResponse(false, e.Message));
+                return;
+            }
+
+            await Respond(context, 200, new InitializeModuleResponse(true));
         }
 
         // Intentional single use method. No heuristic fallback: LLM path failures become HTTP errors (fail fast).
@@ -290,6 +381,47 @@ namespace MorpheusEngine
                     200,
                     new IntentResponse(true, validated.Intent, validated.Parameters));
             }
+        }
+
+        private async Task ProcessRequest_engineLogActivate(HttpListenerContext context)
+        {
+            if (!string.Equals(context.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase))
+            {
+                await Respond(context, 405, new ErrorResponse(false, "Method not allowed; use POST."));
+                return;
+            }
+
+            if (!IsLoopbackRequest(context))
+            {
+                await Respond(context, 403, new ErrorResponse(false, "engine_log/activate is only allowed from loopback."));
+                return;
+            }
+
+            string body;
+            using (var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding))
+            {
+                body = await reader.ReadToEndAsync();
+            }
+
+            var configuration = EngineConfigLoader.GetConfiguration();
+            var result = EngineLogActivateCommands.TryActivateFromJsonBody(
+                body,
+                configuration.RepositoryRoot,
+                primaryNotJoin: false,
+                _jsonOptions);
+            if (!result.Ok)
+            {
+                await Respond(context, 400, new ErrorResponse(false, result.ErrorMessage ?? "Activation failed."));
+                return;
+            }
+
+            await Respond(context, 200, new InitializeModuleResponse(true));
+        }
+
+        private static bool IsLoopbackRequest(HttpListenerContext context)
+        {
+            var ep = context.Request.RemoteEndPoint;
+            return ep is null || IPAddress.IsLoopback(ep.Address);
         }
 
         // Exception to "extract only when >1 use": kept as a named handler parallel to ProcessRequest_intent for /shutdown routing clarity.

@@ -22,7 +22,7 @@ internal sealed class RunPersistence
     #region Public methods
     /// <summary>
     /// Creates session directory, opens DB, applies schema, meta, turn-0 snapshot, and optional lore seed from lore/default_lore_entries.csv only.
-    /// Called from SessionStoreHost on POST /initialize when the run folder/DB does not exist yet (router exposes the same path and forwards to this module).
+    /// Called from SessionStoreHost when the host binds the run for this process.
     /// </summary>
     public InitializeModuleResponse InitializeRun(string gameProjectId, string runId)
     {
@@ -138,7 +138,7 @@ internal sealed class RunPersistence
         if (!File.Exists(dbPath))
         {
             throw new InvalidOperationException(
-                "Run database not found; call router POST /initialize first (forwards to session_store).");
+                "Run database not found; the host must bind the run before persisting turns.");
         }
 
         using var connection = OpenConnection(dbPath);

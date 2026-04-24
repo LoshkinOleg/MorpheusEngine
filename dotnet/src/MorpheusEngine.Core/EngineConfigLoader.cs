@@ -148,7 +148,6 @@ public sealed class EngineConfiguration
     {
         if (string.IsNullOrWhiteSpace(logicalKey))
         {
-            Console.WriteLine("[EngineConfig] ResolveProxyTargetModuleKey: empty logicalKey.");
             return logicalKey;
         }
 
@@ -387,7 +386,6 @@ public static class EngineConfigLoader
         var qwenNumCtx = RequireLlmProviderNumCtx(modules, path);
         var qwenWarmupGameProjectId = RequireLlmProviderWarmupGameProjectId(modules, path);
 
-        Console.WriteLine($"Loaded engine configuration from {path}.");
         return new EngineConfiguration(
             repositoryRoot,
             portMap,
@@ -440,8 +438,6 @@ public static class EngineConfigLoader
             }
         }
 
-        Console.WriteLine(
-            $"Engine ports: {string.Join(", ", dict.OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase).Select(kv => $"{kv.Key}={kv.Value}"))} ({configPath})");
         return new EnginePortMap(dict);
     }
 
@@ -589,11 +585,6 @@ public static class EngineConfigLoader
     {
         var m = modules.FirstOrDefault(x => string.Equals(x.PortKey, "intent_extractor", StringComparison.OrdinalIgnoreCase));
         var model = m?.DefaultIntentLlmModel?.Trim() ?? string.Empty;
-        if (!string.IsNullOrEmpty(model))
-        {
-            Console.WriteLine($"Engine intent default_llm_model={model} ({path}) (optional; not sent to LLM provider on /generate).");
-        }
-
         return model;
     }
 
@@ -604,8 +595,6 @@ public static class EngineConfigLoader
         {
             throw new EngineConfigurationException($"llm_provider_qwen.ollama_port missing or invalid in '{path}'.");
         }
-
-        Console.WriteLine($"Engine llm_provider_qwen ollama_port={p} ({path})");
         return p;
     }
 
@@ -616,8 +605,6 @@ public static class EngineConfigLoader
         {
             throw new EngineConfigurationException($"llm_provider_qwen.default_chat_model missing or empty in '{path}'.");
         }
-
-        Console.WriteLine($"Engine llm_provider_qwen default_chat_model={model} ({path}) (used for Ollama /api/chat and /api/generate).");
         return model;
     }
 
@@ -628,8 +615,6 @@ public static class EngineConfigLoader
         {
             throw new EngineConfigurationException($"llm_provider_qwen.num_ctx missing or invalid in '{path}'.");
         }
-
-        Console.WriteLine($"Engine llm_provider_qwen num_ctx={numCtx} ({path}) (forwarded to Ollama options.num_ctx).");
         return numCtx;
     }
 
@@ -651,7 +636,6 @@ public static class EngineConfigLoader
                 $"llm_provider_qwen.warmup_game_project_id in '{path}' must not contain path separators or '..'.");
         }
 
-        Console.WriteLine($"Engine llm_provider_qwen warmup_game_project_id={trimmed} ({path})");
         return trimmed;
     }
 
@@ -733,7 +717,6 @@ public static class EngineConfigLoader
             }
         }
 
-        Console.WriteLine($"Engine module_aliases: {merged.Count} entries ({path})");
         return merged;
     }
     #endregion

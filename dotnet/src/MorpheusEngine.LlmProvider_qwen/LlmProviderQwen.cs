@@ -31,6 +31,11 @@ namespace MorpheusEngine
         private const string OllamaWarmupUserContent = "[morpheus_engine_warmup]";
 
         private const int WarmupResponseLogMaxChars = 500;
+        private const int OllamaRequestPreviewMaxChars = 160;
+        private const int OllamaResponseLogMaxChars = 500;
+
+        private OllamaTrafficFile? _trafficFile;
+        private readonly object _trafficFileSync = new();
 
         // Instance-owned HttpClient for Ollama (GET /, warm-up, /api/chat, /api/generate); disposed in Shutdown().
         // Model load is handled during InitializeAsync (warm-up) so normal inference stays within this bound.
@@ -44,11 +49,14 @@ namespace MorpheusEngine
         private readonly object _ollamaStateSync = new();
         private readonly Queue<string> _recentOllamaErrorLines = [];
         private bool _shutdownRequested = false;
+        private bool _runBound = false;
+        private string _boundGameProjectId = "";
+        private string _boundRunId = "";
+        private bool _ollamaHttpReady = false;
         private bool _ollamaReady = false;
         private bool _ollamaStopping = false;
         private int _ollamaRestartAttempts = 0;
         private Process? _ollamaProcess;
-        private WindowsJobObject? _ollamaJobObject;
 
         /// <summary>Repository root resolved once at startup for locating bundled Ollama assets.</summary>
         private string _repositoryRoot = "";
@@ -130,21 +138,21 @@ namespace MorpheusEngine
                     "llm_provider_qwen: LlmProviderDefaultChatModel from engine configuration is empty (check default_chat_model in engine_config.json).");
             }
 
-            // Same disk contract as Director POST /initialize so the first real player /chat does not pay first-time context load alone.
+            // Warm-up prompt content is built after host bind_run so the active run's gameProjectId is used.
+            // warmup_game_project_id remains for logging/debug defaults only.
             _warmupGameProjectId = configuration.LlmProviderWarmupGameProjectId;
-            _narrationWarmupSystemContent = DirectorNarrationSystemPrompt.Build(_repositoryRoot, _warmupGameProjectId);
+            _narrationWarmupSystemContent = string.Empty;
+            // Traffic file is created only after POST /engine_log/activate.
 
-            _ollamaJobObject = new WindowsJobObject();
+            // Bundled Ollama inherits the host module job (see MorpheusEngine Run); no nested Job Object here.
             await StartManagedOllamaAsync("initial startup");
 
             var qwenListen = configuration.PortMap.GetRequiredPort("llm_provider_qwen");
             _listener.Prefixes.Add($"http://127.0.0.1:{qwenListen}/");
             _listener.Start();
-            Console.WriteLine($"LlmProvider_qwen listening on http://127.0.0.1:{qwenListen}/");
-            Console.WriteLine($"LlmProvider_qwen Ollama model for /chat and /generate (from engine config): {_chatModel}");
-            Console.WriteLine($"LlmProvider_qwen Ollama child endpoint: http://127.0.0.1:{_ollamaPort}/");
-            Console.WriteLine($"LlmProvider_qwen Ollama num_ctx={_ollamaNumCtx}");
-            Console.WriteLine("LlmProvider_qwen initialized.");
+            Console.WriteLine(
+                $"ready listen=http://127.0.0.1:{qwenListen}/ model='{_chatModel}' ollama=http://127.0.0.1:{_ollamaPort}/ num_ctx={_ollamaNumCtx} "
+                + $"warmup_game_project_id='{_warmupGameProjectId}' awaiting_bind_run=true");
         }
 
         // Intentional single use method.
@@ -180,7 +188,26 @@ namespace MorpheusEngine
                 if (path.Equals("/health", StringComparison.OrdinalIgnoreCase))
                 {
                     var isHealthy = IsOllamaReady();
-                    await Respond(context, isHealthy ? 200 : 503, new ModuleHealthResponse(isHealthy, isHealthy ? "healthy" : "ollama_unavailable"));
+                    var reason = isHealthy
+                        ? "healthy"
+                        : !_ollamaHttpReady
+                            ? "ollama_starting"
+                            : !_runBound
+                                ? "run_not_bound"
+                                : "warming_up";
+                    await Respond(context, isHealthy ? 200 : 503, new ModuleHealthResponse(isHealthy, reason));
+                    return;
+                }
+
+                if (path.Equals("/engine_log/activate", StringComparison.OrdinalIgnoreCase))
+                {
+                    await ProcessRequest_engineLogActivate(context);
+                    return;
+                }
+
+                if (path.Equals(EngineInternalRoutes.BindRunPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    await ProcessRequest_bindRun(context);
                     return;
                 }
 
@@ -247,10 +274,151 @@ namespace MorpheusEngine
             }
 
             StopCurrentOllamaProcess("provider shutdown");
-            _ollamaJobObject?.Dispose();
-            _ollamaJobObject = null;
             _httpClient.Dispose();
             Console.WriteLine("LlmProvider_qwen shut down.");
+        }
+
+        /// <summary>Loopback-only; binds on-disk traffic log for this run (same JSON as bind_run).</summary>
+        private async Task ProcessRequest_engineLogActivate(HttpListenerContext context)
+        {
+            if (!string.Equals(context.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase))
+            {
+                await Respond(context, 405, new ErrorResponse(false, "Method not allowed; use POST."));
+                return;
+            }
+
+            if (!IsLoopbackRequest(context))
+            {
+                await Respond(context, 403, new ErrorResponse(false, "engine_log/activate is only allowed from loopback."));
+                return;
+            }
+
+            string body;
+            using (var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding))
+            {
+                body = await reader.ReadToEndAsync();
+            }
+
+            var result = EngineLogActivateCommands.TryActivateFromJsonBody(
+                body,
+                _repositoryRoot,
+                primaryNotJoin: false,
+                _jsonOptions);
+            if (!result.Ok || result.GameProjectId is null || result.RunId is null)
+            {
+                await Respond(context, 400, new ErrorResponse(false, result.ErrorMessage ?? "Activation failed."));
+                return;
+            }
+
+            var trafficPath = GameRunLogPaths.GetTrafficLogPath(_repositoryRoot, result.GameProjectId, result.RunId);
+            lock (_trafficFileSync)
+            {
+                _trafficFile = new OllamaTrafficFile(trafficPath);
+            }
+
+            await Respond(context, 200, new InitializeModuleResponse(true));
+        }
+
+        private async Task ProcessRequest_bindRun(HttpListenerContext context)
+        {
+            if (!string.Equals(context.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase))
+            {
+                await Respond(context, 405, new ErrorResponse(false, "Method not allowed; use POST."));
+                return;
+            }
+
+            if (!IsLoopbackRequest(context))
+            {
+                await Respond(context, 403, new ErrorResponse(false, "bind_run is only allowed from loopback."));
+                return;
+            }
+
+            string body;
+            using (var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding))
+            {
+                body = await reader.ReadToEndAsync();
+            }
+
+            InitializeModuleRequest? request;
+            try
+            {
+                request = JsonSerializer.Deserialize<InitializeModuleRequest>(body, _jsonOptions);
+            }
+            catch (JsonException e)
+            {
+                await Respond(context, 400, new ErrorResponse(false, "Invalid JSON payload.", e.Message));
+                return;
+            }
+
+            if (request is null
+                || string.IsNullOrWhiteSpace(request.GameProjectId)
+                || string.IsNullOrWhiteSpace(request.RunId))
+            {
+                await Respond(context, 400, new ErrorResponse(false, "Request must include non-empty gameProjectId and runId."));
+                return;
+            }
+
+            await _ollamaRestartGate.WaitAsync();
+            try
+            {
+                if (_runBound)
+                {
+                    await Respond(context, 409, new ErrorResponse(false, "LLM provider is already bound for this process; restart it to bind another run."));
+                    return;
+                }
+
+                _boundGameProjectId = request.GameProjectId.Trim();
+                _boundRunId = request.RunId.Trim();
+                _runBound = true;
+
+                _warmupGameProjectId = _boundGameProjectId;
+                _narrationWarmupSystemContent = DirectorNarrationSystemPrompt.Build(_repositoryRoot, _boundGameProjectId);
+
+                var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(60);
+                while (!_ollamaHttpReady && DateTime.UtcNow < deadline)
+                {
+                    await Task.Delay(250);
+                }
+
+                if (!_ollamaHttpReady)
+                {
+                    await Respond(context, 503, new ErrorResponse(false, "Bundled Ollama is not ready yet; try bind_run again."));
+                    return;
+                }
+
+                await WarmUpBundledOllamaModelAsync();
+                lock (_ollamaStateSync)
+                {
+                    _ollamaReady = true;
+                    _ollamaStopping = false;
+                    _ollamaRestartAttempts = 0;
+                }
+
+                Console.WriteLine($"[LlmProvider_qwen] Bound run runId={_boundRunId} gameProjectId={_boundGameProjectId} and completed warm-up.");
+                await Respond(context, 200, new InitializeModuleResponse(true));
+            }
+            catch (FileNotFoundException e)
+            {
+                await Respond(context, 500, new ErrorResponse(false, e.Message, e.FileName));
+            }
+            catch (InvalidOperationException e)
+            {
+                await Respond(context, 500, new ErrorResponse(false, e.Message));
+            }
+            catch (Exception e)
+            {
+                await Respond(context, 500, new ErrorResponse(false, "Failed to bind run.", e.Message));
+            }
+            finally
+            {
+                _ollamaRestartGate.Release();
+            }
+        }
+
+        private static bool IsLoopbackRequest(HttpListenerContext context)
+        {
+            var ep = context.Request.RemoteEndPoint;
+            return ep is null || System.Net.IPAddress.IsLoopback(ep.Address);
         }
 
         // Exception to "extract only when >1 use": kept as a named handler parallel to ProcessRequest_generate for /shutdown routing clarity.
@@ -316,13 +484,16 @@ namespace MorpheusEngine
                 truncate = false,
                 options = BuildOllamaOptionsPayload()
             };
-            Console.WriteLine("OLLAMA_IO REQUEST " + JsonSerializer.Serialize(ollamaPayload));
+            var promptTrimmed = request.Prompt.Trim();
+            var systemTrimmed = request.System?.Trim();
+            Console.WriteLine(
+                $"OLLAMA_IO REQUEST model={model} promptChars={promptTrimmed.Length} systemChars={(systemTrimmed is null ? 0 : systemTrimmed.Length)} "
+                + $"promptPreview='{TruncateMiddle(promptTrimmed, headChars: 80, tailChars: 60)}'");
 
             // Convert to json for transmission.
-            var content = new StringContent(
-                JsonSerializer.Serialize(ollamaPayload),
-                Encoding.UTF8,
-                "application/json");
+            var requestJson = JsonSerializer.Serialize(ollamaPayload);
+            WriteTrafficLine("OLLAMA_IO TRAFFIC GENERATE_REQUEST_JSON " + requestJson);
+            var content = new StringContent(requestJson, Encoding.UTF8, "application/json");
 
             // Send message to the bundled Ollama child.
             HttpResponseMessage ollamaResponse;
@@ -342,7 +513,9 @@ namespace MorpheusEngine
 
             // Relay the Ollama response back to caller.
             var ollamaBody = await ollamaResponse.Content.ReadAsStringAsync();
-            Console.WriteLine($"OLLAMA_IO RESPONSE status={(int)ollamaResponse.StatusCode} body={ollamaBody}");
+            WriteTrafficLine("OLLAMA_IO TRAFFIC GENERATE_RESPONSE_BODY " + JsonSerializer.Serialize(ollamaBody));
+            Console.WriteLine(
+                $"OLLAMA_IO RESPONSE status={(int)ollamaResponse.StatusCode} bodySnippet={TruncateMiddle(ollamaBody, headChars: 240, tailChars: 120)}");
             if (!ollamaResponse.IsSuccessStatusCode)
             {
                 await Respond(context, (int)ollamaResponse.StatusCode, new
@@ -414,12 +587,12 @@ namespace MorpheusEngine
                 truncate = false,
                 options = BuildOllamaOptionsPayload()
             };
-            Console.WriteLine("OLLAMA_IO CHAT_REQUEST " + JsonSerializer.Serialize(ollamaPayload));
+            Console.WriteLine(
+                $"OLLAMA_IO CHAT_REQUEST model={_chatModel} messages={request.Messages.Count} {DescribeChatMessagesForLog(request.Messages)}");
 
-            var content = new StringContent(
-                JsonSerializer.Serialize(ollamaPayload),
-                Encoding.UTF8,
-                "application/json");
+            var requestJson = JsonSerializer.Serialize(ollamaPayload);
+            WriteTrafficLine("OLLAMA_IO TRAFFIC CHAT_REQUEST_JSON " + requestJson);
+            var content = new StringContent(requestJson, Encoding.UTF8, "application/json");
 
             HttpResponseMessage ollamaResponse;
             try
@@ -437,7 +610,9 @@ namespace MorpheusEngine
             }
 
             var ollamaBody = await ollamaResponse.Content.ReadAsStringAsync();
-            Console.WriteLine($"OLLAMA_IO CHAT_RESPONSE status={(int)ollamaResponse.StatusCode} body={ollamaBody}");
+            WriteTrafficLine("OLLAMA_IO TRAFFIC CHAT_RESPONSE_BODY " + JsonSerializer.Serialize(ollamaBody));
+            Console.WriteLine(
+                $"OLLAMA_IO CHAT_RESPONSE status={(int)ollamaResponse.StatusCode} bodySnippet={TruncateMiddle(ollamaBody, headChars: 240, tailChars: 120)}");
             if (!ollamaResponse.IsSuccessStatusCode)
             {
                 await Respond(context, (int)ollamaResponse.StatusCode, new
@@ -505,7 +680,6 @@ namespace MorpheusEngine
             process.OutputDataReceived += OnOllamaOutputDataReceived;
             process.ErrorDataReceived += OnOllamaErrorDataReceived;
             process.Exited += OnOllamaExited;
-            _ollamaJobObject?.AssignProcess(process);
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
 
@@ -521,6 +695,7 @@ namespace MorpheusEngine
                 staleProcessToDispose = _ollamaProcess;
                 _ollamaProcess = process;
                 _ollamaReady = false;
+                _ollamaHttpReady = false;
                 _ollamaStopping = false;
             }
 
@@ -529,19 +704,33 @@ namespace MorpheusEngine
             try
             {
                 await WaitForOllamaReadyAsync(process);
-                // GET / only proves the HTTP server is up; the first real request still loads the GGUF into VRAM/RAM and can take tens of seconds.
-                await WarmUpBundledOllamaModelAsync();
                 lock (_ollamaStateSync)
                 {
                     if (ReferenceEquals(_ollamaProcess, process))
                     {
-                        _ollamaReady = true;
+                        _ollamaHttpReady = true;
+                    }
+                }
+
+                if (_runBound)
+                {
+                    // GET / only proves the HTTP server is up; the first real request still loads the GGUF into VRAM/RAM and can take tens of seconds.
+                    await WarmUpBundledOllamaModelAsync();
+                }
+                lock (_ollamaStateSync)
+                {
+                    if (ReferenceEquals(_ollamaProcess, process))
+                    {
+                        _ollamaReady = _runBound;
                         _ollamaStopping = false;
                         _ollamaRestartAttempts = 0;
                     }
                 }
 
-                Console.WriteLine($"OLLAMA_IO (ollama) Ready on http://127.0.0.1:{_ollamaPort}/");
+                Console.WriteLine(
+                    _runBound
+                        ? $"OLLAMA_IO (ollama) Ready on http://127.0.0.1:{_ollamaPort}/"
+                        : $"OLLAMA_IO (ollama) HTTP ready on http://127.0.0.1:{_ollamaPort}/ (awaiting bind_run).");
             }
             catch (Exception e)
             {
@@ -551,6 +740,7 @@ namespace MorpheusEngine
                     {
                         _ollamaStopping = true;
                         _ollamaReady = false;
+                        _ollamaHttpReady = false;
                         _ollamaProcess = null;
                     }
                 }
@@ -584,6 +774,7 @@ namespace MorpheusEngine
                 $"OLLAMA_IO WARMUP_REQUEST model={_chatModel} warmup_game_project_id={_warmupGameProjectId} systemChars={_narrationWarmupSystemContent.Length} userToken={OllamaWarmupUserContent}");
 
             var json = JsonSerializer.Serialize(warmupPayload);
+            WriteTrafficLine("OLLAMA_IO TRAFFIC WARMUP_REQUEST_JSON " + json);
             var content = new StringContent(json, Encoding.UTF8, "application/json");
             using var response = await _httpClient.PostAsync(BuildOllamaUri("/api/chat"), content);
             var body = await response.Content.ReadAsStringAsync();
@@ -593,9 +784,9 @@ namespace MorpheusEngine
                     $"Bundled Ollama model warm-up failed: {(int)response.StatusCode} {response.ReasonPhrase}. Body: {body}");
             }
 
-            var bodyForLog = body.Length <= WarmupResponseLogMaxChars
-                ? body
-                : body[..WarmupResponseLogMaxChars] + "…";
+            WriteTrafficLine("OLLAMA_IO TRAFFIC WARMUP_RESPONSE_BODY " + JsonSerializer.Serialize(body));
+
+            var bodyForLog = TruncateMiddle(body, headChars: 240, tailChars: 120);
             Console.WriteLine($"OLLAMA_IO WARMUP_RESPONSE status={(int)response.StatusCode} bodySnippet={bodyForLog}");
         }
 
@@ -788,6 +979,7 @@ namespace MorpheusEngine
             {
                 // Keep the OLLAMA_IO prefix so the WPF monitor continues to pick up these lines.
                 Console.WriteLine("OLLAMA_IO (ollama) " + e.Data);
+                WriteTrafficLine("OLLAMA_IO TRAFFIC OLLAMA_STDOUT " + e.Data);
             }
         }
 
@@ -797,6 +989,7 @@ namespace MorpheusEngine
             {
                 RememberOllamaErrorLine(e.Data);
                 Console.WriteLine("OLLAMA_IO (ollama:ERR) " + e.Data);
+                WriteTrafficLine("OLLAMA_IO TRAFFIC OLLAMA_STDERR " + e.Data);
             }
         }
 
@@ -869,6 +1062,60 @@ namespace MorpheusEngine
             response.ContentLength64 = bytes.LongLength;
             await response.OutputStream.WriteAsync(bytes);
             response.OutputStream.Close();
+        }
+
+        private static string TruncateForLog(string text, int maxLen = OllamaRequestPreviewMaxChars)
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                return text;
+            }
+
+            return text.Length <= maxLen ? text : text[..maxLen] + "…";
+        }
+
+        private static string TruncateMiddle(string text, int headChars, int tailChars)
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                return text;
+            }
+
+            if (headChars < 0 || tailChars < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(headChars), "headChars and tailChars must be >= 0.");
+            }
+
+            var max = headChars + tailChars + 5;
+            if (text.Length <= max || headChars == 0 || tailChars == 0)
+            {
+                return TruncateForLog(text, maxLen: max);
+            }
+
+            return text[..headChars] + " ... " + text[^tailChars..];
+        }
+
+        private void WriteTrafficLine(string payload)
+        {
+            if (_trafficFile is null)
+            {
+                return;
+            }
+
+            _trafficFile.AppendFullLine(EngineLog.FormatLinePrefix(isError: false) + payload);
+        }
+
+        private static string DescribeChatMessagesForLog(IReadOnlyList<ChatGenerateRequest.ChatMessageDto> messages)
+        {
+            var parts = new List<string>(messages.Count);
+            foreach (var m in messages)
+            {
+                var role = string.IsNullOrWhiteSpace(m.Role) ? "(unknown)" : m.Role.Trim();
+                var content = m.Content ?? string.Empty;
+                parts.Add($"{role}({content.Length} chars)='{TruncateMiddle(content, headChars: 80, tailChars: 60)}'");
+            }
+
+            return "messagesPreview=" + string.Join(" | ", parts);
         }
         #endregion
     }

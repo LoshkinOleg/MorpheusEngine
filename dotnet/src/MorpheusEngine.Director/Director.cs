@@ -7,7 +7,7 @@ namespace MorpheusEngine;
 /// <summary>
 /// HTTP host for the director module: one in-process run at a time, system prompt from game project files, LLM via router proxy to generic_llm_provider /chat.
 /// </summary>
-public sealed class Director
+public sealed class Director : IEngineRunBinder
 {
     #region Nested types
 
@@ -34,18 +34,20 @@ public sealed class Director
     private readonly HttpListener _listener = new();
     private bool _shutdownRequested = false;
 
-    /// <summary>Single-flight gate for /initialize and /message (one active run per Director process).</summary>
+    /// <summary>Single-flight gate for bind_run and /message (one active run per Director process).</summary>
     private readonly SemaphoreSlim _sessionGate = new(1, 1);
 
-    /// <summary>Set after successful POST /initialize; cleared only when the process restarts.</summary>
+    /// <summary>Set after successful bind_run; cleared only when the process restarts.</summary>
     private bool _initialized = false;
 
-    /// <summary>Conversation for the bound run; first entry is always system after /initialize.</summary>
+    /// <summary>Conversation for the bound run; first entry is always system after bind_run.</summary>
     private List<ChatMessage>? _history = null;
 
     #endregion
 
     #region Public methods
+
+    public bool IsRunBound => _initialized;
 
     public async Task Run()
     {
@@ -81,8 +83,7 @@ public sealed class Director
         var directorPort = ports.GetRequiredPort("director");
         _listener.Prefixes.Add($"http://127.0.0.1:{directorPort}/");
         _listener.Start();
-        Console.WriteLine($"Director listening on http://127.0.0.1:{directorPort}/");
-        Console.WriteLine("Director initialized.");
+        Console.WriteLine($"ready listen=http://127.0.0.1:{directorPort}/");
     }
 
     private void Shutdown()
@@ -114,7 +115,8 @@ public sealed class Director
 
             if (path.Equals("/health", StringComparison.OrdinalIgnoreCase))
             {
-                await Respond(context, 200, new ModuleHealthResponse(true, "healthy"));
+                var healthy = _initialized;
+                await Respond(context, healthy ? 200 : 503, new ModuleHealthResponse(healthy, healthy ? "healthy" : "run_not_bound"));
                 return;
             }
 
@@ -124,9 +126,15 @@ public sealed class Director
                 return;
             }
 
-            if (path.Equals("/initialize", StringComparison.OrdinalIgnoreCase))
+            if (path.Equals("/engine_log/activate", StringComparison.OrdinalIgnoreCase))
             {
-                await ProcessRequest_initialize(context);
+                await ProcessRequest_engineLogActivate(context);
+                return;
+            }
+
+            if (path.Equals(EngineInternalRoutes.BindRunPath, StringComparison.OrdinalIgnoreCase))
+            {
+                await ProcessRequest_bindRun(context);
                 return;
             }
 
@@ -165,14 +173,98 @@ public sealed class Director
         }
     }
 
-    /// <summary>
-    /// Accepts <see cref="InitializeModuleRequest"/>, loads system prompt from disk once, seeds in-memory history; returns <see cref="InitializeModuleResponse"/> on success. Second call without process restart yields 409 (fail-fast).
-    /// </summary>
-    private async Task ProcessRequest_initialize(HttpListenerContext context)
+    private async Task ProcessRequest_engineLogActivate(HttpListenerContext context)
     {
         if (!string.Equals(context.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase))
         {
             await Respond(context, 405, new ErrorResponse(false, "Method not allowed; use POST."));
+            return;
+        }
+
+        if (!IsLoopbackRequest(context))
+        {
+            await Respond(context, 403, new ErrorResponse(false, "engine_log/activate is only allowed from loopback."));
+            return;
+        }
+
+        string body;
+        using (var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding))
+        {
+            body = await reader.ReadToEndAsync();
+        }
+
+        var result = EngineLogActivateCommands.TryActivateFromJsonBody(
+            body,
+            _configuration.RepositoryRoot,
+            primaryNotJoin: false,
+            JsonOptions);
+        if (!result.Ok)
+        {
+            await Respond(context, 400, new ErrorResponse(false, result.ErrorMessage ?? "Activation failed."));
+            return;
+        }
+
+        await Respond(context, 200, new InitializeModuleResponse(true));
+    }
+
+    private static bool IsLoopbackRequest(HttpListenerContext context)
+    {
+        var ep = context.Request.RemoteEndPoint;
+        return ep is null || IPAddress.IsLoopback(ep.Address);
+    }
+
+    public async Task BindRunAsync(InitializeModuleRequest request, CancellationToken cancellationToken)
+    {
+        if (request is null
+            || string.IsNullOrWhiteSpace(request.RunId)
+            || string.IsNullOrWhiteSpace(request.GameProjectId))
+        {
+            throw new ArgumentException("Request must include non-empty runId and gameProjectId.", nameof(request));
+        }
+
+        var runId = request.RunId.Trim();
+        var gameProjectId = request.GameProjectId.Trim();
+
+        await _sessionGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (_initialized)
+            {
+                throw new InvalidOperationException(
+                    "Director is already initialized for this process; restart the Director module to start another run.");
+            }
+
+            string systemContent;
+            try
+            {
+                systemContent = DirectorNarrationSystemPrompt.Build(_configuration.RepositoryRoot, gameProjectId);
+            }
+            catch (Exception e) when (e is FileNotFoundException or InvalidOperationException)
+            {
+                throw new InvalidOperationException(e.Message, e);
+            }
+
+            _history = new List<ChatMessage> { new ChatMessage("system", systemContent) };
+            _initialized = true;
+            Console.WriteLine($"[Director] Bound run runId={runId} gameProjectId={gameProjectId}.");
+        }
+        finally
+        {
+            _sessionGate.Release();
+        }
+    }
+
+    private async Task ProcessRequest_bindRun(HttpListenerContext context)
+    {
+        if (!string.Equals(context.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase))
+        {
+            await Respond(context, 405, new ErrorResponse(false, "Method not allowed; use POST."));
+            return;
+        }
+
+        if (!IsLoopbackRequest(context))
+        {
+            await Respond(context, 403, new ErrorResponse(false, "bind_run is only allowed from loopback."));
             return;
         }
 
@@ -204,9 +296,6 @@ public sealed class Director
             return;
         }
 
-        var runId = request.RunId.Trim();
-        var gameProjectId = request.GameProjectId.Trim();
-
         await _sessionGate.WaitAsync();
         try
         {
@@ -217,14 +306,14 @@ public sealed class Director
                     409,
                     new ErrorResponse(
                         false,
-                        "Director already initialized for this process; restart the Director module to start another run."));
+                        "Director already bound for this process; restart the Director module to start another run."));
                 return;
             }
 
             string systemContent;
             try
             {
-                systemContent = DirectorNarrationSystemPrompt.Build(_configuration.RepositoryRoot, gameProjectId);
+                systemContent = DirectorNarrationSystemPrompt.Build(_configuration.RepositoryRoot, request.GameProjectId.Trim());
             }
             catch (FileNotFoundException e)
             {
@@ -249,7 +338,7 @@ public sealed class Director
     }
 
     /// <summary>
-    /// Deserializes <see cref="DirectorMessageRequest"/>; requires prior POST /initialize; builds chat messages for Ollama, proxies to LLM, appends user+assistant to history on success, returns <see cref="IntentResponse"/> shim for router/UI.
+    /// Deserializes <see cref="DirectorMessageRequest"/>; requires prior bind_run; builds chat messages for Ollama, proxies to LLM, appends user+assistant to history on success, returns <see cref="IntentResponse"/> shim for router/UI.
     /// </summary>
     private async Task ProcessRequest_message(HttpListenerContext context)
     {
@@ -301,7 +390,7 @@ public sealed class Director
                 await Respond(
                     context,
                     400,
-                    new ErrorResponse(false, "Director is not initialized; call POST /initialize first."));
+                    new ErrorResponse(false, "Director run is not bound; the host must bind the run before calling /message."));
                 return;
             }
 

@@ -1,5 +1,7 @@
 using MorpheusEngine;
 
+EngineLog.Initialize("SessionStore");
+
 var host = new SessionStoreHost();
 Console.CancelKeyPress += (_, e) =>
 {

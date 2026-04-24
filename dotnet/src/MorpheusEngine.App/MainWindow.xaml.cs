@@ -61,7 +61,11 @@ public partial class MainWindow : Window
     private static readonly HttpClient Http = new();
     private MorpheusEngine? _engine;
 
-    private Task _engineTask = Task.CompletedTask;
+    /// <summary>Background task executing <see cref="MorpheusEngine.Run"/>; null when idle (never replace with a sentinel Task).</summary>
+    private Task? _engineRunTask = null;
+
+    private const int EngineStopGraceSeconds = 45;
+    private const int EngineStopKillFollowupSeconds = 15;
 
     /// <summary>True only after required modules (including warmed LLM provider) report healthy; avoids sending game traffic during boot.</summary>
     private bool _engineModulesReadyForGame = false;
@@ -72,11 +76,15 @@ public partial class MainWindow : Window
     private bool _gameRequestInFlight;
     /// <summary>Logical game project folder under game_projects/ (mirrors TS layout). Must match an on-disk project; no silent fallback.</summary>
     private string _gameProjectId = "sandcrawler";
-    /// <summary>Per-run id; empty until <see cref="EnsureRunStartedAsync"/> succeeds.</summary>
+    /// <summary>Per-run id; set when the engine is started (run binding happens at engine start).</summary>
     private string _runId = string.Empty;
     /// <summary>Next turn index to send (1-based; must match MAX(snapshots.turn)+1).</summary>
     private int _nextTurn = 1;
     private string[] _qwenMonitorModuleNames = ["Qwen", "LlmProvider_qwen"];
+    private FileSystemWatcher? _llmLogWatcher;
+    private long _llmLogReadPosition = 0;
+    private string _llmLogRemainder = string.Empty;
+    private bool _llmLogTailingEnabled = false;
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
@@ -106,6 +114,9 @@ public partial class MainWindow : Window
         var uiWriter = new UiTextWriter(Console.Out, AppendLineToPane);
         Console.SetOut(uiWriter);
         Console.SetError(uiWriter);
+
+        // Install per-line prefixes into the same stream the UI captures.
+        EngineLog.Initialize("App");
 
         Console.WriteLine("MorpheusEngine GUI started.");
         Console.WriteLine("Click Start Engine to run.");
@@ -338,19 +349,47 @@ public partial class MainWindow : Window
             return;
         }
 
-        var engine = new MorpheusEngine();
+        var projectIdText = GameProjectIdTextBox?.Text ?? string.Empty;
+        projectIdText = projectIdText.Trim();
+        try
+        {
+            GameRunLogPaths.RequireSafePathSegment(nameof(projectIdText), projectIdText);
+        }
+        catch (Exception e)
+        {
+            MessageBox.Show(
+                $"Invalid game project id:\n{e.Message}",
+                "MorpheusEngine",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
+        _gameProjectId = projectIdText;
+        _runId = Guid.NewGuid().ToString("D");
+        _nextTurn = 1;
+        RefreshGameTurnHeader();
+
+        var engine = new MorpheusEngine(_gameProjectId, _runId);
         _engine = engine;
         _engineModulesReadyForGame = false;
 
-        _engineTask = Task.Run(() =>
+        _engineRunTask = Task.Run(() =>
         {
-            engine.Run();
-            Dispatcher.BeginInvoke(() =>
+            try
             {
-                _engineTask = Task.CompletedTask;
-                _engineModulesReadyForGame = false;
-                UpdateButtonState();
-            });
+                engine.Run();
+            }
+            finally
+            {
+                Dispatcher.BeginInvoke(() =>
+                {
+                    _engineRunTask = null;
+                    _engineModulesReadyForGame = false;
+                    StopLlmLogTail();
+                    UpdateButtonState();
+                });
+            }
         });
 
         _ = ObserveEngineInitializationAsync(engine);
@@ -372,6 +411,7 @@ public partial class MainWindow : Window
                 }
 
                 _engineModulesReadyForGame = true;
+                StartTrafficLogTail();
                 UpdateButtonState();
             });
         }
@@ -392,22 +432,48 @@ public partial class MainWindow : Window
 
     private async Task StopEngineAsync()
     {
-        if (!IsEngineRunning())
+        var runTask = _engineRunTask;
+        if (runTask is null && _engine is null)
         {
             return;
         }
 
         _engineModulesReadyForGame = false;
-        _engine?.RequestShutdown();
+        StopLlmLogTail();
+        var engineRef = _engine;
+        engineRef?.RequestShutdown();
 
-        if (IsEngineRunning())
+        if (runTask is not null)
         {
-            await Task.WhenAny(_engineTask, Task.Delay(3000));
+            var grace = TimeSpan.FromSeconds(EngineStopGraceSeconds);
+            await Task.WhenAny(runTask, Task.Delay(grace)).ConfigureAwait(false);
+            if (!runTask.IsCompleted && engineRef is not null)
+            {
+                Console.WriteLine(
+                    $"[App] Engine did not stop within {EngineStopGraceSeconds}s; killing child module processes.");
+                engineRef.KillChildProcesses();
+                await Task.WhenAny(runTask, Task.Delay(TimeSpan.FromSeconds(EngineStopKillFollowupSeconds)))
+                    .ConfigureAwait(false);
+            }
+
+            try
+            {
+                await runTask.ConfigureAwait(false);
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine("[App] Engine task completed with error: " + e.Message);
+            }
         }
 
-        _engine = null;
-        _engineTask = Task.CompletedTask;
-        UpdateButtonState();
+        await Dispatcher.InvokeAsync(() =>
+        {
+            _engine = null;
+            _runId = string.Empty;
+            _nextTurn = 1;
+            RefreshGameTurnHeader();
+            UpdateButtonState();
+        });
     }
 
     private void UpdateButtonState()
@@ -450,7 +516,8 @@ public partial class MainWindow : Window
             ConsolePane.CaretIndex = ConsolePane.Text.Length;
             ConsolePane.ScrollToEnd();
 
-            if (TryExtractQwenLogLine(text, out var qwenLogLine))
+            // If we are tailing the dedicated traffic file, do not duplicate console summaries into the monitor pane.
+            if (!_llmLogTailingEnabled && TryExtractQwenLogLine(text, out var qwenLogLine))
             {
                 AppendQwenMonitorEntry(qwenLogLine);
             }
@@ -643,35 +710,6 @@ public partial class MainWindow : Window
             body);
     }
 
-    /// <summary>POST router /initialize once per UI session so world_state.db exists before the first /turn.</summary>
-    private async Task<bool> EnsureRunStartedAsync()
-    {
-        if (_config is null)
-        {
-            return false;
-        }
-
-        if (!string.IsNullOrEmpty(_runId))
-        {
-            return true;
-        }
-
-        _runId = Guid.NewGuid().ToString("D");
-        var startBody = JsonSerializer.Serialize(new InitializeModuleRequest(_gameProjectId, _runId), JsonOptions);
-        var startResult = await SendRequestAsync(_config.GetRequiredListenPort("router"), "/initialize", startBody, "POST");
-        if (startResult.StatusCode is not (>= 200 and < 300))
-        {
-            AppendSystemGameMessage(
-                $"Router /initialize returned {startResult.StatusCode} {startResult.ReasonPhrase}.\n{startResult.Body}");
-            _runId = string.Empty;
-            return false;
-        }
-
-        _nextTurn = 1;
-        RefreshGameTurnHeader();
-        return true;
-    }
-
     private async Task SubmitGameInputAsync()
     {
         if (_gameRequestInFlight)
@@ -695,14 +733,14 @@ public partial class MainWindow : Window
         AppendPlayerGameMessage(playerInput.Trim(), _nextTurn);
         GameInputTextBox.Clear();
         _gameRequestInFlight = true;
-        SetGameStatus("Preparing run / sending player input to router /turn...");
+        SetGameStatus("Sending player input to router /turn...");
         UpdateButtonState();
 
         try
         {
-            if (!await EnsureRunStartedAsync())
+            if (string.IsNullOrWhiteSpace(_runId))
             {
-                SetGameStatus("Failed to start run via router /initialize.", isError: true);
+                SetGameStatus("Engine run is not bound. Start the engine and wait for it to become ready.", isError: true);
                 return;
             }
 
@@ -858,29 +896,196 @@ public partial class MainWindow : Window
     {
         Dispatcher.BeginInvoke(() =>
         {
-            var timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
-            QwenMonitorPane.AppendText($"[{timestamp}] {text}{Environment.NewLine}----------------{Environment.NewLine}");
+            QwenMonitorPane.AppendText(text + Environment.NewLine);
             QwenMonitorPane.CaretIndex = QwenMonitorPane.Text.Length;
             QwenMonitorPane.ScrollToEnd();
         });
     }
 
+    /// <summary>Tails <see cref="GameRunLogPaths.OllamaTrafficFileName"/> under the active run (requires <see cref="_runId"/> set).</summary>
+    private void StartTrafficLogTail()
+    {
+        if (_llmLogWatcher is not null || _config is null || string.IsNullOrEmpty(_runId))
+        {
+            return;
+        }
+
+        var llmLogPath = GameRunLogPaths.GetTrafficLogPath(_config.RepositoryRoot, _gameProjectId, _runId);
+        var llmLogDir = Path.GetDirectoryName(llmLogPath);
+        if (string.IsNullOrWhiteSpace(llmLogDir))
+        {
+            return;
+        }
+
+        Directory.CreateDirectory(llmLogDir);
+        if (!File.Exists(llmLogPath))
+        {
+            File.WriteAllText(llmLogPath, string.Empty);
+        }
+
+        // Start from the end so the monitor shows new traffic for this run only.
+        _llmLogReadPosition = new FileInfo(llmLogPath).Length;
+        _llmLogRemainder = string.Empty;
+        _llmLogTailingEnabled = true;
+        QwenMonitorPane.Clear();
+
+        var watcher = new FileSystemWatcher(llmLogDir, Path.GetFileName(llmLogPath))
+        {
+            NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.FileName
+        };
+        watcher.Changed += (_, _) => Dispatcher.BeginInvoke(() => ReadLlmLogAppends(llmLogPath));
+        watcher.Created += (_, _) => Dispatcher.BeginInvoke(() => ReadLlmLogAppends(llmLogPath));
+        watcher.Renamed += (_, _) => Dispatcher.BeginInvoke(() => ReadLlmLogAppends(llmLogPath));
+        watcher.EnableRaisingEvents = true;
+        _llmLogWatcher = watcher;
+    }
+
+    private void StopLlmLogTail()
+    {
+        _llmLogTailingEnabled = false;
+
+        if (_llmLogWatcher is not null)
+        {
+            try
+            {
+                _llmLogWatcher.EnableRaisingEvents = false;
+                _llmLogWatcher.Dispose();
+            }
+            catch
+            {
+            }
+            finally
+            {
+                _llmLogWatcher = null;
+            }
+        }
+    }
+
+    private void ReadLlmLogAppends(string llmLogPath)
+    {
+        if (!_llmLogTailingEnabled)
+        {
+            return;
+        }
+
+        try
+        {
+            using var stream = new FileStream(llmLogPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            if (_llmLogReadPosition > stream.Length)
+            {
+                _llmLogReadPosition = 0;
+                _llmLogRemainder = string.Empty;
+            }
+
+            stream.Seek(_llmLogReadPosition, SeekOrigin.Begin);
+            using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 4096, leaveOpen: true);
+            var appended = reader.ReadToEnd();
+            _llmLogReadPosition = stream.Position;
+
+            if (string.IsNullOrEmpty(appended))
+            {
+                return;
+            }
+
+            var combined = _llmLogRemainder + appended;
+            var lines = combined.Split('\n');
+            _llmLogRemainder = combined.EndsWith("\n", StringComparison.Ordinal) ? string.Empty : lines[^1];
+
+            var lineCount = _llmLogRemainder.Length == 0 ? lines.Length : lines.Length - 1;
+            for (var i = 0; i < lineCount; i++)
+            {
+                var line = lines[i].TrimEnd('\r');
+                if (line.Length == 0)
+                {
+                    continue;
+                }
+
+                // Older builds wrote monitor separators into traffic logs; skip them when tailing so the pane matches current format.
+                var trimmed = line.Trim();
+                if (trimmed.Length >= 4 && trimmed.All(static c => c == '-'))
+                {
+                    continue;
+                }
+
+                AppendQwenMonitorEntry(line);
+            }
+        }
+        catch (IOException)
+        {
+            // Best-effort tailing: ignore transient lock/rename races.
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+    }
+
     private bool TryExtractQwenLogLine(string text, out string qwenLogLine)
     {
+        text = text.TrimEnd('\r', '\n');
+
         foreach (var moduleName in _qwenMonitorModuleNames)
         {
             var normalPrefix = $"[{moduleName}] OLLAMA_IO ";
             if (text.StartsWith(normalPrefix, StringComparison.Ordinal))
             {
-                qwenLogLine = text.Substring(normalPrefix.Length).TrimEnd('\r', '\n');
+                qwenLogLine = text.Substring(normalPrefix.Length);
                 return true;
             }
 
             var errorPrefix = $"[{moduleName}:ERR] OLLAMA_IO ";
             if (text.StartsWith(errorPrefix, StringComparison.Ordinal))
             {
-                qwenLogLine = "ERR: " + text.Substring(errorPrefix.Length).TrimEnd('\r', '\n');
+                qwenLogLine = "ERR: " + text.Substring(errorPrefix.Length);
                 return true;
+            }
+
+            // New EngineLog prefix: [entryId ; HH:MM:SS::cc] [LlmProvider_qwen] OLLAMA_IO ...
+            var newNormalMarker = $"] [{moduleName}] OLLAMA_IO ";
+            var newNormalIdx = text.IndexOf(newNormalMarker, StringComparison.Ordinal);
+            if (newNormalIdx >= 0)
+            {
+                qwenLogLine = text.Substring(newNormalIdx + newNormalMarker.Length);
+                return true;
+            }
+
+            var newErrMarker = $"] [{moduleName}:ERR] OLLAMA_IO ";
+            var newErrIdx = text.IndexOf(newErrMarker, StringComparison.Ordinal);
+            if (newErrIdx >= 0)
+            {
+                qwenLogLine = "ERR: " + text.Substring(newErrIdx + newErrMarker.Length);
+                return true;
+            }
+
+            // Legacy EngineLog: +00012.34s #000123 [LlmProvider_qwen] OLLAMA_IO ...
+            if (text.StartsWith("+", StringComparison.Ordinal))
+            {
+                var tagStart = text.IndexOf('[', StringComparison.Ordinal);
+                if (tagStart >= 0)
+                {
+                    var tagEnd = text.IndexOf(']', tagStart + 1);
+                    if (tagEnd > tagStart)
+                    {
+                        var tag = text.Substring(tagStart + 1, tagEnd - tagStart - 1);
+                        if (string.Equals(tag, moduleName, StringComparison.Ordinal)
+                            || string.Equals(tag, moduleName + ":ERR", StringComparison.Ordinal))
+                        {
+                            var afterTag = tagEnd + 1;
+                            if (afterTag < text.Length && text[afterTag] == ' ')
+                            {
+                                afterTag++;
+                            }
+
+                            const string ollamaPrefix = "OLLAMA_IO ";
+                            if (afterTag + ollamaPrefix.Length <= text.Length
+                                && string.Equals(text.Substring(afterTag, ollamaPrefix.Length), ollamaPrefix, StringComparison.Ordinal))
+                            {
+                                var payload = text.Substring(afterTag + ollamaPrefix.Length);
+                                qwenLogLine = tag.EndsWith(":ERR", StringComparison.Ordinal) ? "ERR: " + payload : payload;
+                                return true;
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -915,5 +1120,6 @@ public partial class MainWindow : Window
         HttpRequestBodyTextBox.CaretIndex = HttpRequestBodyTextBox.Text.Length;
     }
 
-    private bool IsEngineRunning() => _engineTask != Task.CompletedTask;
+    /// <summary>True while an engine instance exists (including shutting down until <see cref="StopEngineAsync"/> clears it).</summary>
+    private bool IsEngineRunning() => _engine is not null;
 }

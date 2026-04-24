@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Text;
 using System.Text.Json;
@@ -8,7 +9,7 @@ namespace MorpheusEngine
     /// HTTP entrypoint for player-facing routes and for proxying allowlisted calls between modules.
     /// Configuration (ports, module endpoints) comes from <see cref="EngineConfiguration"/>.
     /// </summary>
-    public class Router
+    public class Router : IEngineRunBinder
     {
         #region Nested types
 
@@ -43,6 +44,10 @@ namespace MorpheusEngine
             PropertyNameCaseInsensitive = true
         };
 
+        private bool _runBound = false;
+        private string _boundGameProjectId = string.Empty;
+        private string _boundRunId = string.Empty;
+
         // Proxied module calls include LLM /chat; same ceiling as LlmProvider_qwen outbound calls (warm-up runs at provider startup).
         private static readonly HttpClient _httpClient = new()
         {
@@ -55,6 +60,8 @@ namespace MorpheusEngine
         private const string ExpectedProxiedResponseMediaType = "application/json";
 
         #endregion
+
+        public bool IsRunBound => _runBound;
 
         public async Task Run()
         {
@@ -89,8 +96,7 @@ namespace MorpheusEngine
             var routerPort = _configuration.GetRequiredListenPort("router");
             _listener.Prefixes.Add($"http://127.0.0.1:{routerPort}/");
             _listener.Start();
-            Console.WriteLine($"Router module listening on http://127.0.0.1:{routerPort}/");
-            Console.WriteLine("Router initialized.");
+            Console.WriteLine($"ready listen=http://127.0.0.1:{routerPort}/");
         }
 
         private async Task ProcessQuery(HttpListenerContext context)
@@ -104,7 +110,6 @@ namespace MorpheusEngine
                 }
 
                 var path = context.Request.Url.AbsolutePath;
-                Console.WriteLine("Router received call: " + path);
 
                 if (path.Equals("/info", StringComparison.OrdinalIgnoreCase))
                 {
@@ -114,7 +119,8 @@ namespace MorpheusEngine
 
                 if (path.Equals("/health", StringComparison.OrdinalIgnoreCase))
                 {
-                    await RespondAsync(context, 200, new ModuleHealthResponse(true, "healthy"));
+                    var healthy = _runBound;
+                    await RespondAsync(context, healthy ? 200 : 503, new ModuleHealthResponse(healthy, healthy ? "healthy" : "run_not_bound"));
                     return;
                 }
 
@@ -142,9 +148,15 @@ namespace MorpheusEngine
                     return;
                 }
 
-                if (path.Equals("/initialize", StringComparison.OrdinalIgnoreCase))
+                if (path.Equals("/engine_log/activate", StringComparison.OrdinalIgnoreCase))
                 {
-                    await ProcessRequest_initialize(context);
+                    await ProcessRequest_engineLogActivate(context);
+                    return;
+                }
+
+                if (path.Equals(EngineInternalRoutes.BindRunPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    await ProcessRequest_bindRun(context);
                     return;
                 }
 
@@ -169,6 +181,28 @@ namespace MorpheusEngine
 
         public void RequestShutdown() => _shutdownRequested = true;
 
+        public Task BindRunAsync(InitializeModuleRequest request, CancellationToken cancellationToken)
+        {
+            if (request is null
+                || string.IsNullOrWhiteSpace(request.GameProjectId)
+                || string.IsNullOrWhiteSpace(request.RunId))
+            {
+                throw new ArgumentException("Request must include non-empty gameProjectId and runId.", nameof(request));
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            if (_runBound)
+            {
+                throw new InvalidOperationException("Router is already bound for this process; restart the router to bind another run.");
+            }
+
+            _boundGameProjectId = request.GameProjectId.Trim();
+            _boundRunId = request.RunId.Trim();
+            _runBound = true;
+            Console.WriteLine($"[Router] Bound run runId={_boundRunId} gameProjectId={_boundGameProjectId}.");
+            return Task.CompletedTask;
+        }
+
         private void Shutdown()
         {
             _listener.Stop();
@@ -176,11 +210,7 @@ namespace MorpheusEngine
             Console.WriteLine("Router shut down.");
         }
 
-        /// <summary>
-        /// Initializes the Director in-memory run (system prompt + history) then creates the per-run SQLite session via session_store POST /initialize.
-        /// Director runs first so missing game project files fail before the database is created.
-        /// </summary>
-        private async Task ProcessRequest_initialize(HttpListenerContext context)
+        private async Task ProcessRequest_bindRun(HttpListenerContext context)
         {
             if (!string.Equals(context.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase))
             {
@@ -189,6 +219,12 @@ namespace MorpheusEngine
             }
 
             var body = await ReadRequestBodyAsync(context);
+
+            if (!IsLoopbackRequest(context))
+            {
+                await RespondAsync(context, 403, new ErrorResponse(false, "bind_run is only allowed from loopback."));
+                return;
+            }
 
             InitializeModuleRequest? parsed;
             try
@@ -208,26 +244,21 @@ namespace MorpheusEngine
                 await RespondAsync(
                     context,
                     400,
-                    new ErrorResponse(false, "Initialize request must include non-empty runId and gameProjectId."));
+                    new ErrorResponse(false, "Request must include non-empty runId and gameProjectId."));
                 return;
             }
 
-            var directorResult = await ForwardModuleCallAsync("player_ui", "director", "/initialize", "POST", body);
-            if (directorResult.StatusCode != 200)
+            try
             {
-                await WriteForwardedResultAsync(context, directorResult);
+                await BindRunAsync(parsed, CancellationToken.None);
+            }
+            catch (Exception e)
+            {
+                await RespondAsync(context, 409, new ErrorResponse(false, e.Message));
                 return;
             }
 
-            var sessionResult = await ForwardModuleCallAsync("player_ui", "session_store", "/initialize", "POST", body);
-            if (sessionResult.StatusCode != 200)
-            {
-                Console.WriteLine(
-                    "[Router] session_store /initialize failed after director /initialize succeeded; "
-                    + "Director remains initialized until its process restarts.");
-            }
-
-            await WriteForwardedResultAsync(context, sessionResult);
+            await RespondAsync(context, 200, new InitializeModuleResponse(true));
         }
 
         /// <summary>
@@ -261,90 +292,194 @@ namespace MorpheusEngine
                 return;
             }
 
+            if (!_runBound)
+            {
+                await RespondAsync(context, 503, new ErrorResponse(false, "Router run is not bound; the host must bind the run before POST /turn."));
+                return;
+            }
+
+            var requestRunId = request.RunId.Trim();
+            var requestGameProjectId = request.GameProjectId.Trim();
+            if (!string.Equals(requestRunId, _boundRunId, StringComparison.Ordinal)
+                || !string.Equals(requestGameProjectId, _boundGameProjectId, StringComparison.Ordinal))
+            {
+                await RespondAsync(
+                    context,
+                    409,
+                    new ErrorResponse(false, $"Router is bound to runId={_boundRunId} gameProjectId={_boundGameProjectId}; request was runId={requestRunId} gameProjectId={requestGameProjectId}."));
+                return;
+            }
+
             if (request.Turn < 1)
             {
                 await RespondAsync(context, 400, new ErrorResponse(false, "Turn must be >= 1."));
                 return;
             }
 
-            var directorPayload = JsonSerializer.Serialize(
-                new DirectorMessageRequest(request.Turn, request.PlayerInput.Trim()));
-            var directorResult = await ForwardModuleCallAsync(
-                "router",
-                "director",
-                "/message",
-                "POST",
-                directorPayload);
-
-            if (directorResult.StatusCode is < 200 or >= 300)
+            var turnStopwatch = Stopwatch.StartNew();
+            var playerInputTrimmed = request.PlayerInput.Trim();
+            // One global prefix allocation for both llmLog and stdout; the host forwards stdout verbatim when already prefixed.
+            var turnStartInner =
+                $"=== TURN {request.Turn} START === runId={request.RunId.Trim()} gameProjectId={request.GameProjectId.Trim()} input='{TruncateMiddle(playerInputTrimmed)}'";
+            var turnStartFull = EngineLog.FormatLinePrefix(isError: false) + turnStartInner;
+            // Bypass PrefixingTextWriter when present so we do not stack two prefixes; same stream as raw redirected stdout.
+            EngineLog.WriteForwardedLine(turnStartFull);
+            if (!GlobalLogSequence.IsConfigured)
             {
-                await WriteForwardedResultAsync(context, directorResult);
-                return;
+                throw new InvalidOperationException(
+                    "Turn traffic file logging requires POST /engine_log/activate after run init (file log session not bound).");
             }
 
-            IntentResponse? parsedDirector;
+            var trafficPath = GameRunLogPaths.GetTrafficLogPath(
+                _configuration.RepositoryRoot,
+                request.GameProjectId.Trim(),
+                request.RunId.Trim());
+            OllamaTrafficFile.AppendLine(trafficPath, turnStartFull);
+
+            var finalStatusCode = 500;
             try
             {
-                parsedDirector = JsonSerializer.Deserialize<IntentResponse>(directorResult.Body, _jsonOptions);
-            }
-            catch (JsonException)
-            {
+                var directorPayload = JsonSerializer.Serialize(
+                    new DirectorMessageRequest(request.Turn, playerInputTrimmed));
+                var directorResult = await ForwardModuleCallAsync(
+                    "router",
+                    "director",
+                    "/message",
+                    "POST",
+                    directorPayload);
+
+                if (directorResult.StatusCode is < 200 or >= 300)
+                {
+                    finalStatusCode = directorResult.StatusCode;
+                    await WriteForwardedResultAsync(context, directorResult);
+                    return;
+                }
+
+                IntentResponse? parsedDirector;
+                try
+                {
+                    parsedDirector = JsonSerializer.Deserialize<IntentResponse>(directorResult.Body, _jsonOptions);
+                }
+                catch (JsonException)
+                {
+                    finalStatusCode = directorResult.StatusCode;
+                    await WriteForwardedResultAsync(context, directorResult);
+                    return;
+                }
+
+                if (parsedDirector is null || !parsedDirector.Ok)
+                {
+                    finalStatusCode = directorResult.StatusCode;
+                    await WriteForwardedResultAsync(context, directorResult);
+                    return;
+                }
+
+                var persistJson = JsonSerializer.Serialize(
+                    new TurnPersistRequest(
+                        request.Turn,
+                        playerInputTrimmed,
+                        directorResult.Body));
+
+                var persistResult = await ForwardModuleCallAsync(
+                    "router",
+                    "session_store",
+                    "/persist_turn",
+                    "POST",
+                    persistJson);
+
+                if (persistResult.StatusCode != 200)
+                {
+                    finalStatusCode = persistResult.StatusCode;
+                    Console.WriteLine(
+                        "session_store /persist_turn failed after director /message succeeded; "
+                        + "Director in-memory history may be ahead of SQLite.");
+                    await WriteForwardedResultAsync(context, persistResult);
+                    return;
+                }
+
+                TurnPersistResponse? persistBody;
+                try
+                {
+                    persistBody = JsonSerializer.Deserialize<TurnPersistResponse>(persistResult.Body, _jsonOptions);
+                }
+                catch (JsonException e)
+                {
+                    finalStatusCode = 500;
+                    await RespondAsync(
+                        context,
+                        500,
+                        new ErrorResponse(false, "Session store returned invalid JSON for turn persistence.", e.Message));
+                    return;
+                }
+
+                if (persistBody is null || !persistBody.Ok)
+                {
+                    finalStatusCode = 500;
+                    await RespondAsync(
+                        context,
+                        500,
+                        new ErrorResponse(false, "Session store reported persistence failure.", persistResult.Body));
+                    return;
+                }
+
+                finalStatusCode = directorResult.StatusCode;
                 await WriteForwardedResultAsync(context, directorResult);
+            }
+            finally
+            {
+                turnStopwatch.Stop();
+                var turnEndInner =
+                    $"=== TURN {request.Turn} END === status={finalStatusCode} elapsedMs={turnStopwatch.ElapsedMilliseconds}";
+                var turnEndFull = EngineLog.FormatLinePrefix(isError: false) + turnEndInner;
+                EngineLog.WriteForwardedLine(turnEndFull);
+                if (GlobalLogSequence.IsConfigured)
+                {
+                    var trafficPathEnd = GameRunLogPaths.GetTrafficLogPath(
+                        _configuration.RepositoryRoot,
+                        request.GameProjectId.Trim(),
+                        request.RunId.Trim());
+                    OllamaTrafficFile.AppendLine(trafficPathEnd, turnEndFull);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Binds this process to the on-disk log directory for the given run (same JSON as bind_run).
+        /// Loopback-only; intended to be called from the host after run bind.
+        /// </summary>
+        private async Task ProcessRequest_engineLogActivate(HttpListenerContext context)
+        {
+            if (!string.Equals(context.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase))
+            {
+                await RespondAsync(context, 405, new ErrorResponse(false, "Method not allowed; use POST."));
                 return;
             }
 
-            if (parsedDirector is null || !parsedDirector.Ok)
+            if (!IsLoopbackRequest(context))
             {
-                await WriteForwardedResultAsync(context, directorResult);
+                await RespondAsync(context, 403, new ErrorResponse(false, "engine_log/activate is only allowed from loopback."));
                 return;
             }
 
-            var persistJson = JsonSerializer.Serialize(
-                new TurnPersistRequest(
-                    request.Turn,
-                    request.PlayerInput.Trim(),
-                    directorResult.Body));
-
-            var persistResult = await ForwardModuleCallAsync(
-                "router",
-                "session_store",
-                "/persist_turn",
-                "POST",
-                persistJson);
-
-            if (persistResult.StatusCode != 200)
+            var body = await ReadRequestBodyAsync(context);
+            var result = EngineLogActivateCommands.TryActivateFromJsonBody(
+                body,
+                _configuration.RepositoryRoot,
+                primaryNotJoin: false,
+                _jsonOptions);
+            if (!result.Ok)
             {
-                Console.WriteLine(
-                    "[Router] session_store /persist_turn failed after director /message succeeded; "
-                    + "Director in-memory history may be ahead of SQLite.");
-                await WriteForwardedResultAsync(context, persistResult);
+                await RespondAsync(context, 400, new ErrorResponse(false, result.ErrorMessage ?? "Activation failed."));
                 return;
             }
 
-            TurnPersistResponse? persistBody;
-            try
-            {
-                persistBody = JsonSerializer.Deserialize<TurnPersistResponse>(persistResult.Body, _jsonOptions);
-            }
-            catch (JsonException e)
-            {
-                await RespondAsync(
-                    context,
-                    500,
-                    new ErrorResponse(false, "Session store returned invalid JSON for turn persistence.", e.Message));
-                return;
-            }
+            await RespondAsync(context, 200, new InitializeModuleResponse(true));
+        }
 
-            if (persistBody is null || !persistBody.Ok)
-            {
-                await RespondAsync(
-                    context,
-                    500,
-                    new ErrorResponse(false, "Session store reported persistence failure.", persistResult.Body));
-                return;
-            }
-
-            await WriteForwardedResultAsync(context, directorResult);
+        private static bool IsLoopbackRequest(HttpListenerContext context)
+        {
+            var ep = context.Request.RemoteEndPoint;
+            return ep is null || IPAddress.IsLoopback(ep.Address);
         }
 
         /// <summary>
@@ -437,7 +572,7 @@ namespace MorpheusEngine
             }
 
             var uri = $"http://127.0.0.1:{targetPort}{normalizedPath}";
-            Console.WriteLine($"[RouterProxy] {sourceModule} -> {targetModule.PortKey} {methodUpper} {normalizedPath}");
+            Console.WriteLine($"Proxied call: {sourceModule} -> {targetModule.PortKey} {methodUpper} {normalizedPath}");
 
             try
             {
@@ -462,7 +597,8 @@ namespace MorpheusEngine
                         $"Proxied module response must have Content-Type '{ExpectedProxiedResponseMediaType}'; received '{actual}'.");
                 }
 
-                Console.WriteLine($"[RouterProxy] {sourceModule} -> {targetModule.PortKey} {methodUpper} {normalizedPath} => {(int)response.StatusCode}");
+                Console.WriteLine(
+                    $"Proxied call response: {targetModule.PortKey} -> {sourceModule} {methodUpper} {normalizedPath} => {(int)response.StatusCode}");
 
                 // What the router's caller receives: same status code, content type, and body the router got from the target module.
                 return new ForwardedModuleResult(
@@ -472,7 +608,8 @@ namespace MorpheusEngine
             }
             catch (Exception e) when (e is not InvalidOperationException)
             {
-                Console.WriteLine($"[RouterProxy] {sourceModule} -> {targetModule.PortKey} {methodUpper} {normalizedPath} => network error: {e.Message}");
+                Console.WriteLine(
+                    $"Proxied call response: {targetModule.PortKey} -> {sourceModule} {methodUpper} {normalizedPath} => network_error: {e.Message}");
                 return ForwardedModuleResult.FromError(
                     502,
                     $"Failed to reach target module '{targetModule.PortKey}'.",
@@ -481,6 +618,38 @@ namespace MorpheusEngine
         }
 
         #region Helpers
+
+        private static string TruncateForLog(string text, int maxLen = 160)
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                return text;
+            }
+
+            return text.Length <= maxLen ? text : text[..maxLen] + "…";
+        }
+
+        /// <summary>Same shape as LlmProvider_qwen log previews: long text keeps head and tail with an ellipsis gap in the middle.</summary>
+        private static string TruncateMiddle(string text, int headChars = 80, int tailChars = 60)
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                return text;
+            }
+
+            if (headChars < 0 || tailChars < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(headChars), "headChars and tailChars must be >= 0.");
+            }
+
+            var max = headChars + tailChars + 5;
+            if (text.Length <= max || headChars == 0 || tailChars == 0)
+            {
+                return TruncateForLog(text, maxLen: max);
+            }
+
+            return text[..headChars] + " ... " + text[^tailChars..];
+        }
 
         /// <summary>
         /// Reads the request body without blocking a thread pool thread for the duration of the read:
