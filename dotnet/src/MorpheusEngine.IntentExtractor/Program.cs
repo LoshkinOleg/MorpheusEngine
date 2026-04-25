@@ -1,7 +1,5 @@
 using MorpheusEngine;
 
-EngineLog.Initialize("IntentExtractor");
-
 var intentExtractor = new IntentExtractor();
 Console.CancelKeyPress += (_, e) =>
 {

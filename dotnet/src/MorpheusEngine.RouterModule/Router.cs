@@ -335,12 +335,9 @@ namespace MorpheusEngine
 
             var turnStopwatch = Stopwatch.StartNew();
             var playerInputTrimmed = request.PlayerInput.Trim();
-            // One prefix allocation for stdout; the host forwards router stdout verbatim when already prefixed.
             var turnStartInner =
                 $"=== TURN {request.Turn} START === runId={request.RunId.Trim()} gameProjectId={request.GameProjectId.Trim()} input='{TruncateMiddle(playerInputTrimmed)}'";
-            var turnStartFull = EngineLog.FormatLinePrefix(isError: false) + turnStartInner;
-            // Bypass PrefixingTextWriter when present so we do not stack two prefixes; same stream as raw redirected stdout.
-            EngineLog.WriteForwardedLine(turnStartFull);
+            Console.WriteLine(turnStartInner);
 
             var finalStatusCode = 500;
             try
@@ -436,8 +433,7 @@ namespace MorpheusEngine
                 turnStopwatch.Stop();
                 var turnEndInner =
                     $"=== TURN {request.Turn} END === status={finalStatusCode} elapsedMs={turnStopwatch.ElapsedMilliseconds}";
-                var turnEndFull = EngineLog.FormatLinePrefix(isError: false) + turnEndInner;
-                EngineLog.WriteForwardedLine(turnEndFull);
+                Console.WriteLine(turnEndInner);
             }
         }
 

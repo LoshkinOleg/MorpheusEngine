@@ -11,11 +11,11 @@ alwaysApply: true
 
 - A snippet of code should generally be extracted to it's own private / protected method only if it is has >1 usage. Use of private / protected methods as a form of documentation is usually to be avoided unless explicitly specified and documented. Declaration of <=1 use public methods however is perfectly acceptable and expected.
 
-- The definition of a class is to be structured in this order: nested types -> public properties -> private properties -> public methods -> private methods -> helper methods. "#region ... #endregion" preprocessor directives are to be used to organize these sections if the class is large.
+- The definition of a class is to be structured in this order: nested types -> public data-> private data-> public methods -> private methods -> helper methods. "#region ... #endregion" preprocessor directives are to be used to organize these sections if the class is large.
 
-- Compile time constants (const properties) should be public unless otherwise specified. Readonly data members should be grouped with the constants in the file.
+- Compile time constants data and static readonly data should be public unless otherwise specified and use ALL_CAPS_CASE. Compile time constants and static readonly data should be grouped together in the class' declaration.
 
-- When declaring properties, prefer explicitly initializing them to their default value at declaration for clarity's sake, even if they default to the expected value.
+- When declaring properties, prefer explicitly initializing them to their default value at declaration for clarity's sake, even if they default to the expected value. Readonly data members initialization: POD should be declared inline, anything that requires code execution should be initialized in the constructor instead.
 
 - Properties and methods should be instance properties and methods unless there's a reason to make them static, which case this should be documented via a comment. Helper methods can be declared as static without justification as long as they are part of the helpers region.
 
@@ -24,5 +24,3 @@ alwaysApply: true
 - Prefer methods over getter only properties for things that compute the return value instead of just returning a private field.
 
 - In comments, do not use the <c> tag as it makes reading of comments in the source file cumbersome.
-
-- Readonly data members initialization: POD should be declared inline, anything that requires code execution should be initialized in the constructor.

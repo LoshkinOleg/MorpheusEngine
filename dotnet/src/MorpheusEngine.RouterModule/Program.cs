@@ -1,7 +1,5 @@
 using MorpheusEngine;
 
-EngineLog.Initialize("RouterModule");
-
 Router router = new Router();
 Console.CancelKeyPress += (_, e) =>
 {

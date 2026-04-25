@@ -2,12 +2,16 @@ using System.Threading.Tasks;
 
 namespace MorpheusEngine
 {
-
+    /// <summary>
+    /// Host process for Morpheus modules.
+    /// Owns the ordered list of <see cref="ManagedModule"/> instances and orchestrates their lifecycle.
+    /// Each managed module is started in its own process, then instructed by the host to initialize and report readiness.
+    /// </summary>
     public class MorpheusEngine
     {
 #region Public data
         public const int MODULE_READY_TIMEOUT_SECONDS = 120;
-        public const int MODULE_LISTENING_TIMEOUT_SECONDS = 60;
+        public const int MODULE_LISTENING_TIMEOUT_SECONDS = 10;
         public const int MODULE_INITIALIZE_TIMEOUT_SECONDS = 60;
         public readonly EngineConfiguration? Configuration;
         public readonly IReadOnlyList<ManagedModule> Modules;
@@ -91,6 +95,7 @@ namespace MorpheusEngine
             var configuration = Configuration ?? throw new InvalidOperationException("Engine configuration is not initialized.");
 
             // Run binding happens at engine start (gameProjectId + runId are provided by the UI before boot begins).
+            // Note: Console.WriteLine forwards to EngineLog since EngineLog.Initialize() has been called on host process.
             var portsSummary = string.Join(
                 ", ",
                 configuration.ModulesInfos
@@ -110,11 +115,16 @@ namespace MorpheusEngine
                 cancellationToken.ThrowIfCancellationRequested();
                 Console.WriteLine(
                     $"[Engine] Starting module '{module.DisplayName}' (port_key={module.PortKey}, port={module.Port}, required={module.Required}).");
-                module.Start(moduleHostJob);
+                
+                // Note: GetAwaiter().GetResult() is a blocking call, so the three async calls are sequential.
+                // Kick off module's StartProcess() and wait for the module to report readiness.
+                module.StartProcess(moduleHostJob);
+                module.WaitForStartProcessCompletedAsync(TimeSpan.FromSeconds(MODULE_LISTENING_TIMEOUT_SECONDS), cancellationToken).GetAwaiter().GetResult();
 
-                module.WaitUntilListeningAsync(TimeSpan.FromSeconds(MODULE_LISTENING_TIMEOUT_SECONDS), cancellationToken).GetAwaiter().GetResult();
+                // Kick off module's Initialize() and wait for the module to report readiness.
                 module.InitializeAsync(initializePayload, TimeSpan.FromSeconds(MODULE_INITIALIZE_TIMEOUT_SECONDS), cancellationToken).GetAwaiter().GetResult();
-                module.WaitUntilReadyAsync(TimeSpan.FromSeconds(MODULE_READY_TIMEOUT_SECONDS), cancellationToken).GetAwaiter().GetResult();
+                module.WaitForInitializationToCompleteAsync(TimeSpan.FromSeconds(MODULE_READY_TIMEOUT_SECONDS), cancellationToken).GetAwaiter().GetResult();
+
                 Console.WriteLine($"[Engine] Module '{module.DisplayName}' ({module.PortKey}) is healthy.");
             }
 

@@ -1,7 +1,5 @@
 using MorpheusEngine;
 
-EngineLog.Initialize("Director");
-
 var director = new Director();
 Console.CancelKeyPress += (_, e) =>
 {

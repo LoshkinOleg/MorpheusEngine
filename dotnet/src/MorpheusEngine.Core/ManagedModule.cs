@@ -5,25 +5,39 @@ using System.Text.Json;
 
 namespace MorpheusEngine
 {
+    /// <summary>
+    /// Host-side process wrapper for a module implementation (for example Director or IntentExtractor).
+    /// Spawns the implementation in a separate process and provides the host-facing interface for startup, initialization, health checks, and shutdown.
+    /// Module implementations should log via Console methods only; the host prepends unified prefixes when forwarding child output.
+    /// </summary>
     public sealed class ManagedModule
     {
+        #region Public data
+        public string DisplayName => _definition.DisplayName;
+        public string PortKey => _definition.PortKey; // PortKey =/= port! PortKey is the name of the module, like "intent_extractor" that can be used to resolve to the module's actual port.
+        public int Port { get; } = 0;
+        public bool Required => _definition.Required;
+        #endregion
+
+        #region Private data
+        // Intentional exception to "public static readonly" guidance: these are mutable framework objects and are kept private to
+        // prevent external callers from mutating shared process-wide behavior.
         private static readonly HttpClient Http = new()
         {
             Timeout = TimeSpan.FromSeconds(3)
         };
-
         private static readonly JsonSerializerOptions HealthJsonOptions = new()
         {
             PropertyNameCaseInsensitive = true
         };
-
         private readonly EngineConfiguration _configuration;
         private readonly EngineModuleInfo _definition;
         private Process _process = new Process();
-
-        /// <summary>True after <see cref="Start"/> successfully spawned a child; <see cref="StopAsync"/> is a no-op until then.</summary>
+        /// <summary>True after <see cref="StartProcess"/> successfully spawned a child; <see cref="StopAsync"/> is a no-op until then.</summary>
         private bool _childProcessSpawned = false;
+        #endregion
 
+        #region Public methods
         public ManagedModule(EngineConfiguration configuration, EngineModuleInfo definition)
         {
             _configuration = configuration;
@@ -31,14 +45,13 @@ namespace MorpheusEngine
             Port = _configuration.GetRequiredListenPort(definition.PortKey);
         }
 
-        public string DisplayName => _definition.DisplayName;
-        public string PortKey => _definition.PortKey;
-        public int Port { get; }
-        public bool Required => _definition.Required;
-
+        /// <summary>
+        /// Starts the child process that runs the module implementation.
+        /// </summary>
         /// <param name="moduleHostJob">When non-null (Windows host), the spawned module process is assigned so it cannot outlive the job handle.</param>
-        public void Start(WindowsJobObject? moduleHostJob)
+        public void StartProcess(WindowsJobObject? moduleHostJob)
         {
+            // Spawn first so later health checks can fail fast on child exit.
             var psi = CreateProcessStartInfo();
             _process = Process.Start(psi) ?? throw new InvalidOperationException($"Failed to start {DisplayName}.");
             if (moduleHostJob is not null)
@@ -68,7 +81,7 @@ namespace MorpheusEngine
         /// <summary>
         /// Waits until GET /health returns 2xx with <see cref="ModuleHealthResponse.Initialized"/> false (pre-POST /initialize accepting state).
         /// </summary>
-        public async Task WaitUntilListeningAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
+        public async Task WaitForStartProcessCompletedAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
         {
             var deadline = DateTime.UtcNow + timeout;
             Exception? lastError = null;
@@ -77,6 +90,7 @@ namespace MorpheusEngine
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
+                // If the process dies during bootstrap, waiting longer can never succeed.
                 if (_process.HasExited)
                 {
                     throw new InvalidOperationException($"{DisplayName} exited before it began listening.");
@@ -114,7 +128,8 @@ namespace MorpheusEngine
         }
 
         /// <summary>
-        /// Host-driven run binding: waits for GET /health (pre-initialize 2xx), then <see cref="PostInitializeAndBindRunAsync"/>.
+        /// Host-driven initialization call.
+        /// Sends POST /initialize to the module implementation process so it binds to the run and prepares runtime state.
         /// </summary>
         public async Task InitializeAsync(
             InitializeModuleRequest request,
@@ -123,16 +138,11 @@ namespace MorpheusEngine
         {
             if (!_childProcessSpawned)
             {
-                throw new InvalidOperationException($"{DisplayName} is not started; call Start() first.");
+                throw new InvalidOperationException($"{DisplayName} is not started; call StartProcess() first.");
             }
 
-            await WaitUntilListeningAsync(timeout, cancellationToken);
-            await PostInitializeAndBindRunAsync(request, cancellationToken);
-        }
-
-        /// <summary>POST /initialize with <see cref="InitializeModuleRequest"/> JSON; throws if non-success.</summary>
-        private async Task PostInitializeAndBindRunAsync(InitializeModuleRequest request, CancellationToken cancellationToken)
-        {
+            // await WaitForStartCompletedAsync(timeout, cancellationToken); // Uncomment if the modules need to be more self contained and unreliant on MorpheusEngine class to call this.
+            
             var json = JsonSerializer.Serialize(request);
             using var httpRequest = new HttpRequestMessage(HttpMethod.Post, GetModuleUri("/initialize"))
             {
@@ -148,36 +158,7 @@ namespace MorpheusEngine
             }
         }
 
-        public async Task PostJsonEnsureSuccessAsync(string absolutePath, string jsonBody, CancellationToken cancellationToken = default)
-        {
-            if (!_childProcessSpawned)
-            {
-                throw new InvalidOperationException($"{DisplayName} is not started; call Start() first.");
-            }
-
-            if (string.IsNullOrWhiteSpace(absolutePath))
-            {
-                throw new ArgumentException("absolutePath must be non-empty.", nameof(absolutePath));
-            }
-
-            var normalized = EngineConfiguration.NormalizePath(absolutePath);
-            using var httpRequest = new HttpRequestMessage(HttpMethod.Post, GetModuleUri(normalized))
-            {
-                Content = string.IsNullOrWhiteSpace(jsonBody)
-                    ? new ByteArrayContent(Array.Empty<byte>())
-                    : new StringContent(jsonBody, Encoding.UTF8, "application/json")
-            };
-
-            using var response = await Http.SendAsync(httpRequest, cancellationToken);
-            var body = await response.Content.ReadAsStringAsync(cancellationToken);
-            if (!response.IsSuccessStatusCode)
-            {
-                throw new InvalidOperationException(
-                    $"{DisplayName} {normalized} returned {(int)response.StatusCode} {response.ReasonPhrase}. Body: {body}");
-            }
-        }
-
-        public async Task WaitUntilReadyAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
+        public async Task WaitForInitializationToCompleteAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
         {
             var deadline = DateTime.UtcNow + timeout;
             Exception? lastError = null;
@@ -186,6 +167,7 @@ namespace MorpheusEngine
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
+                // Readiness requires both liveness and initialized=true.
                 if (_process.HasExited)
                 {
                     throw new InvalidOperationException($"{DisplayName} exited before it became ready.");
@@ -258,6 +240,7 @@ namespace MorpheusEngine
 
             try
             {
+                // Best-effort cooperative stop first.
                 using var request = new HttpRequestMessage(HttpMethod.Post, GetModuleUri("/shutdown"));
                 request.Content = new ByteArrayContent(Array.Empty<byte>());
                 using var response = await Http.SendAsync(request);
@@ -277,6 +260,7 @@ namespace MorpheusEngine
 
             try
             {
+                // Hard timebox process exit to keep host shutdown bounded.
                 await _process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(3));
             }
             catch (TimeoutException)
@@ -294,7 +278,9 @@ namespace MorpheusEngine
                 CleanupProcess();
             }
         }
+        #endregion
 
+        #region Private methods
         private ProcessStartInfo CreateProcessStartInfo()
         {
             var useDevLaunch = string.Equals(Environment.GetEnvironmentVariable("MORPHEUS_DEV_LAUNCH"), "1", StringComparison.OrdinalIgnoreCase)
@@ -350,34 +336,8 @@ namespace MorpheusEngine
 
         private void ForwardChildLine(string line, bool isError)
         {
-            // Force-env: child kept local EngineLog prefixes; relay unchanged.
-            if (ShouldRelayChildLinesVerbatim())
-            {
-                EngineLog.WriteForwardedLine(line);
-                return;
-            }
-
-            // Some lines (e.g. router turn markers) are already fully prefixed in the child so console and llmLog share one id.
-            if (LooksLikePrefixedUnifiedLogLine(line))
-            {
-                EngineLog.WriteForwardedLine(line);
-                return;
-            }
-
+            // Host owns final log shape for child lines; always prepend host module context.
             EngineLog.WriteHostedChildLine(_definition.PortKey, isError, line);
-        }
-
-        private static bool ShouldRelayChildLinesVerbatim() =>
-            string.Equals(Environment.GetEnvironmentVariable(EngineLog.ForceChildPrefixEnvVar), "1", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(Environment.GetEnvironmentVariable(EngineLog.ForceChildPrefixEnvVar), "true", StringComparison.OrdinalIgnoreCase);
-
-        /// <summary>Detects lines emitted with <see cref="EngineLog.FormatLinePrefix"/> in the child (already include id and session time).</summary>
-        private static bool LooksLikePrefixedUnifiedLogLine(string line)
-        {
-            var t = line.TrimStart();
-            return t.StartsWith("[", StringComparison.Ordinal)
-                && t.Contains(" ; ", StringComparison.Ordinal)
-                && t.Contains("] [", StringComparison.Ordinal);
         }
 
         private string ResolveRepositoryRelativePath(string relativePath) =>
@@ -410,5 +370,7 @@ namespace MorpheusEngine
             _process = new Process();
             _childProcessSpawned = false;
         }
+
+        #endregion
     }
 }
