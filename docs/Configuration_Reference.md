@@ -27,21 +27,14 @@ Without this layout, **`LlmProvider_qwen`** fails at startup when it cannot find
 - **`port_key`**: Stable id; must have a matching **`ports.<port_key>`** entry.
 - **`required`**: If true, engine startup waits for **`GET /health`** on that module.
 - **`launch.artifact`**: Path to built `.exe` or `.dll` (relative to repo root unless absolute).
-- **`launch.dev_project`**: Optional `.csproj` for `dotnet run` when **`MORPHEUS_DEV_LAUNCH`** is set.
 - **`endpoints[]`**: Each **`path`**, **`method`** (`GET` or `POST`), optional **`description`**, **`request_contract`**, **`body_template`**.
 
 **`request_contract`** ties into **`EngineContractExamples.TryGetRequestBodyTemplate`** in `EngineHttpContracts.cs` for UI samples / tooling.
 
 ### Module-specific optional fields
 
-- **`llm_provider_qwen`**: **`ollama_port`** (required on that row only); **`default_chat_model`** (required on that row only; Ollama model for **`POST /chat`** and **`POST /generate`**).
-- **`intent_extractor`**: optional **`default_llm_model`** (stored as **`EngineConfiguration.IntentDefaultLlmModel`** if present; not sent on proxied **`/generate`** — the Qwen module uses **`default_chat_model`**).
-
-## Environment variables
-
-| Variable | Effect |
-|----------|--------|
-| **`MORPHEUS_DEV_LAUNCH=1`** or **`true`** | `ManagedModule` launches **`dotnet run --project <dev_project>`** instead of the **`launch.artifact`** binary. |
+- **Resolved `generic_llm_provider` module**: **`num_ctx`** and **`warmup_game_project_id`** are required on that row.
+- **`llm_provider_qwen`**: **`ollama_port`** and **`default_chat_model`** are required on that row; exposed at runtime as `EngineConfiguration.LlmProviderOllamaListenPort` and `EngineConfiguration.LlmProviderOllamaModel`.
 
 ## `EngineConfiguration` (runtime object)
 
@@ -51,7 +44,8 @@ Built once; exposes:
 - **`PortMap` / `GetRequiredListenPort(portKey)`**
 - **`ModulesInfos`** — Full module metadata including endpoints.
 - **`ModuleAliases`** — Merged defaults + file overrides.
-- **`IntentDefaultLlmModel`** (optional legacy), **`LlmProviderOllamaListenPort`**, **`LlmProviderDefaultChatModel`** — Derived from the **`intent_extractor`** and **`llm_provider_qwen`** module rows.
+- **`LlmProviderNumCtx`**, **`LlmProviderWarmupGameProjectId`** — Derived from the module mapped from **`generic_llm_provider`**.
+- **`LlmProviderOllamaListenPort`**, **`LlmProviderOllamaModel`** — Derived from **`llm_provider_qwen`** (qwen-specific settings).
 
 ## Contract examples and UI
 
@@ -61,4 +55,4 @@ When adding a new **`request_contract`**, extend **`EngineContractExamples.TryGe
 
 ## Build vs run
 
-Production-style runs expect **`launch.artifact`** paths to exist (build **`dotnet/MorpheusEngine.sln`** first). Missing artifacts throw **`FileNotFoundException`** at module start unless dev launch is enabled.
+Runs expect **`launch.artifact`** paths to exist (build **`dotnet/MorpheusEngine.sln`** first). Missing artifacts throw **`FileNotFoundException`** at module start.

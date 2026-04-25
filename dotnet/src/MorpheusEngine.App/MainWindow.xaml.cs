@@ -733,15 +733,15 @@ public partial class MainWindow : Window
             }
 
             var body = JsonSerializer.Serialize(
-                new TurnRequest(_runId, _gameProjectId, _nextTurn, playerInput.Trim()),
+                new TurnRequest(_nextTurn, playerInput.Trim()),
                 JsonOptions);
             var result = await SendRequestAsync(_config.GetRequiredListenPort("router"), "/turn", body, "POST");
 
             if (result.StatusCode is >= 200 and < 300)
             {
-                if (TryParseIntentResponse(result.Body, out var intentResponse))
+                if (TryParseTurnResponse(result.Body, out var turnResponse))
                 {
-                    AppendEngineGameMessage(FormatIntentResponse(intentResponse), _nextTurn);
+                    AppendEngineGameMessage(FormatTurnResponse(turnResponse), _nextTurn);
                     SetGameStatus(string.Empty);
                     _nextTurn++;
                     RefreshGameTurnHeader();
@@ -773,19 +773,19 @@ public partial class MainWindow : Window
         }
     }
 
-    private static bool TryParseIntentResponse(string body, out IntentResponse intentResponse)
+    private static bool TryParseTurnResponse(string body, out TurnResponse turnResponse)
     {
-        intentResponse = null!;
+        turnResponse = null!;
 
         try
         {
-            var parsed = JsonSerializer.Deserialize<IntentResponse>(body, JsonOptions);
+            var parsed = JsonSerializer.Deserialize<TurnResponse>(body, JsonOptions);
             if (parsed is null)
             {
                 return false;
             }
 
-            intentResponse = parsed;
+            turnResponse = parsed;
             return true;
         }
         catch (JsonException)
@@ -794,23 +794,9 @@ public partial class MainWindow : Window
         }
     }
 
-    private static string FormatIntentResponse(IntentResponse response)
+    private static string FormatTurnResponse(TurnResponse response)
     {
-        var lines = new List<string> { $"Intent: {response.Intent}" };
-        if (response.Parameters.Count == 0)
-        {
-            lines.Add("Params: (none)");
-        }
-        else
-        {
-            lines.Add("Params:");
-            foreach (var parameter in response.Parameters)
-            {
-                lines.Add($"- {parameter.Key}: {parameter.Value}");
-            }
-        }
-
-        return string.Join(Environment.NewLine, lines);
+        return response.Text;
     }
 
     private void SetGameStatus(string text, bool isError = false)

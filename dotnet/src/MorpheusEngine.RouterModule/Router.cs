@@ -280,7 +280,7 @@ namespace MorpheusEngine
 
         /// <summary>
         /// Player turn: call director with <see cref="DirectorMessageRequest"/>, then persist events + snapshot through session_store
-        /// (which enforces sequencing). Returns the Director response body (IntentResponse-shaped) on success.
+        /// (which enforces sequencing). Returns a router-owned <see cref="TurnResponse"/> on success.
         /// </summary>
         private async Task ProcessRequest_turn(HttpListenerContext context)
         {
@@ -298,32 +298,18 @@ namespace MorpheusEngine
             }
 
             if (request is null
-                || string.IsNullOrWhiteSpace(request.RunId)
-                || string.IsNullOrWhiteSpace(request.GameProjectId)
                 || string.IsNullOrWhiteSpace(request.PlayerInput))
             {
                 await RespondAsync(
                     context,
                     400,
-                    new ErrorResponse(false, "Turn request must include non-empty runId, gameProjectId, and playerInput."));
+                    new ErrorResponse(false, "Turn request must include non-empty playerInput."));
                 return;
             }
 
             if (!_runBound)
             {
                 await RespondAsync(context, 503, new ErrorResponse(false, "Router run is not bound; the host must bind the run before POST /turn."));
-                return;
-            }
-
-            var requestRunId = request.RunId.Trim();
-            var requestGameProjectId = request.GameProjectId.Trim();
-            if (!string.Equals(requestRunId, _boundRunId, StringComparison.Ordinal)
-                || !string.Equals(requestGameProjectId, _boundGameProjectId, StringComparison.Ordinal))
-            {
-                await RespondAsync(
-                    context,
-                    409,
-                    new ErrorResponse(false, $"Router is bound to runId={_boundRunId} gameProjectId={_boundGameProjectId}; request was runId={requestRunId} gameProjectId={requestGameProjectId}."));
                 return;
             }
 
@@ -336,7 +322,7 @@ namespace MorpheusEngine
             var turnStopwatch = Stopwatch.StartNew();
             var playerInputTrimmed = request.PlayerInput.Trim();
             var turnStartInner =
-                $"=== TURN {request.Turn} START === runId={request.RunId.Trim()} gameProjectId={request.GameProjectId.Trim()} input='{TruncateMiddle(playerInputTrimmed)}'";
+                $"=== TURN {request.Turn} START === runId={_boundRunId} gameProjectId={_boundGameProjectId} input='{TruncateMiddle(playerInputTrimmed)}'";
             Console.WriteLine(turnStartInner);
 
             var finalStatusCode = 500;
@@ -358,10 +344,10 @@ namespace MorpheusEngine
                     return;
                 }
 
-                IntentResponse? parsedDirector;
+                DirectorMessageResponse? parsedDirector;
                 try
                 {
-                    parsedDirector = JsonSerializer.Deserialize<IntentResponse>(directorResult.Body, _jsonOptions);
+                    parsedDirector = JsonSerializer.Deserialize<DirectorMessageResponse>(directorResult.Body, _jsonOptions);
                 }
                 catch (JsonException)
                 {
@@ -370,7 +356,7 @@ namespace MorpheusEngine
                     return;
                 }
 
-                if (parsedDirector is null || !parsedDirector.Ok)
+                if (parsedDirector is null || !parsedDirector.Ok || string.IsNullOrWhiteSpace(parsedDirector.Text))
                 {
                     finalStatusCode = directorResult.StatusCode;
                     await WriteForwardedResultAsync(context, directorResult);
@@ -425,8 +411,11 @@ namespace MorpheusEngine
                     return;
                 }
 
-                finalStatusCode = directorResult.StatusCode;
-                await WriteForwardedResultAsync(context, directorResult);
+                finalStatusCode = 200;
+                await RespondAsync(
+                    context,
+                    200,
+                    new TurnResponse(true, parsedDirector.Text.Trim()));
             }
             finally
             {

@@ -103,7 +103,7 @@ namespace MorpheusEngine
                     .Select(m => $"{m.PortKey}={configuration.GetRequiredListenPort(m.PortKey)}"));
             Console.WriteLine(
                 $"Engine config repo='{configuration.RepositoryRoot}' ports={{ {portsSummary} }} module_aliases={configuration.ModuleAliases.Count} "
-                + $"llm_provider_qwen.ollama_port={configuration.LlmProviderOllamaListenPort} default_chat_model='{configuration.LlmProviderDefaultChatModel}' "
+                + $"llm_provider_qwen.ollama_port={configuration.LlmProviderOllamaListenPort} ollama_model='{configuration.LlmProviderOllamaModel}' "
                 + $"num_ctx={configuration.LlmProviderNumCtx} warmup_game_project_id='{configuration.LlmProviderWarmupGameProjectId}' "
                 + $"run.gameProjectId='{GameProjectId}' run.runId='{RunId}'");
 

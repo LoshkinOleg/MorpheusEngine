@@ -4,7 +4,6 @@ namespace MorpheusEngine;
 
 /// <summary>
 /// Builds the Director narration system string from game project files (instructions + canon lore CSV).
-/// Shared by the Director module and the LLM provider warm-up so content cannot drift.
 /// </summary>
 public static class DirectorNarrationSystemPrompt
 {

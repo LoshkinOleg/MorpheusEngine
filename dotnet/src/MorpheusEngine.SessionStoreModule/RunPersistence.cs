@@ -173,11 +173,11 @@ internal sealed class RunPersistence
             var playerPayload = JsonSerializer.Serialize(new { text = request.PlayerInput });
             InsertEvent(connection, transaction, request.Turn, "player_input", playerPayload);
 
-            var tracePayload = BuildModuleTracePayload(request.PlayerInput, request.IntentResponseBody);
+            var tracePayload = BuildModuleTracePayload(request.PlayerInput, request.DirectorResponseBody);
             InsertEvent(connection, transaction, request.Turn, "module_trace", tracePayload);
 
             var worldState = ReadLatestWorldState(connection, transaction);
-            var viewState = BuildViewStateEnvelope(request.IntentResponseBody);
+            var viewState = BuildViewStateEnvelope(request.DirectorResponseBody);
             InsertSnapshot(connection, transaction, request.Turn, worldState, viewState);
 
             transaction.Commit();
@@ -338,35 +338,20 @@ internal sealed class RunPersistence
         var asLong = Convert.ToInt64(scalar);
         return (int)asLong;
     }
-    private static string BuildModuleTracePayload(string playerInput, string intentResponseBody)
+    private static string BuildModuleTracePayload(string playerInput, string directorResponseBody)
     {
-        static bool tryBuildNarrationFromIntent(string body, out string narration)
+        static bool TryBuildNarrationFromDirectorResponse(string body, out string narration)
         {
             narration = string.Empty;
             try
             {
-                var parsed = JsonSerializer.Deserialize<IntentResponse>(body);
-                if (parsed is null || !parsed.Ok)
+                var parsed = JsonSerializer.Deserialize<DirectorMessageResponse>(body);
+                if (parsed is null || !parsed.Ok || string.IsNullOrWhiteSpace(parsed.Text))
                 {
                     return false;
                 }
 
-                var lines = new List<string> { $"Intent: {parsed.Intent}" };
-                var parameters = parsed.Parameters ?? new Dictionary<string, string>();
-                if (parameters.Count == 0)
-                {
-                    lines.Add("Params: (none)");
-                }
-                else
-                {
-                    lines.Add("Params:");
-                    foreach (var parameter in parameters)
-                    {
-                        lines.Add($"- {parameter.Key}: {parameter.Value}");
-                    }
-                }
-
-                narration = string.Join(Environment.NewLine, lines);
+                narration = parsed.Text.Trim();
                 return true;
             }
             catch (JsonException)
@@ -375,14 +360,14 @@ internal sealed class RunPersistence
             }
         }
 
-        var narrationText = tryBuildNarrationFromIntent(intentResponseBody, out var narration)
+        var narrationText = TryBuildNarrationFromDirectorResponse(directorResponseBody, out var narration)
             ? narration
-            : "Intent extractor returned a non-standard response.";
+            : "Director returned a non-standard response.";
 
         return JsonSerializer.Serialize(new
         {
             narrationText,
-            intentExtractorRaw = intentResponseBody,
+            directorRaw = directorResponseBody,
             playerInputEcho = playerInput
         });
     }
@@ -412,16 +397,16 @@ internal sealed class RunPersistence
         return connection;
     }
 
-    private static string BuildViewStateEnvelope(string intentResponseBody)
+    private static string BuildViewStateEnvelope(string directorResponseBody)
     {
         try
         {
-            using var parsed = JsonDocument.Parse(intentResponseBody);
-            return JsonSerializer.Serialize(new { intentExtractorResponse = parsed.RootElement.Clone() });
+            using var parsed = JsonDocument.Parse(directorResponseBody);
+            return JsonSerializer.Serialize(new { directorResponse = parsed.RootElement.Clone() });
         }
         catch (JsonException)
         {
-            return JsonSerializer.Serialize(new { intentExtractorRawText = intentResponseBody });
+            return JsonSerializer.Serialize(new { directorRawText = directorResponseBody });
         }
     }
     /// <summary>Minimal CSV line parser mirroring TS parseCsvLine (quoted fields, doubled quotes).</summary>

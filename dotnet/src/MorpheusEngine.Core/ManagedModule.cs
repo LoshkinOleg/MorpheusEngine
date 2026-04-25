@@ -283,29 +283,11 @@ namespace MorpheusEngine
         #region Private methods
         private ProcessStartInfo CreateProcessStartInfo()
         {
-            var useDevLaunch = string.Equals(Environment.GetEnvironmentVariable("MORPHEUS_DEV_LAUNCH"), "1", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(Environment.GetEnvironmentVariable("MORPHEUS_DEV_LAUNCH"), "true", StringComparison.OrdinalIgnoreCase);
-
-            if (useDevLaunch && !string.IsNullOrWhiteSpace(_definition.LaunchInfo.DevProject))
-            {
-                var projectPath = ResolveRepositoryRelativePath(_definition.LaunchInfo.DevProject);
-                return new ProcessStartInfo
-                {
-                    FileName = "dotnet",
-                    Arguments = $"run --project \"{projectPath}\" --",
-                    WorkingDirectory = _configuration.GetDotnetRoot(),
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true
-                };
-            }
-
             var artifactPath = ResolveRepositoryRelativePath(_definition.LaunchInfo.Artifact);
             if (!File.Exists(artifactPath))
             {
                 throw new FileNotFoundException(
-                    $"{DisplayName} artifact not found at '{artifactPath}'. Build the solution first or set MORPHEUS_DEV_LAUNCH=1.",
+                    $"{DisplayName} artifact not found at '{artifactPath}'. Build the solution first.",
                     artifactPath);
             }
 

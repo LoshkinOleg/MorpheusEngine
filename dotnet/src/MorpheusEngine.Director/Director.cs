@@ -319,7 +319,7 @@ public sealed class Director : IEngineRunBinder
     }
 
     /// <summary>
-    /// Deserializes <see cref="DirectorMessageRequest"/>; requires prior POST /initialize; builds chat messages for Ollama, proxies to LLM, appends user+assistant to history on success, returns <see cref="IntentResponse"/> shim for router/UI.
+    /// Deserializes <see cref="DirectorMessageRequest"/>; requires prior POST /initialize; builds chat messages for Ollama, proxies to LLM, appends user+assistant to history on success, returns <see cref="DirectorMessageResponse"/>.
     /// </summary>
     private async Task ProcessRequest_message(HttpListenerContext context)
     {
@@ -463,12 +463,7 @@ public sealed class Director : IEngineRunBinder
                 history.Add(new ChatMessage("user", playerInput));
                 history.Add(new ChatMessage("assistant", assistantText));
 
-                var narrationParams = new Dictionary<string, string>(StringComparer.Ordinal)
-                {
-                    ["text"] = assistantText
-                };
-
-                await Respond(context, 200, new IntentResponse(true, "narration", narrationParams));
+                await Respond(context, 200, new DirectorMessageResponse(true, assistantText));
             }
         }
         finally

@@ -263,12 +263,12 @@ public sealed class SessionStoreHost : IEngineRunBinder
 
         if (request is null
             || string.IsNullOrWhiteSpace(request.PlayerInput)
-            || string.IsNullOrWhiteSpace(request.IntentResponseBody))
+            || string.IsNullOrWhiteSpace(request.DirectorResponseBody))
         {
             await RespondJsonAsync(
                 context,
                 400,
-                new ErrorResponse(false, "Request must include non-empty turn, playerInput, and intentResponseBody."));
+                new ErrorResponse(false, "Request must include non-empty turn, playerInput, and directorResponseBody."));
             return;
         }
 

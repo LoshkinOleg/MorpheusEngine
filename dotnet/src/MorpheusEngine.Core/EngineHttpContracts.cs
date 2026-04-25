@@ -37,23 +37,31 @@ public sealed record InitializeModuleResponse([property: JsonPropertyName("ok")]
 #endregion
 
 #region Turn pipeline (router POST /turn; director POST /message; session_store POST /persist_turn)
-/// <summary>Player-facing turn envelope: identifies the run and turn index before the router forwards downstream.</summary>
+/// <summary>Player-facing turn envelope. Run identity comes from router process state bound by host POST /initialize.</summary>
 public sealed record TurnRequest(
-    [property: JsonPropertyName("runId")] string RunId, // Needed, used by SessionStore module.
-    [property: JsonPropertyName("gameProjectId")] string GameProjectId, // Needed, used by SessionStore module.
     [property: JsonPropertyName("turn")] int Turn,
     [property: JsonPropertyName("playerInput")] string PlayerInput);
+
+/// <summary>Router-owned response envelope returned by POST /turn.</summary>
+public sealed record TurnResponse(
+    [property: JsonPropertyName("ok")] bool Ok,
+    [property: JsonPropertyName("text")] string Text);
 
 /// <summary>Router forwards to director POST /message after the host POST /initialize (single bound run per Director process).</summary>
 public sealed record DirectorMessageRequest(
     [property: JsonPropertyName("turn")] int Turn,
     [property: JsonPropertyName("playerInput")] string PlayerInput);
 
+/// <summary>Director module response envelope returned by POST /message.</summary>
+public sealed record DirectorMessageResponse(
+    [property: JsonPropertyName("ok")] bool Ok,
+    [property: JsonPropertyName("text")] string Text);
+
 /// <summary>Body for session_store POST /persist_turn; run identity comes from the last successful host POST /initialize on that module process.</summary>
 public sealed record TurnPersistRequest(
     [property: JsonPropertyName("turn")] int Turn,
     [property: JsonPropertyName("playerInput")] string PlayerInput,
-    [property: JsonPropertyName("intentResponseBody")] string IntentResponseBody);
+    [property: JsonPropertyName("directorResponseBody")] string DirectorResponseBody);
 
 public sealed record TurnPersistResponse(
     [property: JsonPropertyName("ok")] bool Ok);
@@ -68,7 +76,7 @@ public sealed record ModuleProxyRequest(
     [property: JsonPropertyName("body")] JsonElement? Body);
 #endregion
 
-#region Intent catalog (intent_extractor POST /intent; director POST /message returns this shape as narration shim)
+#region Intent catalog (intent_extractor POST /intent)
 public sealed record IntentRequest(
     [property: JsonPropertyName("playerInput")] string PlayerInput);
 
@@ -122,15 +130,13 @@ public static class EngineContractExamples
     public static string? TryGetRequestBodyTemplate(string? requestContract) => requestContract switch
     {
         "turn_request" => Serialize(new TurnRequest(
-            "00000000-0000-0000-0000-000000000001",
-            "sandcrawler",
             1,
             "look around")),
         "initialize_request" => Serialize(new InitializeModuleRequest("sandcrawler", "00000000-0000-0000-0000-000000000001")),
         "session_turn_persist_request" => Serialize(new TurnPersistRequest(
             1,
             "look around",
-            "{\"ok\":true,\"intent\":\"wait\",\"params\":{}}")),
+            "{\"ok\":true,\"text\":\"You stand still and listen.\"}")),
         "qwen_generate_request" => Serialize(new LlmGenerateRequest("Write a short response.")),
         "intent_request" => Serialize(new IntentRequest("look around")),
         "director_message_request" => Serialize(new DirectorMessageRequest(1, "Look around.")),

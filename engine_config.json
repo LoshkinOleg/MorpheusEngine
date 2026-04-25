@@ -16,7 +16,6 @@
       "required": true,
       "launch": {
         "artifact": "dotnet/src/MorpheusEngine.Director/bin/Debug/net9.0/MorpheusEngine.Director.exe",
-        "dev_project": "dotnet/src/MorpheusEngine.Director/MorpheusEngine.Director.csproj"
       },
       "endpoints": [
         {
@@ -49,7 +48,6 @@
       "required": true,
       "launch": {
         "artifact": "dotnet/src/MorpheusEngine.SessionStoreModule/bin/Debug/net9.0/MorpheusEngine.SessionStoreModule.exe",
-        "dev_project": "dotnet/src/MorpheusEngine.SessionStoreModule/MorpheusEngine.SessionStoreModule.csproj"
       },
       "endpoints": [
         {
@@ -86,7 +84,6 @@
       "warmup_game_project_id": "sandcrawler",
       "launch": {
         "artifact": "dotnet/src/MorpheusEngine.LlmProvider_qwen/bin/Debug/net9.0/MorpheusEngine.LlmProvider_qwen.exe",
-        "dev_project": "dotnet/src/MorpheusEngine.LlmProvider_qwen/MorpheusEngine.LlmProvider_qwen.csproj"
       },
       "endpoints": [
         {
@@ -125,7 +122,6 @@
       "required": true,
       "launch": {
         "artifact": "dotnet/src/MorpheusEngine.IntentExtractor/bin/Debug/net9.0/MorpheusEngine.IntentExtractor.exe",
-        "dev_project": "dotnet/src/MorpheusEngine.IntentExtractor/MorpheusEngine.IntentExtractor.csproj"
       },
       "endpoints": [
         {
@@ -158,7 +154,6 @@
       "required": true,
       "launch": {
         "artifact": "dotnet/src/MorpheusEngine.RouterModule/bin/Debug/net9.0/MorpheusEngine.RouterModule.exe",
-        "dev_project": "dotnet/src/MorpheusEngine.RouterModule/MorpheusEngine.RouterModule.csproj"
       },
       "endpoints": [
         {

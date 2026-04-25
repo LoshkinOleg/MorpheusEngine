@@ -27,15 +27,10 @@ namespace MorpheusEngine
         private const int MaxCapturedOllamaErrorLines = 20;
         private const int OllamaRequestNumKeep = -1;
 
-        /// <summary>Minimal user turn for Ollama warm-up only; not shown to players.</summary>
-        private const string OllamaWarmupUserContent = "[morpheus_engine_warmup]";
-
-        private const int WarmupResponseLogMaxChars = 500;
         private const int OllamaRequestPreviewMaxChars = 160;
         private const int OllamaResponseLogMaxChars = 500;
 
-        // Instance-owned HttpClient for Ollama (GET /, warm-up, /api/chat, /api/generate); disposed in Shutdown().
-        // Model load is handled during InitializeAsync (warm-up) so normal inference stays within this bound.
+        // Instance-owned HttpClient for Ollama (GET /, /api/chat, /api/generate); disposed in Shutdown().
         private readonly HttpClient _httpClient = new()
         {
             Timeout = OllamaHttpTimeout
@@ -68,10 +63,7 @@ namespace MorpheusEngine
         /// <summary>Forwarded on every Ollama /api/chat and /api/generate request as options.num_ctx.</summary>
         private int _ollamaNumCtx = 0;
 
-        /// <summary>Director narration system text (instructions + lore) for Ollama warm-up; built once per process.</summary>
-        private string _narrationWarmupSystemContent = "";
-
-        /// <summary>Configured game project id used to build <see cref="_narrationWarmupSystemContent"/> (logging only).</summary>
+        /// <summary>Configured game project id for log context only.</summary>
         private string _warmupGameProjectId = "";
         #endregion
 
@@ -127,19 +119,17 @@ namespace MorpheusEngine
         {
             var configuration = EngineConfigLoader.GetConfiguration();
             _repositoryRoot = configuration.RepositoryRoot;
-            _chatModel = configuration.LlmProviderDefaultChatModel.Trim();
+            _chatModel = configuration.LlmProviderOllamaModel.Trim();
             _ollamaPort = configuration.LlmProviderOllamaListenPort;
             _ollamaNumCtx = configuration.LlmProviderNumCtx;
             if (string.IsNullOrWhiteSpace(_chatModel))
             {
                 throw new InvalidOperationException(
-                    "llm_provider_qwen: LlmProviderDefaultChatModel from engine configuration is empty (check default_chat_model in engine_config.json).");
+                    "llm_provider_qwen: LlmProviderOllamaModel from engine configuration is empty (check default_chat_model in engine_config.json).");
             }
 
-            // Warm-up prompt content is built after host POST /initialize so the active run's gameProjectId is used.
             // warmup_game_project_id remains for logging/debug defaults only.
             _warmupGameProjectId = configuration.LlmProviderWarmupGameProjectId;
-            _narrationWarmupSystemContent = string.Empty;
 
             // Bundled Ollama inherits the host module job (see MorpheusEngine Run); no nested Job Object here.
             await StartManagedOllamaAsync("initial startup");
@@ -341,7 +331,6 @@ namespace MorpheusEngine
                     _runBound = true;
 
                     _warmupGameProjectId = _boundGameProjectId;
-                    _narrationWarmupSystemContent = DirectorNarrationSystemPrompt.Build(_repositoryRoot, _boundGameProjectId);
 
                     var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(60);
                     while (!_ollamaHttpReady && DateTime.UtcNow < deadline)
@@ -355,7 +344,6 @@ namespace MorpheusEngine
                         return;
                     }
 
-                    await WarmUpBundledOllamaModelAsync();
                     lock (_ollamaStateSync)
                     {
                         _ollamaReady = true;
@@ -363,7 +351,7 @@ namespace MorpheusEngine
                         _ollamaRestartAttempts = 0;
                     }
 
-                    Console.WriteLine($"[LlmProvider_qwen] Bound run runId={_boundRunId} gameProjectId={_boundGameProjectId} and completed warm-up.");
+                    Console.WriteLine($"[LlmProvider_qwen] Bound run runId={_boundRunId} gameProjectId={_boundGameProjectId}.");
                     await Respond(context, 200, new InitializeModuleResponse(true));
                 }
                 catch (FileNotFoundException e)
@@ -686,11 +674,6 @@ namespace MorpheusEngine
                     }
                 }
 
-                if (_runBound)
-                {
-                    // GET / only proves the HTTP server is up; the first real request still loads the GGUF into VRAM/RAM and can take tens of seconds.
-                    await WarmUpBundledOllamaModelAsync();
-                }
                 lock (_ollamaStateSync)
                 {
                     if (ReferenceEquals(_ollamaProcess, process))
@@ -723,45 +706,6 @@ namespace MorpheusEngine
                 throw new InvalidOperationException(
                     $"Bundled Ollama failed to become ready on port {_ollamaPort}. {e.Message}{DescribeRecentOllamaErrors()}");
             }
-        }
-
-        /// <summary>
-        /// Forces Ollama to load the configured model and the Director-grade system context (instructions + lore) before the module listens.
-        /// </summary>
-        private async Task WarmUpBundledOllamaModelAsync()
-        {
-            var sharedOptions = BuildOllamaOptionsPayload();
-            var warmupPayload = new
-            {
-                model = _chatModel,
-                messages = new object[]
-                {
-                    new { role = "system", content = _narrationWarmupSystemContent },
-                    new { role = "user", content = OllamaWarmupUserContent }
-                },
-                stream = false,
-                truncate = false,
-                options = new { num_ctx = sharedOptions.num_ctx, num_keep = sharedOptions.num_keep, num_predict = 1 }
-            };
-
-            Console.WriteLine(
-                $"OLLAMA_IO WARMUP_REQUEST model={_chatModel} warmup_game_project_id={_warmupGameProjectId} systemChars={_narrationWarmupSystemContent.Length} userToken={OllamaWarmupUserContent}");
-
-            var json = JsonSerializer.Serialize(warmupPayload);
-            WriteTrafficLine("OLLAMA_IO TRAFFIC WARMUP_REQUEST_JSON " + json);
-            var content = new StringContent(json, Encoding.UTF8, "application/json");
-            using var response = await _httpClient.PostAsync(BuildOllamaUri("/api/chat"), content);
-            var body = await response.Content.ReadAsStringAsync();
-            if (!response.IsSuccessStatusCode)
-            {
-                throw new InvalidOperationException(
-                    $"Bundled Ollama model warm-up failed: {(int)response.StatusCode} {response.ReasonPhrase}. Body: {body}");
-            }
-
-            WriteTrafficLine("OLLAMA_IO TRAFFIC WARMUP_RESPONSE_BODY " + JsonSerializer.Serialize(body));
-
-            var bodyForLog = TruncateMiddle(body, headChars: 240, tailChars: 120);
-            Console.WriteLine($"OLLAMA_IO WARMUP_RESPONSE status={(int)response.StatusCode} bodySnippet={bodyForLog}");
         }
 
         // Intentional extraction: shared by startup and crash-recovery restart paths.
