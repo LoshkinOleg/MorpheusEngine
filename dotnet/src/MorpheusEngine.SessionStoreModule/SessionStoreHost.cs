@@ -191,12 +191,6 @@ public sealed class SessionStoreHost : IEngineRunBinder
 
     private async Task HandleRequest_bindRun(HttpListenerContext context)
     {
-        if (!IsLoopbackRequest(context))
-        {
-            await RespondJsonAsync(context, 403, new ErrorResponse(false, "POST /initialize is only allowed from loopback."));
-            return;
-        }
-
         var body = await ReadRequestBodyAsync(context);
         InitializeModuleRequest? request;
         try
@@ -313,12 +307,6 @@ public sealed class SessionStoreHost : IEngineRunBinder
     }
 
     #endregion
-
-    private static bool IsLoopbackRequest(HttpListenerContext context)
-    {
-        var ep = context.Request.RemoteEndPoint;
-        return ep is null || System.Net.IPAddress.IsLoopback(ep.Address);
-    }
 
     #region Helpers
     private static async Task<string> ReadRequestBodyAsync(HttpListenerContext context)

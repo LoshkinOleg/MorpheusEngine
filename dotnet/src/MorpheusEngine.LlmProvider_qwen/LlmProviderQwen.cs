@@ -276,12 +276,6 @@ namespace MorpheusEngine
                 return;
             }
 
-            if (!IsLoopbackRequest(context))
-            {
-                await Respond(context, 403, new ErrorResponse(false, "POST /initialize is only allowed from loopback."));
-                return;
-            }
-
             string body;
             using (var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding))
             {
@@ -366,12 +360,6 @@ namespace MorpheusEngine
             {
                 _initializing = false;
             }
-        }
-
-        private static bool IsLoopbackRequest(HttpListenerContext context)
-        {
-            var ep = context.Request.RemoteEndPoint;
-            return ep is null || System.Net.IPAddress.IsLoopback(ep.Address);
         }
 
         // Exception to "extract only when >1 use": kept as a named handler parallel to ProcessRequest_generate for /shutdown routing clarity.

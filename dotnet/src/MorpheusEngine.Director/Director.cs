@@ -23,7 +23,7 @@ public sealed class Director : IEngineRunBinder
         PropertyNameCaseInsensitive = true
     };
 
-    private readonly EngineConfiguration _configuration = EngineConfigLoader.GetConfiguration();
+    private readonly EngineConfiguration _configuration = EngineConfigLoader.GetConfiguration(); // Note: each module loads the config independantly because that's where the http ports are defined. Can't pass them via /initialize since that would require the HTTP client to already be listening on a port.
 
     // LLM calls are bounded by the same ceiling as LlmProvider_qwen's outbound HttpClient; model load happens during provider init (warm-up).
     private readonly HttpClient _httpClient = new()
@@ -31,16 +31,18 @@ public sealed class Director : IEngineRunBinder
         Timeout = TimeSpan.FromSeconds(30)
     };
 
+    private readonly RouterProxyClient _routerProxy;
+
     private readonly HttpListener _listener = new();
     private bool _shutdownRequested = false;
 
-    /// <summary>Single-flight gate for POST /initialize and /message (one active run per Director process).</summary>
+    /// <summary>Single-flight gate for POST /initialize and /message (one active run per Director process). Used to prevent concurrent module state mutating HTTP calls.</summary>
     private readonly SemaphoreSlim _sessionGate = new(1, 1);
 
     /// <summary>Set after successful POST /initialize; cleared only when the process restarts.</summary>
     private bool _initialized = false;
 
-    private volatile bool _initializing;
+    private volatile bool _initializing; // Set to true while /initialize processing is in flight.
 
     /// <summary>Conversation for the bound run; first entry is always system after POST /initialize.</summary>
     private List<ChatMessage>? _history = null;
@@ -50,6 +52,11 @@ public sealed class Director : IEngineRunBinder
     #region Public methods
 
     public bool IsRunBound => _initialized;
+
+    public Director()
+    {
+        _routerProxy = new RouterProxyClient(_httpClient, _configuration, "director", JsonOptions);
+    }
 
     public async Task Run()
     {
@@ -75,6 +82,49 @@ public sealed class Director : IEngineRunBinder
 
     public void RequestShutdown() => _shutdownRequested = true;
 
+    #endregion
+
+    #region Overrides / implementations
+    async Task IEngineRunBinder.BindRunAsync(InitializeModuleRequest request, CancellationToken cancellationToken)
+    {
+        if (request is null
+            || string.IsNullOrWhiteSpace(request.RunId)
+            || string.IsNullOrWhiteSpace(request.GameProjectId))
+        {
+            throw new ArgumentException("Request must include non-empty runId and gameProjectId.", nameof(request));
+        }
+
+        var runId = request.RunId.Trim();
+        var gameProjectId = request.GameProjectId.Trim();
+
+        await _sessionGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (_initialized)
+            {
+                throw new InvalidOperationException(
+                    "Director is already initialized for this process; restart the Director module to start another run.");
+            }
+
+            string systemContent;
+            try
+            {
+                systemContent = DirectorNarrationSystemPrompt.Build(_configuration.RepositoryRoot, gameProjectId);
+            }
+            catch (Exception e) when (e is FileNotFoundException or InvalidOperationException)
+            {
+                throw new InvalidOperationException(e.Message, e);
+            }
+
+            _history = new List<ChatMessage> { new ChatMessage("system", systemContent) };
+            _initialized = true;
+            Console.WriteLine($"[Director] Bound run runId={runId} gameProjectId={gameProjectId}.");
+        }
+        finally
+        {
+            _sessionGate.Release();
+        }
+    }
     #endregion
 
     #region Private methods
@@ -180,64 +230,11 @@ public sealed class Director : IEngineRunBinder
         }
     }
 
-    private static bool IsLoopbackRequest(HttpListenerContext context)
-    {
-        var ep = context.Request.RemoteEndPoint;
-        return ep is null || IPAddress.IsLoopback(ep.Address);
-    }
-
-    public async Task BindRunAsync(InitializeModuleRequest request, CancellationToken cancellationToken)
-    {
-        if (request is null
-            || string.IsNullOrWhiteSpace(request.RunId)
-            || string.IsNullOrWhiteSpace(request.GameProjectId))
-        {
-            throw new ArgumentException("Request must include non-empty runId and gameProjectId.", nameof(request));
-        }
-
-        var runId = request.RunId.Trim();
-        var gameProjectId = request.GameProjectId.Trim();
-
-        await _sessionGate.WaitAsync(cancellationToken);
-        try
-        {
-            if (_initialized)
-            {
-                throw new InvalidOperationException(
-                    "Director is already initialized for this process; restart the Director module to start another run.");
-            }
-
-            string systemContent;
-            try
-            {
-                systemContent = DirectorNarrationSystemPrompt.Build(_configuration.RepositoryRoot, gameProjectId);
-            }
-            catch (Exception e) when (e is FileNotFoundException or InvalidOperationException)
-            {
-                throw new InvalidOperationException(e.Message, e);
-            }
-
-            _history = new List<ChatMessage> { new ChatMessage("system", systemContent) };
-            _initialized = true;
-            Console.WriteLine($"[Director] Bound run runId={runId} gameProjectId={gameProjectId}.");
-        }
-        finally
-        {
-            _sessionGate.Release();
-        }
-    }
-
     private async Task ProcessRequest_bindRun(HttpListenerContext context)
     {
         if (!string.Equals(context.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase))
         {
             await Respond(context, 405, new ErrorResponse(false, "Method not allowed; use POST."));
-            return;
-        }
-
-        if (!IsLoopbackRequest(context))
-        {
-            await Respond(context, 403, new ErrorResponse(false, "POST /initialize is only allowed from loopback."));
             return;
         }
 
@@ -387,26 +384,14 @@ public sealed class Director : IEngineRunBinder
             messagesForApi.Add(new ChatGenerateRequest.ChatMessageDto("user", playerInput)); // Add new player input.
 
             var chatRequest = new ChatGenerateRequest { Messages = messagesForApi };
-            var proxyRequest = new ModuleProxyRequest(
-                "director",
-                "generic_llm_provider",
-                "/chat",
-                "POST",
-                JsonSerializer.SerializeToElement(chatRequest, JsonOptions));
 
-            using var proxyContent = new StringContent(
-                JsonSerializer.Serialize(proxyRequest, JsonOptions),
-                Encoding.UTF8,
-                "application/json");
-
-            // I'm noticing that the routing mechanism makes reading endpoint handling code quite cumbersome. I wonder if there's some elegant way to avoid that.
-            var routerPort = _configuration.GetRequiredListenPort("router");
-            HttpResponseMessage llmResponse;
+            RouterProxyResponse<ChatGenerateResponse> llmResponse;
             try
             {
-                llmResponse = await _httpClient.PostAsync(
-                    $"http://127.0.0.1:{routerPort}/proxy",
-                    proxyContent);
+                llmResponse = await _routerProxy.PostAsync<ChatGenerateRequest, ChatGenerateResponse>(
+                    "generic_llm_provider",
+                    "/chat",
+                    chatRequest);
             }
             catch (Exception e)
             {
@@ -415,56 +400,49 @@ public sealed class Director : IEngineRunBinder
                 return;
             }
 
-            using (llmResponse)
+            var llmBody = llmResponse.RawBody;
+            if (llmResponse.StatusCode is < 200 or >= 300)
             {
-                var llmBody = await llmResponse.Content.ReadAsStringAsync();
-                if (!llmResponse.IsSuccessStatusCode)
-                {
-                    Console.WriteLine($"[Director] Router proxy returned {(int)llmResponse.StatusCode}: {llmBody}");
-                    await Respond(
-                        context,
-                        502,
-                        new ErrorResponse(
-                            false,
-                            "Router proxy did not return success for LLM chat.",
-                            TruncateDetails(llmBody)));
-                    return;
-                }
-
-                ChatGenerateResponse? payload;
-                try
-                {
-                    payload = JsonSerializer.Deserialize<ChatGenerateResponse>(llmBody, JsonOptions);
-                }
-                catch (JsonException e)
-                {
-                    Console.WriteLine("[Director] Invalid JSON from proxied LLM provider: " + e.Message);
-                    await Respond(
-                        context,
-                        422,
-                        new ErrorResponse(false, "Proxied LLM response was not valid JSON.", e.Message));
-                    return;
-                }
-
-                if (payload is null || !payload.Ok || string.IsNullOrWhiteSpace(payload.Response))
-                {
-                    Console.WriteLine("[Director] Proxied LLM chat response missing assistant text.");
-                    await Respond(
-                        context,
-                        422,
-                        new ErrorResponse(
-                            false,
-                            "LLM chat response was empty or missing 'response'.",
-                            TruncateDetails(llmBody)));
-                    return;
-                }
-
-                var assistantText = payload.Response.Trim();
-                history.Add(new ChatMessage("user", playerInput));
-                history.Add(new ChatMessage("assistant", assistantText));
-
-                await Respond(context, 200, new DirectorMessageResponse(true, assistantText));
+                Console.WriteLine($"[Director] Router proxy returned {llmResponse.StatusCode}: {llmBody}");
+                await Respond(
+                    context,
+                    502,
+                    new ErrorResponse(
+                        false,
+                        "Router proxy did not return success for LLM chat.",
+                        TruncateDetails(llmBody)));
+                return;
             }
+
+            if (!string.IsNullOrWhiteSpace(llmResponse.DeserializeError) || llmResponse.Payload is null)
+            {
+                Console.WriteLine("[Director] Invalid JSON from proxied LLM provider: " + llmResponse.DeserializeError);
+                await Respond(
+                    context,
+                    422,
+                    new ErrorResponse(false, "Proxied LLM response was not valid JSON.", llmResponse.DeserializeError));
+                return;
+            }
+
+            var reponsePayload = llmResponse.Payload;
+            if (!reponsePayload.Ok || string.IsNullOrWhiteSpace(reponsePayload.Response))
+            {
+                Console.WriteLine("[Director] Proxied LLM chat response missing assistant text.");
+                await Respond(
+                    context,
+                    422,
+                    new ErrorResponse(
+                        false,
+                        "LLM chat response was empty or missing 'response'.",
+                        TruncateDetails(llmBody)));
+                return;
+            }
+
+            var assistantText = reponsePayload.Response.Trim();
+            history.Add(new ChatMessage("user", playerInput));
+            history.Add(new ChatMessage("assistant", assistantText));
+
+            await Respond(context, 200, new DirectorMessageResponse(true, assistantText));
         }
         finally
         {

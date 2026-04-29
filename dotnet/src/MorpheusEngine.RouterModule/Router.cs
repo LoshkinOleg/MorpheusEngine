@@ -48,6 +48,7 @@ namespace MorpheusEngine
         private volatile bool _initializing;
         private string _boundGameProjectId = string.Empty;
         private string _boundRunId = string.Empty;
+        private bool _sessionStoreEnabled = false;
 
         // Proxied module calls include LLM /chat; same ceiling as LlmProvider_qwen outbound calls (warm-up runs at provider startup).
         private static readonly HttpClient _httpClient = new()
@@ -208,6 +209,23 @@ namespace MorpheusEngine
             _boundGameProjectId = request.GameProjectId.Trim();
             _boundRunId = request.RunId.Trim();
             _runBound = true;
+
+            var manifest = GameProjectManifestLoader.Load(_configuration.RepositoryRoot, _boundGameProjectId);
+            var requiredForRun = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var module in _configuration.ModulesInfos)
+            {
+                if (module.RequiredByEngine)
+                {
+                    requiredForRun.Add(module.PortKey);
+                }
+            }
+
+            foreach (var moduleKey in manifest.RequiredModules)
+            {
+                requiredForRun.Add(moduleKey);
+            }
+
+            _sessionStoreEnabled = requiredForRun.Contains("session_store");
             Console.WriteLine($"[Router] Bound run runId={_boundRunId} gameProjectId={_boundGameProjectId}.");
             return Task.CompletedTask;
         }
@@ -228,12 +246,6 @@ namespace MorpheusEngine
             }
 
             var body = await ReadRequestBodyAsync(context);
-
-            if (!IsLoopbackRequest(context))
-            {
-                await RespondAsync(context, 403, new ErrorResponse(false, "POST /initialize is only allowed from loopback."));
-                return;
-            }
 
             InitializeModuleRequest? parsed;
             try
@@ -363,6 +375,16 @@ namespace MorpheusEngine
                     return;
                 }
 
+                if (!_sessionStoreEnabled)
+                {
+                    finalStatusCode = 200;
+                    await RespondAsync(
+                        context,
+                        200,
+                        new TurnResponse(true, parsedDirector.Text.Trim()));
+                    return;
+                }
+
                 var persistJson = JsonSerializer.Serialize(
                     new TurnPersistRequest(
                         request.Turn,
@@ -424,12 +446,6 @@ namespace MorpheusEngine
                     $"=== TURN {request.Turn} END === status={finalStatusCode} elapsedMs={turnStopwatch.ElapsedMilliseconds}";
                 Console.WriteLine(turnEndInner);
             }
-        }
-
-        private static bool IsLoopbackRequest(HttpListenerContext context)
-        {
-            var ep = context.Request.RemoteEndPoint;
-            return ep is null || IPAddress.IsLoopback(ep.Address);
         }
 
         /// <summary>

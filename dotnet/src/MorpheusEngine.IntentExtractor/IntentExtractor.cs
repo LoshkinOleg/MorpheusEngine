@@ -30,6 +30,9 @@ namespace MorpheusEngine
             Timeout = TimeSpan.FromSeconds(30)
         };
 
+        private readonly EngineConfiguration _configuration = EngineConfigLoader.GetConfiguration();
+        private readonly RouterProxyClient _routerProxy;
+
         private readonly JsonSerializerOptions _jsonOptions = new()
         {
             PropertyNameCaseInsensitive = true // Allows either casing for json fields.
@@ -47,6 +50,11 @@ namespace MorpheusEngine
         #region Public methods
 
         public bool IsRunBound => _runBound;
+
+        public IntentExtractor()
+        {
+            _routerProxy = new RouterProxyClient(_httpClient, _configuration, "intent_extractor", _jsonOptions);
+        }
 
         public Task BindRunAsync(InitializeModuleRequest request, CancellationToken cancellationToken)
         {
@@ -104,8 +112,7 @@ namespace MorpheusEngine
         // Intentional single use method.
         private void Initialize()
         {
-            var ports = EngineConfigLoader.GetPorts();
-            var intentPort = ports.GetRequiredPort("intent_extractor");
+            var intentPort = _configuration.GetRequiredListenPort("intent_extractor");
             _listener.Prefixes.Add($"http://127.0.0.1:{intentPort}/");
             _listener.Start();
             Console.WriteLine($"ready listen=http://127.0.0.1:{intentPort}/");
@@ -201,12 +208,6 @@ namespace MorpheusEngine
                 return;
             }
 
-            if (!IsLoopbackRequest(context))
-            {
-                await Respond(context, 403, new ErrorResponse(false, "POST /initialize is only allowed from loopback."));
-                return;
-            }
-
             string body;
             using (var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding))
             {
@@ -295,26 +296,13 @@ namespace MorpheusEngine
                 BuildIntentPrompt(request.PlayerInput),
                 BuildIntentSystemPrompt());
 
-            var proxyRequest = new ModuleProxyRequest(
-                "intent_extractor",
-                "generic_llm_provider",
-                "/generate",
-                "POST",
-                JsonSerializer.SerializeToElement(qwenRequest));
-
-            // Convert to json for transmission to the router's /proxy endpoint.
-            using var content = new StringContent(
-                JsonSerializer.Serialize(proxyRequest, _jsonOptions),
-                Encoding.UTF8,
-                "application/json");
-
-            var ports = EngineConfigLoader.GetPorts();
-            HttpResponseMessage qwenResponse;
+            RouterProxyResponse<LlmProviderGenerateResponse> qwenResponse;
             try
             {
-                qwenResponse = await _httpClient.PostAsync(
-                    $"http://127.0.0.1:{ports.GetRequiredPort("router")}/proxy",
-                    content);
+                qwenResponse = await _routerProxy.PostAsync<LlmGenerateRequest, LlmProviderGenerateResponse>(
+                    "generic_llm_provider",
+                    "/generate",
+                    qwenRequest);
             }
             catch (Exception e)
             {
@@ -323,84 +311,71 @@ namespace MorpheusEngine
                 return;
             }
 
-            using (qwenResponse)
+            // Unwrap the router's response body (same JSON the LLM provider returned).
+            var qwenBody = qwenResponse.RawBody;
+            if (qwenResponse.StatusCode is < 200 or >= 300)
             {
-                // Unwrap the router's response body (same JSON the LLM provider returned).
-                var qwenBody = await qwenResponse.Content.ReadAsStringAsync();
-                if (!qwenResponse.IsSuccessStatusCode)
-                {
-                    Console.WriteLine(
-                        $"[IntentExtractor] Router proxy returned {(int)qwenResponse.StatusCode}: {qwenBody}");
-                    await Respond(
-                        context,
-                        502,
-                        new ErrorResponse(
-                            false,
-                            "Router proxy did not return success for LLM call.",
-                            TruncateDetails(qwenBody)));
-                    return;
-                }
-
-                LlmProviderGenerateResponse? payload;
-                try
-                {
-                    payload = JsonSerializer.Deserialize<LlmProviderGenerateResponse>(qwenBody, _jsonOptions);
-                }
-                catch (JsonException e)
-                {
-                    Console.WriteLine("[IntentExtractor] Invalid JSON from proxied LLM provider: " + e.Message);
-                    await Respond(
-                        context,
-                        422,
-                        new ErrorResponse(false, "Proxied LLM response was not valid JSON.", e.Message));
-                    return;
-                }
-
-                if (payload is null || string.IsNullOrWhiteSpace(payload.Response))
-                {
-                    Console.WriteLine("[IntentExtractor] Proxied LLM response missing 'response' text.");
-                    await Respond(
-                        context,
-                        422,
-                        new ErrorResponse(
-                            false,
-                            "LLM response was empty or missing 'response'.",
-                            TruncateDetails(qwenBody)));
-                    return;
-                }
-
-                // Parse the model's text field as strict intent JSON (params, not parameters).
-                if (!TryParseIntentResult(payload.Response, out var extraction))
-                {
-                    await Respond(
-                        context,
-                        422,
-                        new ErrorResponse(
-                            false,
-                            "Could not parse LLM output as intent JSON.",
-                            TruncateDetails(payload.Response)));
-                    return;
-                }
-
-                // Catalog rules: required target/text per intent.
-                if (!TryNormalizeAndValidateIntent(extraction, out var validated, out var validationError))
-                {
-                    Console.WriteLine("[IntentExtractor] Intent validation failed: " + validationError);
-                    await Respond(context, 422, new ErrorResponse(false, validationError ?? "Intent validation failed."));
-                    return;
-                }
-
+                Console.WriteLine(
+                    $"[IntentExtractor] Router proxy returned {qwenResponse.StatusCode}: {qwenBody}");
                 await Respond(
                     context,
-                    200,
-                    new IntentResponse(true, validated.Intent, validated.Parameters));
+                    502,
+                    new ErrorResponse(
+                        false,
+                        "Router proxy did not return success for LLM call.",
+                        TruncateDetails(qwenBody)));
+                return;
             }
-        }
 
-        private static bool IsLoopbackRequest(HttpListenerContext context)
-        {
-            var ep = context.Request.RemoteEndPoint;
-            return ep is null || IPAddress.IsLoopback(ep.Address);
+            if (!string.IsNullOrWhiteSpace(qwenResponse.DeserializeError) || qwenResponse.Payload is null)
+            {
+                Console.WriteLine("[IntentExtractor] Invalid JSON from proxied LLM provider: " + qwenResponse.DeserializeError);
+                await Respond(
+                    context,
+                    422,
+                    new ErrorResponse(false, "Proxied LLM response was not valid JSON.", qwenResponse.DeserializeError));
+                return;
+            }
+
+            var payload = qwenResponse.Payload;
+            if (string.IsNullOrWhiteSpace(payload.Response))
+            {
+                Console.WriteLine("[IntentExtractor] Proxied LLM response missing 'response' text.");
+                await Respond(
+                    context,
+                    422,
+                    new ErrorResponse(
+                        false,
+                        "LLM response was empty or missing 'response'.",
+                        TruncateDetails(qwenBody)));
+                return;
+            }
+
+            // Parse the model's text field as strict intent JSON (params, not parameters).
+            if (!TryParseIntentResult(payload.Response, out var extraction))
+            {
+                await Respond(
+                    context,
+                    422,
+                    new ErrorResponse(
+                        false,
+                        "Could not parse LLM output as intent JSON.",
+                        TruncateDetails(payload.Response)));
+                return;
+            }
+
+            // Catalog rules: required target/text per intent.
+            if (!TryNormalizeAndValidateIntent(extraction, out var validated, out var validationError))
+            {
+                Console.WriteLine("[IntentExtractor] Intent validation failed: " + validationError);
+                await Respond(context, 422, new ErrorResponse(false, validationError ?? "Intent validation failed."));
+                return;
+            }
+
+            await Respond(
+                context,
+                200,
+                new IntentResponse(true, validated.Intent, validated.Parameters));
         }
 
         // Exception to "extract only when >1 use": kept as a named handler parallel to ProcessRequest_intent for /shutdown routing clarity.
