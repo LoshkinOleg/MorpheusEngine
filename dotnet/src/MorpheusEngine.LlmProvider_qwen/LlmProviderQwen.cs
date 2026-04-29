@@ -62,9 +62,6 @@ namespace MorpheusEngine
 
         /// <summary>Forwarded on every Ollama /api/chat and /api/generate request as options.num_ctx.</summary>
         private int _ollamaNumCtx = 0;
-
-        /// <summary>Configured game project id for log context only.</summary>
-        private string _warmupGameProjectId = "";
         #endregion
 
         #region Public methods
@@ -128,9 +125,6 @@ namespace MorpheusEngine
                     "llm_provider_qwen: LlmProviderOllamaModel from engine configuration is empty (check default_chat_model in engine_config.json).");
             }
 
-            // warmup_game_project_id remains for logging/debug defaults only.
-            _warmupGameProjectId = configuration.LlmProviderWarmupGameProjectId;
-
             // Bundled Ollama inherits the host module job (see MorpheusEngine Run); no nested Job Object here.
             await StartManagedOllamaAsync("initial startup");
 
@@ -138,8 +132,7 @@ namespace MorpheusEngine
             _listener.Prefixes.Add($"http://127.0.0.1:{qwenListen}/");
             _listener.Start();
             Console.WriteLine(
-                $"ready listen=http://127.0.0.1:{qwenListen}/ model='{_chatModel}' ollama=http://127.0.0.1:{_ollamaPort}/ num_ctx={_ollamaNumCtx} "
-                + $"warmup_game_project_id='{_warmupGameProjectId}' awaiting_initialize=true");
+                $"ready listen=http://127.0.0.1:{qwenListen}/ model='{_chatModel}' ollama=http://127.0.0.1:{_ollamaPort}/ num_ctx={_ollamaNumCtx} awaiting_initialize=true");
         }
 
         // Intentional single use method.
@@ -329,8 +322,6 @@ namespace MorpheusEngine
                     _boundGameProjectId = request.GameProjectId.Trim();
                     _boundRunId = request.RunId.Trim();
                     _runBound = true;
-
-                    _warmupGameProjectId = _boundGameProjectId;
 
                     var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(60);
                     while (!_ollamaHttpReady && DateTime.UtcNow < deadline)

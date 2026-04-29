@@ -32,8 +32,32 @@ namespace MorpheusEngine
             RunId = runId.Trim();
             Configuration = EngineConfigLoader.GetConfiguration();
             var configuration = Configuration ?? throw new InvalidOperationException("Engine configuration is not initialized.");
+
+            var manifest = GameProjectManifestLoader.Load(configuration.RepositoryRoot, GameProjectId);
+            var requiredForRun = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var module in configuration.ModulesInfos)
+            {
+                if (module.RequiredByEngine)
+                {
+                    requiredForRun.Add(module.PortKey);
+                }
+            }
+
+            foreach (var moduleKey in manifest.RequiredModules)
+            {
+                if (configuration.FindModule(moduleKey) is null)
+                {
+                    throw new InvalidOperationException(
+                        $"Game project '{manifest.Id}' requires unknown module '{moduleKey}'. Fix '{manifest.Id}/manifest.json' or engine_config.json.");
+                }
+
+                requiredForRun.Add(moduleKey);
+            }
+
             Modules = configuration.ModulesInfos
-                .Select(module => new ManagedModule(configuration, module))
+                .Where(module => requiredForRun.Contains(module.PortKey))
+                .OrderBy(module => module.LoadOrder)
+                .Select(module => new ManagedModule(configuration, module, requiredForRun: true))
                 .ToArray();
         }
 
@@ -104,7 +128,7 @@ namespace MorpheusEngine
             Console.WriteLine(
                 $"Engine config repo='{configuration.RepositoryRoot}' ports={{ {portsSummary} }} module_aliases={configuration.ModuleAliases.Count} "
                 + $"llm_provider_qwen.ollama_port={configuration.LlmProviderOllamaListenPort} ollama_model='{configuration.LlmProviderOllamaModel}' "
-                + $"num_ctx={configuration.LlmProviderNumCtx} warmup_game_project_id='{configuration.LlmProviderWarmupGameProjectId}' "
+                + $"num_ctx={configuration.LlmProviderNumCtx} "
                 + $"run.gameProjectId='{GameProjectId}' run.runId='{RunId}'");
 
             var initializePayload = new InitializeModuleRequest(GameProjectId, RunId);

@@ -66,6 +66,7 @@ public partial class MainWindow : Window
 
     private const int EngineStopGraceSeconds = 45;
     private const int EngineStopKillFollowupSeconds = 15;
+    private const string ResponseTemplateHeader = "Example response (template):\r\n";
 
     /// <summary>True only after required modules (including warmed LLM provider) report healthy; avoids sending game traffic during boot.</summary>
     private bool _engineModulesReadyForGame = false;
@@ -317,8 +318,9 @@ public partial class MainWindow : Window
         try
         {
             EndpointTextBox.Text = info.Path;
-            HttpRequestBodyTextBox.Text = info.BodyTemplate ?? string.Empty;
+            HttpRequestBodyTextBox.Text = info.RequestBodyTemplate ?? string.Empty;
             HttpRequestBodyTextBox.CaretIndex = HttpRequestBodyTextBox.Text.Length;
+            ApplyResponseTemplateIfNeeded(info);
         }
         finally
         {
@@ -968,13 +970,35 @@ public partial class MainWindow : Window
         }
 
         var match = _config.FindEndpointForPort(port, EndpointTextBox.Text);
-        if (match?.BodyTemplate is null)
+        if (match?.RequestBodyTemplate is null)
         {
             return;
         }
 
-        HttpRequestBodyTextBox.Text = match.BodyTemplate;
+        HttpRequestBodyTextBox.Text = match.RequestBodyTemplate;
         HttpRequestBodyTextBox.CaretIndex = HttpRequestBodyTextBox.Text.Length;
+        ApplyResponseTemplateIfNeeded(match);
+    }
+
+    private void ApplyResponseTemplateIfNeeded(EngineEndpointInfo endpoint)
+    {
+        if (HttpResponsePane is null)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(endpoint.ResponseBodyTemplate))
+        {
+            return;
+        }
+
+        var current = HttpResponsePane.Text ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(current) && !current.StartsWith(ResponseTemplateHeader, StringComparison.Ordinal))
+        {
+            return; // Preserve the last real response unless the pane is empty or already showing a template.
+        }
+
+        HttpResponsePane.Text = ResponseTemplateHeader + endpoint.ResponseBodyTemplate;
     }
 
     /// <summary>True while an engine instance exists (including shutting down until <see cref="StopEngineAsync"/> clears it).</summary>

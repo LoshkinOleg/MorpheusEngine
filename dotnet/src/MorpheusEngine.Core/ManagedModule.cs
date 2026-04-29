@@ -16,7 +16,7 @@ namespace MorpheusEngine
         public string DisplayName => _definition.DisplayName;
         public string PortKey => _definition.PortKey; // PortKey =/= port! PortKey is the name of the module, like "intent_extractor" that can be used to resolve to the module's actual port.
         public int Port { get; } = 0;
-        public bool Required => _definition.Required;
+        public bool Required { get; }
         #endregion
 
         #region Private data
@@ -38,11 +38,12 @@ namespace MorpheusEngine
         #endregion
 
         #region Public methods
-        public ManagedModule(EngineConfiguration configuration, EngineModuleInfo definition)
+        public ManagedModule(EngineConfiguration configuration, EngineModuleInfo definition, bool requiredForRun)
         {
             _configuration = configuration;
             _definition = definition;
             Port = _configuration.GetRequiredListenPort(definition.PortKey);
+            Required = requiredForRun;
         }
 
         /// <summary>

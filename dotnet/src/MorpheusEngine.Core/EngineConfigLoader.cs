@@ -24,11 +24,6 @@ public sealed class EnginePortMap
 {
     private readonly IReadOnlyDictionary<string, int> _mapping; // Port identifier to int: example: "router" -> 1234
 
-    /// <summary>Keys that must appear under JSON ports (and must not include extra keys).</summary>
-    public static readonly string[] RequiredPortKeys = ["router", "generic_llm_provider", "director", "session_store"];
-    /// <summary>Set of <see cref="RequiredPortKeys"/> for fast membership checks (case-insensitive).</summary>
-    public static readonly HashSet<string> RequiredPortKeySet = new(RequiredPortKeys, StringComparer.OrdinalIgnoreCase);
-
     // Constructor restricted to this project only.
     internal EnginePortMap(IReadOnlyDictionary<string, int> mapping)
     {
@@ -42,7 +37,7 @@ public sealed class EnginePortMap
         if (!_mapping.TryGetValue(portKey, out var port))
         {
             throw new EngineConfigurationException(
-                $"Unknown port_key '{portKey}' for listen port lookup. Known keys: {string.Join(", ", RequiredPortKeys)}.");
+                $"Unknown port_key '{portKey}' for listen port lookup. Known keys: {string.Join(", ", _mapping.Keys)}.");
         }
 
         return port;
@@ -60,19 +55,20 @@ public sealed record EngineModuleLaunchInfo(string Artifact);
 /// <param name="Path">URL path on that module, e.g. /health or /intent.</param>
 /// <param name="Description">Short label; used by the WPF UI when listing endpoints (see MainWindow).</param>
 /// <param name="Method">GET or POST (required in JSON).</param>
-/// <param name="RequestContract">Optional logical name for the request body shape (e.g. turn_request); drives sample templates.</param>
-/// <param name="BodyTemplate">Optional JSON string template; if omitted, filled from <see cref="EngineContractExamples"/> when <paramref name="RequestContract"/> is set.</param>
+/// <param name="TemplateContractsId">Logical template id that maps to example request/response bodies (used by tooling/UI).</param>
+/// <param name="RequestBodyTemplate">Optional JSON request body template (POST only). If omitted, filled via <see cref="EngineContractExamples"/>.</param>
+/// <param name="ResponseBodyTemplate">Optional JSON response body template. If omitted, filled via <see cref="EngineContractExamples"/>.</param>
 public sealed record EngineEndpointInfo(
     string Path, // example: /health, /intent
     string? Description, // Used by MainWindow for combo box / endpoint labels.
     string Method,
-    string? RequestContract, // Logical contract id for request JSON shape / examples.
-    string? BodyTemplate); // Templates are optional overrides / snippets; contracts stay string ids for JSON flexibility.
+    string? TemplateContractsId, // Logical template id for request+response JSON examples.
+    string? RequestBodyTemplate,
+    string? ResponseBodyTemplate);
 
 /// <summary>Options required by whichever concrete module is mapped from generic_llm_provider.</summary>
 public sealed record GenericLlmProviderModuleOptions(
-    int NumCtx,
-    string WarmupGameProjectId);
+    int NumCtx);
 
 /// <summary>Options specific to the llm_provider_qwen module implementation.</summary>
 public sealed record QwenModuleOptions(
@@ -82,7 +78,8 @@ public sealed record QwenModuleOptions(
 public sealed record EngineModuleInfo(
     string PortKey, // stable module id (e.g. router); actual port is in EngineConfiguration.PortMap.
     string DisplayName, // Shown in UI / logs;
-    bool Required,
+    bool RequiredByEngine,
+    int LoadOrder,
     EngineModuleLaunchInfo LaunchInfo,
     IReadOnlyList<EngineEndpointInfo> Endpoints,
     /// <summary>Set only on the module resolved from generic_llm_provider.</summary>
@@ -113,9 +110,6 @@ public sealed class EngineConfiguration
     /// <summary>From the generic_llm_provider module's num_ctx in JSON (forwarded as Ollama options.num_ctx in qwen).</summary>
     public int LlmProviderNumCtx { get; }
 
-    /// <summary>From the generic_llm_provider module's warmup_game_project_id in JSON.</summary>
-    public string LlmProviderWarmupGameProjectId { get; }
-
     public EngineConfiguration(
         string repositoryRoot,
         EnginePortMap portMap,
@@ -123,8 +117,7 @@ public sealed class EngineConfiguration
         IReadOnlyDictionary<string, string> moduleAliases,
         int llmProviderOllamaListenPort,
         string llmProviderOllamaModel,
-        int llmProviderNumCtx,
-        string llmProviderWarmupGameProjectId)
+        int llmProviderNumCtx)
     {
         RepositoryRoot = repositoryRoot;
         PortMap = portMap;
@@ -133,7 +126,6 @@ public sealed class EngineConfiguration
         LlmProviderOllamaListenPort = llmProviderOllamaListenPort;
         LlmProviderOllamaModel = llmProviderOllamaModel;
         LlmProviderNumCtx = llmProviderNumCtx;
-        LlmProviderWarmupGameProjectId = llmProviderWarmupGameProjectId;
     }
 
     /// <summary>
@@ -155,22 +147,8 @@ public sealed class EngineConfiguration
     /// <inheritdoc cref="EnginePortMap.GetRequiredPort"/>
     public int GetRequiredListenPort(string portKey)
     {
-        if (PortMap.HasListenPortForModule(portKey))
-        {
-            return PortMap.GetRequiredPort(portKey);
-        }
-
-        // Support concrete module keys that are targeted by a logical alias in ports (e.g. generic_llm_provider -> llm_provider_qwen).
-        foreach (var alias in ModuleAliases)
-        {
-            if (string.Equals(alias.Value, portKey, StringComparison.OrdinalIgnoreCase)
-                && PortMap.HasListenPortForModule(alias.Key))
-            {
-                return PortMap.GetRequiredPort(alias.Key);
-            }
-        }
-
-        return PortMap.GetRequiredPort(portKey);
+        var resolved = ResolveProxyTargetModuleKey(portKey);
+        return PortMap.GetRequiredPort(resolved);
     }
 
     /// <summary>
@@ -263,11 +241,17 @@ public static class EngineConfigLoader
         [JsonPropertyName("port_key")]
         public string? PortKey { get; set; }
 
+        public int? Port { get; set; }
+
+        [JsonPropertyName("load_order")]
+        public int? LoadOrder { get; set; }
+
         [JsonPropertyName("display_name")]
         public string? DisplayName { get; set; }
 
-        public bool? Required { get; set; }
-        public ModuleLaunchDto? Launch { get; set; }
+        [JsonPropertyName("required_by_engine")]
+        public bool? RequiredByEngine { get; set; }
+        public string? Launch { get; set; }
         public List<EndpointDto>? Endpoints { get; set; }
 
         [JsonPropertyName("ollama_port")]
@@ -278,17 +262,6 @@ public static class EngineConfigLoader
 
         [JsonPropertyName("num_ctx")]
         public int? NumCtx { get; set; }
-
-        [JsonPropertyName("warmup_game_project_id")]
-        public string? WarmupGameProjectId { get; set; }
-    }
-
-    private sealed class ModuleLaunchDto
-    {
-        public string? Artifact { get; set; }
-
-        [JsonExtensionData]
-        public Dictionary<string, JsonElement>? AdditionalFields { get; set; }
     }
 
     private sealed class EndpointDto
@@ -298,11 +271,14 @@ public static class EngineConfigLoader
         public string? Description { get; set; }
         public string? Method { get; set; }
 
-        [JsonPropertyName("request_contract")]
-        public string? RequestContract { get; set; }
+        [JsonPropertyName("template_contracts_id")]
+        public string? TemplateContractsId { get; set; }
 
-        [JsonPropertyName("body_template")]
-        public string? BodyTemplate { get; set; }
+        [JsonPropertyName("request_body_template")]
+        public string? RequestBodyTemplate { get; set; }
+
+        [JsonPropertyName("response_body_template")]
+        public string? ResponseBodyTemplate { get; set; }
     }
     #endregion
 
@@ -319,17 +295,413 @@ public static class EngineConfigLoader
     /// <summary>Protects double-checked initialization of <see cref="_cached"/> together with <see cref="GetConfiguration"/>.</summary>
     // Mutex for the cache: only one thread runs <see cref="LoadConfigurationUncached"/> when cache is cold.
     private static readonly object Sync = new();
-
-    private static IReadOnlyDictionary<string, string> DefaultModuleAliases() =>
-        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["generic_llm_provider"] = "llm_provider_qwen"
-        };
     #endregion
 
     #region Public methods
     public static EngineConfiguration GetConfiguration()
     {
+        EngineConfiguration LoadConfigurationUncached()
+        {
+            static IReadOnlyDictionary<string, string> MergeModuleAliases(Dictionary<string, string>? fromFile, string path)
+            {
+                if (fromFile is null)
+                {
+                    throw new EngineConfigurationException($"engine_config.json at '{path}' must contain a top-level 'module_aliases' object.");
+                }
+
+                var merged = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var pair in fromFile)
+                {
+                    if (string.IsNullOrWhiteSpace(pair.Key) || string.IsNullOrWhiteSpace(pair.Value))
+                    {
+                        throw new EngineConfigurationException(
+                            $"module_aliases in '{path}' contains an entry with empty key or value.");
+                    }
+
+                    merged[pair.Key.Trim()] = pair.Value.Trim();
+                }
+
+                return merged;
+            }
+
+            static string ResolveRequiredGenericProviderModuleKey(
+                IReadOnlyDictionary<string, string> moduleAliases,
+                string path)
+            {
+                if (!moduleAliases.TryGetValue("generic_llm_provider", out var mapped) || string.IsNullOrWhiteSpace(mapped))
+                {
+                    throw new EngineConfigurationException(
+                        $"module_aliases in '{path}' must map 'generic_llm_provider' to a concrete module key.");
+                }
+
+                return mapped.Trim();
+            }
+
+            static EnginePortMap BuildPortMapFromModules(IReadOnlyList<ModuleDto> modules, string configPath)
+            {
+                if (modules.Count == 0)
+                {
+                    throw new EngineConfigurationException($"engine_config.json at '{configPath}' must contain a non-empty 'modules' array.");
+                }
+
+                var dict = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                var seenPorts = new HashSet<int>();
+                foreach (var module in modules)
+                {
+                    var key = module.PortKey?.Trim();
+                    if (string.IsNullOrWhiteSpace(key))
+                    {
+                        throw new EngineConfigurationException(
+                            $"modules[] entry in '{configPath}' is missing port_key (required to build the port map).");
+                    }
+
+                    if (module.Port is null)
+                    {
+                        throw new EngineConfigurationException(
+                            $"Module '{key}' in '{configPath}' is missing port (each module must declare its own listen port).");
+                    }
+
+                    var port = module.Port.Value;
+                    if (port is < 1 or > 65535)
+                    {
+                        throw new EngineConfigurationException($"Module '{key}' port in '{configPath}' must be between 1 and 65535 (got {port}).");
+                    }
+
+                    if (!seenPorts.Add(port))
+                    {
+                        throw new EngineConfigurationException($"Duplicate listen port {port} in '{configPath}' (each module must have a unique port).");
+                    }
+
+                    dict[key] = port;
+                }
+
+                return new EnginePortMap(dict);
+            }
+
+            static IReadOnlyList<EngineEndpointInfo> MergeEndpoints(List<EndpointDto>? endpointsDto, string modulePortKey, string path)
+            {
+                if (endpointsDto is null)
+                {
+                    throw new EngineConfigurationException($"Module '{modulePortKey}' in '{path}' must declare an endpoints array.");
+                }
+
+                var list = new List<EngineEndpointInfo>();
+                foreach (var endpoint in endpointsDto)
+                {
+                    var epPath = endpoint.Path?.Trim();
+                    if (string.IsNullOrEmpty(epPath))
+                    {
+                        throw new EngineConfigurationException(
+                            $"Module '{modulePortKey}' in '{path}' has an endpoint with missing or empty path.");
+                    }
+
+                    if (string.IsNullOrWhiteSpace(endpoint.Method))
+                    {
+                        throw new EngineConfigurationException(
+                            $"Module '{modulePortKey}' endpoint '{epPath}' in '{path}' must declare method (GET or POST).");
+                    }
+
+                    var method = endpoint.Method.Trim().ToUpperInvariant();
+                    if (method is not ("GET" or "POST"))
+                    {
+                        throw new EngineConfigurationException(
+                            $"Module '{modulePortKey}' endpoint '{epPath}' in '{path}' has invalid method '{endpoint.Method}' (expected GET or POST).");
+                    }
+
+                    var templateContractsId = string.IsNullOrWhiteSpace(endpoint.TemplateContractsId)
+                        ? null
+                        : endpoint.TemplateContractsId.Trim();
+
+                    var templates = EngineContractExamples.TryGetTemplates(templateContractsId);
+                    var requestBodyTemplate = string.IsNullOrWhiteSpace(endpoint.RequestBodyTemplate)
+                        ? templates?.RequestBodyTemplate
+                        : endpoint.RequestBodyTemplate;
+                    var responseBodyTemplate = string.IsNullOrWhiteSpace(endpoint.ResponseBodyTemplate)
+                        ? templates?.ResponseBodyTemplate
+                        : endpoint.ResponseBodyTemplate;
+
+                    list.Add(new EngineEndpointInfo(
+                        EngineConfiguration.NormalizePath(epPath),
+                        string.IsNullOrWhiteSpace(endpoint.Description) ? null : endpoint.Description.Trim(),
+                        method,
+                        templateContractsId,
+                        requestBodyTemplate,
+                        responseBodyTemplate));
+                }
+
+                return list;
+            }
+
+            static void ValidateModuleScopedOptions(
+                string portKey,
+                bool isActiveGenericProvider,
+                bool isQwen,
+                int? ollamaPort,
+                string? ollamaModel,
+                int? numCtx,
+                string path)
+            {
+                if (isActiveGenericProvider)
+                {
+                    if (numCtx is null or < 512 or > 131072) // 131072 is qwen's max context.
+                    {
+                        throw new EngineConfigurationException(
+                            $"Module '{portKey}' in '{path}' (resolved from generic_llm_provider) must set num_ctx to an integer between 512 and 131072.");
+                    }
+                }
+
+                if (!isActiveGenericProvider && numCtx is not null)
+                {
+                    throw new EngineConfigurationException(
+                        $"Module '{portKey}' in '{path}' must not set num_ctx (only the module resolved from generic_llm_provider may).");
+                }
+
+                if (isQwen)
+                {
+                    if (ollamaPort is null or < 1 or > 65535)
+                    {
+                        throw new EngineConfigurationException(
+                            $"Module '{portKey}' in '{path}' (llm_provider_qwen) must set ollama_port to an integer between 1 and 65535.");
+                    }
+
+                    if (string.IsNullOrWhiteSpace(ollamaModel))
+                    {
+                        throw new EngineConfigurationException(
+                            $"Module '{portKey}' in '{path}' (llm_provider_qwen) must set default_chat_model to a non-empty string.");
+                    }
+                }
+                else
+                {
+                    if (ollamaPort is not null)
+                    {
+                        throw new EngineConfigurationException(
+                            $"Module '{portKey}' in '{path}' must not set ollama_port (only llm_provider_qwen may).");
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(ollamaModel))
+                    {
+                        throw new EngineConfigurationException(
+                            $"Module '{portKey}' in '{path}' must not set default_chat_model (only llm_provider_qwen may).");
+                    }
+                }
+            }
+
+            // Structural roles the host always expects to find under modules[] and to treat as engine-mandatory.
+            // required_by_engine on each row means "include in default startup"; it cannot by itself prove that a
+            // router/director row exists if someone omitted that block from the file, so those identities stay fixed here.
+            static void EnsureRequiredModulesPresent(List<EngineModuleInfo> list, string genericLlmProviderModuleKey, string path)
+            {
+                void RequireCatalogEntryEngineMandatory(string portKey, string missingCatalogMessage)
+                {
+                    var module = list.FirstOrDefault(x =>
+                        string.Equals(x.PortKey, portKey, StringComparison.OrdinalIgnoreCase));
+
+                    if (module is null)
+                    {
+                        throw new EngineConfigurationException(missingCatalogMessage);
+                    }
+
+                    // Must match modules[].required_by_engine so defaults and structural requirements cannot disagree.
+                    if (!module.RequiredByEngine)
+                    {
+                        throw new EngineConfigurationException(
+                            $"Module '{portKey}' in '{path}' must set required_by_engine to true.");
+                    }
+                }
+
+                RequireCatalogEntryEngineMandatory(
+                    "router",
+                    $"modules[] in '{path}' must include a router (port_key 'router').");
+
+                RequireCatalogEntryEngineMandatory(
+                    "director",
+                    $"modules[] in '{path}' must include a director (port_key 'director').");
+
+                RequireCatalogEntryEngineMandatory(
+                    genericLlmProviderModuleKey,
+                    $"modules[] in '{path}' must include the concrete generic_llm_provider module '{genericLlmProviderModuleKey}'.");
+            }
+
+            static IReadOnlyList<EngineModuleInfo> MergeModules(
+                List<ModuleDto> modulesDto,
+                EnginePortMap portMap,
+                string path,
+                string genericLlmProviderModuleKey)
+            {
+                var list = new List<EngineModuleInfo>();
+                var seenLoadOrders = new HashSet<int>();
+                foreach (var module in modulesDto)
+                {
+                    var portKey = module.PortKey?.Trim();
+                    if (string.IsNullOrEmpty(portKey))
+                    {
+                        throw new EngineConfigurationException($"modules[] entry in '{path}' is missing port_key.");
+                    }
+
+                    // Port map is built directly from modules[].port (fail fast if a module is missing a port).
+                    _ = portMap.GetRequiredPort(portKey);
+
+                    if (module.LoadOrder is not int loadOrder)
+                    {
+                        throw new EngineConfigurationException($"Module '{portKey}' in '{path}' is missing load_order.");
+                    }
+
+                    if (loadOrder < 0)
+                    {
+                        throw new EngineConfigurationException($"Module '{portKey}' in '{path}' load_order must be >= 0 (got {loadOrder}).");
+                    }
+
+                    if (!seenLoadOrders.Add(loadOrder))
+                    {
+                        throw new EngineConfigurationException($"Duplicate load_order {loadOrder} in '{path}' (each module must have a unique load_order).");
+                    }
+
+                    // launch is a single string path per module; empty is invalid.
+                    if (string.IsNullOrWhiteSpace(module.Launch))
+                    {
+                        throw new EngineConfigurationException($"Module '{portKey}' in '{path}' is missing launch.");
+                    }
+
+                    var launch = new EngineModuleLaunchInfo(module.Launch.Trim());
+                    var endpoints = MergeEndpoints(module.Endpoints, portKey, path);
+                    var isActiveGenericProvider = string.Equals(portKey, genericLlmProviderModuleKey, StringComparison.OrdinalIgnoreCase);
+                    var isQwen = string.Equals(portKey, "llm_provider_qwen", StringComparison.OrdinalIgnoreCase);
+
+                    ValidateModuleScopedOptions(
+                        portKey,
+                        isActiveGenericProvider,
+                        isQwen,
+                        module.OllamaPort,
+                        module.OllamaModel,
+                        module.NumCtx,
+                        path);
+
+                    // Compose provider-agnostic options only for the active generic provider module.
+                    var genericProviderOptions = isActiveGenericProvider
+                        ? new GenericLlmProviderModuleOptions(module.NumCtx!.Value)
+                        : null;
+
+                    // Compose qwen options only for qwen modules.
+                    var qwenOptions = isQwen
+                        ? new QwenModuleOptions(module.OllamaPort!.Value, module.OllamaModel!.Trim())
+                        : null;
+
+                    list.Add(new EngineModuleInfo(
+                        portKey,
+                        string.IsNullOrWhiteSpace(module.DisplayName) ? portKey : module.DisplayName.Trim(),
+                        module.RequiredByEngine ?? true,
+                        loadOrder,
+                        launch,
+                        endpoints,
+                        genericProviderOptions,
+                        qwenOptions));
+                }
+
+                if (list.Count == 0)
+                {
+                    throw new EngineConfigurationException($"No modules could be built from '{path}'.");
+                }
+
+                EnsureRequiredModulesPresent(list, genericLlmProviderModuleKey, path);
+                return list;
+            }
+
+            static int RequireLlmProviderOllamaPort(IReadOnlyList<EngineModuleInfo> modules, string providerPortKey, string path)
+            {
+                if (!string.Equals(providerPortKey, "llm_provider_qwen", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new EngineConfigurationException(
+                        $"generic_llm_provider is mapped to '{providerPortKey}' in '{path}', but EngineConfiguration currently expects llm_provider_qwen-specific ollama_port.");
+                }
+
+                var m = modules.FirstOrDefault(x => string.Equals(x.PortKey, providerPortKey, StringComparison.OrdinalIgnoreCase));
+                if (m?.QwenOptions?.OllamaPort is not int p)
+                {
+                    throw new EngineConfigurationException($"generic_llm_provider ('{providerPortKey}') ollama_port missing or invalid in '{path}'.");
+                }
+
+                return p;
+            }
+
+            static string RequireLlmProviderOllamaModel(IReadOnlyList<EngineModuleInfo> modules, string providerPortKey, string path)
+            {
+                if (!string.Equals(providerPortKey, "llm_provider_qwen", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new EngineConfigurationException(
+                        $"generic_llm_provider is mapped to '{providerPortKey}' in '{path}', but EngineConfiguration currently expects llm_provider_qwen-specific default_chat_model.");
+                }
+
+                var m = modules.FirstOrDefault(x => string.Equals(x.PortKey, providerPortKey, StringComparison.OrdinalIgnoreCase));
+                if (m?.QwenOptions?.OllamaModel is not { } model || string.IsNullOrWhiteSpace(model))
+                {
+                    throw new EngineConfigurationException($"generic_llm_provider ('{providerPortKey}') default_chat_model missing or empty in '{path}'.");
+                }
+
+                return model;
+            }
+
+            static int RequireLlmProviderNumCtx(IReadOnlyList<EngineModuleInfo> modules, string providerPortKey, string path)
+            {
+                var m = modules.FirstOrDefault(x => string.Equals(x.PortKey, providerPortKey, StringComparison.OrdinalIgnoreCase));
+                if (m?.GenericLlmProviderOptions?.NumCtx is not int numCtx)
+                {
+                    throw new EngineConfigurationException($"generic_llm_provider ('{providerPortKey}') num_ctx missing or invalid in '{path}'.");
+                }
+
+                return numCtx;
+            }
+
+            var repositoryRoot = FindRepositoryRoot();
+            var path = repositoryRoot is null ? null : Path.Combine(repositoryRoot, "engine_config.json");
+            if (repositoryRoot is null || path is null || !File.Exists(path))
+            {
+                throw new EngineConfigurationException(
+                    "engine_config.json not found or repository root could not be resolved. Expected the file next to MorpheusEngine sources or under a discovered repo root.");
+            }
+
+            string json;
+            try
+            {
+                json = File.ReadAllText(path);
+            }
+            catch (Exception e)
+            {
+                throw new EngineConfigurationException($"Failed to read engine_config.json at '{path}'.", e);
+            }
+
+            EngineConfigFileDto? dto;
+            try
+            {
+                dto = JsonSerializer.Deserialize<EngineConfigFileDto>(json, _jsonOptions);
+            }
+            catch (JsonException e)
+            {
+                throw new EngineConfigurationException($"Invalid JSON in engine_config.json at '{path}'.", e);
+            }
+
+            if (dto?.Modules is null || dto.Modules.Count == 0)
+            {
+                throw new EngineConfigurationException($"engine_config.json at '{path}' must contain a non-empty 'modules' array.");
+            }
+
+            var moduleAliases = MergeModuleAliases(dto.ModuleAliases, path);
+            var genericLlmProviderModuleKey = ResolveRequiredGenericProviderModuleKey(moduleAliases, path);
+            var portMap = BuildPortMapFromModules(dto.Modules, path);
+            var modules = MergeModules(dto.Modules, portMap, path, genericLlmProviderModuleKey);
+            var ollamaPort = RequireLlmProviderOllamaPort(modules, genericLlmProviderModuleKey, path);
+            var ollamaModel = RequireLlmProviderOllamaModel(modules, genericLlmProviderModuleKey, path);
+            var qwenNumCtx = RequireLlmProviderNumCtx(modules, genericLlmProviderModuleKey, path);
+
+            return new EngineConfiguration(
+                repositoryRoot,
+                portMap,
+                modules,
+                moduleAliases,
+                ollamaPort,
+                ollamaModel,
+                qwenNumCtx);
+        }
+
         if (_cached is not null)
         {
             return _cached;
@@ -342,457 +714,6 @@ public static class EngineConfigLoader
     }
 
     public static EnginePortMap GetPorts() => GetConfiguration().PortMap;
-    #endregion
-
-    #region Private methods
-    private static EngineConfiguration LoadConfigurationUncached()
-    {
-        var repositoryRoot = FindRepositoryRoot();
-        var path = repositoryRoot is null ? null : Path.Combine(repositoryRoot, "engine_config.json");
-        if (repositoryRoot is null || path is null || !File.Exists(path))
-        {
-            throw new EngineConfigurationException(
-                "engine_config.json not found or repository root could not be resolved. Expected the file next to MorpheusEngine sources or under a discovered repo root.");
-        }
-
-        string json;
-        try
-        {
-            json = File.ReadAllText(path);
-        }
-        catch (Exception e)
-        {
-            throw new EngineConfigurationException($"Failed to read engine_config.json at '{path}'.", e);
-        }
-
-        using var doc = JsonDocument.Parse(json, new JsonDocumentOptions { CommentHandling = JsonCommentHandling.Skip });
-        var root = doc.RootElement;
-        if (!root.TryGetProperty("ports", out var portsElement))
-        {
-            throw new EngineConfigurationException($"engine_config.json at '{path}' must contain a top-level 'ports' object.");
-        }
-
-        var portMap = BuildPortMapFromJson(portsElement, path);
-
-        EngineConfigFileDto? dto;
-        try
-        {
-            dto = JsonSerializer.Deserialize<EngineConfigFileDto>(json, _jsonOptions);
-        }
-        catch (JsonException e)
-        {
-            throw new EngineConfigurationException($"Invalid JSON in engine_config.json at '{path}'.", e);
-        }
-
-        if (dto?.Modules is null || dto.Modules.Count == 0)
-        {
-            throw new EngineConfigurationException($"engine_config.json at '{path}' must contain a non-empty 'modules' array.");
-        }
-
-        var moduleAliases = MergeModuleAliases(dto.ModuleAliases, path);
-        var genericLlmProviderModuleKey = ResolveRequiredGenericProviderModuleKey(moduleAliases, path);
-        var modules = MergeModules(dto.Modules, portMap, path, genericLlmProviderModuleKey, moduleAliases);
-        var ollamaPort = RequireLlmProviderOllamaPort(modules, genericLlmProviderModuleKey, path);
-        var ollamaModel = RequireLlmProviderOllamaModel(modules, genericLlmProviderModuleKey, path);
-        var qwenNumCtx = RequireLlmProviderNumCtx(modules, genericLlmProviderModuleKey, path);
-        var qwenWarmupGameProjectId = RequireLlmProviderWarmupGameProjectId(modules, genericLlmProviderModuleKey, path);
-
-        return new EngineConfiguration(
-            repositoryRoot,
-            portMap,
-            modules,
-            moduleAliases,
-            ollamaPort,
-            ollamaModel,
-            qwenNumCtx,
-            qwenWarmupGameProjectId);
-    }
-
-    /// <summary>Intentional single call site: kept extracted so <see cref="LoadConfigurationUncached"/> stays readable (CodingStyle documented exception).</summary>
-    private static EnginePortMap BuildPortMapFromJson(JsonElement portsEl, string configPath)
-    {
-        if (portsEl.ValueKind != JsonValueKind.Object)
-        {
-            throw new EngineConfigurationException($"'ports' in '{configPath}' must be a JSON object.");
-        }
-
-        var dict = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        foreach (var prop in portsEl.EnumerateObject())
-        {
-            var key = prop.Name.Trim();
-            if (!EnginePortMap.RequiredPortKeySet.Contains(key))
-            {
-                throw new EngineConfigurationException(
-                    $"ports: unknown key '{prop.Name}' in '{configPath}'. Allowed keys only: {string.Join(", ", EnginePortMap.RequiredPortKeys)}.");
-            }
-
-            if (prop.Value.ValueKind != JsonValueKind.Number || !prop.Value.TryGetInt32(out var port))
-            {
-                throw new EngineConfigurationException($"ports.{prop.Name} in '{configPath}' must be an integer TCP port.");
-            }
-
-            if (port is < 1 or > 65535)
-            {
-                throw new EngineConfigurationException($"ports.{prop.Name} in '{configPath}' must be between 1 and 65535 (got {port}).");
-            }
-
-            dict[key] = port;
-        }
-
-        foreach (var required in EnginePortMap.RequiredPortKeys)
-        {
-            if (!dict.ContainsKey(required))
-            {
-                throw new EngineConfigurationException(
-                    $"ports in '{configPath}' must include '{required}'. Present: {string.Join(", ", dict.Keys)}.");
-            }
-        }
-
-        return new EnginePortMap(dict);
-    }
-
-    /// <summary>Intentional single call site: kept extracted for readability (CodingStyle documented exception).</summary>
-    private static IReadOnlyList<EngineModuleInfo> MergeModules(
-        List<ModuleDto> modulesDto,
-        EnginePortMap portMap,
-        string path,
-        string genericLlmProviderModuleKey,
-        IReadOnlyDictionary<string, string> moduleAliases)
-    {
-        var list = new List<EngineModuleInfo>();
-        foreach (var module in modulesDto)
-        {
-            var portKey = module.PortKey?.Trim();
-            if (string.IsNullOrEmpty(portKey))
-            {
-                throw new EngineConfigurationException($"modules[] entry in '{path}' is missing port_key.");
-            }
-
-            if (!HasListenPortForModuleOrAlias(portMap, moduleAliases, portKey))
-            {
-                throw new EngineConfigurationException(
-                    $"Module '{portKey}' in '{path}' has no matching entry under ports (directly or through module_aliases). Known required port keys: {string.Join(", ", EnginePortMap.RequiredPortKeys)}.");
-            }
-
-            var launch = MergeLaunch(module.Launch, portKey, path);
-            var endpoints = MergeEndpoints(module.Endpoints, portKey, path);
-            var isActiveGenericProvider = string.Equals(portKey, genericLlmProviderModuleKey, StringComparison.OrdinalIgnoreCase);
-            var isQwen = string.Equals(portKey, "llm_provider_qwen", StringComparison.OrdinalIgnoreCase);
-
-            ValidateModuleScopedOptions(
-                portKey,
-                isActiveGenericProvider,
-                isQwen,
-                module.OllamaPort,
-                module.OllamaModel,
-                module.NumCtx,
-                module.WarmupGameProjectId,
-                path);
-
-            // Compose provider-agnostic options only for the active generic provider module.
-            var genericProviderOptions = isActiveGenericProvider
-                ? new GenericLlmProviderModuleOptions(module.NumCtx!.Value, module.WarmupGameProjectId!.Trim())
-                : null;
-
-            // Compose qwen options only for qwen modules.
-            var qwenOptions = isQwen
-                ? new QwenModuleOptions(module.OllamaPort!.Value, module.OllamaModel!.Trim())
-                : null;
-
-            list.Add(new EngineModuleInfo(
-                portKey,
-                string.IsNullOrWhiteSpace(module.DisplayName) ? portKey : module.DisplayName.Trim(),
-                module.Required ?? true,
-                launch,
-                endpoints,
-                genericProviderOptions,
-                qwenOptions));
-        }
-
-        if (list.Count == 0)
-        {
-            throw new EngineConfigurationException($"No modules could be built from '{path}'.");
-        }
-
-        EnsureRequiredModulesPresent(list, genericLlmProviderModuleKey, path);
-        return list;
-    }
-
-    private static void ValidateModuleScopedOptions(
-        string portKey,
-        bool isActiveGenericProvider,
-        bool isQwen,
-        int? ollamaPort,
-        string? ollamaModel,
-        int? numCtx,
-        string? warmupGameProjectId,
-        string path)
-    {
-        if (isActiveGenericProvider)
-        {
-            if (numCtx is null or < 512 or > 131072)
-            {
-                throw new EngineConfigurationException(
-                    $"Module '{portKey}' in '{path}' (resolved from generic_llm_provider) must set num_ctx to an integer between 512 and 131072.");
-            }
-
-            if (string.IsNullOrWhiteSpace(warmupGameProjectId))
-            {
-                throw new EngineConfigurationException(
-                    $"Module '{portKey}' in '{path}' (resolved from generic_llm_provider) must set warmup_game_project_id to a non-empty string.");
-            }
-        }
-
-        if (!isActiveGenericProvider && numCtx is not null)
-        {
-            throw new EngineConfigurationException(
-                $"Module '{portKey}' in '{path}' must not set num_ctx (only the module resolved from generic_llm_provider may).");
-        }
-
-        if (!isActiveGenericProvider && !string.IsNullOrWhiteSpace(warmupGameProjectId))
-        {
-            throw new EngineConfigurationException(
-                $"Module '{portKey}' in '{path}' must not set warmup_game_project_id (only the module resolved from generic_llm_provider may).");
-        }
-
-        if (isQwen)
-        {
-            if (ollamaPort is null or < 1 or > 65535)
-            {
-                throw new EngineConfigurationException(
-                    $"Module '{portKey}' in '{path}' (llm_provider_qwen) must set ollama_port to an integer between 1 and 65535.");
-            }
-
-            if (string.IsNullOrWhiteSpace(ollamaModel))
-            {
-                throw new EngineConfigurationException(
-                    $"Module '{portKey}' in '{path}' (llm_provider_qwen) must set default_chat_model to a non-empty string.");
-            }
-        }
-        else
-        {
-            if (ollamaPort is not null)
-            {
-                throw new EngineConfigurationException(
-                    $"Module '{portKey}' in '{path}' must not set ollama_port (only llm_provider_qwen may).");
-            }
-
-            if (!string.IsNullOrWhiteSpace(ollamaModel))
-            {
-                throw new EngineConfigurationException(
-                    $"Module '{portKey}' in '{path}' must not set default_chat_model (only llm_provider_qwen may).");
-            }
-        }
-
-    }
-
-    private static void EnsureRequiredModulesPresent(List<EngineModuleInfo> list, string genericLlmProviderModuleKey, string path)
-    {
-        static bool Has(List<EngineModuleInfo> m, string key) =>
-            m.Exists(x => string.Equals(x.PortKey, key, StringComparison.OrdinalIgnoreCase));
-
-        if (!Has(list, "router")
-            || !Has(list, genericLlmProviderModuleKey)
-            || !Has(list, "intent_extractor")
-            || !Has(list, "director")
-            || !Has(list, "session_store"))
-        {
-            throw new EngineConfigurationException(
-                $"modules in '{path}' must include router, intent_extractor, director, session_store, and the concrete module mapped from generic_llm_provider ('{genericLlmProviderModuleKey}').");
-        }
-    }
-
-    private static int RequireLlmProviderOllamaPort(IReadOnlyList<EngineModuleInfo> modules, string providerPortKey, string path)
-    {
-        if (!string.Equals(providerPortKey, "llm_provider_qwen", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new EngineConfigurationException(
-                $"generic_llm_provider is mapped to '{providerPortKey}' in '{path}', but EngineConfiguration currently expects llm_provider_qwen-specific ollama_port.");
-        }
-
-        var m = modules.FirstOrDefault(x => string.Equals(x.PortKey, providerPortKey, StringComparison.OrdinalIgnoreCase));
-        if (m?.QwenOptions?.OllamaPort is not int p)
-        {
-            throw new EngineConfigurationException($"generic_llm_provider ('{providerPortKey}') ollama_port missing or invalid in '{path}'.");
-        }
-        return p;
-    }
-
-    private static string RequireLlmProviderOllamaModel(IReadOnlyList<EngineModuleInfo> modules, string providerPortKey, string path)
-    {
-        if (!string.Equals(providerPortKey, "llm_provider_qwen", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new EngineConfigurationException(
-                $"generic_llm_provider is mapped to '{providerPortKey}' in '{path}', but EngineConfiguration currently expects llm_provider_qwen-specific default_chat_model.");
-        }
-
-        var m = modules.FirstOrDefault(x => string.Equals(x.PortKey, providerPortKey, StringComparison.OrdinalIgnoreCase));
-        if (m?.QwenOptions?.OllamaModel is not { } model || string.IsNullOrWhiteSpace(model))
-        {
-            throw new EngineConfigurationException($"generic_llm_provider ('{providerPortKey}') default_chat_model missing or empty in '{path}'.");
-        }
-        return model;
-    }
-
-    private static int RequireLlmProviderNumCtx(IReadOnlyList<EngineModuleInfo> modules, string providerPortKey, string path)
-    {
-        var m = modules.FirstOrDefault(x => string.Equals(x.PortKey, providerPortKey, StringComparison.OrdinalIgnoreCase));
-        if (m?.GenericLlmProviderOptions?.NumCtx is not int numCtx)
-        {
-            throw new EngineConfigurationException($"generic_llm_provider ('{providerPortKey}') num_ctx missing or invalid in '{path}'.");
-        }
-        return numCtx;
-    }
-
-    private static string RequireLlmProviderWarmupGameProjectId(IReadOnlyList<EngineModuleInfo> modules, string providerPortKey, string path)
-    {
-        var m = modules.FirstOrDefault(x => string.Equals(x.PortKey, providerPortKey, StringComparison.OrdinalIgnoreCase));
-        if (m?.GenericLlmProviderOptions?.WarmupGameProjectId is not { } id || string.IsNullOrWhiteSpace(id))
-        {
-            throw new EngineConfigurationException(
-                $"generic_llm_provider ('{providerPortKey}') warmup_game_project_id missing or empty in '{path}' (required for Ollama narration warm-up).");
-        }
-
-        var trimmed = id.Trim();
-        if (trimmed.Contains("..", StringComparison.Ordinal)
-            || trimmed.Contains('/', StringComparison.Ordinal)
-            || trimmed.Contains('\\', StringComparison.Ordinal))
-        {
-            throw new EngineConfigurationException(
-                $"generic_llm_provider ('{providerPortKey}') warmup_game_project_id in '{path}' must not contain path separators or '..'.");
-        }
-
-        return trimmed;
-    }
-
-    private static string ResolveRequiredGenericProviderModuleKey(
-        IReadOnlyDictionary<string, string> moduleAliases,
-        string path)
-    {
-        if (!moduleAliases.TryGetValue("generic_llm_provider", out var mapped) || string.IsNullOrWhiteSpace(mapped))
-        {
-            throw new EngineConfigurationException(
-                $"module_aliases in '{path}' must map 'generic_llm_provider' to a concrete module key.");
-        }
-
-        var providerPortKey = mapped.Trim();
-        if (!EnginePortMap.RequiredPortKeySet.Contains("generic_llm_provider"))
-        {
-            throw new EngineConfigurationException("Internal error: generic_llm_provider must be part of required port keys.");
-        }
-
-        return providerPortKey;
-    }
-
-    private static bool HasListenPortForModuleOrAlias(
-        EnginePortMap portMap,
-        IReadOnlyDictionary<string, string> moduleAliases,
-        string modulePortKey)
-    {
-        if (portMap.HasListenPortForModule(modulePortKey))
-        {
-            return true;
-        }
-
-        foreach (var alias in moduleAliases)
-        {
-            if (string.Equals(alias.Value, modulePortKey, StringComparison.OrdinalIgnoreCase)
-                && portMap.HasListenPortForModule(alias.Key))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /// <summary>Intentional single call site: kept extracted for readability (CodingStyle documented exception).</summary>
-    private static EngineModuleLaunchInfo MergeLaunch(ModuleLaunchDto? launch, string portKey, string path)
-    {
-        if (launch is null || string.IsNullOrWhiteSpace(launch.Artifact))
-        {
-            throw new EngineConfigurationException($"Module '{portKey}' in '{path}' is missing launch.artifact.");
-        }
-
-        // Legacy config was allowed to specify launch.dev_project for MORPHEUS_DEV_LAUNCH.
-        // Executable-only launch is now enforced, so this is a hard config error.
-        if (launch.AdditionalFields is not null
-            && launch.AdditionalFields.Keys.Any(k => string.Equals(k, "dev_project", StringComparison.OrdinalIgnoreCase)))
-        {
-            throw new EngineConfigurationException(
-                $"Module '{portKey}' in '{path}' must not set launch.dev_project. Engine now launches modules from built artifacts only (launch.artifact).");
-        }
-
-        return new EngineModuleLaunchInfo(launch.Artifact.Trim());
-    }
-
-    /// <summary>Intentional single call site: kept extracted for readability (CodingStyle documented exception).</summary>
-    private static IReadOnlyList<EngineEndpointInfo> MergeEndpoints(List<EndpointDto>? endpointsDto, string modulePortKey, string path)
-    {
-        if (endpointsDto is null)
-        {
-            throw new EngineConfigurationException($"Module '{modulePortKey}' in '{path}' must declare an endpoints array.");
-        }
-
-        var list = new List<EngineEndpointInfo>();
-        foreach (var endpoint in endpointsDto)
-        {
-            var epPath = endpoint.Path?.Trim();
-            if (string.IsNullOrEmpty(epPath))
-            {
-                throw new EngineConfigurationException(
-                    $"Module '{modulePortKey}' in '{path}' has an endpoint with missing or empty path.");
-            }
-
-            if (string.IsNullOrWhiteSpace(endpoint.Method))
-            {
-                throw new EngineConfigurationException(
-                    $"Module '{modulePortKey}' endpoint '{epPath}' in '{path}' must declare method (GET or POST).");
-            }
-
-            var method = endpoint.Method.Trim().ToUpperInvariant();
-            if (method is not ("GET" or "POST"))
-            {
-                throw new EngineConfigurationException(
-                    $"Module '{modulePortKey}' endpoint '{epPath}' in '{path}' has invalid method '{endpoint.Method}' (expected GET or POST).");
-            }
-
-            var requestContract = string.IsNullOrWhiteSpace(endpoint.RequestContract)
-                ? null
-                : endpoint.RequestContract.Trim();
-
-            list.Add(new EngineEndpointInfo(
-                EngineConfiguration.NormalizePath(epPath),
-                string.IsNullOrWhiteSpace(endpoint.Description) ? null : endpoint.Description.Trim(),
-                method,
-                requestContract,
-                string.IsNullOrWhiteSpace(endpoint.BodyTemplate)
-                    ? EngineContractExamples.TryGetRequestBodyTemplate(requestContract)
-                    : endpoint.BodyTemplate));
-        }
-
-        return list;
-    }
-
-    private static IReadOnlyDictionary<string, string> MergeModuleAliases(Dictionary<string, string>? fromFile, string path)
-    {
-        var merged = new Dictionary<string, string>(DefaultModuleAliases(), StringComparer.OrdinalIgnoreCase);
-        if (fromFile is not null)
-        {
-            foreach (var pair in fromFile)
-            {
-                if (string.IsNullOrWhiteSpace(pair.Key) || string.IsNullOrWhiteSpace(pair.Value))
-                {
-                    throw new EngineConfigurationException(
-                        $"module_aliases in '{path}' contains an entry with empty key or value.");
-                }
-
-                merged[pair.Key.Trim()] = pair.Value.Trim();
-            }
-        }
-
-        return merged;
-    }
     #endregion
 
     #region Helpers

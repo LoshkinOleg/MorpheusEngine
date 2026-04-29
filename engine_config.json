@@ -2,181 +2,183 @@
   "module_aliases": {
     "generic_llm_provider": "llm_provider_qwen"
   },
-  "ports": {
-    "router": 8790,
-    "llm_provider_qwen": 8791,
-    "intent_extractor": 8792,
-    "director": 8794,
-    "session_store": 8793
-  },
   "modules": [
     {
       "port_key": "director",
+      "port": 8794,
+      "load_order": 50,
       "display_name": "Director",
-      "required": true,
-      "launch": {
-        "artifact": "dotnet/src/MorpheusEngine.Director/bin/Debug/net9.0/MorpheusEngine.Director.exe",
-      },
+      "required_by_engine": true,
+      "launch": "dotnet/src/MorpheusEngine.Director/bin/Debug/net9.0/MorpheusEngine.Director.exe",
       "endpoints": [
         {
           "path": "/info",
           "description": "Module metadata",
-          "method": "GET"
+          "method": "GET",
+          "template_contracts_id": "module_info"
         },
         {
           "path": "/health",
           "description": "Health check",
-          "method": "GET"
+          "method": "GET",
+          "template_contracts_id": "module_health"
         },
         {
           "path": "/initialize",
           "description": "Host binds run identity (game project id and run id) for this module process",
           "method": "POST",
-          "request_contract": "initialize_request"
+          "template_contracts_id": "initialize"
         },
         {
           "path": "/message",
-          "description": "Send a player message to the Director",
+          "description": "Initiates a new turn with the player's input.",
           "method": "POST",
-          "request_contract": "director_message_request"
+          "template_contracts_id": "director_message"
         }
       ]
     },
     {
       "port_key": "session_store",
+      "port": 8793,
+      "load_order": 40,
       "display_name": "SessionStore",
-      "required": true,
-      "launch": {
-        "artifact": "dotnet/src/MorpheusEngine.SessionStoreModule/bin/Debug/net9.0/MorpheusEngine.SessionStoreModule.exe",
-      },
+      "required_by_engine": false,
+      "launch": "dotnet/src/MorpheusEngine.SessionStoreModule/bin/Debug/net9.0/MorpheusEngine.SessionStoreModule.exe",
       "endpoints": [
         {
           "path": "/info",
           "description": "Module metadata",
-          "method": "GET"
+          "method": "GET",
+          "template_contracts_id": "module_info"
         },
         {
           "path": "/health",
           "description": "Health check",
-          "method": "GET"
+          "method": "GET",
+          "template_contracts_id": "module_health"
         },
         {
           "path": "/initialize",
           "description": "Host binds run identity (game project id and run id) for this module process",
           "method": "POST",
-          "request_contract": "initialize_request"
+          "template_contracts_id": "initialize"
         },
         {
           "path": "/persist_turn",
           "description": "Persist events + snapshot for the run bound by host POST /initialize on this process (enforces sequencing in a transaction)",
           "method": "POST",
-          "request_contract": "session_turn_persist_request"
+          "template_contracts_id": "persist_turn"
         }
       ]
     },
     {
       "port_key": "llm_provider_qwen",
+      "port": 8791,
+      "load_order": 20,
       "display_name": "LlmProvider_qwen",
-      "required": true,
+      "required_by_engine": true,
       "ollama_port": 8795,
       "default_chat_model": "qwen2.5:7b-instruct",
       "num_ctx": 4096,
-      "warmup_game_project_id": "sandcrawler",
-      "launch": {
-        "artifact": "dotnet/src/MorpheusEngine.LlmProvider_qwen/bin/Debug/net9.0/MorpheusEngine.LlmProvider_qwen.exe",
-      },
+      "launch": "dotnet/src/MorpheusEngine.LlmProvider_qwen/bin/Debug/net9.0/MorpheusEngine.LlmProvider_qwen.exe",
       "endpoints": [
         {
           "path": "/info",
           "description": "Module metadata",
-          "method": "GET"
+          "method": "GET",
+          "template_contracts_id": "module_info"
         },
         {
           "path": "/health",
           "description": "Health check",
-          "method": "GET"
+          "method": "GET",
+          "template_contracts_id": "module_health"
         },
         {
           "path": "/initialize",
           "description": "Host binds run identity (game project id and run id) for this module process",
           "method": "POST",
-          "request_contract": "initialize_request"
+          "template_contracts_id": "initialize"
         },
         {
           "path": "/generate",
           "description": "LLM generate (Ollama model from default_chat_model)",
           "method": "POST",
-          "request_contract": "qwen_generate_request"
+          "template_contracts_id": "generate"
         },
         {
           "path": "/chat",
           "description": "LLM chat (Ollama /api/chat)",
           "method": "POST",
-          "request_contract": "chat_generate_request"
+          "template_contracts_id": "chat"
         }
       ]
     },
     {
       "port_key": "intent_extractor",
+      "port": 8792,
+      "load_order": 30,
       "display_name": "IntentExtractor",
-      "required": true,
-      "launch": {
-        "artifact": "dotnet/src/MorpheusEngine.IntentExtractor/bin/Debug/net9.0/MorpheusEngine.IntentExtractor.exe",
-      },
+      "required_by_engine": false,
+      "launch": "dotnet/src/MorpheusEngine.IntentExtractor/bin/Debug/net9.0/MorpheusEngine.IntentExtractor.exe",
       "endpoints": [
         {
           "path": "/info",
           "description": "Module metadata",
-          "method": "GET"
+          "method": "GET",
+          "template_contracts_id": "module_info"
         },
         {
           "path": "/health",
           "description": "Health check",
-          "method": "GET"
+          "method": "GET",
+          "template_contracts_id": "module_health"
         },
         {
           "path": "/initialize",
           "description": "Host binds run identity (game project id and run id) for this module process",
           "method": "POST",
-          "request_contract": "initialize_request"
+          "template_contracts_id": "initialize"
         },
         {
           "path": "/intent",
           "description": "Extract player intent",
           "method": "POST",
-          "request_contract": "intent_request"
+          "template_contracts_id": "intent"
         }
       ]
     },
     {
       "port_key": "router",
+      "port": 8790,
+      "load_order": 10,
       "display_name": "RouterModule",
-      "required": true,
-      "launch": {
-        "artifact": "dotnet/src/MorpheusEngine.RouterModule/bin/Debug/net9.0/MorpheusEngine.RouterModule.exe",
-      },
+      "required_by_engine": true,
+      "launch": "dotnet/src/MorpheusEngine.RouterModule/bin/Debug/net9.0/MorpheusEngine.RouterModule.exe",
       "endpoints": [
         {
           "path": "/info",
           "description": "Module metadata",
-          "method": "GET"
+          "method": "GET",
+          "template_contracts_id": "module_info"
         },
         {
           "path": "/health",
           "description": "Health check",
-          "method": "GET"
+          "method": "GET",
+          "template_contracts_id": "module_health"
         },
         {
           "path": "/initialize",
           "description": "Host binds run identity (game project id and run id) for this module process",
           "method": "POST",
-          "request_contract": "initialize_request"
+          "template_contracts_id": "initialize"
         },
         {
           "path": "/turn",
           "description": "Submit player turn",
           "method": "POST",
-          "request_contract": "turn_request"
+          "template_contracts_id": "turn"
         }
       ]
     }

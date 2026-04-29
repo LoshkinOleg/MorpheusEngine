@@ -119,41 +119,65 @@ public sealed record ChatGenerateResponse(
     [property: JsonPropertyName("rawResponse")] string? RawResponse);
 #endregion
 
-#region Contract examples (engine_config request_contract tooling)
+#region Contract examples (engine_config template_contracts_id tooling)
 public static class EngineContractExamples
 {
+    public sealed record EndpointTemplatePair(
+        string? RequestBodyTemplate,
+        string? ResponseBodyTemplate);
+
     private static readonly JsonSerializerOptions TemplateOptions = new()
     {
         WriteIndented = true
     };
 
-    public static string? TryGetRequestBodyTemplate(string? requestContract) => requestContract switch
+    public static EndpointTemplatePair? TryGetTemplates(string? templateContractsId) => templateContractsId switch
     {
-        "turn_request" => Serialize(new TurnRequest(
-            1,
-            "look around")),
-        "initialize_request" => Serialize(new InitializeModuleRequest("sandcrawler", "00000000-0000-0000-0000-000000000001")),
-        "session_turn_persist_request" => Serialize(new TurnPersistRequest(
-            1,
-            "look around",
-            "{\"ok\":true,\"text\":\"You stand still and listen.\"}")),
-        "qwen_generate_request" => Serialize(new LlmGenerateRequest("Write a short response.")),
-        "intent_request" => Serialize(new IntentRequest("look around")),
-        "director_message_request" => Serialize(new DirectorMessageRequest(1, "Look around.")),
-        "chat_generate_request" => Serialize(new ChatGenerateRequest
-        {
-            Messages =
-            [
-                new ChatGenerateRequest.ChatMessageDto("system", "You are the GM."),
-                new ChatGenerateRequest.ChatMessageDto("user", "Look around.")
-            ]
-        }),
-        "module_proxy_request" => Serialize(new ModuleProxyRequest(
-            "intent_extractor",
-            "generic_llm_provider",
-            "/generate",
-            "POST",
-            JsonSerializer.SerializeToElement(new LlmGenerateRequest("Write a short response.")))),
+        "turn" => new EndpointTemplatePair(
+            Serialize(new TurnRequest(1, "look around")),
+            Serialize(new TurnResponse(true, "You stand still and listen."))),
+        "initialize" => new EndpointTemplatePair(
+            Serialize(new InitializeModuleRequest("sandcrawler", "00000000-0000-0000-0000-000000000001")),
+            Serialize(new InitializeModuleResponse(true))),
+        "persist_turn" => new EndpointTemplatePair(
+            Serialize(new TurnPersistRequest(
+                1,
+                "look around",
+                "{\"ok\":true,\"text\":\"You stand still and listen.\"}")),
+            Serialize(new TurnPersistResponse(true))),
+        "generate" => new EndpointTemplatePair(
+            Serialize(new LlmGenerateRequest("Write a short response.")),
+            Serialize(new LlmProviderGenerateResponse(true, "Short response.", "{\"raw\":\"...\"}"))),
+        "intent" => new EndpointTemplatePair(
+            Serialize(new IntentRequest("look around")),
+            Serialize(new IntentResponse(true, "look_around", new Dictionary<string, string> { ["direction"] = "around" }))),
+        "director_message" => new EndpointTemplatePair(
+            Serialize(new DirectorMessageRequest(1, "Look around.")),
+            Serialize(new DirectorMessageResponse(true, "You stand still and listen."))),
+        "chat" => new EndpointTemplatePair(
+            Serialize(new ChatGenerateRequest
+            {
+                Messages =
+                [
+                    new ChatGenerateRequest.ChatMessageDto("system", "You are the GM."),
+                    new ChatGenerateRequest.ChatMessageDto("user", "Look around.")
+                ]
+            }),
+            Serialize(new ChatGenerateResponse(true, "You stand still and listen.", "{\"raw\":\"...\"}"))),
+        "module_proxy" => new EndpointTemplatePair(
+            Serialize(new ModuleProxyRequest(
+                "intent_extractor",
+                "generic_llm_provider",
+                "/generate",
+                "POST",
+                JsonSerializer.SerializeToElement(new LlmGenerateRequest("Write a short response.")))),
+            Serialize(new LlmProviderGenerateResponse(true, "Short response.", "{\"raw\":\"...\"}"))),
+        "module_info" => new EndpointTemplatePair(
+            null,
+            Serialize(new ModuleInfoResponse(true, "router"))),
+        "module_health" => new EndpointTemplatePair(
+            null,
+            Serialize(new ModuleHealthResponse(true, "ok", true))),
         _ => null
     };
 

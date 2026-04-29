@@ -1,4 +1,6 @@
 {
   "id": "sandcrawler",
-  "title": "Sandcrawler Captain"
+  "title": "Sandcrawler Captain",
+  "required_modules": [
+  ]
 }

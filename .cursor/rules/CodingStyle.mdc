@@ -9,7 +9,7 @@ alwaysApply: true
 
 - When designing new code snippets, use a fail fast and loud approach. The code shouldn't have fallbacks that cover up a caller's expected contract breaches.
 
-- A snippet of code should generally be extracted to it's own private / protected method only if it is has >1 usage. Use of private / protected methods as a form of documentation is usually to be avoided unless explicitly specified and documented. Declaration of <=1 use public methods however is perfectly acceptable and expected.
+- A snippet of code should generally be extracted to it's own private / protected method only if it is has >1 usage. Use of private / protected methods as a form of documentation is usually to be avoided unless explicitly specified and documented, declaring local nested methods for documentation / organisation however is perfectly fine. Declaration of <=1 use public methods however is perfectly acceptable and expected.
 
 - The definition of a class is to be structured in this order: nested types -> public data-> private data-> public methods -> private methods -> helper methods. "#region ... #endregion" preprocessor directives are to be used to organize these sections if the class is large.
 
@@ -24,3 +24,5 @@ alwaysApply: true
 - Prefer methods over getter only properties for things that compute the return value instead of just returning a private field.
 
 - In comments, do not use the <c> tag as it makes reading of comments in the source file cumbersome.
+
+- Unless explicitly prompted to, when modifying existing code, don't add legacy guards. The modified code is by default expected to work according to any updated preconditions.
