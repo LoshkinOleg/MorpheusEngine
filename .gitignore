@@ -3,6 +3,7 @@ dist/
 build/
 tsImplementation/
 third_party/
+docs/letta/
 .DS_Store
 *.log
 LLM_*.md
