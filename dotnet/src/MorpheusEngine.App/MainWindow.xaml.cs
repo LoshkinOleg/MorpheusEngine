@@ -68,8 +68,8 @@ public partial class MainWindow : Window
     private const int EngineStopKillFollowupSeconds = 15;
     private const string ResponseTemplateHeader = "Example response (template):\r\n";
 
-    /// <summary>True only after required modules (including warmed LLM provider) report healthy; avoids sending game traffic during boot.</summary>
-    private bool _engineModulesReadyForGame = false;
+    /// <summary>True after <see cref="MorpheusEngine.InitializationCompletedSource"/> completes (host module init; llm_provider_qwen has primed and reports initialized on /health). Enables game UI; not a separate first-token benchmark.</summary>
+    private bool _engineModulesInitializedForGame = false;
     private bool _allowClose;
     private bool _shutdownInProgress;
     private bool _suppressEndpointPresetEvents;
@@ -158,8 +158,6 @@ public partial class MainWindow : Window
     {
         if (_allowClose)
         {
-            Console.SetOut(Console.Out);
-            Console.SetError(Console.Error);
             return;
         }
 
@@ -365,7 +363,7 @@ public partial class MainWindow : Window
 
         var engine = new MorpheusEngine(_gameProjectId, _runId);
         _engine = engine;
-        _engineModulesReadyForGame = false;
+        _engineModulesInitializedForGame = false;
 
         _engineRunTask = Task.Run(() =>
         {
@@ -375,12 +373,10 @@ public partial class MainWindow : Window
             }
                 finally
                 {
-                    Dispatcher.BeginInvoke(() =>
-                    {
-                        _engineRunTask = null;
-                        _engineModulesReadyForGame = false;
-                        UpdateButtonState();
-                    });
+                    // Clear task reference on the completing thread so _engineRunTask is not left non-null until a dispatcher tick.
+                    _engineRunTask = null;
+                    _engineModulesInitializedForGame = false;
+                    Dispatcher.BeginInvoke(UpdateButtonState);
                 }
         });
 
@@ -402,7 +398,7 @@ public partial class MainWindow : Window
                     return;
                 }
 
-                _engineModulesReadyForGame = true;
+                _engineModulesInitializedForGame = true;
                 QwenMonitorPane.Clear();
                 UpdateButtonState();
             });
@@ -416,7 +412,7 @@ public partial class MainWindow : Window
                     return;
                 }
 
-                _engineModulesReadyForGame = false;
+                _engineModulesInitializedForGame = false;
                 UpdateButtonState();
             });
         }
@@ -430,7 +426,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        _engineModulesReadyForGame = false;
+        _engineModulesInitializedForGame = false;
         var engineRef = _engine;
         engineRef?.RequestShutdown();
 
@@ -484,18 +480,18 @@ public partial class MainWindow : Window
 
         if (GameChatInteractionRoot is not null)
         {
-            // Transcript + composer stay inactive until required modules (including LLM warm-up) are ready.
-            GameChatInteractionRoot.IsEnabled = running && _engineModulesReadyForGame;
+            // Transcript + composer stay inactive until engine InitializationCompleted (modules healthy; Qwen has completed model priming before initialized=true).
+            GameChatInteractionRoot.IsEnabled = running && _engineModulesInitializedForGame;
         }
 
         if (GameSendButton is not null)
         {
-            GameSendButton.IsEnabled = running && _engineModulesReadyForGame && !_shutdownInProgress && !_gameRequestInFlight;
+            GameSendButton.IsEnabled = running && _engineModulesInitializedForGame && !_shutdownInProgress && !_gameRequestInFlight;
         }
 
         if (GameInputTextBox is not null)
         {
-            GameInputTextBox.IsEnabled = running && _engineModulesReadyForGame && !_shutdownInProgress && !_gameRequestInFlight;
+            GameInputTextBox.IsEnabled = running && _engineModulesInitializedForGame && !_shutdownInProgress && !_gameRequestInFlight;
         }
     }
 

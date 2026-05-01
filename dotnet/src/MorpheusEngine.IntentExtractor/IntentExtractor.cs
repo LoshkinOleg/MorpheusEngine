@@ -5,7 +5,7 @@ using System.Text.Json;
 
 namespace MorpheusEngine
 {
-    public class IntentExtractor : IEngineRunBinder
+    public class IntentExtractor
     {
         #region Nested types
 
@@ -24,10 +24,10 @@ namespace MorpheusEngine
         ];
 
         // Instance-owned HttpClient: we dispose it in Shutdown() after the listener stops so sockets are released cleanly for this process.
-        // Intent extraction hits the LLM provider; same ceiling as provider outbound HttpClient (model load is warmed at provider init).
+        // Intent extraction hits the LLM provider via the router; same 60s ceiling as Director/LlmProvider_qwen (weights are primed in the provider before initialized=true).
         private readonly HttpClient _httpClient = new()
         {
-            Timeout = TimeSpan.FromSeconds(30)
+            Timeout = TimeSpan.FromSeconds(60)
         };
 
         private readonly EngineConfiguration _configuration = EngineConfigLoader.GetConfiguration();
@@ -40,7 +40,7 @@ namespace MorpheusEngine
 
         private readonly HttpListener _listener = new HttpListener(); // Inbound listener for responding to http messages.
         private bool _shutdownRequested = false;
-        private bool _runBound = false;
+        private volatile bool _runBound = false;
         private volatile bool _initializing;
         private string _boundGameProjectId = string.Empty;
         private string _boundRunId = string.Empty;
@@ -49,13 +49,12 @@ namespace MorpheusEngine
 
         #region Public methods
 
-        public bool IsRunBound => _runBound;
-
         public IntentExtractor()
         {
             _routerProxy = new RouterProxyClient(_httpClient, _configuration, "intent_extractor", _jsonOptions);
         }
 
+        /// <summary>Host-driven run binding (invoked from POST /initialize after JSON validation).</summary>
         public Task BindRunAsync(InitializeModuleRequest request, CancellationToken cancellationToken)
         {
             if (request is null

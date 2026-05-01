@@ -9,7 +9,7 @@ namespace MorpheusEngine
     /// HTTP entrypoint for player-facing routes and for proxying allowlisted calls between modules.
     /// Configuration (ports, module endpoints) comes from <see cref="EngineConfiguration"/>.
     /// </summary>
-    public class Router : IEngineRunBinder
+    public class Router
     {
         #region Nested types
 
@@ -44,16 +44,16 @@ namespace MorpheusEngine
             PropertyNameCaseInsensitive = true
         };
 
-        private bool _runBound = false;
+        private volatile bool _runBound = false;
         private volatile bool _initializing;
         private string _boundGameProjectId = string.Empty;
         private string _boundRunId = string.Empty;
         private bool _sessionStoreEnabled = false;
 
-        // Proxied module calls include LLM /chat; same ceiling as LlmProvider_qwen outbound calls (warm-up runs at provider startup).
+        // Proxied module calls include LLM /chat; same 60s ceiling as LlmProvider_qwen outbound calls (provider primes the model before initialized=true).
         private static readonly HttpClient _httpClient = new()
         {
-            Timeout = TimeSpan.FromSeconds(30)
+            Timeout = TimeSpan.FromSeconds(60)
         };
 
         /// <summary>
@@ -62,8 +62,6 @@ namespace MorpheusEngine
         private const string ExpectedProxiedResponseMediaType = "application/json";
 
         #endregion
-
-        public bool IsRunBound => _runBound;
 
         public async Task Run()
         {
@@ -191,6 +189,7 @@ namespace MorpheusEngine
 
         public void RequestShutdown() => _shutdownRequested = true;
 
+        /// <summary>Host-driven run binding (invoked from POST /initialize after JSON validation).</summary>
         public Task BindRunAsync(InitializeModuleRequest request, CancellationToken cancellationToken)
         {
             if (request is null
@@ -370,8 +369,11 @@ namespace MorpheusEngine
 
                 if (parsedDirector is null || !parsedDirector.Ok || string.IsNullOrWhiteSpace(parsedDirector.Text))
                 {
-                    finalStatusCode = directorResult.StatusCode;
-                    await WriteForwardedResultAsync(context, directorResult);
+                    // Director can return HTTP 200 with ok:false; use 422 so turn logs and the client status match the error envelope.
+                    finalStatusCode = 422;
+                    await WriteForwardedResultAsync(
+                        context,
+                        new ForwardedModuleResult(422, directorResult.ContentType, directorResult.Body));
                     return;
                 }
 

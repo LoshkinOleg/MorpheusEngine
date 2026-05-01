@@ -87,7 +87,7 @@ public sealed record EngineModuleInfo(
     /// <summary>Set only on llm_provider_qwen.</summary>
     QwenModuleOptions? QwenOptions = null);
 
-/// <summary>Loaded engine configuration: repository layout, listen ports, module list, proxy aliases, and module-derived settings from generic provider + qwen-specific options.</summary>
+/// <summary>Loaded engine configuration: repository layout, listen ports, module list, and proxy aliases. Provider-specific options live on each <see cref="EngineModuleInfo"/> row.</summary>
 public sealed class EngineConfiguration
 {
     /// <summary>Repository root containing engine_config.json and typically a dotnet folder.</summary>
@@ -101,31 +101,25 @@ public sealed class EngineConfiguration
     // Used to make http messages mention only the generic modules instead of having to rely on specific implementation modules. Ex: llm_provider_qwen becomes just generic_llm_provider and the Router resolves it back to llm_provider_qwen or whichever generic llm module is currently used.
     public IReadOnlyDictionary<string, string> ModuleAliases { get; }
 
-    /// <summary>From the llm_provider_qwen module's ollama_port in JSON.</summary>
-    public int LlmProviderOllamaListenPort { get; } // Note: I'm not convinced by implementation mentions in this generic class.
-
-    /// <summary>From the llm_provider_qwen module's default_chat_model in JSON (Ollama model for /api/chat and /api/generate).</summary>
-    public string LlmProviderOllamaModel { get; }
-
-    /// <summary>From the generic_llm_provider module's num_ctx in JSON (forwarded as Ollama options.num_ctx in qwen).</summary>
-    public int LlmProviderNumCtx { get; }
-
     public EngineConfiguration(
         string repositoryRoot,
         EnginePortMap portMap,
         IReadOnlyList<EngineModuleInfo> modulesInfos,
-        IReadOnlyDictionary<string, string> moduleAliases,
-        int llmProviderOllamaListenPort,
-        string llmProviderOllamaModel,
-        int llmProviderNumCtx)
+        IReadOnlyDictionary<string, string> moduleAliases)
     {
         RepositoryRoot = repositoryRoot;
         PortMap = portMap;
         ModulesInfos = modulesInfos;
         ModuleAliases = moduleAliases;
-        LlmProviderOllamaListenPort = llmProviderOllamaListenPort;
-        LlmProviderOllamaModel = llmProviderOllamaModel;
-        LlmProviderNumCtx = llmProviderNumCtx;
+    }
+
+    /// <summary>Concrete <see cref="EngineModuleInfo"/> row for the module named by <c>generic_llm_provider</c> in <see cref="ModuleAliases"/>.</summary>
+    public EngineModuleInfo GetRequiredGenericLlmProviderModule()
+    {
+        var key = ResolveProxyTargetModuleKey("generic_llm_provider");
+        return FindModule(key)
+            ?? throw new EngineConfigurationException(
+                $"Configured modules do not include port_key '{key}' (generic_llm_provider alias target).");
     }
 
     /// <summary>
@@ -606,49 +600,39 @@ public static class EngineConfigLoader
                 return list;
             }
 
-            static int RequireLlmProviderOllamaPort(IReadOnlyList<EngineModuleInfo> modules, string providerPortKey, string path)
+            static void EnsureGenericLlmProviderModuleOptionsComplete(
+                IReadOnlyList<EngineModuleInfo> modules,
+                string genericLlmProviderModuleKey,
+                string path)
             {
-                if (!string.Equals(providerPortKey, "llm_provider_qwen", StringComparison.OrdinalIgnoreCase))
+                var m = modules.FirstOrDefault(x =>
+                    string.Equals(x.PortKey, genericLlmProviderModuleKey, StringComparison.OrdinalIgnoreCase));
+                if (m is null)
                 {
                     throw new EngineConfigurationException(
-                        $"generic_llm_provider is mapped to '{providerPortKey}' in '{path}', but EngineConfiguration currently expects llm_provider_qwen-specific ollama_port.");
+                        $"Internal error: generic_llm_provider module '{genericLlmProviderModuleKey}' missing after merge ('{path}').");
                 }
 
-                var m = modules.FirstOrDefault(x => string.Equals(x.PortKey, providerPortKey, StringComparison.OrdinalIgnoreCase));
-                if (m?.QwenOptions?.OllamaPort is not int p)
-                {
-                    throw new EngineConfigurationException($"generic_llm_provider ('{providerPortKey}') ollama_port missing or invalid in '{path}'.");
-                }
-
-                return p;
-            }
-
-            static string RequireLlmProviderOllamaModel(IReadOnlyList<EngineModuleInfo> modules, string providerPortKey, string path)
-            {
-                if (!string.Equals(providerPortKey, "llm_provider_qwen", StringComparison.OrdinalIgnoreCase))
+                if (m.GenericLlmProviderOptions is null)
                 {
                     throw new EngineConfigurationException(
-                        $"generic_llm_provider is mapped to '{providerPortKey}' in '{path}', but EngineConfiguration currently expects llm_provider_qwen-specific default_chat_model.");
+                        $"Module '{genericLlmProviderModuleKey}' in '{path}' (resolved from generic_llm_provider) must have num_ctx (generic_llm_provider options).");
                 }
 
-                var m = modules.FirstOrDefault(x => string.Equals(x.PortKey, providerPortKey, StringComparison.OrdinalIgnoreCase));
-                if (m?.QwenOptions?.OllamaModel is not { } model || string.IsNullOrWhiteSpace(model))
+                if (string.Equals(genericLlmProviderModuleKey, "llm_provider_qwen", StringComparison.OrdinalIgnoreCase))
                 {
-                    throw new EngineConfigurationException($"generic_llm_provider ('{providerPortKey}') default_chat_model missing or empty in '{path}'.");
+                    if (m.QwenOptions is null)
+                    {
+                        throw new EngineConfigurationException(
+                            $"Module '{genericLlmProviderModuleKey}' in '{path}' must have qwen options (ollama_port, default_chat_model).");
+                    }
+
+                    if (m.QwenOptions.OllamaModel is not { } model || string.IsNullOrWhiteSpace(model))
+                    {
+                        throw new EngineConfigurationException(
+                            $"generic_llm_provider ('{genericLlmProviderModuleKey}') default_chat_model missing or empty in '{path}'.");
+                    }
                 }
-
-                return model;
-            }
-
-            static int RequireLlmProviderNumCtx(IReadOnlyList<EngineModuleInfo> modules, string providerPortKey, string path)
-            {
-                var m = modules.FirstOrDefault(x => string.Equals(x.PortKey, providerPortKey, StringComparison.OrdinalIgnoreCase));
-                if (m?.GenericLlmProviderOptions?.NumCtx is not int numCtx)
-                {
-                    throw new EngineConfigurationException($"generic_llm_provider ('{providerPortKey}') num_ctx missing or invalid in '{path}'.");
-                }
-
-                return numCtx;
             }
 
             var repositoryRoot = FindRepositoryRoot();
@@ -688,18 +672,9 @@ public static class EngineConfigLoader
             var genericLlmProviderModuleKey = ResolveRequiredGenericProviderModuleKey(moduleAliases, path);
             var portMap = BuildPortMapFromModules(dto.Modules, path);
             var modules = MergeModules(dto.Modules, portMap, path, genericLlmProviderModuleKey);
-            var ollamaPort = RequireLlmProviderOllamaPort(modules, genericLlmProviderModuleKey, path);
-            var ollamaModel = RequireLlmProviderOllamaModel(modules, genericLlmProviderModuleKey, path);
-            var qwenNumCtx = RequireLlmProviderNumCtx(modules, genericLlmProviderModuleKey, path);
+            EnsureGenericLlmProviderModuleOptionsComplete(modules, genericLlmProviderModuleKey, path);
 
-            return new EngineConfiguration(
-                repositoryRoot,
-                portMap,
-                modules,
-                moduleAliases,
-                ollamaPort,
-                ollamaModel,
-                qwenNumCtx);
+            return new EngineConfiguration(repositoryRoot, portMap, modules, moduleAliases);
         }
 
         if (_cached is not null)

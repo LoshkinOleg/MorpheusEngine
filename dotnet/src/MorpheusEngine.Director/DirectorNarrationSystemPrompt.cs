@@ -35,12 +35,14 @@ public static class DirectorNarrationSystemPrompt
 
     /// <summary>
     /// Parses default_lore_entries.csv (subject + data columns) into a markdown bullet list under ## Canon Lore.
+    /// Logical CSV rows follow RFC 4180 rules (newlines inside quoted fields do not end a row).
     /// </summary>
     private static string BuildCanonLoreSectionFromCsv(string csvPath)
     {
-        var lines = File.ReadAllLines(csvPath)
-            .Select(static line => line.Trim())
-            .Where(static line => line.Length > 0 && !line.StartsWith("#", StringComparison.Ordinal))
+        var text = File.ReadAllText(csvPath);
+        // Trim only for comment detection / blank rows; do not trim record text so quoted fields keep boundary spaces.
+        var lines = CsvRfc4180.SplitRecords(text)
+            .Where(static line => !string.IsNullOrWhiteSpace(line) && !line.TrimStart().StartsWith("#", StringComparison.Ordinal))
             .ToArray();
 
         if (lines.Length == 0)
@@ -48,7 +50,7 @@ public static class DirectorNarrationSystemPrompt
             throw new InvalidOperationException($"Lore CSV at '{csvPath}' is empty.");
         }
 
-        var headers = ParseCsvLine(lines[0]).Select(static h => h.ToLowerInvariant()).ToArray();
+        var headers = CsvRfc4180.ParseRecordFields(lines[0]).Select(static h => h.ToLowerInvariant()).ToArray();
         var subjectIndex = Array.IndexOf(headers, "subject");
         var dataIndex = Array.FindIndex(
             headers,
@@ -65,15 +67,15 @@ public static class DirectorNarrationSystemPrompt
 
         for (var i = 1; i < lines.Length; i++)
         {
-            var columns = ParseCsvLine(lines[i]);
+            var columns = CsvRfc4180.ParseRecordFields(lines[i]);
             if (subjectIndex >= columns.Count || dataIndex >= columns.Count)
             {
                 continue;
             }
 
-            var subject = columns[subjectIndex].Trim();
-            var data = columns[dataIndex].Trim();
-            if (subject.Length == 0 || data.Length == 0)
+            var subject = columns[subjectIndex];
+            var data = columns[dataIndex];
+            if (string.IsNullOrWhiteSpace(subject) || string.IsNullOrWhiteSpace(data))
             {
                 continue;
             }
@@ -86,52 +88,5 @@ public static class DirectorNarrationSystemPrompt
         }
 
         return sb.ToString().TrimEnd();
-    }
-
-    /// <summary>Minimal CSV line parser mirroring RunPersistence.ParseCsvLine (quoted fields, doubled quotes).</summary>
-    private static List<string> ParseCsvLine(string line)
-    {
-        var values = new List<string>();
-        var current = new StringBuilder();
-        var inQuotes = false;
-        for (var i = 0; i < line.Length; i++)
-        {
-            var ch = line[i];
-            if (ch == '"')
-            {
-                if (inQuotes && i + 1 < line.Length && line[i + 1] == '"')
-                {
-                    current.Append('"');
-                    i++;
-                }
-                else
-                {
-                    inQuotes = !inQuotes;
-                }
-
-                continue;
-            }
-
-            if (ch == ',' && !inQuotes)
-            {
-                values.Add(current.ToString().Trim());
-                current.Clear();
-                continue;
-            }
-
-            current.Append(ch);
-        }
-
-        values.Add(current.ToString().Trim());
-        for (var v = 0; v < values.Count; v++)
-        {
-            var s = values[v];
-            if (s.Length >= 2 && s[0] == '"' && s[^1] == '"')
-            {
-                values[v] = s.Substring(1, s.Length - 2).Trim();
-            }
-        }
-
-        return values;
     }
 }

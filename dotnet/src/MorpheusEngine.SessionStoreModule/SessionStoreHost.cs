@@ -9,7 +9,7 @@ namespace MorpheusEngine;
 /// POST /persist_turn targets the run established by the last successful host POST /initialize on this process (one run per process).
 /// Essentially a wrapper for RunPersistence which does the actual work. This is just a wrapper that handles the HTTP messaging.
 /// </summary>
-public sealed class SessionStoreHost : IEngineRunBinder
+public sealed class SessionStoreHost
 {
     #region Private data
 
@@ -38,25 +38,7 @@ public sealed class SessionStoreHost : IEngineRunBinder
 
     #region Public methods
 
-    public bool IsRunBound => !string.IsNullOrWhiteSpace(_boundRunId) && !string.IsNullOrWhiteSpace(_boundGameProjectId);
-
-    public async Task BindRunAsync(InitializeModuleRequest request, CancellationToken cancellationToken)
-    {
-        if (request is null
-            || string.IsNullOrWhiteSpace(request.GameProjectId)
-            || string.IsNullOrWhiteSpace(request.RunId))
-        {
-            throw new ArgumentException("Request must include non-empty gameProjectId and runId.", nameof(request));
-        }
-
-        cancellationToken.ThrowIfCancellationRequested();
-        var response = _persistence.InitializeRun(request.GameProjectId.Trim(), request.RunId.Trim());
-        _boundGameProjectId = request.GameProjectId.Trim();
-        _boundRunId = request.RunId.Trim();
-        Console.WriteLine($"[SessionStore] Bound run runId={_boundRunId} gameProjectId={_boundGameProjectId}.");
-        _ = response; // Response is returned by HTTP handler; retained here to keep the same code path.
-        await Task.CompletedTask;
-    }
+    private bool IsRunBound => !string.IsNullOrWhiteSpace(_boundRunId) && !string.IsNullOrWhiteSpace(_boundGameProjectId);
 
     public async Task RunAsync()
     {

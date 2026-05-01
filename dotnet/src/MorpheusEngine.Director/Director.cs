@@ -7,7 +7,7 @@ namespace MorpheusEngine;
 /// <summary>
 /// HTTP host for the director module: one in-process run at a time, system prompt from game project files, LLM via router proxy to generic_llm_provider /chat.
 /// </summary>
-public sealed class Director : IEngineRunBinder
+public sealed class Director
 {
     #region Nested types
 
@@ -25,10 +25,10 @@ public sealed class Director : IEngineRunBinder
 
     private readonly EngineConfiguration _configuration = EngineConfigLoader.GetConfiguration(); // Note: each module loads the config independantly because that's where the http ports are defined. Can't pass them via /initialize since that would require the HTTP client to already be listening on a port.
 
-    // LLM calls are bounded by the same ceiling as LlmProvider_qwen's outbound HttpClient; model load happens during provider init (warm-up).
+    // LLM proxy calls share the same per-request ceiling as LlmProvider_qwen's outbound HttpClient (60s). Model weights are primed inside the provider before /health reports initialized.
     private readonly HttpClient _httpClient = new()
     {
-        Timeout = TimeSpan.FromSeconds(30)
+        Timeout = TimeSpan.FromSeconds(60)
     };
 
     private readonly RouterProxyClient _routerProxy;
@@ -40,7 +40,7 @@ public sealed class Director : IEngineRunBinder
     private readonly SemaphoreSlim _sessionGate = new(1, 1);
 
     /// <summary>Set after successful POST /initialize; cleared only when the process restarts.</summary>
-    private bool _initialized = false;
+    private volatile bool _initialized = false;
 
     private volatile bool _initializing; // Set to true while /initialize processing is in flight.
 
@@ -50,8 +50,6 @@ public sealed class Director : IEngineRunBinder
     #endregion
 
     #region Public methods
-
-    public bool IsRunBound => _initialized;
 
     public Director()
     {
@@ -82,49 +80,6 @@ public sealed class Director : IEngineRunBinder
 
     public void RequestShutdown() => _shutdownRequested = true;
 
-    #endregion
-
-    #region Overrides / implementations
-    async Task IEngineRunBinder.BindRunAsync(InitializeModuleRequest request, CancellationToken cancellationToken)
-    {
-        if (request is null
-            || string.IsNullOrWhiteSpace(request.RunId)
-            || string.IsNullOrWhiteSpace(request.GameProjectId))
-        {
-            throw new ArgumentException("Request must include non-empty runId and gameProjectId.", nameof(request));
-        }
-
-        var runId = request.RunId.Trim();
-        var gameProjectId = request.GameProjectId.Trim();
-
-        await _sessionGate.WaitAsync(cancellationToken);
-        try
-        {
-            if (_initialized)
-            {
-                throw new InvalidOperationException(
-                    "Director is already initialized for this process; restart the Director module to start another run.");
-            }
-
-            string systemContent;
-            try
-            {
-                systemContent = DirectorNarrationSystemPrompt.Build(_configuration.RepositoryRoot, gameProjectId);
-            }
-            catch (Exception e) when (e is FileNotFoundException or InvalidOperationException)
-            {
-                throw new InvalidOperationException(e.Message, e);
-            }
-
-            _history = new List<ChatMessage> { new ChatMessage("system", systemContent) };
-            _initialized = true;
-            Console.WriteLine($"[Director] Bound run runId={runId} gameProjectId={gameProjectId}.");
-        }
-        finally
-        {
-            _sessionGate.Release();
-        }
-    }
     #endregion
 
     #region Private methods

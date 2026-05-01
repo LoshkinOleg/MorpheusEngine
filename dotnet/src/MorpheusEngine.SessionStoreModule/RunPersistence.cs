@@ -86,13 +86,12 @@ internal sealed class RunPersistence
             }
             else
             {
-                var lines = File.ReadAllLines(csvPath)
-                    .Select(static line => line.Trim())
-                    .Where(static line => line.Length > 0 && !line.StartsWith('#'))
+                var lines = CsvRfc4180.SplitRecords(File.ReadAllText(csvPath))
+                    .Where(static line => !string.IsNullOrWhiteSpace(line) && !line.TrimStart().StartsWith('#'))
                     .ToArray();
                 if (lines.Length > 0)
                 {
-                    var headers = ParseCsvLine(lines[0]).Select(static h => h.ToLowerInvariant()).ToArray();
+                    var headers = CsvRfc4180.ParseRecordFields(lines[0]).Select(static h => h.ToLowerInvariant()).ToArray();
                     var subjectIndex = Array.IndexOf(headers, "subject");
                     var dataIndex = Array.FindIndex(
                         headers,
@@ -101,15 +100,15 @@ internal sealed class RunPersistence
                     {
                         for (var i = 1; i < lines.Length; i++)
                         {
-                            var columns = ParseCsvLine(lines[i]);
+                            var columns = CsvRfc4180.ParseRecordFields(lines[i]);
                             if (subjectIndex >= columns.Count || dataIndex >= columns.Count)
                             {
                                 continue;
                             }
 
-                            var subject = columns[subjectIndex].Trim();
-                            var data = columns[dataIndex].Trim();
-                            if (subject.Length == 0 || data.Length == 0)
+                            var subject = columns[subjectIndex];
+                            var data = columns[dataIndex];
+                            if (string.IsNullOrWhiteSpace(subject) || string.IsNullOrWhiteSpace(data))
                             {
                                 continue;
                             }
@@ -408,52 +407,6 @@ internal sealed class RunPersistence
         {
             return JsonSerializer.Serialize(new { directorRawText = directorResponseBody });
         }
-    }
-    /// <summary>Minimal CSV line parser mirroring TS parseCsvLine (quoted fields, doubled quotes).</summary>
-    private static List<string> ParseCsvLine(string line)
-    {
-        var values = new List<string>();
-        var current = new StringBuilder();
-        var inQuotes = false;
-        for (var i = 0; i < line.Length; i++)
-        {
-            var ch = line[i];
-            if (ch == '"')
-            {
-                if (inQuotes && i + 1 < line.Length && line[i + 1] == '"')
-                {
-                    current.Append('"');
-                    i++;
-                }
-                else
-                {
-                    inQuotes = !inQuotes;
-                }
-
-                continue;
-            }
-
-            if (ch == ',' && !inQuotes)
-            {
-                values.Add(current.ToString().Trim());
-                current.Clear();
-                continue;
-            }
-
-            current.Append(ch);
-        }
-
-        values.Add(current.ToString().Trim());
-        for (var v = 0; v < values.Count; v++)
-        {
-            var s = values[v];
-            if (s.Length >= 2 && s[0] == '"' && s[^1] == '"')
-            {
-                values[v] = s.Substring(1, s.Length - 2).Trim();
-            }
-        }
-
-        return values;
     }
     #endregion
 }

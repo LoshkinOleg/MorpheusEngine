@@ -33,8 +33,8 @@ Without this layout, **`LlmProvider_qwen`** fails at startup when it cannot find
 
 ### Module-specific optional fields
 
-- **Resolved `generic_llm_provider` module**: **`num_ctx`** and **`warmup_game_project_id`** are required on that row.
-- **`llm_provider_qwen`**: **`ollama_port`** and **`default_chat_model`** are required on that row; exposed at runtime as `EngineConfiguration.LlmProviderOllamaListenPort` and `EngineConfiguration.LlmProviderOllamaModel`.
+- **`module_aliases.generic_llm_provider`** must point at a concrete **`port_key`** (typically **`llm_provider_qwen`**). The loader merges **`generic_llm_provider`** JSON options onto that row.
+- **That resolved row** must carry **`GenericLlmProviderOptions`** (**`num_ctx`** from the generic provider JSON). When the concrete key is **`llm_provider_qwen`**, the same row must also have **`QwenOptions`** (**`ollama_port`**, **`default_chat_model`**).
 
 ## `EngineConfiguration` (runtime object)
 
@@ -42,10 +42,9 @@ Built once; exposes:
 
 - **`RepositoryRoot`** — Directory containing `engine_config.json`.
 - **`PortMap` / `GetRequiredListenPort(portKey)`**
-- **`ModulesInfos`** — Full module metadata including endpoints.
+- **`ModulesInfos`** — Full module metadata including endpoints and per-row **`QwenOptions`** / **`GenericLlmProviderOptions`** (see `EngineModuleInfo` in `EngineConfigLoader.cs`) where applicable.
 - **`ModuleAliases`** — Merged defaults + file overrides.
-- **`LlmProviderNumCtx`**, **`LlmProviderWarmupGameProjectId`** — Derived from the module mapped from **`generic_llm_provider`**.
-- **`LlmProviderOllamaListenPort`**, **`LlmProviderOllamaModel`** — Derived from **`llm_provider_qwen`** (qwen-specific settings).
+- **`ResolveProxyTargetModuleKey`**, **`FindModule`**, **`GetRequiredGenericLlmProviderModule()`** — Resolve **`generic_llm_provider`** to the concrete module row; provider code reads Ollama and **`num_ctx`** from that row’s option records.
 
 ## Contract examples and UI
 

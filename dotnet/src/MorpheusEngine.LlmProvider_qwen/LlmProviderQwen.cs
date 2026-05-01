@@ -21,8 +21,8 @@ namespace MorpheusEngine
         private static readonly TimeSpan OllamaReadyTimeout = TimeSpan.FromSeconds(90);
         private static readonly TimeSpan OllamaReadyPollInterval = TimeSpan.FromMilliseconds(200);
         private static readonly TimeSpan OllamaRestartBackoff = TimeSpan.FromMilliseconds(500);
-        /// <summary>Every outbound call to the bundled Ollama process (probe, warm-up, inference) uses this ceiling.</summary>
-        private static readonly TimeSpan OllamaHttpTimeout = TimeSpan.FromSeconds(30);
+        /// <summary>Every outbound call to the bundled Ollama process (GET /, model priming, inference) uses this ceiling; matches Director/Router LLM proxy budget.</summary>
+        private static readonly TimeSpan OllamaHttpTimeout = TimeSpan.FromSeconds(60);
         private const int MaxOllamaRestartAttempts = 3;
         private const int MaxCapturedOllamaErrorLines = 20;
         private const int OllamaRequestNumKeep = -1;
@@ -42,11 +42,16 @@ namespace MorpheusEngine
         private readonly Queue<string> _recentOllamaErrorLines = [];
         private bool _shutdownRequested = false;
         private volatile bool _initializing;
-        private bool _runBound = false;
+        private volatile bool _runBound = false;
         private string _boundGameProjectId = "";
         private string _boundRunId = "";
         private bool _ollamaHttpReady = false;
         private bool _ollamaReady = false;
+        /// <summary>Set when POST /initialize returned 202 but completion failed (host should fail fast via /health).</summary>
+        private volatile bool _initializeBindFailedAfterAccepted = false;
+        /// <summary>Set when background bundled Ollama bootstrap throws; host fails fast via /health status ollama_startup_failed.</summary>
+        private volatile bool _ollamaBootstrapFailed = false;
+        private Task? _bundledOllamaBootstrapTask;
         private bool _ollamaStopping = false;
         private int _ollamaRestartAttempts = 0;
         private Process? _ollamaProcess;
@@ -69,7 +74,7 @@ namespace MorpheusEngine
         {
             try
             {
-                // Start the bundled Ollama child first so /health only becomes reachable after inference is actually ready.
+                // HTTP listener starts before bundled Ollama is HTTP-ready so the host can poll GET /health (short listen timeout) while Ollama boots.
                 await InitializeAsync();
 
                 // Block until a request arrives, then handle it without awaiting (concurrent requests).
@@ -111,28 +116,52 @@ namespace MorpheusEngine
         #endregion
 
         #region Private methods
-        // Intentional single use method.
-        private async Task InitializeAsync()
+        // Intentional single use method: binds the HTTP listener immediately, then starts bundled Ollama on a background task so GET /health can answer during long Ollama cold start.
+        private Task InitializeAsync()
         {
             var configuration = EngineConfigLoader.GetConfiguration();
             _repositoryRoot = configuration.RepositoryRoot;
-            _chatModel = configuration.LlmProviderOllamaModel.Trim();
-            _ollamaPort = configuration.LlmProviderOllamaListenPort;
-            _ollamaNumCtx = configuration.LlmProviderNumCtx;
+            var providerRow = configuration.GetRequiredGenericLlmProviderModule();
+            var qwenOpts = providerRow.QwenOptions
+                ?? throw new InvalidOperationException(
+                    "llm_provider_qwen: generic_llm_provider target module has no qwen options (ollama_port, default_chat_model).");
+            var genericOpts = providerRow.GenericLlmProviderOptions
+                ?? throw new InvalidOperationException(
+                    "llm_provider_qwen: generic_llm_provider target module has no num_ctx (generic_llm_provider options).");
+            _chatModel = qwenOpts.OllamaModel.Trim();
+            _ollamaPort = qwenOpts.OllamaPort;
+            _ollamaNumCtx = genericOpts.NumCtx;
             if (string.IsNullOrWhiteSpace(_chatModel))
             {
                 throw new InvalidOperationException(
-                    "llm_provider_qwen: LlmProviderOllamaModel from engine configuration is empty (check default_chat_model in engine_config.json).");
+                    "llm_provider_qwen: default_chat_model from engine configuration is empty (check engine_config.json).");
             }
-
-            // Bundled Ollama inherits the host module job (see MorpheusEngine Run); no nested Job Object here.
-            await StartManagedOllamaAsync("initial startup");
 
             var qwenListen = configuration.PortMap.GetRequiredPort("llm_provider_qwen");
             _listener.Prefixes.Add($"http://127.0.0.1:{qwenListen}/");
             _listener.Start();
+
+            // Bundled Ollama inherits the host module job (see MorpheusEngine Run); no nested Job Object here.
+            _ollamaBootstrapFailed = false;
+            _bundledOllamaBootstrapTask = RunBundledOllamaBootstrapAsync();
+
             Console.WriteLine(
-                $"ready listen=http://127.0.0.1:{qwenListen}/ model='{_chatModel}' ollama=http://127.0.0.1:{_ollamaPort}/ num_ctx={_ollamaNumCtx} awaiting_initialize=true");
+                $"ready listen=http://127.0.0.1:{qwenListen}/ model='{_chatModel}' ollama=http://127.0.0.1:{_ollamaPort}/ num_ctx={_ollamaNumCtx} awaiting_initialize=true (ollama bootstrap in background)");
+            return Task.CompletedTask;
+        }
+
+        // Swallows exceptions from StartManagedOllamaAsync so Run() always enters the accept loop; failures are reported on GET /health (ollama_startup_failed).
+        private async Task RunBundledOllamaBootstrapAsync()
+        {
+            try
+            {
+                await StartManagedOllamaAsync("initial startup");
+            }
+            catch (Exception e)
+            {
+                _ollamaBootstrapFailed = true;
+                Console.WriteLine("LlmProvider_qwen: bundled Ollama initial bootstrap failed: " + e.Message);
+            }
         }
 
         // Intentional single use method.
@@ -164,7 +193,8 @@ namespace MorpheusEngine
                     return;
                 }
 
-                // /health: awaiting_initialize (200) → initializing/warming (503) → healthy (200, initialized).
+                // /health: awaiting_initialize (200) → initializing (503, includes one-shot model priming) → healthy (200, initialized).
+                // POST /initialize may return 202 quickly while bind + priming continue; initialized stays false until priming succeeds.
                 if (path.Equals("/health", StringComparison.OrdinalIgnoreCase))
                 {
                     if (_initializing)
@@ -179,15 +209,29 @@ namespace MorpheusEngine
                         return;
                     }
 
+                    // Terminal bootstrap failure: 200 + fail-fast in host WaitForStartProcessCompletedAsync / WaitForInitializationToCompleteAsync.
+                    if (_ollamaBootstrapFailed)
+                    {
+                        await Respond(context, 200, new ModuleHealthResponse(false, "ollama_startup_failed", false));
+                        return;
+                    }
+
+                    // 200 (not 503): host WaitForStartProcessCompletedAsync only treats 2xx as "listening"; Ollama may still be warming for many seconds.
                     if (!_runBound && !_ollamaHttpReady)
                     {
-                        await Respond(context, 503, new ModuleHealthResponse(false, "ollama_starting", false));
+                        await Respond(context, 200, new ModuleHealthResponse(false, "ollama_starting", false));
                         return;
                     }
 
                     if (!_runBound)
                     {
                         await Respond(context, 200, new ModuleHealthResponse(false, "awaiting_initialize", false));
+                        return;
+                    }
+
+                    if (_initializeBindFailedAfterAccepted)
+                    {
+                        await Respond(context, 503, new ModuleHealthResponse(false, "initialize_failed", false));
                         return;
                     }
 
@@ -242,6 +286,13 @@ namespace MorpheusEngine
         private void Shutdown()
         {
             _shutdownRequested = true;
+
+            // Let in-flight initial Ollama bootstrap finish if possible so we do not dispose HttpClient while it is still probing.
+            if (_bundledOllamaBootstrapTask is { IsCompleted: false }
+                && !_bundledOllamaBootstrapTask.Wait(TimeSpan.FromSeconds(15)))
+            {
+                Console.WriteLine("LlmProvider_qwen shutdown: bundled Ollama bootstrap still running; proceeding with teardown.");
+            }
 
             // Stop taking new requests before tearing down the child process.
             try
@@ -305,6 +356,7 @@ namespace MorpheusEngine
             try
             {
                 await _ollamaRestartGate.WaitAsync();
+                var acceptedInitialize = false;
                 try
                 {
                     if (_runBound)
@@ -316,6 +368,12 @@ namespace MorpheusEngine
                     _boundGameProjectId = request.GameProjectId.Trim();
                     _boundRunId = request.RunId.Trim();
                     _runBound = true;
+                    _initializeBindFailedAfterAccepted = false;
+
+                    // Return 202 immediately so the host's short HttpClient timeout is not exceeded while waiting for Ollama HTTP readiness.
+                    // Completion (or failure) is visible on GET /health; the host still calls WaitForInitializationToCompleteAsync afterward.
+                    await Respond(context, 202, new InitializeModuleResponse(true));
+                    acceptedInitialize = true;
 
                     var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(60);
                     while (!_ollamaHttpReady && DateTime.UtcNow < deadline)
@@ -325,7 +383,22 @@ namespace MorpheusEngine
 
                     if (!_ollamaHttpReady)
                     {
-                        await Respond(context, 503, new ErrorResponse(false, "Bundled Ollama is not ready yet; try POST /initialize again."));
+                        _initializeBindFailedAfterAccepted = true;
+                        Console.WriteLine(
+                            "[LlmProvider_qwen] POST /initialize accepted (202) but bundled Ollama HTTP did not become ready within the bind wait; "
+                            + "GET /health will report initialize_failed.");
+                        return;
+                    }
+
+                    // One minimal /api/generate so weights load before any external /chat; initialized=true only after this succeeds.
+                    try
+                    {
+                        await PrimeBundledOllamaModelAsync("post_initialize_bind");
+                    }
+                    catch (Exception e)
+                    {
+                        _initializeBindFailedAfterAccepted = true;
+                        Console.WriteLine("[LlmProvider_qwen] Model priming failed after bind: " + e.Message);
                         return;
                     }
 
@@ -337,19 +410,42 @@ namespace MorpheusEngine
                     }
 
                     Console.WriteLine($"[LlmProvider_qwen] Bound run runId={_boundRunId} gameProjectId={_boundGameProjectId}.");
-                    await Respond(context, 200, new InitializeModuleResponse(true));
                 }
                 catch (FileNotFoundException e)
                 {
-                    await Respond(context, 500, new ErrorResponse(false, e.Message, e.FileName));
+                    if (!acceptedInitialize)
+                    {
+                        await Respond(context, 500, new ErrorResponse(false, e.Message, e.FileName));
+                    }
+                    else
+                    {
+                        _initializeBindFailedAfterAccepted = true;
+                        Console.WriteLine($"[LlmProvider_qwen] Bind failed after POST /initialize 202: {e.Message}");
+                    }
                 }
                 catch (InvalidOperationException e)
                 {
-                    await Respond(context, 500, new ErrorResponse(false, e.Message));
+                    if (!acceptedInitialize)
+                    {
+                        await Respond(context, 500, new ErrorResponse(false, e.Message));
+                    }
+                    else
+                    {
+                        _initializeBindFailedAfterAccepted = true;
+                        Console.WriteLine($"[LlmProvider_qwen] Bind failed after POST /initialize 202: {e.Message}");
+                    }
                 }
                 catch (Exception e)
                 {
-                    await Respond(context, 500, new ErrorResponse(false, "Failed to bind run.", e.Message));
+                    if (!acceptedInitialize)
+                    {
+                        await Respond(context, 500, new ErrorResponse(false, "Failed to bind run.", e.Message));
+                    }
+                    else
+                    {
+                        _initializeBindFailedAfterAccepted = true;
+                        Console.WriteLine($"[LlmProvider_qwen] Bind failed after POST /initialize 202: {e.Message}");
+                    }
                 }
                 finally
                 {
@@ -653,6 +749,18 @@ namespace MorpheusEngine
                     }
                 }
 
+                // After an unexpected exit, bind may still be active: reload weights before marking inference-ready (initial bind primes in ProcessRequest_bindRun instead).
+                var shouldPrimeAfterHttp = false;
+                lock (_ollamaStateSync)
+                {
+                    shouldPrimeAfterHttp = _runBound && ReferenceEquals(_ollamaProcess, process);
+                }
+
+                if (shouldPrimeAfterHttp)
+                {
+                    await PrimeBundledOllamaModelAsync(reason);
+                }
+
                 lock (_ollamaStateSync)
                 {
                     if (ReferenceEquals(_ollamaProcess, process))
@@ -685,6 +793,55 @@ namespace MorpheusEngine
                 throw new InvalidOperationException(
                     $"Bundled Ollama failed to become ready on port {_ollamaPort}. {e.Message}{DescribeRecentOllamaErrors()}");
             }
+        }
+
+        // Single minimal /api/generate so Ollama loads the configured model before external /chat traffic (lazy load otherwise).
+        private async Task PrimeBundledOllamaModelAsync(string logTag)
+        {
+            Process? proc;
+            lock (_ollamaStateSync)
+            {
+                proc = _ollamaProcess;
+            }
+
+            if (proc is null || proc.HasExited)
+            {
+                throw new InvalidOperationException("Bundled Ollama process is not running; cannot prime model.");
+            }
+
+            var options = BuildOllamaOptionsPayload();
+            var ollamaPayload = new
+            {
+                model = _chatModel,
+                prompt = ".",
+                stream = false,
+                truncate = false,
+                options = new { options.num_ctx, options.num_keep, num_predict = 1 }
+            };
+
+            var requestJson = JsonSerializer.Serialize(ollamaPayload);
+            WriteTrafficLine("OLLAMA_IO TRAFFIC PRIME_REQUEST_JSON " + requestJson);
+            using var content = new StringContent(requestJson, Encoding.UTF8, "application/json");
+
+            HttpResponseMessage response;
+            try
+            {
+                response = await _httpClient.PostAsync(BuildOllamaUri("/api/generate"), content);
+            }
+            catch (Exception e)
+            {
+                throw new InvalidOperationException($"Ollama priming request failed ({logTag}). {e.Message}", e);
+            }
+
+            var responseBody = await response.Content.ReadAsStringAsync();
+            WriteTrafficLine("OLLAMA_IO TRAFFIC PRIME_RESPONSE_BODY " + JsonSerializer.Serialize(responseBody));
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new InvalidOperationException(
+                    $"Ollama priming returned {(int)response.StatusCode} ({logTag}). Body: {TruncateMiddle(responseBody, headChars: 200, tailChars: 120)}");
+            }
+
+            Console.WriteLine($"OLLAMA_IO Model priming succeeded ({logTag}) model={_chatModel} logSnippet={TruncateMiddle(responseBody, headChars: 120, tailChars: 80)}");
         }
 
         // Intentional extraction: shared by startup and crash-recovery restart paths.

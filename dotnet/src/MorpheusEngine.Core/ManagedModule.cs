@@ -81,6 +81,7 @@ namespace MorpheusEngine
 
         /// <summary>
         /// Waits until GET /health returns 2xx with <see cref="ModuleHealthResponse.Initialized"/> false (pre-POST /initialize accepting state).
+        /// Implementations may use status ollama_starting with 200 while a child process is still booting; the host treats that as "listening" and proceeds.
         /// </summary>
         public async Task WaitForStartProcessCompletedAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
         {
@@ -100,19 +101,28 @@ namespace MorpheusEngine
                 try
                 {
                     using var response = await Http.GetAsync(GetModuleUri("/health"), cancellationToken);
+                    var body = await response.Content.ReadAsStringAsync(cancellationToken);
+                    var health = JsonSerializer.Deserialize<ModuleHealthResponse>(body, HealthJsonOptions);
+
+                    // llm_provider_qwen may return 200 ollama_startup_failed / initialize_failed with a JSON body even when HTTP is non-2xx for some paths; treat as terminal.
+                    if (string.Equals(health?.Status, "ollama_startup_failed", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(health?.Status, "initialize_failed", StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new InvalidOperationException(
+                            $"{DisplayName} reported terminal health status '{health?.Status}' while waiting for listen (see module logs). Body: {body}");
+                    }
+
                     if (!response.IsSuccessStatusCode)
                     {
-                        lastError = new InvalidOperationException($"{DisplayName} /health returned {(int)response.StatusCode}.");
+                        lastError = new InvalidOperationException(
+                            $"{DisplayName} /health returned {(int)response.StatusCode} (status={health?.Status ?? "(null)"}).");
+                    }
+                    else if (health is not null && !health.Initialized)
+                    {
+                        return;
                     }
                     else
                     {
-                        var body = await response.Content.ReadAsStringAsync(cancellationToken);
-                        var health = JsonSerializer.Deserialize<ModuleHealthResponse>(body, HealthJsonOptions);
-                        if (health is not null && !health.Initialized)
-                        {
-                            return;
-                        }
-
                         lastError = new InvalidOperationException(
                             $"{DisplayName} /health returned 2xx but missing or unexpected body (expected initialized=false).");
                     }
@@ -131,6 +141,8 @@ namespace MorpheusEngine
         /// <summary>
         /// Host-driven initialization call.
         /// Sends POST /initialize to the module implementation process so it binds to the run and prepares runtime state.
+        /// Implementations may return 202 Accepted with the same JSON shape as 200 to defer long work; the host then relies on
+        /// <see cref="WaitForInitializationToCompleteAsync"/> (GET /health) for completion. Any 2xx response is treated as acceptance.
         /// </summary>
         public async Task InitializeAsync(
             InitializeModuleRequest request,
@@ -177,10 +189,19 @@ namespace MorpheusEngine
                 try
                 {
                     using var response = await Http.GetAsync(GetModuleUri("/health"), cancellationToken);
+                    var body = await response.Content.ReadAsStringAsync(cancellationToken);
+                    var health = JsonSerializer.Deserialize<ModuleHealthResponse>(body, HealthJsonOptions);
+
+                    // Terminal failure from modules that accept POST /initialize quickly (e.g. 202) then report bind errors only on /health, or from failed bundled Ollama bootstrap.
+                    if (string.Equals(health?.Status, "initialize_failed", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(health?.Status, "ollama_startup_failed", StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new InvalidOperationException(
+                            $"{DisplayName} reported terminal health status '{health?.Status}' during startup (see module logs). Body: {body}");
+                    }
+
                     if (response.IsSuccessStatusCode)
                     {
-                        var body = await response.Content.ReadAsStringAsync(cancellationToken);
-                        var health = JsonSerializer.Deserialize<ModuleHealthResponse>(body, HealthJsonOptions);
                         if (health?.Initialized == true)
                         {
                             return;
@@ -191,7 +212,8 @@ namespace MorpheusEngine
                     }
                     else
                     {
-                        lastError = new InvalidOperationException($"{DisplayName} health check returned {(int)response.StatusCode}.");
+                        lastError = new InvalidOperationException(
+                            $"{DisplayName} health check returned {(int)response.StatusCode} (status={health?.Status ?? "(null)"}).");
                     }
                 }
                 catch (Exception e)

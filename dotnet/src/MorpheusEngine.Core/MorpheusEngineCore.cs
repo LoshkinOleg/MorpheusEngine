@@ -19,6 +19,7 @@ namespace MorpheusEngine
         public readonly string RunId;
         /// <summary>
         /// Completes after each module has been started, host-initialized, and GET /health reports initialized=true (2xx), in engine_config.json list order.
+        /// For llm_provider_qwen, initialized=true is only set after a successful one-shot model priming request to bundled Ollama.
         /// </summary>
         public readonly TaskCompletionSource InitializationCompletedSource = new(TaskCreationOptions.RunContinuationsAsynchronously);
 #endregion
@@ -125,15 +126,18 @@ namespace MorpheusEngine
                 configuration.ModulesInfos
                     .OrderBy(m => m.PortKey, StringComparer.OrdinalIgnoreCase)
                     .Select(m => $"{m.PortKey}={configuration.GetRequiredListenPort(m.PortKey)}"));
+            var llmRow = configuration.GetRequiredGenericLlmProviderModule();
+            var qwenLog = llmRow.QwenOptions;
+            var numCtxLog = llmRow.GenericLlmProviderOptions?.NumCtx;
             Console.WriteLine(
                 $"Engine config repo='{configuration.RepositoryRoot}' ports={{ {portsSummary} }} module_aliases={configuration.ModuleAliases.Count} "
-                + $"llm_provider_qwen.ollama_port={configuration.LlmProviderOllamaListenPort} ollama_model='{configuration.LlmProviderOllamaModel}' "
-                + $"num_ctx={configuration.LlmProviderNumCtx} "
+                + $"generic_llm_provider→{llmRow.PortKey} ollama_port={qwenLog?.OllamaPort} ollama_model='{qwenLog?.OllamaModel}' "
+                + $"num_ctx={numCtxLog} "
                 + $"run.gameProjectId='{GameProjectId}' run.runId='{RunId}'");
 
             var initializePayload = new InitializeModuleRequest(GameProjectId, RunId);
 
-            // One module at a time: spawn → wait GET /health 2xx + initialized=false → POST /initialize → wait GET /health 2xx + initialized=true.
+            // One module at a time: spawn → wait GET /health 2xx + initialized=false → POST /initialize (2xx or 202) → wait GET /health until initialized=true.
             foreach (var module in Modules)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -152,7 +156,7 @@ namespace MorpheusEngine
                 Console.WriteLine($"[Engine] Module '{module.DisplayName}' ({module.PortKey}) is healthy.");
             }
 
-            // Signals the GUI (and any other host) that outbound calls may reach a warmed LLM provider.
+            // Signals the GUI (and any other host) that module HTTP init finished (including llm_provider_qwen model priming before initialized=true).
             InitializationCompletedSource.TrySetResult();
 
             Console.WriteLine("Engine initialized.");

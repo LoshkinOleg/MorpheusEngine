@@ -10,7 +10,10 @@ public sealed record ModuleInfoResponse(
     [property: JsonPropertyName("ok")] bool Ok,
     [property: JsonPropertyName("moduleName")] string ModuleName);
 
-/// <summary>GET /health JSON. <see cref="Initialized"/> is false while awaiting or processing POST /initialize; true only when module-specific init is complete.</summary>
+/// <summary>GET /health JSON. <see cref="Initialized"/> is false while awaiting or processing POST /initialize; true only when module-specific init is complete.
+/// Status initialize_failed means a deferred bind (for example after POST /initialize returned 202) could not complete; the host should fail startup.
+/// Status ollama_starting is used while the HTTP listener is up but bundled Ollama is not HTTP-ready yet (expect 200 from llm_provider_qwen so the host listen-wait can succeed).
+/// Status ollama_startup_failed means bundled Ollama failed during initial bootstrap; the host should fail startup.</summary>
 public sealed record ModuleHealthResponse(
     [property: JsonPropertyName("ok")] bool Ok,
     [property: JsonPropertyName("status")] string Status,
