@@ -159,6 +159,91 @@ public sealed class SessionStoreHost
                 return;
             }
 
+            if (path.Equals("/memory/load_context", StringComparison.OrdinalIgnoreCase) && method == "POST")
+            {
+                await HandleMemoryStubRequest<MemoryLoadContextRequest>(
+                    context,
+                    request => new MemoryLoadContextResponse(
+                        true,
+                        [],
+                        [],
+                        CreateEmptySnapshot(),
+                        CreatePhase0MemoryBudget(request.RecentMessageCount)));
+                return;
+            }
+
+            if (path.Equals("/memory/persist_step", StringComparison.OrdinalIgnoreCase) && method == "POST")
+            {
+                await HandleMemoryStubRequest<MemoryPersistStepRequest>(
+                    context,
+                    _ => new MemoryPersistStepResponse(true));
+                return;
+            }
+
+            if (path.Equals("/memory/recall_search", StringComparison.OrdinalIgnoreCase) && method == "POST")
+            {
+                await HandleMemoryStubRequest<MemoryRecallSearchRequest>(
+                    context,
+                    _ => new MemoryRecallSearchResponse(true, []));
+                return;
+            }
+
+            if (path.Equals("/memory/archival_search", StringComparison.OrdinalIgnoreCase) && method == "POST")
+            {
+                await HandleMemoryStubRequest<MemoryArchivalSearchRequest>(
+                    context,
+                    _ => new MemoryArchivalSearchResponse(true, []));
+                return;
+            }
+
+            if (path.Equals("/memory/blocks/get_all", StringComparison.OrdinalIgnoreCase) && method == "POST")
+            {
+                await HandleMemoryStubRequest<MemoryBlocksGetAllRequest>(
+                    context,
+                    _ => new MemoryBlocksGetAllResponse(true, []));
+                return;
+            }
+
+            if (path.Equals("/memory/blocks/upsert", StringComparison.OrdinalIgnoreCase) && method == "POST")
+            {
+                await HandleMemoryStubRequest<MemoryBlockUpsertRequest>(
+                    context,
+                    _ => new MemoryBlockUpsertResponse(true));
+                return;
+            }
+
+            if (path.Equals("/memory/messages/recent", StringComparison.OrdinalIgnoreCase) && method == "POST")
+            {
+                await HandleMemoryStubRequest<MemoryMessagesRecentRequest>(
+                    context,
+                    _ => new MemoryMessagesRecentResponse(true, []));
+                return;
+            }
+
+            if (path.Equals("/memory/messages/append", StringComparison.OrdinalIgnoreCase) && method == "POST")
+            {
+                await HandleMemoryStubRequest<MemoryMessageAppendRequest>(
+                    context,
+                    _ => new MemoryMessageAppendResponse(true));
+                return;
+            }
+
+            if (path.Equals("/memory/mutations/append", StringComparison.OrdinalIgnoreCase) && method == "POST")
+            {
+                await HandleMemoryStubRequest<MemoryMutationAppendRequest>(
+                    context,
+                    _ => new MemoryMutationAppendResponse(true));
+                return;
+            }
+
+            if (path.Equals("/memory/snapshot/latest", StringComparison.OrdinalIgnoreCase) && method == "POST")
+            {
+                await HandleMemoryStubRequest<MemorySnapshotLatestRequest>(
+                    context,
+                    _ => new MemorySnapshotLatestResponse(true, CreateEmptySnapshot()));
+                return;
+            }
+
             await RespondJsonAsync(context, 404, new ErrorResponse(false, "Not found: " + path));
         }
         catch (Exception e)
@@ -287,6 +372,63 @@ public sealed class SessionStoreHost
             await RespondJsonAsync(context, 500, new ErrorResponse(false, "Failed to persist turn.", e.Message));
         }
     }
+
+    private async Task HandleMemoryStubRequest<TRequest>(
+        HttpListenerContext context,
+        Func<TRequest, object> responseFactory)
+        where TRequest : class
+    {
+        var body = await ReadRequestBodyAsync(context);
+        TRequest? request;
+        try
+        {
+            request = JsonSerializer.Deserialize<TRequest>(body, JsonOptions);
+        }
+        catch (JsonException e)
+        {
+            await RespondJsonAsync(context, 400, new ErrorResponse(false, "Invalid JSON payload.", e.Message));
+            return;
+        }
+
+        if (request is null)
+        {
+            await RespondJsonAsync(context, 400, new ErrorResponse(false, "Invalid JSON payload."));
+            return;
+        }
+
+        bool missingBound;
+        lock (_sessionLock)
+        {
+            missingBound = !IsRunBound;
+        }
+
+        if (missingBound)
+        {
+            await RespondJsonAsync(
+                context,
+                400,
+                new ErrorResponse(
+                    false,
+                    "No bound run: the host must bind the run on this session_store process before memory endpoints."));
+            return;
+        }
+
+        await RespondJsonAsync(context, 200, responseFactory(request));
+    }
+
+    private MemoryBudgetDto CreatePhase0MemoryBudget(int recentMessageCount)
+    {
+        var llmProvider = _configuration.GetRequiredGenericLlmProviderModule();
+        if (llmProvider.GenericLlmProviderOptions is null)
+        {
+            throw new InvalidOperationException("Generic LLM provider options are required to derive the Phase 0 memory budget.");
+        }
+
+        var numCtx = llmProvider.GenericLlmProviderOptions.NumCtx;
+        return new MemoryBudgetDto(numCtx, numCtx * 70 / 100, recentMessageCount, 4000);
+    }
+
+    private static LatestSnapshotDto CreateEmptySnapshot() => new(0, "{}", "{}");
 
     #endregion
 

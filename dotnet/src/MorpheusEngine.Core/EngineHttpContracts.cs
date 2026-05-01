@@ -70,6 +70,144 @@ public sealed record TurnPersistResponse(
     [property: JsonPropertyName("ok")] bool Ok);
 #endregion
 
+#region Memory-director Phase 0 storage and provider contracts
+public sealed record MemoryBlockDto(
+    [property: JsonPropertyName("label")] string Label,
+    [property: JsonPropertyName("description")] string Description,
+    [property: JsonPropertyName("value")] string Value,
+    [property: JsonPropertyName("charLimit")] int CharLimit,
+    [property: JsonPropertyName("readOnly")] bool ReadOnly);
+
+public sealed record AgentMessageDto(
+    [property: JsonPropertyName("turn")] int Turn,
+    [property: JsonPropertyName("stepNumber")] int StepNumber,
+    [property: JsonPropertyName("role")] string Role,
+    [property: JsonPropertyName("messageType")] string MessageType,
+    [property: JsonPropertyName("content")] string Content,
+    [property: JsonPropertyName("toolName")] string? ToolName = null,
+    [property: JsonPropertyName("toolCallId")] string? ToolCallId = null);
+
+public sealed record MemoryMutationDto(
+    [property: JsonPropertyName("turn")] int Turn,
+    [property: JsonPropertyName("stepNumber")] int StepNumber,
+    [property: JsonPropertyName("toolName")] string ToolName,
+    [property: JsonPropertyName("target")] string Target,
+    [property: JsonPropertyName("beforeJson")] string? BeforeJson = null,
+    [property: JsonPropertyName("afterJson")] string? AfterJson = null);
+
+public sealed record LatestSnapshotDto(
+    [property: JsonPropertyName("turn")] int Turn,
+    [property: JsonPropertyName("worldStateJson")] string WorldStateJson,
+    [property: JsonPropertyName("viewStateJson")] string ViewStateJson);
+
+public sealed record MemoryBudgetDto(
+    [property: JsonPropertyName("numCtx")] int NumCtx,
+    [property: JsonPropertyName("targetContextTokens")] int TargetContextTokens,
+    [property: JsonPropertyName("recentMessageCount")] int RecentMessageCount,
+    [property: JsonPropertyName("maxToolResultChars")] int MaxToolResultChars);
+
+public sealed record MemoryLoadContextRequest(
+    [property: JsonPropertyName("turn")] int Turn,
+    [property: JsonPropertyName("recentMessageCount")] int RecentMessageCount = 12);
+
+public sealed record MemoryLoadContextResponse(
+    [property: JsonPropertyName("ok")] bool Ok,
+    [property: JsonPropertyName("blocks")] IReadOnlyList<MemoryBlockDto> Blocks,
+    [property: JsonPropertyName("recentMessages")] IReadOnlyList<AgentMessageDto> RecentMessages,
+    [property: JsonPropertyName("latestSnapshot")] LatestSnapshotDto LatestSnapshot,
+    [property: JsonPropertyName("budget")] MemoryBudgetDto Budget);
+
+public sealed record MemoryPersistStepRequest(
+    [property: JsonPropertyName("turn")] int Turn,
+    [property: JsonPropertyName("stepNumber")] int StepNumber,
+    [property: JsonPropertyName("messages")] IReadOnlyList<AgentMessageDto> Messages,
+    [property: JsonPropertyName("mutations")] IReadOnlyList<MemoryMutationDto> Mutations,
+    [property: JsonPropertyName("blockUpdates")] IReadOnlyList<MemoryBlockDto> BlockUpdates);
+
+public sealed record MemoryPersistStepResponse([property: JsonPropertyName("ok")] bool Ok);
+
+public sealed record MemoryRecallSearchRequest(
+    [property: JsonPropertyName("query")] string Query,
+    [property: JsonPropertyName("roles")] IReadOnlyList<string>? Roles = null,
+    [property: JsonPropertyName("limit")] int Limit = 5);
+
+public sealed record MemorySearchResultDto(
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("content")] string Content,
+    [property: JsonPropertyName("source")] string Source,
+    [property: JsonPropertyName("score")] double? Score = null,
+    [property: JsonPropertyName("metadataJson")] string? MetadataJson = null);
+
+public sealed record MemoryRecallSearchResponse(
+    [property: JsonPropertyName("ok")] bool Ok,
+    [property: JsonPropertyName("results")] IReadOnlyList<MemorySearchResultDto> Results);
+
+public sealed record MemoryArchivalSearchRequest(
+    [property: JsonPropertyName("query")] string Query,
+    [property: JsonPropertyName("tags")] IReadOnlyList<string>? Tags = null,
+    [property: JsonPropertyName("topK")] int TopK = 5);
+
+public sealed record MemoryArchivalSearchResponse(
+    [property: JsonPropertyName("ok")] bool Ok,
+    [property: JsonPropertyName("results")] IReadOnlyList<MemorySearchResultDto> Results);
+
+public sealed record MemoryBlocksGetAllRequest([property: JsonPropertyName("includeReadOnly")] bool IncludeReadOnly = true);
+
+public sealed record MemoryBlocksGetAllResponse(
+    [property: JsonPropertyName("ok")] bool Ok,
+    [property: JsonPropertyName("blocks")] IReadOnlyList<MemoryBlockDto> Blocks);
+
+public sealed record MemoryBlockUpsertRequest([property: JsonPropertyName("block")] MemoryBlockDto Block);
+
+public sealed record MemoryBlockUpsertResponse([property: JsonPropertyName("ok")] bool Ok);
+
+public sealed record MemoryMessagesRecentRequest(
+    [property: JsonPropertyName("limit")] int Limit = 12,
+    [property: JsonPropertyName("roles")] IReadOnlyList<string>? Roles = null);
+
+public sealed record MemoryMessagesRecentResponse(
+    [property: JsonPropertyName("ok")] bool Ok,
+    [property: JsonPropertyName("messages")] IReadOnlyList<AgentMessageDto> Messages);
+
+public sealed record MemoryMessageAppendRequest([property: JsonPropertyName("message")] AgentMessageDto Message);
+
+public sealed record MemoryMessageAppendResponse([property: JsonPropertyName("ok")] bool Ok);
+
+public sealed record MemoryMutationAppendRequest([property: JsonPropertyName("mutation")] MemoryMutationDto Mutation);
+
+public sealed record MemoryMutationAppendResponse([property: JsonPropertyName("ok")] bool Ok);
+
+public sealed record MemorySnapshotLatestRequest([property: JsonPropertyName("includeViewState")] bool IncludeViewState = true);
+
+public sealed record MemorySnapshotLatestResponse(
+    [property: JsonPropertyName("ok")] bool Ok,
+    [property: JsonPropertyName("snapshot")] LatestSnapshotDto Snapshot);
+
+public sealed record EmbeddingRequest(
+    [property: JsonPropertyName("model")] string Model,
+    [property: JsonPropertyName("texts")] IReadOnlyList<string> Texts);
+
+public sealed record EmbeddingVectorDto(
+    [property: JsonPropertyName("index")] int Index,
+    [property: JsonPropertyName("vector")] IReadOnlyList<float> Vector);
+
+public sealed record EmbeddingResponse(
+    [property: JsonPropertyName("ok")] bool Ok,
+    [property: JsonPropertyName("model")] string Model,
+    [property: JsonPropertyName("dimensions")] int Dimensions,
+    [property: JsonPropertyName("vectors")] IReadOnlyList<EmbeddingVectorDto> Vectors);
+
+public sealed record TokenCountRequest(
+    [property: JsonPropertyName("model")] string Model,
+    [property: JsonPropertyName("text")] string Text);
+
+public sealed record TokenCountResponse(
+    [property: JsonPropertyName("ok")] bool Ok,
+    [property: JsonPropertyName("model")] string Model,
+    [property: JsonPropertyName("estimatedTokens")] int EstimatedTokens,
+    [property: JsonPropertyName("exact")] bool Exact);
+#endregion
+
 #region Router POST /proxy
 public sealed record ModuleProxyRequest(
     [property: JsonPropertyName("sourceModule")] string SourceModule,
@@ -167,6 +305,52 @@ public static class EngineContractExamples
                 ]
             }),
             Serialize(new ChatGenerateResponse(true, "You stand still and listen.", "{\"raw\":\"...\"}"))),
+        "memory_load_context" => new EndpointTemplatePair(
+            Serialize(new MemoryLoadContextRequest(1, 12)),
+            Serialize(new MemoryLoadContextResponse(
+                true,
+                [ExampleMemoryBlock()],
+                [ExampleAgentMessage()],
+                ExampleSnapshot(),
+                ExampleMemoryBudget()))),
+        "memory_persist_step" => new EndpointTemplatePair(
+            Serialize(new MemoryPersistStepRequest(
+                1,
+                1,
+                [ExampleAgentMessage()],
+                [ExampleMemoryMutation()],
+                [ExampleMemoryBlock()])),
+            Serialize(new MemoryPersistStepResponse(true))),
+        "memory_recall_search" => new EndpointTemplatePair(
+            Serialize(new MemoryRecallSearchRequest("recent decisions", ["assistant"], 5)),
+            Serialize(new MemoryRecallSearchResponse(true, [ExampleMemorySearchResult("recall")]))),
+        "memory_archival_search" => new EndpointTemplatePair(
+            Serialize(new MemoryArchivalSearchRequest("ancient ruins", ["lore"], 5)),
+            Serialize(new MemoryArchivalSearchResponse(true, [ExampleMemorySearchResult("archival")]))),
+        "memory_blocks_get_all" => new EndpointTemplatePair(
+            Serialize(new MemoryBlocksGetAllRequest(true)),
+            Serialize(new MemoryBlocksGetAllResponse(true, [ExampleMemoryBlock()]))),
+        "memory_blocks_upsert" => new EndpointTemplatePair(
+            Serialize(new MemoryBlockUpsertRequest(ExampleMemoryBlock())),
+            Serialize(new MemoryBlockUpsertResponse(true))),
+        "memory_messages_recent" => new EndpointTemplatePair(
+            Serialize(new MemoryMessagesRecentRequest(12, ["assistant", "tool"])),
+            Serialize(new MemoryMessagesRecentResponse(true, [ExampleAgentMessage()]))),
+        "memory_messages_append" => new EndpointTemplatePair(
+            Serialize(new MemoryMessageAppendRequest(ExampleAgentMessage())),
+            Serialize(new MemoryMessageAppendResponse(true))),
+        "memory_mutations_append" => new EndpointTemplatePair(
+            Serialize(new MemoryMutationAppendRequest(ExampleMemoryMutation())),
+            Serialize(new MemoryMutationAppendResponse(true))),
+        "memory_snapshot_latest" => new EndpointTemplatePair(
+            Serialize(new MemorySnapshotLatestRequest(true)),
+            Serialize(new MemorySnapshotLatestResponse(true, ExampleSnapshot()))),
+        "embed" => new EndpointTemplatePair(
+            Serialize(new EmbeddingRequest("nomic-embed-text", ["The party enters the ruin."])),
+            Serialize(new EmbeddingResponse(true, "nomic-embed-text", 3, [new EmbeddingVectorDto(0, [0.12f, -0.04f, 0.88f])]))),
+        "token_count" => new EndpointTemplatePair(
+            Serialize(new TokenCountRequest("qwen2.5:7b-instruct", "The party enters the ruin.")),
+            Serialize(new TokenCountResponse(true, "qwen2.5:7b-instruct", 7, false))),
         "module_proxy" => new EndpointTemplatePair(
             Serialize(new ModuleProxyRequest(
                 "intent_extractor",
@@ -186,5 +370,23 @@ public static class EngineContractExamples
 
     private static string Serialize<T>(T payload) =>
         JsonSerializer.Serialize(payload, TemplateOptions);
+
+    private static MemoryBlockDto ExampleMemoryBlock() =>
+        new("human", "Stable player-facing facts.", "Player prefers concise descriptions.", 2000, false);
+
+    private static AgentMessageDto ExampleAgentMessage() =>
+        new(1, 1, "assistant", "send_message", "You stand still and listen.");
+
+    private static MemoryMutationDto ExampleMemoryMutation() =>
+        new(1, 1, "core_memory_append", "human", null, "{\"append\":\"Player prefers concise descriptions.\"}");
+
+    private static LatestSnapshotDto ExampleSnapshot() =>
+        new(1, "{\"location\":\"dune\"}", "{\"visibleExits\":[\"north\"]}");
+
+    private static MemoryBudgetDto ExampleMemoryBudget() =>
+        new(4096, 2867, 12, 4000);
+
+    private static MemorySearchResultDto ExampleMemorySearchResult(string source) =>
+        new("example-1", "The party entered the ruin.", source, 0.92, "{\"turn\":1}");
 }
 #endregion

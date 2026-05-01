@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://morpheusengine.local/schemas/memory_director_action.schema.json",
+  "title": "Memory Director Action Envelope",
+  "description": "Schema passed to Ollama /api/chat format for one memory_director assistant action.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "thought",
+    "tool",
+    "arguments"
+  ],
+  "properties": {
+    "thought": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Brief private reasoning for why this action is next."
+    },
+    "tool": {
+      "type": "string",
+      "enum": [
+        "send_message",
+        "core_memory_append",
+        "core_memory_replace",
+        "core_memory_set",
+        "get_current_snapshot"
+      ]
+    },
+    "arguments": {
+      "type": "object"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "tool": {
+          "const": "send_message"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "message"
+          ],
+          "properties": {
+            "message": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "tool": {
+          "const": "core_memory_append"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "label",
+            "content"
+          ],
+          "properties": {
+            "label": {
+              "type": "string",
+              "minLength": 1
+            },
+            "content": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "tool": {
+          "const": "core_memory_replace"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "label",
+            "oldValue",
+            "newValue"
+          ],
+          "properties": {
+            "label": {
+              "type": "string",
+              "minLength": 1
+            },
+            "oldValue": {
+              "type": "string",
+              "minLength": 1
+            },
+            "newValue": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "tool": {
+          "const": "core_memory_set"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "label",
+            "value"
+          ],
+          "properties": {
+            "label": {
+              "type": "string",
+              "minLength": 1
+            },
+            "value": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "tool": {
+          "const": "get_current_snapshot"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {}
+        }
+      }
+    }
+  ]
+}

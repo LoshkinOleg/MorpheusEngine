@@ -68,6 +68,66 @@
           "description": "Persist events + snapshot for the run bound by host POST /initialize on this process (enforces sequencing in a transaction)",
           "method": "POST",
           "template_contracts_id": "persist_turn"
+        },
+        {
+          "path": "/memory/load_context",
+          "description": "Load memory-director context for the run bound by host POST /initialize on this process",
+          "method": "POST",
+          "template_contracts_id": "memory_load_context"
+        },
+        {
+          "path": "/memory/persist_step",
+          "description": "Persist a memory-director step for the run bound by host POST /initialize on this process",
+          "method": "POST",
+          "template_contracts_id": "memory_persist_step"
+        },
+        {
+          "path": "/memory/recall_search",
+          "description": "Search recall memory for the run bound by host POST /initialize on this process",
+          "method": "POST",
+          "template_contracts_id": "memory_recall_search"
+        },
+        {
+          "path": "/memory/archival_search",
+          "description": "Search archival memory for the run bound by host POST /initialize on this process",
+          "method": "POST",
+          "template_contracts_id": "memory_archival_search"
+        },
+        {
+          "path": "/memory/blocks/get_all",
+          "description": "Get core memory blocks for the run bound by host POST /initialize on this process",
+          "method": "POST",
+          "template_contracts_id": "memory_blocks_get_all"
+        },
+        {
+          "path": "/memory/blocks/upsert",
+          "description": "Upsert a core memory block for the run bound by host POST /initialize on this process",
+          "method": "POST",
+          "template_contracts_id": "memory_blocks_upsert"
+        },
+        {
+          "path": "/memory/messages/recent",
+          "description": "Get recent agent messages for the run bound by host POST /initialize on this process",
+          "method": "POST",
+          "template_contracts_id": "memory_messages_recent"
+        },
+        {
+          "path": "/memory/messages/append",
+          "description": "Append an agent message for the run bound by host POST /initialize on this process",
+          "method": "POST",
+          "template_contracts_id": "memory_messages_append"
+        },
+        {
+          "path": "/memory/mutations/append",
+          "description": "Append a memory mutation audit row for the run bound by host POST /initialize on this process",
+          "method": "POST",
+          "template_contracts_id": "memory_mutations_append"
+        },
+        {
+          "path": "/memory/snapshot/latest",
+          "description": "Get the latest world/view snapshot for the run bound by host POST /initialize on this process",
+          "method": "POST",
+          "template_contracts_id": "memory_snapshot_latest"
         }
       ]
     },
