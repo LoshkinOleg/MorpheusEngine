@@ -189,6 +189,202 @@ internal sealed class RunPersistence
 
         return new TurnPersistResponse(true);
     }
+
+    public MemoryLoadContextResponse LoadMemoryContext(string gameProjectId, string runId, MemoryLoadContextRequest request, MemoryBudgetDto budget)
+    {
+        if (request.Turn < 1)
+        {
+            throw new InvalidOperationException("Turn must be >= 1.");
+        }
+
+        var dbPath = RequireRunDatabase(gameProjectId, runId);
+        using var connection = OpenConnection(dbPath);
+        InitializeSessionSchema(connection);
+
+        return new MemoryLoadContextResponse(
+            true,
+            ReadMemoryBlocks(connection, includeReadOnly: true),
+            ReadRecentMessages(connection, request.RecentMessageCount, roles: null),
+            ReadLatestSnapshot(connection),
+            budget);
+    }
+
+    public MemoryPersistStepResponse PersistMemoryStep(string gameProjectId, string runId, MemoryPersistStepRequest request)
+    {
+        if (request.Turn < 1)
+        {
+            throw new InvalidOperationException("Turn must be >= 1.");
+        }
+
+        if (request.StepNumber < 0)
+        {
+            throw new InvalidOperationException("stepNumber must be >= 0.");
+        }
+
+        var dbPath = RequireRunDatabase(gameProjectId, runId);
+        using var connection = OpenConnection(dbPath);
+        InitializeSessionSchema(connection);
+
+        using var transaction = connection.BeginTransaction(IsolationLevel.Serializable);
+        try
+        {
+            foreach (var message in request.Messages)
+            {
+                InsertAgentMessage(connection, transaction, runId, message);
+            }
+
+            foreach (var mutation in request.Mutations)
+            {
+                InsertMemoryMutation(connection, transaction, runId, mutation);
+            }
+
+            foreach (var block in request.BlockUpdates)
+            {
+                UpsertMemoryBlock(connection, transaction, block);
+            }
+
+            transaction.Commit();
+        }
+        catch
+        {
+            transaction.Rollback();
+            throw;
+        }
+
+        return new MemoryPersistStepResponse(true);
+    }
+
+    public MemoryBlocksGetAllResponse GetMemoryBlocks(string gameProjectId, string runId, MemoryBlocksGetAllRequest request)
+    {
+        var dbPath = RequireRunDatabase(gameProjectId, runId);
+        using var connection = OpenConnection(dbPath);
+        InitializeSessionSchema(connection);
+        return new MemoryBlocksGetAllResponse(true, ReadMemoryBlocks(connection, request.IncludeReadOnly));
+    }
+
+    public MemoryBlockUpsertResponse UpsertMemoryBlock(string gameProjectId, string runId, MemoryBlockUpsertRequest request)
+    {
+        var dbPath = RequireRunDatabase(gameProjectId, runId);
+        using var connection = OpenConnection(dbPath);
+        InitializeSessionSchema(connection);
+        using var transaction = connection.BeginTransaction(IsolationLevel.Serializable);
+        try
+        {
+            UpsertMemoryBlock(connection, transaction, request.Block);
+            transaction.Commit();
+        }
+        catch
+        {
+            transaction.Rollback();
+            throw;
+        }
+
+        return new MemoryBlockUpsertResponse(true);
+    }
+
+    public MemoryMessagesRecentResponse GetRecentMessages(string gameProjectId, string runId, MemoryMessagesRecentRequest request)
+    {
+        var dbPath = RequireRunDatabase(gameProjectId, runId);
+        using var connection = OpenConnection(dbPath);
+        InitializeSessionSchema(connection);
+        return new MemoryMessagesRecentResponse(true, ReadRecentMessages(connection, request.Limit, request.Roles));
+    }
+
+    public MemoryMessageAppendResponse AppendMessage(string gameProjectId, string runId, MemoryMessageAppendRequest request)
+    {
+        var dbPath = RequireRunDatabase(gameProjectId, runId);
+        using var connection = OpenConnection(dbPath);
+        InitializeSessionSchema(connection);
+        using var transaction = connection.BeginTransaction(IsolationLevel.Serializable);
+        try
+        {
+            InsertAgentMessage(connection, transaction, runId, request.Message);
+            transaction.Commit();
+        }
+        catch
+        {
+            transaction.Rollback();
+            throw;
+        }
+
+        return new MemoryMessageAppendResponse(true);
+    }
+
+    public MemoryMutationAppendResponse AppendMutation(string gameProjectId, string runId, MemoryMutationAppendRequest request)
+    {
+        var dbPath = RequireRunDatabase(gameProjectId, runId);
+        using var connection = OpenConnection(dbPath);
+        InitializeSessionSchema(connection);
+        using var transaction = connection.BeginTransaction(IsolationLevel.Serializable);
+        try
+        {
+            InsertMemoryMutation(connection, transaction, runId, request.Mutation);
+            transaction.Commit();
+        }
+        catch
+        {
+            transaction.Rollback();
+            throw;
+        }
+
+        return new MemoryMutationAppendResponse(true);
+    }
+
+    public MemorySnapshotLatestResponse GetLatestSnapshot(string gameProjectId, string runId)
+    {
+        var dbPath = RequireRunDatabase(gameProjectId, runId);
+        using var connection = OpenConnection(dbPath);
+        InitializeSessionSchema(connection);
+        return new MemorySnapshotLatestResponse(true, ReadLatestSnapshot(connection));
+    }
+
+    public MemoryRecallSearchResponse SearchRecall(string gameProjectId, string runId, MemoryRecallSearchRequest request)
+    {
+        var dbPath = RequireRunDatabase(gameProjectId, runId);
+        using var connection = OpenConnection(dbPath);
+        InitializeSessionSchema(connection);
+        var query = request.Query?.Trim() ?? string.Empty;
+        if (query.Length == 0)
+        {
+            return new MemoryRecallSearchResponse(true, []);
+        }
+
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText =
+            """
+            SELECT id, turn, step_number, role, message_type, content
+            FROM agent_messages
+            WHERE content LIKE @query
+            ORDER BY turn DESC, step_number DESC, id DESC
+            LIMIT @limit;
+            """;
+        cmd.Parameters.AddWithValue("@query", "%" + query + "%");
+        cmd.Parameters.AddWithValue("@limit", Math.Clamp(request.Limit, 1, 50));
+
+        var results = new List<MemorySearchResultDto>();
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            var id = reader.GetInt64(0).ToString();
+            var metadata = JsonSerializer.Serialize(new
+            {
+                turn = reader.GetInt32(1),
+                stepNumber = reader.GetInt32(2),
+                role = reader.GetString(3),
+                messageType = reader.GetString(4)
+            });
+            results.Add(new MemorySearchResultDto(id, reader.GetString(5), "recall", null, metadata));
+        }
+
+        return new MemoryRecallSearchResponse(true, results);
+    }
+
+    public MemoryArchivalSearchResponse SearchArchival(string gameProjectId, string runId, MemoryArchivalSearchRequest request)
+    {
+        _ = RequireRunDatabase(gameProjectId, runId);
+        _ = request;
+        return new MemoryArchivalSearchResponse(true, []);
+    }
     #endregion
 
     #region db I/O
@@ -251,6 +447,50 @@ internal sealed class RunPersistence
               payload TEXT NOT NULL,
               created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS memory_blocks (
+              label TEXT PRIMARY KEY,
+              description TEXT NOT NULL,
+              value TEXT NOT NULL,
+              char_limit INTEGER NOT NULL,
+              read_only INTEGER NOT NULL,
+              created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS agent_messages (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              run_id TEXT NOT NULL,
+              turn INTEGER NOT NULL,
+              step_number INTEGER NOT NULL,
+              role TEXT NOT NULL,
+              message_type TEXT NOT NULL,
+              content TEXT NOT NULL,
+              tool_name TEXT NULL,
+              tool_call_id TEXT NULL,
+              created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_agent_messages_turn_step
+            ON agent_messages (turn, step_number, id);
+
+            CREATE INDEX IF NOT EXISTS idx_agent_messages_role
+            ON agent_messages (role);
+
+            CREATE TABLE IF NOT EXISTS memory_mutations (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              run_id TEXT NOT NULL,
+              turn INTEGER NOT NULL,
+              step_number INTEGER NOT NULL,
+              tool_name TEXT NOT NULL,
+              target TEXT NOT NULL,
+              before_json TEXT NULL,
+              after_json TEXT NULL,
+              created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_memory_mutations_turn_step
+            ON memory_mutations (turn, step_number, id);
             """;
         cmd.ExecuteNonQuery();
     }
@@ -320,6 +560,260 @@ internal sealed class RunPersistence
         cmd.Parameters.AddWithValue("@src", source);
         cmd.ExecuteNonQuery();
     }
+
+    private static IReadOnlyList<MemoryBlockDto> ReadMemoryBlocks(SqliteConnection connection, bool includeReadOnly)
+    {
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText =
+            """
+            SELECT label, description, value, char_limit, read_only
+            FROM memory_blocks
+            WHERE @includeReadOnly = 1 OR read_only = 0
+            ORDER BY label COLLATE NOCASE;
+            """;
+        cmd.Parameters.AddWithValue("@includeReadOnly", includeReadOnly ? 1 : 0);
+
+        var rows = new List<MemoryBlockDto>();
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            rows.Add(new MemoryBlockDto(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.GetInt32(3),
+                reader.GetInt32(4) != 0));
+        }
+
+        return rows;
+    }
+
+    private static IReadOnlyList<AgentMessageDto> ReadRecentMessages(
+        SqliteConnection connection,
+        int limit,
+        IReadOnlyList<string>? roles)
+    {
+        var normalizedLimit = Math.Clamp(limit, 0, 200);
+        if (normalizedLimit == 0)
+        {
+            return [];
+        }
+
+        var roleFilter = roles?
+            .Where(static role => !string.IsNullOrWhiteSpace(role))
+            .Select(static role => role.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        using var cmd = connection.CreateCommand();
+        if (roleFilter is { Length: > 0 })
+        {
+            var parameterNames = new List<string>();
+            for (var i = 0; i < roleFilter.Length; i++)
+            {
+                var parameterName = "@role" + i;
+                parameterNames.Add(parameterName);
+                cmd.Parameters.AddWithValue(parameterName, roleFilter[i]);
+            }
+
+            cmd.CommandText =
+                $"""
+                SELECT turn, step_number, role, message_type, content, tool_name, tool_call_id
+                FROM agent_messages
+                WHERE role IN ({string.Join(", ", parameterNames)})
+                ORDER BY turn DESC, step_number DESC, id DESC
+                LIMIT @limit;
+                """;
+        }
+        else
+        {
+            cmd.CommandText =
+                """
+                SELECT turn, step_number, role, message_type, content, tool_name, tool_call_id
+                FROM agent_messages
+                ORDER BY turn DESC, step_number DESC, id DESC
+                LIMIT @limit;
+                """;
+        }
+
+        cmd.Parameters.AddWithValue("@limit", normalizedLimit);
+        var rows = new List<AgentMessageDto>();
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            rows.Add(new AgentMessageDto(
+                reader.GetInt32(0),
+                reader.GetInt32(1),
+                reader.GetString(2),
+                reader.GetString(3),
+                reader.GetString(4),
+                reader.IsDBNull(5) ? null : reader.GetString(5),
+                reader.IsDBNull(6) ? null : reader.GetString(6)));
+        }
+
+        rows.Reverse();
+        return rows;
+    }
+
+    private static LatestSnapshotDto ReadLatestSnapshot(SqliteConnection connection)
+    {
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText =
+            """
+            SELECT turn, world_state, view_state
+            FROM snapshots
+            ORDER BY turn DESC, id DESC
+            LIMIT 1;
+            """;
+        using var reader = cmd.ExecuteReader();
+        if (reader.Read())
+        {
+            return new LatestSnapshotDto(reader.GetInt32(0), reader.GetString(1), reader.GetString(2));
+        }
+
+        return new LatestSnapshotDto(0, "{}", "{}");
+    }
+
+    private static void InsertAgentMessage(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string runId,
+        AgentMessageDto message)
+    {
+        if (message.Turn < 1 && message.Turn != 0)
+        {
+            throw new InvalidOperationException("Agent message turn must be 0 for setup or >= 1.");
+        }
+
+        if (message.StepNumber < 0)
+        {
+            throw new InvalidOperationException("Agent message stepNumber must be >= 0.");
+        }
+
+        if (string.IsNullOrWhiteSpace(message.Role)
+            || string.IsNullOrWhiteSpace(message.MessageType)
+            || string.IsNullOrWhiteSpace(message.Content))
+        {
+            throw new InvalidOperationException("Agent message must include non-empty role, messageType, and content.");
+        }
+
+        using var cmd = connection.CreateCommand();
+        cmd.Transaction = transaction;
+        cmd.CommandText =
+            """
+            INSERT INTO agent_messages
+              (run_id, turn, step_number, role, message_type, content, tool_name, tool_call_id)
+            VALUES
+              (@runId, @turn, @stepNumber, @role, @messageType, @content, @toolName, @toolCallId);
+            """;
+        cmd.Parameters.AddWithValue("@runId", runId);
+        cmd.Parameters.AddWithValue("@turn", message.Turn);
+        cmd.Parameters.AddWithValue("@stepNumber", message.StepNumber);
+        cmd.Parameters.AddWithValue("@role", message.Role.Trim());
+        cmd.Parameters.AddWithValue("@messageType", message.MessageType.Trim());
+        cmd.Parameters.AddWithValue("@content", message.Content);
+        cmd.Parameters.AddWithValue("@toolName", string.IsNullOrWhiteSpace(message.ToolName) ? DBNull.Value : message.ToolName.Trim());
+        cmd.Parameters.AddWithValue("@toolCallId", string.IsNullOrWhiteSpace(message.ToolCallId) ? DBNull.Value : message.ToolCallId.Trim());
+        cmd.ExecuteNonQuery();
+    }
+
+    private static void InsertMemoryMutation(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string runId,
+        MemoryMutationDto mutation)
+    {
+        if (mutation.Turn < 1 && mutation.Turn != 0)
+        {
+            throw new InvalidOperationException("Memory mutation turn must be 0 for setup or >= 1.");
+        }
+
+        if (mutation.StepNumber < 0)
+        {
+            throw new InvalidOperationException("Memory mutation stepNumber must be >= 0.");
+        }
+
+        if (string.IsNullOrWhiteSpace(mutation.ToolName) || string.IsNullOrWhiteSpace(mutation.Target))
+        {
+            throw new InvalidOperationException("Memory mutation must include non-empty toolName and target.");
+        }
+
+        using var cmd = connection.CreateCommand();
+        cmd.Transaction = transaction;
+        cmd.CommandText =
+            """
+            INSERT INTO memory_mutations
+              (run_id, turn, step_number, tool_name, target, before_json, after_json)
+            VALUES
+              (@runId, @turn, @stepNumber, @toolName, @target, @beforeJson, @afterJson);
+            """;
+        cmd.Parameters.AddWithValue("@runId", runId);
+        cmd.Parameters.AddWithValue("@turn", mutation.Turn);
+        cmd.Parameters.AddWithValue("@stepNumber", mutation.StepNumber);
+        cmd.Parameters.AddWithValue("@toolName", mutation.ToolName.Trim());
+        cmd.Parameters.AddWithValue("@target", mutation.Target.Trim());
+        cmd.Parameters.AddWithValue("@beforeJson", mutation.BeforeJson is null ? DBNull.Value : mutation.BeforeJson);
+        cmd.Parameters.AddWithValue("@afterJson", mutation.AfterJson is null ? DBNull.Value : mutation.AfterJson);
+        cmd.ExecuteNonQuery();
+    }
+
+    private static void UpsertMemoryBlock(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        MemoryBlockDto block)
+    {
+        ValidateMemoryBlock(block);
+        var existing = ReadMemoryBlock(connection, transaction, block.Label);
+        if (existing is not null && existing.ReadOnly && existing != block)
+        {
+            throw new InvalidOperationException($"Memory block '{block.Label}' is read-only and cannot be changed.");
+        }
+
+        using var cmd = connection.CreateCommand();
+        cmd.Transaction = transaction;
+        cmd.CommandText =
+            """
+            INSERT INTO memory_blocks (label, description, value, char_limit, read_only)
+            VALUES (@label, @description, @value, @charLimit, @readOnly)
+            ON CONFLICT(label) DO UPDATE SET
+              description = excluded.description,
+              value = excluded.value,
+              char_limit = excluded.char_limit,
+              read_only = excluded.read_only,
+              updated_at = CURRENT_TIMESTAMP;
+            """;
+        cmd.Parameters.AddWithValue("@label", block.Label.Trim());
+        cmd.Parameters.AddWithValue("@description", block.Description.Trim());
+        cmd.Parameters.AddWithValue("@value", block.Value);
+        cmd.Parameters.AddWithValue("@charLimit", block.CharLimit);
+        cmd.Parameters.AddWithValue("@readOnly", block.ReadOnly ? 1 : 0);
+        cmd.ExecuteNonQuery();
+    }
+
+    private static MemoryBlockDto? ReadMemoryBlock(SqliteConnection connection, SqliteTransaction transaction, string label)
+    {
+        using var cmd = connection.CreateCommand();
+        cmd.Transaction = transaction;
+        cmd.CommandText =
+            """
+            SELECT label, description, value, char_limit, read_only
+            FROM memory_blocks
+            WHERE label = @label;
+            """;
+        cmd.Parameters.AddWithValue("@label", label.Trim());
+        using var reader = cmd.ExecuteReader();
+        if (!reader.Read())
+        {
+            return null;
+        }
+
+        return new MemoryBlockDto(
+            reader.GetString(0),
+            reader.GetString(1),
+            reader.GetString(2),
+            reader.GetInt32(3),
+            reader.GetInt32(4) != 0);
+    }
     #endregion
 
     #region Helpers
@@ -374,6 +868,52 @@ internal sealed class RunPersistence
 
     private string GetDbPath(string gameProjectId, string runId) =>
         Path.Combine(GetGameProjectsRoot(), gameProjectId, "saved", runId, "world_state.db");
+
+    private string RequireRunDatabase(string gameProjectId, string runId)
+    {
+        if (string.IsNullOrWhiteSpace(gameProjectId))
+        {
+            throw new ArgumentException("gameProjectId must be non-empty.", nameof(gameProjectId));
+        }
+
+        if (string.IsNullOrWhiteSpace(runId))
+        {
+            throw new ArgumentException("runId must be non-empty.", nameof(runId));
+        }
+
+        var dbPath = GetDbPath(gameProjectId, runId);
+        if (!File.Exists(dbPath))
+        {
+            throw new InvalidOperationException(
+                "Run database not found; the host must bind the run before using memory endpoints.");
+        }
+
+        return dbPath;
+    }
+
+    private static void ValidateMemoryBlock(MemoryBlockDto block)
+    {
+        if (string.IsNullOrWhiteSpace(block.Label))
+        {
+            throw new InvalidOperationException("Memory block label must be non-empty.");
+        }
+
+        if (string.IsNullOrWhiteSpace(block.Description))
+        {
+            throw new InvalidOperationException($"Memory block '{block.Label}' description must be non-empty.");
+        }
+
+        if (block.CharLimit < 1)
+        {
+            throw new InvalidOperationException($"Memory block '{block.Label}' charLimit must be >= 1.");
+        }
+
+        if (block.Value.Length > block.CharLimit)
+        {
+            throw new InvalidOperationException(
+                $"Memory block '{block.Label}' value length {block.Value.Length} exceeds charLimit {block.CharLimit}.");
+        }
+    }
 
     private static SqliteConnection OpenConnection(string dbPath)
     {

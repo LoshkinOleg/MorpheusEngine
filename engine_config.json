@@ -1,6 +1,7 @@
 {
   "module_aliases": {
-    "generic_llm_provider": "llm_provider_qwen"
+    "generic_llm_provider": "llm_provider_qwen",
+    "generic_director": "memory_director"
   },
   "modules": [
     {
@@ -8,7 +9,7 @@
       "port": 8794,
       "load_order": 50,
       "display_name": "Director",
-      "required_by_engine": true,
+      "required_by_engine": false,
       "launch": "dotnet/src/MorpheusEngine.Director/bin/Debug/net9.0/MorpheusEngine.Director.exe",
       "endpoints": [
         {
@@ -38,11 +39,55 @@
       ]
     },
     {
+      "port_key": "memory_director",
+      "port": 8796,
+      "load_order": 55,
+      "display_name": "MemoryDirector",
+      "required_by_engine": true,
+      "max_steps_per_turn": 12,
+      "max_tool_result_chars": 4000,
+      "recent_message_count": 12,
+      "keep_alive": "30m",
+      "launch": "dotnet/src/MorpheusEngine.MemoryDirector/bin/Debug/net9.0/MorpheusEngine.MemoryDirector.exe",
+      "endpoints": [
+        {
+          "path": "/info",
+          "description": "Module metadata",
+          "method": "GET",
+          "template_contracts_id": "module_info"
+        },
+        {
+          "path": "/health",
+          "description": "Health check",
+          "method": "GET",
+          "template_contracts_id": "module_health"
+        },
+        {
+          "path": "/initialize",
+          "description": "Host binds run identity (game project id and run id) for this module process",
+          "method": "POST",
+          "template_contracts_id": "initialize"
+        },
+        {
+          "path": "/message",
+          "description": "Runs a memory-managed turn with the player's input.",
+          "method": "POST",
+          "template_contracts_id": "director_message"
+        },
+        {
+          "path": "/shutdown",
+          "description": "Request module shutdown",
+          "method": "POST",
+          "template_contracts_id": "module_shutdown"
+        }
+      ]
+    },
+    {
       "port_key": "session_store",
       "port": 8793,
       "load_order": 40,
       "display_name": "SessionStore",
-      "required_by_engine": false,
+      "required_by_engine": true,
       "launch": "dotnet/src/MorpheusEngine.SessionStoreModule/bin/Debug/net9.0/MorpheusEngine.SessionStoreModule.exe",
       "endpoints": [
         {

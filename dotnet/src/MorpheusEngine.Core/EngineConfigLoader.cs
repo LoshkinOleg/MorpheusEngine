@@ -75,6 +75,13 @@ public sealed record QwenModuleOptions(
     int OllamaPort,
     string OllamaModel);
 
+/// <summary>Options specific to the memory_director module implementation.</summary>
+public sealed record MemoryDirectorModuleOptions(
+    int MaxStepsPerTurn,
+    int MaxToolResultChars,
+    int RecentMessageCount,
+    string KeepAlive);
+
 public sealed record EngineModuleInfo(
     string PortKey, // stable module id (e.g. router); actual port is in EngineConfiguration.PortMap.
     string DisplayName, // Shown in UI / logs;
@@ -85,7 +92,9 @@ public sealed record EngineModuleInfo(
     /// <summary>Set only on the module resolved from generic_llm_provider.</summary>
     GenericLlmProviderModuleOptions? GenericLlmProviderOptions = null,
     /// <summary>Set only on llm_provider_qwen.</summary>
-    QwenModuleOptions? QwenOptions = null);
+    QwenModuleOptions? QwenOptions = null,
+    /// <summary>Set only on memory_director.</summary>
+    MemoryDirectorModuleOptions? MemoryDirectorOptions = null);
 
 /// <summary>Loaded engine configuration: repository layout, listen ports, module list, and proxy aliases. Provider-specific options live on each <see cref="EngineModuleInfo"/> row.</summary>
 public sealed class EngineConfiguration
@@ -120,6 +129,15 @@ public sealed class EngineConfiguration
         return FindModule(key)
             ?? throw new EngineConfigurationException(
                 $"Configured modules do not include port_key '{key}' (generic_llm_provider alias target).");
+    }
+
+    /// <summary>Concrete <see cref="EngineModuleInfo"/> row for the module named by generic_director in <see cref="ModuleAliases"/>.</summary>
+    public EngineModuleInfo GetRequiredGenericDirectorModule()
+    {
+        var key = ResolveProxyTargetModuleKey("generic_director");
+        return FindModule(key)
+            ?? throw new EngineConfigurationException(
+                $"Configured modules do not include port_key '{key}' (generic_director alias target).");
     }
 
     /// <summary>
@@ -256,6 +274,18 @@ public static class EngineConfigLoader
 
         [JsonPropertyName("num_ctx")]
         public int? NumCtx { get; set; }
+
+        [JsonPropertyName("max_steps_per_turn")]
+        public int? MaxStepsPerTurn { get; set; }
+
+        [JsonPropertyName("max_tool_result_chars")]
+        public int? MaxToolResultChars { get; set; }
+
+        [JsonPropertyName("recent_message_count")]
+        public int? RecentMessageCount { get; set; }
+
+        [JsonPropertyName("keep_alive")]
+        public string? KeepAlive { get; set; }
     }
 
     private sealed class EndpointDto
@@ -326,6 +356,19 @@ public static class EngineConfigLoader
                 {
                     throw new EngineConfigurationException(
                         $"module_aliases in '{path}' must map 'generic_llm_provider' to a concrete module key.");
+                }
+
+                return mapped.Trim();
+            }
+
+            static string ResolveRequiredGenericDirectorModuleKey(
+                IReadOnlyDictionary<string, string> moduleAliases,
+                string path)
+            {
+                if (!moduleAliases.TryGetValue("generic_director", out var mapped) || string.IsNullOrWhiteSpace(mapped))
+                {
+                    throw new EngineConfigurationException(
+                        $"module_aliases in '{path}' must map 'generic_director' to a concrete module key.");
                 }
 
                 return mapped.Trim();
@@ -430,9 +473,14 @@ public static class EngineConfigLoader
                 string portKey,
                 bool isActiveGenericProvider,
                 bool isQwen,
+                bool isMemoryDirector,
                 int? ollamaPort,
                 string? ollamaModel,
                 int? numCtx,
+                int? maxStepsPerTurn,
+                int? maxToolResultChars,
+                int? recentMessageCount,
+                string? keepAlive,
                 string path)
             {
                 if (isActiveGenericProvider)
@@ -478,12 +526,54 @@ public static class EngineConfigLoader
                             $"Module '{portKey}' in '{path}' must not set default_chat_model (only llm_provider_qwen may).");
                     }
                 }
+
+                if (isMemoryDirector)
+                {
+                    if (maxStepsPerTurn is null or < 1 or > 64)
+                    {
+                        throw new EngineConfigurationException(
+                            $"Module '{portKey}' in '{path}' (memory_director) must set max_steps_per_turn to an integer between 1 and 64.");
+                    }
+
+                    if (maxToolResultChars is null or < 256 or > 131072)
+                    {
+                        throw new EngineConfigurationException(
+                            $"Module '{portKey}' in '{path}' (memory_director) must set max_tool_result_chars to an integer between 256 and 131072.");
+                    }
+
+                    if (recentMessageCount is null or < 0 or > 200)
+                    {
+                        throw new EngineConfigurationException(
+                            $"Module '{portKey}' in '{path}' (memory_director) must set recent_message_count to an integer between 0 and 200.");
+                    }
+
+                    if (string.IsNullOrWhiteSpace(keepAlive))
+                    {
+                        throw new EngineConfigurationException(
+                            $"Module '{portKey}' in '{path}' (memory_director) must set keep_alive to a non-empty Ollama duration string.");
+                    }
+                }
+                else
+                {
+                    if (maxStepsPerTurn is not null
+                        || maxToolResultChars is not null
+                        || recentMessageCount is not null
+                        || !string.IsNullOrWhiteSpace(keepAlive))
+                    {
+                        throw new EngineConfigurationException(
+                            $"Module '{portKey}' in '{path}' must not set memory_director options (only memory_director may).");
+                    }
+                }
             }
 
             // Structural roles the host always expects to find under modules[] and to treat as engine-mandatory.
             // required_by_engine on each row means "include in default startup"; it cannot by itself prove that a
             // router/director row exists if someone omitted that block from the file, so those identities stay fixed here.
-            static void EnsureRequiredModulesPresent(List<EngineModuleInfo> list, string genericLlmProviderModuleKey, string path)
+            static void EnsureRequiredModulesPresent(
+                List<EngineModuleInfo> list,
+                string genericLlmProviderModuleKey,
+                string genericDirectorModuleKey,
+                string path)
             {
                 void RequireCatalogEntryEngineMandatory(string portKey, string missingCatalogMessage)
                 {
@@ -508,8 +598,8 @@ public static class EngineConfigLoader
                     $"modules[] in '{path}' must include a router (port_key 'router').");
 
                 RequireCatalogEntryEngineMandatory(
-                    "director",
-                    $"modules[] in '{path}' must include a director (port_key 'director').");
+                    genericDirectorModuleKey,
+                    $"modules[] in '{path}' must include the concrete generic_director module '{genericDirectorModuleKey}'.");
 
                 RequireCatalogEntryEngineMandatory(
                     genericLlmProviderModuleKey,
@@ -520,7 +610,8 @@ public static class EngineConfigLoader
                 List<ModuleDto> modulesDto,
                 EnginePortMap portMap,
                 string path,
-                string genericLlmProviderModuleKey)
+                string genericLlmProviderModuleKey,
+                string genericDirectorModuleKey)
             {
                 var list = new List<EngineModuleInfo>();
                 var seenLoadOrders = new HashSet<int>();
@@ -560,14 +651,20 @@ public static class EngineConfigLoader
                     var endpoints = MergeEndpoints(module.Endpoints, portKey, path);
                     var isActiveGenericProvider = string.Equals(portKey, genericLlmProviderModuleKey, StringComparison.OrdinalIgnoreCase);
                     var isQwen = string.Equals(portKey, "llm_provider_qwen", StringComparison.OrdinalIgnoreCase);
+                    var isMemoryDirector = string.Equals(portKey, "memory_director", StringComparison.OrdinalIgnoreCase);
 
                     ValidateModuleScopedOptions(
                         portKey,
                         isActiveGenericProvider,
                         isQwen,
+                        isMemoryDirector,
                         module.OllamaPort,
                         module.OllamaModel,
                         module.NumCtx,
+                        module.MaxStepsPerTurn,
+                        module.MaxToolResultChars,
+                        module.RecentMessageCount,
+                        module.KeepAlive,
                         path);
 
                     // Compose provider-agnostic options only for the active generic provider module.
@@ -580,6 +677,14 @@ public static class EngineConfigLoader
                         ? new QwenModuleOptions(module.OllamaPort!.Value, module.OllamaModel!.Trim())
                         : null;
 
+                    var memoryDirectorOptions = isMemoryDirector
+                        ? new MemoryDirectorModuleOptions(
+                            module.MaxStepsPerTurn!.Value,
+                            module.MaxToolResultChars!.Value,
+                            module.RecentMessageCount!.Value,
+                            module.KeepAlive!.Trim())
+                        : null;
+
                     list.Add(new EngineModuleInfo(
                         portKey,
                         string.IsNullOrWhiteSpace(module.DisplayName) ? portKey : module.DisplayName.Trim(),
@@ -588,7 +693,8 @@ public static class EngineConfigLoader
                         launch,
                         endpoints,
                         genericProviderOptions,
-                        qwenOptions));
+                        qwenOptions,
+                        memoryDirectorOptions));
                 }
 
                 if (list.Count == 0)
@@ -596,7 +702,7 @@ public static class EngineConfigLoader
                     throw new EngineConfigurationException($"No modules could be built from '{path}'.");
                 }
 
-                EnsureRequiredModulesPresent(list, genericLlmProviderModuleKey, path);
+                EnsureRequiredModulesPresent(list, genericLlmProviderModuleKey, genericDirectorModuleKey, path);
                 return list;
             }
 
@@ -670,8 +776,9 @@ public static class EngineConfigLoader
 
             var moduleAliases = MergeModuleAliases(dto.ModuleAliases, path);
             var genericLlmProviderModuleKey = ResolveRequiredGenericProviderModuleKey(moduleAliases, path);
+            var genericDirectorModuleKey = ResolveRequiredGenericDirectorModuleKey(moduleAliases, path);
             var portMap = BuildPortMapFromModules(dto.Modules, path);
-            var modules = MergeModules(dto.Modules, portMap, path, genericLlmProviderModuleKey);
+            var modules = MergeModules(dto.Modules, portMap, path, genericLlmProviderModuleKey, genericDirectorModuleKey);
             EnsureGenericLlmProviderModuleOptionsComplete(modules, genericLlmProviderModuleKey, path);
 
             return new EngineConfiguration(repositoryRoot, portMap, modules, moduleAliases);

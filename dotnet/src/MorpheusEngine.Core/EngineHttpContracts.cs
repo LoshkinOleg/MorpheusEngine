@@ -70,7 +70,7 @@ public sealed record TurnPersistResponse(
     [property: JsonPropertyName("ok")] bool Ok);
 #endregion
 
-#region Memory-director Phase 0 storage and provider contracts
+#region Memory-director storage and provider contracts
 public sealed record MemoryBlockDto(
     [property: JsonPropertyName("label")] string Label,
     [property: JsonPropertyName("description")] string Description,
@@ -241,7 +241,7 @@ public sealed record LlmProviderGenerateResponse(
     [property: JsonPropertyName("response")] string? Response,
     [property: JsonPropertyName("rawResponse")] string? RawResponse);
 
-/// <summary>Request to llm_provider_qwen POST /chat: message list only; Ollama model comes from engine_config.json on the provider module.</summary>
+/// <summary>Request to llm_provider_qwen POST /chat; Ollama model comes from engine_config.json on the provider module.</summary>
 public sealed record ChatGenerateRequest
 {
     /// <summary>One chat message (Ollama /api/chat message shape).</summary>
@@ -251,6 +251,14 @@ public sealed record ChatGenerateRequest
 
     [property: JsonPropertyName("messages")]
     public IReadOnlyList<ChatMessageDto> Messages { get; init; } = Array.Empty<ChatMessageDto>();
+
+    /// <summary>Optional Ollama format value, either a string mode or a JSON Schema object.</summary>
+    [property: JsonPropertyName("format")]
+    public JsonElement? Format { get; init; } = null;
+
+    /// <summary>Optional Ollama keep_alive duration, for example "30m".</summary>
+    [property: JsonPropertyName("keepAlive")]
+    public string? KeepAlive { get; init; } = null;
 }
 
 /// <summary>JSON envelope returned by llm_provider_qwen on successful /chat (<see cref="Response"/> is assistant text).</summary>
@@ -365,6 +373,9 @@ public static class EngineContractExamples
         "module_health" => new EndpointTemplatePair(
             null,
             Serialize(new ModuleHealthResponse(true, "ok", true))),
+        "module_shutdown" => new EndpointTemplatePair(
+            null,
+            Serialize(new ModuleShutdownResponse(true, "Shutdown requested."))),
         _ => null
     };
 

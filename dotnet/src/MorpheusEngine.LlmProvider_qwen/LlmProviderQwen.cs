@@ -615,15 +615,26 @@ namespace MorpheusEngine
                 return;
             }
 
-            // Ollama /api/chat expects { model, messages, stream, truncate, options }; model is fixed at provider InitializeAsync() from engine_config.json.
-            var ollamaPayload = new
+            // Ollama /api/chat expects { model, messages, stream, truncate, options } plus optional format/keep_alive.
+            // The model is fixed at provider InitializeAsync() from engine_config.json.
+            var ollamaPayload = new Dictionary<string, object?>
             {
-                model = _chatModel,
-                messages = request.Messages,
-                stream = false,
-                truncate = false,
-                options = BuildOllamaOptionsPayload()
+                ["model"] = _chatModel,
+                ["messages"] = request.Messages,
+                ["stream"] = false,
+                ["truncate"] = false,
+                ["options"] = BuildOllamaOptionsPayload()
             };
+
+            if (request.Format.HasValue)
+            {
+                ollamaPayload["format"] = request.Format.Value;
+            }
+
+            if (!string.IsNullOrWhiteSpace(request.KeepAlive))
+            {
+                ollamaPayload["keep_alive"] = request.KeepAlive.Trim();
+            }
             Console.WriteLine(
                 $"OLLAMA_IO CHAT_REQUEST model={_chatModel} messages={request.Messages.Count} {DescribeChatMessagesForLog(request.Messages)}");
 

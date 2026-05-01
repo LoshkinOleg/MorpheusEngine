@@ -1,4 +1,4 @@
-
+﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
@@ -18,6 +18,12 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MorpheusEngine.Director", "src\MorpheusEngine.Director\MorpheusEngine.Director.csproj", "{E8F4A2B1-3C5D-4E6F-9A0B-1C2D3E4F5A6B}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MorpheusEngine.SessionStoreModule", "src\MorpheusEngine.SessionStoreModule\MorpheusEngine.SessionStoreModule.csproj", "{6F1A2B3C-4D5E-6F70-A1B2-C3D4E5F60718}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MorpheusEngine.MemoryDirector", "src\MorpheusEngine.MemoryDirector\MorpheusEngine.MemoryDirector.csproj", "{ED83DAA9-9F56-4C28-A04A-1AB5AB698442}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{0AB3BF05-4346-4AA6-1389-037BE0695223}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MorpheusEngine.Phase1SmokeTests", "tests\MorpheusEngine.Phase1SmokeTests\MorpheusEngine.Phase1SmokeTests.csproj", "{F63760CA-073F-4552-A891-BD16025B6B78}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -113,6 +119,30 @@ Global
 		{6F1A2B3C-4D5E-6F70-A1B2-C3D4E5F60718}.Release|x64.Build.0 = Release|Any CPU
 		{6F1A2B3C-4D5E-6F70-A1B2-C3D4E5F60718}.Release|x86.ActiveCfg = Release|Any CPU
 		{6F1A2B3C-4D5E-6F70-A1B2-C3D4E5F60718}.Release|x86.Build.0 = Release|Any CPU
+		{ED83DAA9-9F56-4C28-A04A-1AB5AB698442}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{ED83DAA9-9F56-4C28-A04A-1AB5AB698442}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{ED83DAA9-9F56-4C28-A04A-1AB5AB698442}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{ED83DAA9-9F56-4C28-A04A-1AB5AB698442}.Debug|x64.Build.0 = Debug|Any CPU
+		{ED83DAA9-9F56-4C28-A04A-1AB5AB698442}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{ED83DAA9-9F56-4C28-A04A-1AB5AB698442}.Debug|x86.Build.0 = Debug|Any CPU
+		{ED83DAA9-9F56-4C28-A04A-1AB5AB698442}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{ED83DAA9-9F56-4C28-A04A-1AB5AB698442}.Release|Any CPU.Build.0 = Release|Any CPU
+		{ED83DAA9-9F56-4C28-A04A-1AB5AB698442}.Release|x64.ActiveCfg = Release|Any CPU
+		{ED83DAA9-9F56-4C28-A04A-1AB5AB698442}.Release|x64.Build.0 = Release|Any CPU
+		{ED83DAA9-9F56-4C28-A04A-1AB5AB698442}.Release|x86.ActiveCfg = Release|Any CPU
+		{ED83DAA9-9F56-4C28-A04A-1AB5AB698442}.Release|x86.Build.0 = Release|Any CPU
+		{F63760CA-073F-4552-A891-BD16025B6B78}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F63760CA-073F-4552-A891-BD16025B6B78}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F63760CA-073F-4552-A891-BD16025B6B78}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{F63760CA-073F-4552-A891-BD16025B6B78}.Debug|x64.Build.0 = Debug|Any CPU
+		{F63760CA-073F-4552-A891-BD16025B6B78}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{F63760CA-073F-4552-A891-BD16025B6B78}.Debug|x86.Build.0 = Debug|Any CPU
+		{F63760CA-073F-4552-A891-BD16025B6B78}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F63760CA-073F-4552-A891-BD16025B6B78}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F63760CA-073F-4552-A891-BD16025B6B78}.Release|x64.ActiveCfg = Release|Any CPU
+		{F63760CA-073F-4552-A891-BD16025B6B78}.Release|x64.Build.0 = Release|Any CPU
+		{F63760CA-073F-4552-A891-BD16025B6B78}.Release|x86.ActiveCfg = Release|Any CPU
+		{F63760CA-073F-4552-A891-BD16025B6B78}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -125,5 +155,7 @@ Global
 		{27B65D00-40C3-4C01-8D21-99F45103C35F} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{E8F4A2B1-3C5D-4E6F-9A0B-1C2D3E4F5A6B} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{6F1A2B3C-4D5E-6F70-A1B2-C3D4E5F60718} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{ED83DAA9-9F56-4C28-A04A-1AB5AB698442} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{F63760CA-073F-4552-A891-BD16025B6B78} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 	EndGlobalSection
 EndGlobal

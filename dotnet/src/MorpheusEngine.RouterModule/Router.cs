@@ -343,7 +343,7 @@ namespace MorpheusEngine
                     new DirectorMessageRequest(request.Turn, playerInputTrimmed));
                 var directorResult = await ForwardModuleCallAsync(
                     "router",
-                    "director",
+                    "generic_director",
                     "/message",
                     "POST",
                     directorPayload);

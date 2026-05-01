@@ -161,86 +161,81 @@ public sealed class SessionStoreHost
 
             if (path.Equals("/memory/load_context", StringComparison.OrdinalIgnoreCase) && method == "POST")
             {
-                await HandleMemoryStubRequest<MemoryLoadContextRequest>(
+                await HandleMemoryRequest<MemoryLoadContextRequest>(
                     context,
-                    request => new MemoryLoadContextResponse(
-                        true,
-                        [],
-                        [],
-                        CreateEmptySnapshot(),
-                        CreatePhase0MemoryBudget(request.RecentMessageCount)));
+                    (gameProjectId, runId, request) => _persistence.LoadMemoryContext(gameProjectId, runId, request, CreateMemoryBudget(request.RecentMessageCount)));
                 return;
             }
 
             if (path.Equals("/memory/persist_step", StringComparison.OrdinalIgnoreCase) && method == "POST")
             {
-                await HandleMemoryStubRequest<MemoryPersistStepRequest>(
+                await HandleMemoryRequest<MemoryPersistStepRequest>(
                     context,
-                    _ => new MemoryPersistStepResponse(true));
+                    (gameProjectId, runId, request) => _persistence.PersistMemoryStep(gameProjectId, runId, request));
                 return;
             }
 
             if (path.Equals("/memory/recall_search", StringComparison.OrdinalIgnoreCase) && method == "POST")
             {
-                await HandleMemoryStubRequest<MemoryRecallSearchRequest>(
+                await HandleMemoryRequest<MemoryRecallSearchRequest>(
                     context,
-                    _ => new MemoryRecallSearchResponse(true, []));
+                    (gameProjectId, runId, request) => _persistence.SearchRecall(gameProjectId, runId, request));
                 return;
             }
 
             if (path.Equals("/memory/archival_search", StringComparison.OrdinalIgnoreCase) && method == "POST")
             {
-                await HandleMemoryStubRequest<MemoryArchivalSearchRequest>(
+                await HandleMemoryRequest<MemoryArchivalSearchRequest>(
                     context,
-                    _ => new MemoryArchivalSearchResponse(true, []));
+                    (gameProjectId, runId, request) => _persistence.SearchArchival(gameProjectId, runId, request));
                 return;
             }
 
             if (path.Equals("/memory/blocks/get_all", StringComparison.OrdinalIgnoreCase) && method == "POST")
             {
-                await HandleMemoryStubRequest<MemoryBlocksGetAllRequest>(
+                await HandleMemoryRequest<MemoryBlocksGetAllRequest>(
                     context,
-                    _ => new MemoryBlocksGetAllResponse(true, []));
+                    (gameProjectId, runId, request) => _persistence.GetMemoryBlocks(gameProjectId, runId, request));
                 return;
             }
 
             if (path.Equals("/memory/blocks/upsert", StringComparison.OrdinalIgnoreCase) && method == "POST")
             {
-                await HandleMemoryStubRequest<MemoryBlockUpsertRequest>(
+                await HandleMemoryRequest<MemoryBlockUpsertRequest>(
                     context,
-                    _ => new MemoryBlockUpsertResponse(true));
+                    (gameProjectId, runId, request) => _persistence.UpsertMemoryBlock(gameProjectId, runId, request));
                 return;
             }
 
             if (path.Equals("/memory/messages/recent", StringComparison.OrdinalIgnoreCase) && method == "POST")
             {
-                await HandleMemoryStubRequest<MemoryMessagesRecentRequest>(
+                await HandleMemoryRequest<MemoryMessagesRecentRequest>(
                     context,
-                    _ => new MemoryMessagesRecentResponse(true, []));
+                    (gameProjectId, runId, request) => _persistence.GetRecentMessages(gameProjectId, runId, request));
                 return;
             }
 
             if (path.Equals("/memory/messages/append", StringComparison.OrdinalIgnoreCase) && method == "POST")
             {
-                await HandleMemoryStubRequest<MemoryMessageAppendRequest>(
+                await HandleMemoryRequest<MemoryMessageAppendRequest>(
                     context,
-                    _ => new MemoryMessageAppendResponse(true));
+                    (gameProjectId, runId, request) => _persistence.AppendMessage(gameProjectId, runId, request));
                 return;
             }
 
             if (path.Equals("/memory/mutations/append", StringComparison.OrdinalIgnoreCase) && method == "POST")
             {
-                await HandleMemoryStubRequest<MemoryMutationAppendRequest>(
+                await HandleMemoryRequest<MemoryMutationAppendRequest>(
                     context,
-                    _ => new MemoryMutationAppendResponse(true));
+                    (gameProjectId, runId, request) => _persistence.AppendMutation(gameProjectId, runId, request));
                 return;
             }
 
             if (path.Equals("/memory/snapshot/latest", StringComparison.OrdinalIgnoreCase) && method == "POST")
             {
-                await HandleMemoryStubRequest<MemorySnapshotLatestRequest>(
+                await HandleMemoryRequest<MemorySnapshotLatestRequest>(
                     context,
-                    _ => new MemorySnapshotLatestResponse(true, CreateEmptySnapshot()));
+                    (gameProjectId, runId, _) => _persistence.GetLatestSnapshot(gameProjectId, runId));
                 return;
             }
 
@@ -373,9 +368,9 @@ public sealed class SessionStoreHost
         }
     }
 
-    private async Task HandleMemoryStubRequest<TRequest>(
+    private async Task HandleMemoryRequest<TRequest>(
         HttpListenerContext context,
-        Func<TRequest, object> responseFactory)
+        Func<string, string, TRequest, object> responseFactory)
         where TRequest : class
     {
         var body = await ReadRequestBodyAsync(context);
@@ -396,39 +391,58 @@ public sealed class SessionStoreHost
             return;
         }
 
-        bool missingBound;
-        lock (_sessionLock)
+        try
         {
-            missingBound = !IsRunBound;
-        }
+            object? response = null;
+            bool missingBound;
+            lock (_sessionLock)
+            {
+                missingBound = !IsRunBound;
+                if (!missingBound)
+                {
+                    response = responseFactory(_boundGameProjectId, _boundRunId, request);
+                }
+            }
 
-        if (missingBound)
+            if (missingBound)
+            {
+                await RespondJsonAsync(
+                    context,
+                    400,
+                    new ErrorResponse(
+                        false,
+                        "No bound run: the host must bind the run on this session_store process before memory endpoints."));
+                return;
+            }
+
+            await RespondJsonAsync(context, 200, response!);
+        }
+        catch (ArgumentException e)
         {
-            await RespondJsonAsync(
-                context,
-                400,
-                new ErrorResponse(
-                    false,
-                    "No bound run: the host must bind the run on this session_store process before memory endpoints."));
-            return;
+            await RespondJsonAsync(context, 400, new ErrorResponse(false, e.Message));
         }
-
-        await RespondJsonAsync(context, 200, responseFactory(request));
+        catch (InvalidOperationException e)
+        {
+            await RespondJsonAsync(context, 409, new ErrorResponse(false, e.Message));
+        }
+        catch (Exception e)
+        {
+            await RespondJsonAsync(context, 500, new ErrorResponse(false, "Failed to process memory endpoint.", e.Message));
+        }
     }
 
-    private MemoryBudgetDto CreatePhase0MemoryBudget(int recentMessageCount)
+    private MemoryBudgetDto CreateMemoryBudget(int recentMessageCount)
     {
         var llmProvider = _configuration.GetRequiredGenericLlmProviderModule();
         if (llmProvider.GenericLlmProviderOptions is null)
         {
-            throw new InvalidOperationException("Generic LLM provider options are required to derive the Phase 0 memory budget.");
+            throw new InvalidOperationException("Generic LLM provider options are required to derive the memory budget.");
         }
 
         var numCtx = llmProvider.GenericLlmProviderOptions.NumCtx;
-        return new MemoryBudgetDto(numCtx, numCtx * 70 / 100, recentMessageCount, 4000);
+        var maxToolResultChars = _configuration.GetRequiredGenericDirectorModule().MemoryDirectorOptions?.MaxToolResultChars ?? 4000;
+        return new MemoryBudgetDto(numCtx, numCtx * 70 / 100, recentMessageCount, maxToolResultChars);
     }
-
-    private static LatestSnapshotDto CreateEmptySnapshot() => new(0, "{}", "{}");
 
     #endregion
 
