@@ -66,6 +66,23 @@ public sealed record EngineEndpointInfo(
     string? RequestBodyTemplate,
     string? ResponseBodyTemplate);
 
+public sealed record EngineTurnPipelineStepInfo(
+    string Id,
+    string TargetModule,
+    string Path,
+    string Method,
+    string BodyTemplate,
+    bool ContinueOnFailure = false);
+
+public sealed record EngineTurnPipelineResponseMapping(
+    string SourceStep,
+    string Type);
+
+public sealed record EngineTurnPipelineInfo(
+    string Id,
+    IReadOnlyList<EngineTurnPipelineStepInfo> Steps,
+    EngineTurnPipelineResponseMapping ResponseMapping);
+
 /// <summary>Options required by whichever concrete module is mapped from generic_llm_provider.</summary>
 public sealed record GenericLlmProviderModuleOptions(
     int NumCtx);
@@ -82,6 +99,12 @@ public sealed record MemoryDirectorModuleOptions(
     int RecentMessageCount,
     string KeepAlive);
 
+/// <summary>Options specific to the Ollama-backed embeddings module implementation.</summary>
+public sealed record EmbeddingsModuleOptions(
+    int OllamaPort,
+    string DefaultEmbeddingModel,
+    string KeepAlive);
+
 public sealed record EngineModuleInfo(
     string PortKey, // stable module id (e.g. router); actual port is in EngineConfiguration.PortMap.
     string DisplayName, // Shown in UI / logs;
@@ -94,7 +117,9 @@ public sealed record EngineModuleInfo(
     /// <summary>Set only on llm_provider_qwen.</summary>
     QwenModuleOptions? QwenOptions = null,
     /// <summary>Set only on memory_director.</summary>
-    MemoryDirectorModuleOptions? MemoryDirectorOptions = null);
+    MemoryDirectorModuleOptions? MemoryDirectorOptions = null,
+    /// <summary>Set only on the module resolved from generic_embeddings.</summary>
+    EmbeddingsModuleOptions? EmbeddingsOptions = null);
 
 /// <summary>Loaded engine configuration: repository layout, listen ports, module list, and proxy aliases. Provider-specific options live on each <see cref="EngineModuleInfo"/> row.</summary>
 public sealed class EngineConfiguration
@@ -107,6 +132,8 @@ public sealed class EngineConfiguration
 
     public IReadOnlyList<EngineModuleInfo> ModulesInfos { get; }
 
+    public IReadOnlyDictionary<string, EngineTurnPipelineInfo> TurnPipelines { get; }
+
     // Used to make http messages mention only the generic modules instead of having to rely on specific implementation modules. Ex: llm_provider_qwen becomes just generic_llm_provider and the Router resolves it back to llm_provider_qwen or whichever generic llm module is currently used.
     public IReadOnlyDictionary<string, string> ModuleAliases { get; }
 
@@ -114,12 +141,14 @@ public sealed class EngineConfiguration
         string repositoryRoot,
         EnginePortMap portMap,
         IReadOnlyList<EngineModuleInfo> modulesInfos,
-        IReadOnlyDictionary<string, string> moduleAliases)
+        IReadOnlyDictionary<string, string> moduleAliases,
+        IReadOnlyDictionary<string, EngineTurnPipelineInfo> turnPipelines)
     {
         RepositoryRoot = repositoryRoot;
         PortMap = portMap;
         ModulesInfos = modulesInfos;
         ModuleAliases = moduleAliases;
+        TurnPipelines = turnPipelines;
     }
 
     /// <summary>Concrete <see cref="EngineModuleInfo"/> row for the module named by <c>generic_llm_provider</c> in <see cref="ModuleAliases"/>.</summary>
@@ -138,6 +167,15 @@ public sealed class EngineConfiguration
         return FindModule(key)
             ?? throw new EngineConfigurationException(
                 $"Configured modules do not include port_key '{key}' (generic_director alias target).");
+    }
+
+    /// <summary>Concrete <see cref="EngineModuleInfo"/> row for the module named by generic_embeddings in <see cref="ModuleAliases"/>.</summary>
+    public EngineModuleInfo GetRequiredGenericEmbeddingsModule()
+    {
+        var key = ResolveProxyTargetModuleKey("generic_embeddings");
+        return FindModule(key)
+            ?? throw new EngineConfigurationException(
+                $"Configured modules do not include port_key '{key}' (generic_embeddings alias target).");
     }
 
     /// <summary>
@@ -186,6 +224,19 @@ public sealed class EngineConfiguration
         }
 
         return null;
+    }
+
+    public EngineTurnPipelineInfo GetRequiredTurnPipeline(string id)
+    {
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            throw new EngineConfigurationException("turn_pipeline id must be non-empty.");
+        }
+
+        return TurnPipelines.TryGetValue(id.Trim(), out var pipeline)
+            ? pipeline
+            : throw new EngineConfigurationException(
+                $"Unknown turn_pipeline '{id}'. Known pipelines: {string.Join(", ", TurnPipelines.Keys.OrderBy(static key => key, StringComparer.OrdinalIgnoreCase))}.");
     }
 
     /// <summary>Finds which module is bound to the given TCP <paramref name="port"/> (listen ports from <see cref="PortMap"/>).</summary>
@@ -246,6 +297,42 @@ public static class EngineConfigLoader
 
         [JsonPropertyName("module_aliases")]
         public Dictionary<string, string>? ModuleAliases { get; set; }
+
+        [JsonPropertyName("turn_pipelines")]
+        public Dictionary<string, TurnPipelineDto>? TurnPipelines { get; set; }
+    }
+
+    private sealed class TurnPipelineDto
+    {
+        public List<TurnPipelineStepDto>? Steps { get; set; }
+
+        [JsonPropertyName("response_mapping")]
+        public TurnPipelineResponseMappingDto? ResponseMapping { get; set; }
+    }
+
+    private sealed class TurnPipelineStepDto
+    {
+        public string? Id { get; set; }
+
+        [JsonPropertyName("target_module")]
+        public string? TargetModule { get; set; }
+
+        public string? Path { get; set; }
+        public string? Method { get; set; }
+
+        [JsonPropertyName("body_template")]
+        public string? BodyTemplate { get; set; }
+
+        [JsonPropertyName("continue_on_failure")]
+        public bool? ContinueOnFailure { get; set; }
+    }
+
+    private sealed class TurnPipelineResponseMappingDto
+    {
+        [JsonPropertyName("source_step")]
+        public string? SourceStep { get; set; }
+
+        public string? Type { get; set; }
     }
 
     private sealed class ModuleDto
@@ -271,6 +358,9 @@ public static class EngineConfigLoader
 
         [JsonPropertyName("default_chat_model")]
         public string? OllamaModel { get; set; }
+
+        [JsonPropertyName("default_embedding_model")]
+        public string? DefaultEmbeddingModel { get; set; }
 
         [JsonPropertyName("num_ctx")]
         public int? NumCtx { get; set; }
@@ -374,6 +464,19 @@ public static class EngineConfigLoader
                 return mapped.Trim();
             }
 
+            static string ResolveRequiredGenericEmbeddingsModuleKey(
+                IReadOnlyDictionary<string, string> moduleAliases,
+                string path)
+            {
+                if (!moduleAliases.TryGetValue("generic_embeddings", out var mapped) || string.IsNullOrWhiteSpace(mapped))
+                {
+                    throw new EngineConfigurationException(
+                        $"module_aliases in '{path}' must map 'generic_embeddings' to a concrete module key.");
+                }
+
+                return mapped.Trim();
+            }
+
             static EnginePortMap BuildPortMapFromModules(IReadOnlyList<ModuleDto> modules, string configPath)
             {
                 if (modules.Count == 0)
@@ -469,13 +572,132 @@ public static class EngineConfigLoader
                 return list;
             }
 
+            static IReadOnlyDictionary<string, EngineTurnPipelineInfo> MergeTurnPipelines(
+                Dictionary<string, TurnPipelineDto>? pipelinesDto,
+                string path)
+            {
+                if (pipelinesDto is null || pipelinesDto.Count == 0)
+                {
+                    throw new EngineConfigurationException($"engine_config.json at '{path}' must define non-empty turn_pipelines.");
+                }
+
+                var pipelines = new Dictionary<string, EngineTurnPipelineInfo>(StringComparer.OrdinalIgnoreCase);
+                foreach (var pair in pipelinesDto)
+                {
+                    var id = pair.Key.Trim();
+                    if (string.IsNullOrWhiteSpace(id))
+                    {
+                        throw new EngineConfigurationException($"turn_pipelines in '{path}' contains an empty pipeline id.");
+                    }
+
+                    var dto = pair.Value ?? throw new EngineConfigurationException($"turn_pipelines.{id} in '{path}' must be an object.");
+                    if (dto.Steps is null || dto.Steps.Count == 0)
+                    {
+                        throw new EngineConfigurationException($"turn_pipelines.{id} in '{path}' must define a non-empty steps array.");
+                    }
+
+                    var steps = new List<EngineTurnPipelineStepInfo>();
+                    var stepIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var stepDto in dto.Steps)
+                    {
+                        var stepId = stepDto.Id?.Trim();
+                        if (string.IsNullOrWhiteSpace(stepId) || !stepIds.Add(stepId))
+                        {
+                            throw new EngineConfigurationException($"turn_pipelines.{id} in '{path}' has an empty or duplicate step id.");
+                        }
+
+                        if (string.IsNullOrWhiteSpace(stepDto.TargetModule))
+                        {
+                            throw new EngineConfigurationException($"turn_pipelines.{id}.{stepId} in '{path}' must define target_module.");
+                        }
+
+                        if (string.IsNullOrWhiteSpace(stepDto.Path))
+                        {
+                            throw new EngineConfigurationException($"turn_pipelines.{id}.{stepId} in '{path}' must define path.");
+                        }
+
+                        if (string.IsNullOrWhiteSpace(stepDto.BodyTemplate))
+                        {
+                            throw new EngineConfigurationException($"turn_pipelines.{id}.{stepId} in '{path}' must define body_template.");
+                        }
+
+                        var method = stepDto.Method?.Trim().ToUpperInvariant();
+                        if (method is not ("GET" or "POST"))
+                        {
+                            throw new EngineConfigurationException($"turn_pipelines.{id}.{stepId} in '{path}' must use method GET or POST.");
+                        }
+
+                        steps.Add(new EngineTurnPipelineStepInfo(
+                            stepId,
+                            stepDto.TargetModule.Trim(),
+                            EngineConfiguration.NormalizePath(stepDto.Path),
+                            method,
+                            stepDto.BodyTemplate,
+                            stepDto.ContinueOnFailure ?? false));
+                    }
+
+                    var mapping = dto.ResponseMapping
+                        ?? throw new EngineConfigurationException($"turn_pipelines.{id} in '{path}' must define response_mapping.");
+                    var sourceStep = mapping.SourceStep?.Trim();
+                    if (string.IsNullOrWhiteSpace(sourceStep) || !stepIds.Contains(sourceStep))
+                    {
+                        throw new EngineConfigurationException($"turn_pipelines.{id}.response_mapping.source_step in '{path}' must reference an existing step id.");
+                    }
+
+                    var type = mapping.Type?.Trim();
+                    if (type is not "director_message_response")
+                    {
+                        throw new EngineConfigurationException($"turn_pipelines.{id}.response_mapping.type in '{path}' must be 'director_message_response'.");
+                    }
+
+                    pipelines[id] = new EngineTurnPipelineInfo(id, steps, new EngineTurnPipelineResponseMapping(sourceStep, type));
+                }
+
+                return pipelines;
+            }
+
+            static void ValidateTurnPipelines(
+                IReadOnlyDictionary<string, EngineTurnPipelineInfo> pipelines,
+                IReadOnlyList<EngineModuleInfo> modules,
+                IReadOnlyDictionary<string, string> moduleAliases,
+                string path)
+            {
+                foreach (var pipeline in pipelines.Values)
+                {
+                    foreach (var step in pipeline.Steps)
+                    {
+                        var resolved = moduleAliases.TryGetValue(step.TargetModule, out var mapped) && !string.IsNullOrWhiteSpace(mapped)
+                            ? mapped.Trim()
+                            : step.TargetModule;
+                        var module = modules.FirstOrDefault(module =>
+                            string.Equals(module.PortKey, resolved, StringComparison.OrdinalIgnoreCase));
+                        if (module is null)
+                        {
+                            throw new EngineConfigurationException(
+                                $"turn_pipelines.{pipeline.Id}.{step.Id} in '{path}' targets unknown module or alias '{step.TargetModule}'.");
+                        }
+
+                        var endpoint = module.Endpoints.FirstOrDefault(endpoint =>
+                            string.Equals(EngineConfiguration.NormalizePath(endpoint.Path), EngineConfiguration.NormalizePath(step.Path), StringComparison.OrdinalIgnoreCase)
+                            && string.Equals(endpoint.Method, step.Method, StringComparison.OrdinalIgnoreCase));
+                        if (endpoint is null)
+                        {
+                            throw new EngineConfigurationException(
+                                $"turn_pipelines.{pipeline.Id}.{step.Id} in '{path}' targets {step.Method} {step.Path}, which is not allowlisted on module '{module.PortKey}'.");
+                        }
+                    }
+                }
+            }
+
             static void ValidateModuleScopedOptions(
                 string portKey,
                 bool isActiveGenericProvider,
                 bool isQwen,
                 bool isMemoryDirector,
+                bool isActiveGenericEmbeddings,
                 int? ollamaPort,
                 string? ollamaModel,
+                string? defaultEmbeddingModel,
                 int? numCtx,
                 int? maxStepsPerTurn,
                 int? maxToolResultChars,
@@ -514,10 +736,10 @@ public static class EngineConfigLoader
                 }
                 else
                 {
-                    if (ollamaPort is not null)
+                    if (!isActiveGenericEmbeddings && ollamaPort is not null)
                     {
                         throw new EngineConfigurationException(
-                            $"Module '{portKey}' in '{path}' must not set ollama_port (only llm_provider_qwen may).");
+                            $"Module '{portKey}' in '{path}' must not set ollama_port (only llm_provider_qwen or the module resolved from generic_embeddings may).");
                     }
 
                     if (!string.IsNullOrWhiteSpace(ollamaModel))
@@ -525,6 +747,32 @@ public static class EngineConfigLoader
                         throw new EngineConfigurationException(
                             $"Module '{portKey}' in '{path}' must not set default_chat_model (only llm_provider_qwen may).");
                     }
+                }
+
+                if (isActiveGenericEmbeddings)
+                {
+                    if (ollamaPort is null or < 1 or > 65535)
+                    {
+                        throw new EngineConfigurationException(
+                            $"Module '{portKey}' in '{path}' (resolved from generic_embeddings) must set ollama_port to an integer between 1 and 65535.");
+                    }
+
+                    if (string.IsNullOrWhiteSpace(defaultEmbeddingModel))
+                    {
+                        throw new EngineConfigurationException(
+                            $"Module '{portKey}' in '{path}' (resolved from generic_embeddings) must set default_embedding_model to a non-empty string.");
+                    }
+
+                    if (string.IsNullOrWhiteSpace(keepAlive))
+                    {
+                        throw new EngineConfigurationException(
+                            $"Module '{portKey}' in '{path}' (resolved from generic_embeddings) must set keep_alive to a non-empty Ollama duration string.");
+                    }
+                }
+                else if (!string.IsNullOrWhiteSpace(defaultEmbeddingModel))
+                {
+                    throw new EngineConfigurationException(
+                        $"Module '{portKey}' in '{path}' must not set default_embedding_model (only the module resolved from generic_embeddings may).");
                 }
 
                 if (isMemoryDirector)
@@ -558,7 +806,7 @@ public static class EngineConfigLoader
                     if (maxStepsPerTurn is not null
                         || maxToolResultChars is not null
                         || recentMessageCount is not null
-                        || !string.IsNullOrWhiteSpace(keepAlive))
+                        || (!isActiveGenericEmbeddings && !string.IsNullOrWhiteSpace(keepAlive)))
                     {
                         throw new EngineConfigurationException(
                             $"Module '{portKey}' in '{path}' must not set memory_director options (only memory_director may).");
@@ -573,6 +821,7 @@ public static class EngineConfigLoader
                 List<EngineModuleInfo> list,
                 string genericLlmProviderModuleKey,
                 string genericDirectorModuleKey,
+                string genericEmbeddingsModuleKey,
                 string path)
             {
                 void RequireCatalogEntryEngineMandatory(string portKey, string missingCatalogMessage)
@@ -604,6 +853,10 @@ public static class EngineConfigLoader
                 RequireCatalogEntryEngineMandatory(
                     genericLlmProviderModuleKey,
                     $"modules[] in '{path}' must include the concrete generic_llm_provider module '{genericLlmProviderModuleKey}'.");
+
+                RequireCatalogEntryEngineMandatory(
+                    genericEmbeddingsModuleKey,
+                    $"modules[] in '{path}' must include the concrete generic_embeddings module '{genericEmbeddingsModuleKey}'.");
             }
 
             static IReadOnlyList<EngineModuleInfo> MergeModules(
@@ -611,7 +864,8 @@ public static class EngineConfigLoader
                 EnginePortMap portMap,
                 string path,
                 string genericLlmProviderModuleKey,
-                string genericDirectorModuleKey)
+                string genericDirectorModuleKey,
+                string genericEmbeddingsModuleKey)
             {
                 var list = new List<EngineModuleInfo>();
                 var seenLoadOrders = new HashSet<int>();
@@ -650,6 +904,7 @@ public static class EngineConfigLoader
                     var launch = new EngineModuleLaunchInfo(module.Launch.Trim());
                     var endpoints = MergeEndpoints(module.Endpoints, portKey, path);
                     var isActiveGenericProvider = string.Equals(portKey, genericLlmProviderModuleKey, StringComparison.OrdinalIgnoreCase);
+                    var isActiveGenericEmbeddings = string.Equals(portKey, genericEmbeddingsModuleKey, StringComparison.OrdinalIgnoreCase);
                     var isQwen = string.Equals(portKey, "llm_provider_qwen", StringComparison.OrdinalIgnoreCase);
                     var isMemoryDirector = string.Equals(portKey, "memory_director", StringComparison.OrdinalIgnoreCase);
 
@@ -658,8 +913,10 @@ public static class EngineConfigLoader
                         isActiveGenericProvider,
                         isQwen,
                         isMemoryDirector,
+                        isActiveGenericEmbeddings,
                         module.OllamaPort,
                         module.OllamaModel,
+                        module.DefaultEmbeddingModel,
                         module.NumCtx,
                         module.MaxStepsPerTurn,
                         module.MaxToolResultChars,
@@ -685,6 +942,13 @@ public static class EngineConfigLoader
                             module.KeepAlive!.Trim())
                         : null;
 
+                    var embeddingsOptions = isActiveGenericEmbeddings
+                        ? new EmbeddingsModuleOptions(
+                            module.OllamaPort!.Value,
+                            module.DefaultEmbeddingModel!.Trim(),
+                            module.KeepAlive!.Trim())
+                        : null;
+
                     list.Add(new EngineModuleInfo(
                         portKey,
                         string.IsNullOrWhiteSpace(module.DisplayName) ? portKey : module.DisplayName.Trim(),
@@ -694,7 +958,8 @@ public static class EngineConfigLoader
                         endpoints,
                         genericProviderOptions,
                         qwenOptions,
-                        memoryDirectorOptions));
+                        memoryDirectorOptions,
+                        embeddingsOptions));
                 }
 
                 if (list.Count == 0)
@@ -702,7 +967,7 @@ public static class EngineConfigLoader
                     throw new EngineConfigurationException($"No modules could be built from '{path}'.");
                 }
 
-                EnsureRequiredModulesPresent(list, genericLlmProviderModuleKey, genericDirectorModuleKey, path);
+                EnsureRequiredModulesPresent(list, genericLlmProviderModuleKey, genericDirectorModuleKey, genericEmbeddingsModuleKey, path);
                 return list;
             }
 
@@ -777,11 +1042,14 @@ public static class EngineConfigLoader
             var moduleAliases = MergeModuleAliases(dto.ModuleAliases, path);
             var genericLlmProviderModuleKey = ResolveRequiredGenericProviderModuleKey(moduleAliases, path);
             var genericDirectorModuleKey = ResolveRequiredGenericDirectorModuleKey(moduleAliases, path);
+            var genericEmbeddingsModuleKey = ResolveRequiredGenericEmbeddingsModuleKey(moduleAliases, path);
             var portMap = BuildPortMapFromModules(dto.Modules, path);
-            var modules = MergeModules(dto.Modules, portMap, path, genericLlmProviderModuleKey, genericDirectorModuleKey);
+            var modules = MergeModules(dto.Modules, portMap, path, genericLlmProviderModuleKey, genericDirectorModuleKey, genericEmbeddingsModuleKey);
             EnsureGenericLlmProviderModuleOptionsComplete(modules, genericLlmProviderModuleKey, path);
+            var turnPipelines = MergeTurnPipelines(dto.TurnPipelines, path);
+            ValidateTurnPipelines(turnPipelines, modules, moduleAliases, path);
 
-            return new EngineConfiguration(repositoryRoot, portMap, modules, moduleAliases);
+            return new EngineConfiguration(repositoryRoot, portMap, modules, moduleAliases, turnPipelines);
         }
 
         if (_cached is not null)

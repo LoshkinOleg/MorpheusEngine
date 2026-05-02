@@ -268,6 +268,13 @@ namespace MorpheusEngine
                     return;
                 }
 
+                if (path.Equals("/token_count", StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.WriteLine("LlmProvider_qwen/token_count called.");
+                    await ProcessRequest_tokenCount(context);
+                    return;
+                }
+
                 // Invalid endpoint specified.
                 Console.WriteLine("LlmProvider_qwen called with an unknown path: " + path);
                 await Respond(context, 404, new ErrorResponse(false, "Not found: " + path));
@@ -693,6 +700,88 @@ namespace MorpheusEngine
             await Respond(context, 200, new ChatGenerateResponse(true, assistantText, ollamaBody));
         }
 
+        private async Task ProcessRequest_tokenCount(HttpListenerContext context)
+        {
+            string body;
+            using (var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding))
+            {
+                body = await reader.ReadToEndAsync();
+            }
+
+            TokenCountRequest? request;
+            try
+            {
+                request = JsonSerializer.Deserialize<TokenCountRequest>(body, _jsonOptions);
+            }
+            catch (JsonException e)
+            {
+                await Respond(context, 400, new ErrorResponse(false, "Invalid JSON payload.", e.Message));
+                return;
+            }
+
+            if (request is null || string.IsNullOrWhiteSpace(request.Text))
+            {
+                await Respond(context, 400, new ErrorResponse(false, "Request must include non-empty text."));
+                return;
+            }
+
+            if (!string.IsNullOrWhiteSpace(request.Model) && !string.Equals(request.Model.Trim(), _chatModel, StringComparison.OrdinalIgnoreCase))
+            {
+                await Respond(context, 400, new ErrorResponse(false, $"llm_provider_qwen token_count uses configured model '{_chatModel}', not caller model '{request.Model.Trim()}'."));
+                return;
+            }
+
+            if (!await RespondIfOllamaUnavailableAsync(context))
+            {
+                return;
+            }
+
+            var options = BuildOllamaOptionsPayload();
+            var ollamaPayload = new
+            {
+                model = _chatModel,
+                prompt = request.Text,
+                stream = false,
+                raw = true,
+                truncate = false,
+                options = new { options.num_ctx, options.num_keep, num_predict = 0 }
+            };
+            var requestJson = JsonSerializer.Serialize(ollamaPayload);
+            using var content = new StringContent(requestJson, Encoding.UTF8, "application/json");
+
+            HttpResponseMessage ollamaResponse;
+            try
+            {
+                ollamaResponse = await _httpClient.PostAsync(BuildOllamaUri("/api/generate"), content);
+            }
+            catch (Exception e)
+            {
+                await Respond(
+                    context,
+                    IsOllamaReady() ? 502 : 503,
+                    new ErrorResponse(false, "Bundled Ollama is unavailable.", BuildOllamaUnavailableDetails(e.Message)));
+                return;
+            }
+
+            var ollamaBody = await ollamaResponse.Content.ReadAsStringAsync();
+            if (!ollamaResponse.IsSuccessStatusCode)
+            {
+                await Respond(context, (int)ollamaResponse.StatusCode, new ErrorResponse(false, "Ollama returned an error during token_count.", ollamaBody));
+                return;
+            }
+
+            if (TryReadPromptEvalCount(ollamaBody, out var exactTokens))
+            {
+                Console.WriteLine($"OLLAMA_IO TOKEN_COUNT exact=true model={_chatModel} chars={request.Text.Length} tokens={exactTokens}");
+                await Respond(context, 200, new TokenCountResponse(true, _chatModel, exactTokens, true));
+                return;
+            }
+
+            var estimated = EstimateTokensFromText(request.Text);
+            Console.WriteLine($"OLLAMA_IO TOKEN_COUNT exact=false model={_chatModel} chars={request.Text.Length} estimatedTokens={estimated}");
+            await Respond(context, 200, new TokenCountResponse(true, _chatModel, estimated, false));
+        }
+
         // Intentional extraction: this sequence is used by initial startup and restart recovery.
         private async Task StartManagedOllamaAsync(string reason)
         {
@@ -1105,6 +1194,35 @@ namespace MorpheusEngine
 
         private OllamaOptionsPayload BuildOllamaOptionsPayload() =>
             new(_ollamaNumCtx, OllamaRequestNumKeep);
+
+        private static bool TryReadPromptEvalCount(string ollamaBody, out int promptEvalCount)
+        {
+            promptEvalCount = 0;
+            try
+            {
+                using var doc = JsonDocument.Parse(ollamaBody);
+                if (!doc.RootElement.TryGetProperty("prompt_eval_count", out var countElement)
+                    || countElement.ValueKind != JsonValueKind.Number
+                    || !countElement.TryGetInt32(out var count)
+                    || count <= 0)
+                {
+                    return false;
+                }
+
+                promptEvalCount = count;
+                return true;
+            }
+            catch (JsonException)
+            {
+                return false;
+            }
+        }
+
+        private static int EstimateTokensFromText(string text)
+        {
+            var utf8Bytes = Encoding.UTF8.GetByteCount(text);
+            return Math.Max(1, (int)Math.Ceiling(utf8Bytes / 4.0));
+        }
 
         private string BuildOllamaUnavailableDetails(string? extraDetail = null)
         {

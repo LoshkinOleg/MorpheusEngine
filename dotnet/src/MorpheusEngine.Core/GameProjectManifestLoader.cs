@@ -6,6 +6,7 @@ namespace MorpheusEngine;
 public sealed record GameProjectManifest(
     string Id,
     string Title,
+    string TurnPipeline,
     IReadOnlyList<string> RequiredModules);
 
 public static class GameProjectManifestLoader
@@ -17,6 +18,9 @@ public static class GameProjectManifestLoader
 
         [JsonPropertyName("required_modules")]
         public List<string>? RequiredModules { get; set; }
+
+        [JsonPropertyName("turn_pipeline")]
+        public string? TurnPipeline { get; set; }
     }
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -114,7 +118,21 @@ public static class GameProjectManifestLoader
             }
         }
 
-        return new GameProjectManifest(id, title, required.ToArray());
+        var turnPipeline = (dto.TurnPipeline ?? "memory_director_default").Trim();
+        if (string.IsNullOrWhiteSpace(turnPipeline))
+        {
+            throw new InvalidOperationException($"Manifest at '{manifestPath}' has an empty turn_pipeline.");
+        }
+
+        if (turnPipeline.Contains("..", StringComparison.Ordinal)
+            || turnPipeline.Contains('/', StringComparison.Ordinal)
+            || turnPipeline.Contains('\\', StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Manifest turn_pipeline contains invalid pipeline id '{turnPipeline}' in '{manifestPath}' (no path separators or '..').");
+        }
+
+        return new GameProjectManifest(id, title, turnPipeline, required.ToArray());
     }
 }
 

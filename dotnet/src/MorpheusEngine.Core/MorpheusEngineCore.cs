@@ -46,13 +46,33 @@ namespace MorpheusEngine
 
             foreach (var moduleKey in manifest.RequiredModules)
             {
-                if (configuration.FindModule(moduleKey) is null)
+                var trimmedModuleKey = moduleKey.Trim();
+                var resolvedModuleKey = configuration.ResolveProxyTargetModuleKey(trimmedModuleKey);
+                if (configuration.FindModule(resolvedModuleKey) is null)
                 {
                     throw new InvalidOperationException(
-                        $"Game project '{manifest.Id}' requires unknown module '{moduleKey}'. Fix '{manifest.Id}/manifest.json' or engine_config.json.");
+                        $"Game project '{manifest.Id}' requires unknown module or alias '{trimmedModuleKey}'. Fix '{manifest.Id}/manifest.json' or engine_config.json.");
                 }
 
-                requiredForRun.Add(moduleKey);
+                requiredForRun.Add(resolvedModuleKey);
+            }
+
+            var selectedPipeline = configuration.GetRequiredTurnPipeline(manifest.TurnPipeline);
+            foreach (var step in selectedPipeline.Steps)
+            {
+                var resolvedStepModuleKey = configuration.ResolveProxyTargetModuleKey(step.TargetModule);
+                if (configuration.FindModule(resolvedStepModuleKey) is null)
+                {
+                    throw new InvalidOperationException(
+                        $"Game project '{manifest.Id}' selected turn_pipeline '{selectedPipeline.Id}' with unknown module or alias '{step.TargetModule}'.");
+                }
+
+                if (!requiredForRun.Contains(resolvedStepModuleKey))
+                {
+                    throw new InvalidOperationException(
+                        $"Game project '{manifest.Id}' selected turn_pipeline '{selectedPipeline.Id}' step '{step.Id}' "
+                        + $"which references module '{step.TargetModule}', but that module is not required by the engine or manifest.");
+                }
             }
 
             Modules = configuration.ModulesInfos

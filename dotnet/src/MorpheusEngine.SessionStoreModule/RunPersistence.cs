@@ -1,4 +1,5 @@
 using System.Data;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
@@ -11,6 +12,18 @@ namespace MorpheusEngine;
 /// </summary>
 internal sealed class RunPersistence
 {
+    #region Nested types
+    public sealed record ArchivalSeedCandidate(
+        string Id,
+        string Scope,
+        string Source,
+        string Content,
+        IReadOnlyList<string> Tags,
+        string MetadataJson);
+
+    private sealed record LoreSeedEntry(string Subject, string Data);
+    #endregion
+
     private readonly string _repositoryRoot;
 
     // ctor
@@ -71,52 +84,11 @@ internal sealed class RunPersistence
         }
 
         // Lore seed: default_lore_entries.csv under game_projects/&lt;id&gt;/lore/ only.
-        var loreDir = Path.Combine(GetGameProjectsRoot(), gameProjectId, "lore");
-        var csvPath = Path.Combine(loreDir, "default_lore_entries.csv");
-
         try
         {
-            if (!File.Exists(csvPath))
+            foreach (var entry in ReadLoreSeedEntries(gameProjectId))
             {
-                if (Directory.Exists(loreDir))
-                {
-                    Console.WriteLine(
-                        $"[SessionStore] WARNING: No default_lore_entries.csv under '{loreDir}' for game project '{gameProjectId}'. Lore table will not be seeded from disk.");
-                }
-            }
-            else
-            {
-                var lines = CsvRfc4180.SplitRecords(File.ReadAllText(csvPath))
-                    .Where(static line => !string.IsNullOrWhiteSpace(line) && !line.TrimStart().StartsWith('#'))
-                    .ToArray();
-                if (lines.Length > 0)
-                {
-                    var headers = CsvRfc4180.ParseRecordFields(lines[0]).Select(static h => h.ToLowerInvariant()).ToArray();
-                    var subjectIndex = Array.IndexOf(headers, "subject");
-                    var dataIndex = Array.FindIndex(
-                        headers,
-                        static h => h is "data" or "description" or "entry");
-                    if (subjectIndex >= 0 && dataIndex >= 0)
-                    {
-                        for (var i = 1; i < lines.Length; i++)
-                        {
-                            var columns = CsvRfc4180.ParseRecordFields(lines[i]);
-                            if (subjectIndex >= columns.Count || dataIndex >= columns.Count)
-                            {
-                                continue;
-                            }
-
-                            var subject = columns[subjectIndex];
-                            var data = columns[dataIndex];
-                            if (string.IsNullOrWhiteSpace(subject) || string.IsNullOrWhiteSpace(data))
-                            {
-                                continue;
-                            }
-
-                            UpsertLore(connection, subject, data, "lore/default_lore_entries.csv");
-                        }
-                    }
-                }
+                UpsertLore(connection, entry.Subject, entry.Data, "lore/default_lore_entries.csv");
             }
         }
         catch (Exception ex)
@@ -206,7 +178,8 @@ internal sealed class RunPersistence
             ReadMemoryBlocks(connection, includeReadOnly: true),
             ReadRecentMessages(connection, request.RecentMessageCount, roles: null),
             ReadLatestSnapshot(connection),
-            budget);
+            budget,
+            ReadRecentSummaries(connection, limit: 5));
     }
 
     public MemoryPersistStepResponse PersistMemoryStep(string gameProjectId, string runId, MemoryPersistStepRequest request)
@@ -241,6 +214,17 @@ internal sealed class RunPersistence
             foreach (var block in request.BlockUpdates)
             {
                 UpsertMemoryBlock(connection, transaction, block);
+            }
+
+            if (request.ContextAccounting is not null)
+            {
+                InsertPipelineEvent(
+                    connection,
+                    transaction,
+                    runId,
+                    request.Turn,
+                    request.StepNumber,
+                    JsonSerializer.Serialize(new { eventType = "memory_context_budget", accounting = request.ContextAccounting }));
             }
 
             transaction.Commit();
@@ -338,6 +322,14 @@ internal sealed class RunPersistence
         return new MemorySnapshotLatestResponse(true, ReadLatestSnapshot(connection));
     }
 
+    public MemoryPipelineEventsRecentResponse GetRecentPipelineEvents(string gameProjectId, string runId, MemoryPipelineEventsRecentRequest request)
+    {
+        var dbPath = RequireRunDatabase(gameProjectId, runId);
+        using var connection = OpenConnection(dbPath);
+        InitializeSessionSchema(connection);
+        return new MemoryPipelineEventsRecentResponse(true, ReadRecentPipelineEvents(connection, request));
+    }
+
     public MemoryRecallSearchResponse SearchRecall(string gameProjectId, string runId, MemoryRecallSearchRequest request)
     {
         var dbPath = RequireRunDatabase(gameProjectId, runId);
@@ -350,15 +342,31 @@ internal sealed class RunPersistence
         }
 
         using var cmd = connection.CreateCommand();
+        var roles = NormalizeRoles(request.Roles);
+        var roleClause = string.Empty;
+        if (roles.Length > 0)
+        {
+            var roleParameters = new List<string>();
+            for (var i = 0; i < roles.Length; i++)
+            {
+                var parameterName = "@role" + i;
+                roleParameters.Add(parameterName);
+                cmd.Parameters.AddWithValue(parameterName, roles[i]);
+            }
+
+            roleClause = $" AND m.role IN ({string.Join(", ", roleParameters)})";
+        }
+
         cmd.CommandText =
-            """
-            SELECT id, turn, step_number, role, message_type, content
-            FROM agent_messages
-            WHERE content LIKE @query
-            ORDER BY turn DESC, step_number DESC, id DESC
+            $"""
+            SELECT m.id, m.turn, m.step_number, m.role, m.message_type, m.content, m.tool_name, bm25(agent_messages_fts) AS score
+            FROM agent_messages_fts f
+            JOIN agent_messages m ON m.id = f.rowid
+            WHERE agent_messages_fts MATCH @query{roleClause}
+            ORDER BY score ASC, m.turn DESC, m.step_number DESC, m.id DESC
             LIMIT @limit;
             """;
-        cmd.Parameters.AddWithValue("@query", "%" + query + "%");
+        cmd.Parameters.AddWithValue("@query", BuildFtsQuery(query));
         cmd.Parameters.AddWithValue("@limit", Math.Clamp(request.Limit, 1, 50));
 
         var results = new List<MemorySearchResultDto>();
@@ -371,9 +379,10 @@ internal sealed class RunPersistence
                 turn = reader.GetInt32(1),
                 stepNumber = reader.GetInt32(2),
                 role = reader.GetString(3),
-                messageType = reader.GetString(4)
+                messageType = reader.GetString(4),
+                toolName = reader.IsDBNull(6) ? null : reader.GetString(6)
             });
-            results.Add(new MemorySearchResultDto(id, reader.GetString(5), "recall", null, metadata));
+            results.Add(new MemorySearchResultDto(id, reader.GetString(5), "recall", reader.GetDouble(7), metadata));
         }
 
         return new MemoryRecallSearchResponse(true, results);
@@ -381,9 +390,154 @@ internal sealed class RunPersistence
 
     public MemoryArchivalSearchResponse SearchArchival(string gameProjectId, string runId, MemoryArchivalSearchRequest request)
     {
+        var dbPath = RequireRunDatabase(gameProjectId, runId);
+        using var connection = OpenConnection(dbPath);
+        InitializeSessionSchema(connection);
+        var query = request.Query?.Trim() ?? string.Empty;
+        if (query.Length == 0)
+        {
+            return new MemoryArchivalSearchResponse(true, []);
+        }
+
+        if (request.QueryEmbedding is null || request.QueryEmbedding.Count == 0)
+        {
+            throw new InvalidOperationException("Archival search requires a non-empty queryEmbedding.");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.EmbeddingModel))
+        {
+            throw new InvalidOperationException("Archival search requires embeddingModel.");
+        }
+
+        var queryEmbedding = request.QueryEmbedding.ToArray();
+        var tags = NormalizeTags(request.Tags);
+        var topK = Math.Clamp(request.TopK, 1, 50);
+        var results = new List<(MemorySearchResultDto Result, string CreatedAt)>();
+
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText =
+            """
+            SELECT id, scope, source, content, tags_json, metadata_json, embedding_model, embedding_dimensions, embedding_json, created_at
+            FROM archival_passages
+            WHERE embedding_model = @embeddingModel
+              AND embedding_dimensions = @dimensions;
+            """;
+        cmd.Parameters.AddWithValue("@embeddingModel", request.EmbeddingModel.Trim());
+        cmd.Parameters.AddWithValue("@dimensions", queryEmbedding.Length);
+
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            var passageTags = DeserializeStringArray(reader.GetString(4));
+            if (tags.Length > 0 && !TagsContainAll(passageTags, tags))
+            {
+                continue;
+            }
+
+            var embedding = DeserializeFloatArray(reader.GetString(8));
+            if (embedding.Length != queryEmbedding.Length)
+            {
+                continue;
+            }
+
+            var score = CosineSimilarity(queryEmbedding, embedding);
+            var metadata = JsonSerializer.Serialize(new
+            {
+                scope = reader.GetString(1),
+                source = reader.GetString(2),
+                tags = passageTags,
+                metadataJson = reader.IsDBNull(5) ? null : reader.GetString(5),
+                embeddingModel = reader.GetString(6),
+                embeddingDimensions = reader.GetInt32(7)
+            });
+            results.Add((
+                new MemorySearchResultDto(reader.GetString(0), reader.GetString(3), "archival", score, metadata),
+                reader.GetString(9)));
+        }
+
+        var ordered = results
+            .OrderByDescending(static row => row.Result.Score ?? double.NegativeInfinity)
+            .ThenByDescending(static row => row.CreatedAt, StringComparer.Ordinal)
+            .ThenBy(static row => row.Result.Id, StringComparer.Ordinal)
+            .Take(topK)
+            .Select(static row => row.Result)
+            .ToArray();
+        return new MemoryArchivalSearchResponse(true, ordered);
+    }
+
+    public MemoryArchivalUpsertResponse UpsertArchivalPassage(string gameProjectId, string runId, MemoryArchivalUpsertRequest request)
+    {
+        var dbPath = RequireRunDatabase(gameProjectId, runId);
+        using var connection = OpenConnection(dbPath);
+        InitializeSessionSchema(connection);
+        using var transaction = connection.BeginTransaction(IsolationLevel.Serializable);
+        try
+        {
+            var passage = UpsertArchivalPassage(connection, transaction, request.Passage);
+            transaction.Commit();
+            return new MemoryArchivalUpsertResponse(true, passage);
+        }
+        catch
+        {
+            transaction.Rollback();
+            throw;
+        }
+    }
+
+    public IReadOnlyList<ArchivalSeedCandidate> BuildArchivalLoreSeedCandidates(string gameProjectId, string runId)
+    {
         _ = RequireRunDatabase(gameProjectId, runId);
-        _ = request;
-        return new MemoryArchivalSearchResponse(true, []);
+        return ReadLoreSeedEntries(gameProjectId)
+            .Select(static entry =>
+            {
+                var id = CreateStableArchivalId("lore/default_lore_entries.csv", entry.Subject);
+                var content = $"{entry.Subject}: {entry.Data}";
+                var metadata = JsonSerializer.Serialize(new { subject = entry.Subject, source = "lore/default_lore_entries.csv" });
+                return new ArchivalSeedCandidate(id, "project", "lore/default_lore_entries.csv", content, ["lore", "seed"], metadata);
+            })
+            .ToArray();
+    }
+
+    public MemorySummariesRecentResponse GetRecentSummaries(string gameProjectId, string runId, MemorySummariesRecentRequest request)
+    {
+        var dbPath = RequireRunDatabase(gameProjectId, runId);
+        using var connection = OpenConnection(dbPath);
+        InitializeSessionSchema(connection);
+        return new MemorySummariesRecentResponse(true, ReadRecentSummaries(connection, request.Limit));
+    }
+
+    public MemoryCompactRecallResponse CompactRecall(string gameProjectId, string runId, MemoryCompactRecallRequest request)
+    {
+        if (request.StartTurn < 1 || request.EndTurn < request.StartTurn)
+        {
+            throw new InvalidOperationException("Compaction range must start at turn >= 1 and end at or after startTurn.");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.Summary))
+        {
+            throw new InvalidOperationException("Compaction summary must be non-empty.");
+        }
+
+        if (request.SourceMessageCount < 1)
+        {
+            throw new InvalidOperationException("sourceMessageCount must be >= 1.");
+        }
+
+        var dbPath = RequireRunDatabase(gameProjectId, runId);
+        using var connection = OpenConnection(dbPath);
+        InitializeSessionSchema(connection);
+        using var transaction = connection.BeginTransaction(IsolationLevel.Serializable);
+        try
+        {
+            var summary = InsertConversationSummary(connection, transaction, request);
+            transaction.Commit();
+            return new MemoryCompactRecallResponse(true, summary);
+        }
+        catch
+        {
+            transaction.Rollback();
+            throw;
+        }
     }
     #endregion
 
@@ -448,6 +602,9 @@ internal sealed class RunPersistence
               created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
+            CREATE INDEX IF NOT EXISTS idx_pipeline_events_turn_step
+            ON pipeline_events (turn, step_number, id);
+
             CREATE TABLE IF NOT EXISTS memory_blocks (
               label TEXT PRIMARY KEY,
               description TEXT NOT NULL,
@@ -477,6 +634,32 @@ internal sealed class RunPersistence
             CREATE INDEX IF NOT EXISTS idx_agent_messages_role
             ON agent_messages (role);
 
+            CREATE VIRTUAL TABLE IF NOT EXISTS agent_messages_fts USING fts5(
+              content,
+              role UNINDEXED,
+              message_type UNINDEXED,
+              tool_name UNINDEXED,
+              content='agent_messages',
+              content_rowid='id'
+            );
+
+            CREATE TRIGGER IF NOT EXISTS agent_messages_ai AFTER INSERT ON agent_messages BEGIN
+              INSERT INTO agent_messages_fts(rowid, content, role, message_type, tool_name)
+              VALUES (new.id, new.content, new.role, new.message_type, COALESCE(new.tool_name, ''));
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS agent_messages_ad AFTER DELETE ON agent_messages BEGIN
+              INSERT INTO agent_messages_fts(agent_messages_fts, rowid, content, role, message_type, tool_name)
+              VALUES ('delete', old.id, old.content, old.role, old.message_type, COALESCE(old.tool_name, ''));
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS agent_messages_au AFTER UPDATE ON agent_messages BEGIN
+              INSERT INTO agent_messages_fts(agent_messages_fts, rowid, content, role, message_type, tool_name)
+              VALUES ('delete', old.id, old.content, old.role, old.message_type, COALESCE(old.tool_name, ''));
+              INSERT INTO agent_messages_fts(rowid, content, role, message_type, tool_name)
+              VALUES (new.id, new.content, new.role, new.message_type, COALESCE(new.tool_name, ''));
+            END;
+
             CREATE TABLE IF NOT EXISTS memory_mutations (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               run_id TEXT NOT NULL,
@@ -491,8 +674,49 @@ internal sealed class RunPersistence
 
             CREATE INDEX IF NOT EXISTS idx_memory_mutations_turn_step
             ON memory_mutations (turn, step_number, id);
+
+            CREATE TABLE IF NOT EXISTS conversation_summaries (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              run_id TEXT NOT NULL,
+              start_turn INTEGER NOT NULL,
+              end_turn INTEGER NOT NULL,
+              summary TEXT NOT NULL,
+              source_message_count INTEGER NOT NULL,
+              metadata_json TEXT NULL,
+              created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(start_turn, end_turn)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_conversation_summaries_turn_range
+            ON conversation_summaries (start_turn, end_turn, id);
+
+            CREATE TABLE IF NOT EXISTS archival_passages (
+              id TEXT PRIMARY KEY,
+              scope TEXT NOT NULL,
+              source TEXT NOT NULL,
+              content TEXT NOT NULL,
+              tags_json TEXT NOT NULL,
+              metadata_json TEXT NULL,
+              embedding_model TEXT NOT NULL,
+              embedding_dimensions INTEGER NOT NULL,
+              embedding_json TEXT NOT NULL,
+              created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_archival_passages_scope
+            ON archival_passages (scope);
+
+            CREATE INDEX IF NOT EXISTS idx_archival_passages_source
+            ON archival_passages (source);
+
+            CREATE INDEX IF NOT EXISTS idx_archival_passages_created_at
+            ON archival_passages (created_at);
             """;
         cmd.ExecuteNonQuery();
+        using var rebuild = connection.CreateCommand();
+        rebuild.CommandText = "INSERT INTO agent_messages_fts(agent_messages_fts) VALUES ('rebuild');";
+        rebuild.ExecuteNonQuery();
     }
     private static void SetMeta(SqliteConnection connection, string key, string value)
     {
@@ -588,6 +812,73 @@ internal sealed class RunPersistence
         return rows;
     }
 
+    private static IReadOnlyList<MemorySummaryDto> ReadRecentSummaries(SqliteConnection connection, int limit)
+    {
+        var normalizedLimit = Math.Clamp(limit, 0, 20);
+        if (normalizedLimit == 0)
+        {
+            return [];
+        }
+
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText =
+            """
+            SELECT start_turn, end_turn, summary, source_message_count, metadata_json
+            FROM conversation_summaries
+            ORDER BY end_turn DESC, start_turn DESC, id DESC
+            LIMIT @limit;
+            """;
+        cmd.Parameters.AddWithValue("@limit", normalizedLimit);
+
+        var rows = new List<MemorySummaryDto>();
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            rows.Add(new MemorySummaryDto(
+                reader.GetInt32(0),
+                reader.GetInt32(1),
+                reader.GetString(2),
+                reader.GetInt32(3),
+                reader.IsDBNull(4) ? null : reader.GetString(4)));
+        }
+
+        rows.Reverse();
+        return rows;
+    }
+
+    private static MemorySummaryDto InsertConversationSummary(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        MemoryCompactRecallRequest request)
+    {
+        using var cmd = connection.CreateCommand();
+        cmd.Transaction = transaction;
+        cmd.CommandText =
+            """
+            INSERT INTO conversation_summaries
+              (run_id, start_turn, end_turn, summary, source_message_count, metadata_json)
+            VALUES
+              ((SELECT value FROM meta WHERE key = 'run_id'), @startTurn, @endTurn, @summary, @sourceMessageCount, @metadataJson)
+            ON CONFLICT(start_turn, end_turn) DO UPDATE SET
+              summary = excluded.summary,
+              source_message_count = excluded.source_message_count,
+              metadata_json = excluded.metadata_json;
+            """;
+        cmd.Parameters.AddWithValue("@startTurn", request.StartTurn);
+        cmd.Parameters.AddWithValue("@endTurn", request.EndTurn);
+        cmd.Parameters.AddWithValue("@summary", request.Summary.Trim());
+        cmd.Parameters.AddWithValue("@sourceMessageCount", request.SourceMessageCount);
+        cmd.Parameters.AddWithValue("@metadataJson", request.MetadataJson is null ? DBNull.Value : request.MetadataJson);
+        cmd.ExecuteNonQuery();
+
+        return new MemorySummaryDto(
+            request.StartTurn,
+            request.EndTurn,
+            request.Summary.Trim(),
+            request.SourceMessageCount,
+            request.MetadataJson);
+    }
+
     private static IReadOnlyList<AgentMessageDto> ReadRecentMessages(
         SqliteConnection connection,
         int limit,
@@ -649,6 +940,47 @@ internal sealed class RunPersistence
                 reader.GetString(4),
                 reader.IsDBNull(5) ? null : reader.GetString(5),
                 reader.IsDBNull(6) ? null : reader.GetString(6)));
+        }
+
+        rows.Reverse();
+        return rows;
+    }
+
+    private static IReadOnlyList<MemoryPipelineEventDto> ReadRecentPipelineEvents(
+        SqliteConnection connection,
+        MemoryPipelineEventsRecentRequest request)
+    {
+        var normalizedLimit = Math.Clamp(request.Limit, 0, 200);
+        if (normalizedLimit == 0)
+        {
+            return [];
+        }
+
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText =
+            """
+            SELECT turn, step_number, payload, created_at
+            FROM pipeline_events
+            ORDER BY turn DESC, step_number DESC, id DESC
+            LIMIT @limit;
+            """;
+        cmd.Parameters.AddWithValue("@limit", normalizedLimit * 4);
+
+        var rows = new List<MemoryPipelineEventDto>();
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read() && rows.Count < normalizedLimit)
+        {
+            var payload = reader.GetString(2);
+            if (!PayloadMatchesEventType(payload, request.EventType))
+            {
+                continue;
+            }
+
+            rows.Add(new MemoryPipelineEventDto(
+                reader.GetInt32(0),
+                reader.GetInt32(1),
+                payload,
+                reader.GetString(3)));
         }
 
         rows.Reverse();
@@ -757,6 +1089,39 @@ internal sealed class RunPersistence
         cmd.ExecuteNonQuery();
     }
 
+    private static void InsertPipelineEvent(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string runId,
+        int turn,
+        int stepNumber,
+        string payloadJson)
+    {
+        if (turn < 1 && turn != 0)
+        {
+            throw new InvalidOperationException("Pipeline event turn must be 0 for setup or >= 1.");
+        }
+
+        if (stepNumber < 0)
+        {
+            throw new InvalidOperationException("Pipeline event stepNumber must be >= 0.");
+        }
+
+        using var _ = JsonDocument.Parse(payloadJson);
+        using var cmd = connection.CreateCommand();
+        cmd.Transaction = transaction;
+        cmd.CommandText =
+            """
+            INSERT INTO pipeline_events (run_id, turn, step_number, payload)
+            VALUES (@runId, @turn, @stepNumber, @payload);
+            """;
+        cmd.Parameters.AddWithValue("@runId", runId);
+        cmd.Parameters.AddWithValue("@turn", turn);
+        cmd.Parameters.AddWithValue("@stepNumber", stepNumber);
+        cmd.Parameters.AddWithValue("@payload", payloadJson);
+        cmd.ExecuteNonQuery();
+    }
+
     private static void UpsertMemoryBlock(
         SqliteConnection connection,
         SqliteTransaction transaction,
@@ -788,6 +1153,57 @@ internal sealed class RunPersistence
         cmd.Parameters.AddWithValue("@charLimit", block.CharLimit);
         cmd.Parameters.AddWithValue("@readOnly", block.ReadOnly ? 1 : 0);
         cmd.ExecuteNonQuery();
+    }
+
+    private static ArchivalPassageDto UpsertArchivalPassage(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ArchivalPassageDto passage)
+    {
+        ValidateArchivalPassage(passage);
+        var normalized = passage with
+        {
+            Id = passage.Id.Trim(),
+            Scope = passage.Scope.Trim().ToLowerInvariant(),
+            Source = passage.Source.Trim(),
+            Content = passage.Content.Trim(),
+            Tags = NormalizeTags(passage.Tags),
+            MetadataJson = string.IsNullOrWhiteSpace(passage.MetadataJson) ? null : passage.MetadataJson.Trim(),
+            EmbeddingModel = passage.EmbeddingModel.Trim(),
+            EmbeddingDimensions = passage.Embedding.Count,
+            Embedding = passage.Embedding.ToArray()
+        };
+
+        using var cmd = connection.CreateCommand();
+        cmd.Transaction = transaction;
+        cmd.CommandText =
+            """
+            INSERT INTO archival_passages
+              (id, scope, source, content, tags_json, metadata_json, embedding_model, embedding_dimensions, embedding_json)
+            VALUES
+              (@id, @scope, @source, @content, @tagsJson, @metadataJson, @embeddingModel, @embeddingDimensions, @embeddingJson)
+            ON CONFLICT(id) DO UPDATE SET
+              scope = excluded.scope,
+              source = excluded.source,
+              content = excluded.content,
+              tags_json = excluded.tags_json,
+              metadata_json = excluded.metadata_json,
+              embedding_model = excluded.embedding_model,
+              embedding_dimensions = excluded.embedding_dimensions,
+              embedding_json = excluded.embedding_json,
+              updated_at = CURRENT_TIMESTAMP;
+            """;
+        cmd.Parameters.AddWithValue("@id", normalized.Id);
+        cmd.Parameters.AddWithValue("@scope", normalized.Scope);
+        cmd.Parameters.AddWithValue("@source", normalized.Source);
+        cmd.Parameters.AddWithValue("@content", normalized.Content);
+        cmd.Parameters.AddWithValue("@tagsJson", JsonSerializer.Serialize(normalized.Tags));
+        cmd.Parameters.AddWithValue("@metadataJson", normalized.MetadataJson is null ? DBNull.Value : normalized.MetadataJson);
+        cmd.Parameters.AddWithValue("@embeddingModel", normalized.EmbeddingModel);
+        cmd.Parameters.AddWithValue("@embeddingDimensions", normalized.EmbeddingDimensions);
+        cmd.Parameters.AddWithValue("@embeddingJson", JsonSerializer.Serialize(normalized.Embedding));
+        cmd.ExecuteNonQuery();
+        return normalized;
     }
 
     private static MemoryBlockDto? ReadMemoryBlock(SqliteConnection connection, SqliteTransaction transaction, string label)
@@ -912,6 +1328,201 @@ internal sealed class RunPersistence
         {
             throw new InvalidOperationException(
                 $"Memory block '{block.Label}' value length {block.Value.Length} exceeds charLimit {block.CharLimit}.");
+        }
+    }
+
+    private static string[] NormalizeRoles(IReadOnlyList<string>? roles) =>
+        roles?
+            .Where(static role => !string.IsNullOrWhiteSpace(role))
+            .Select(static role => role.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray()
+        ?? [];
+
+    private static string[] NormalizeTags(IReadOnlyList<string>? tags) =>
+        tags?
+            .Where(static tag => !string.IsNullOrWhiteSpace(tag))
+            .Select(static tag => tag.Trim().ToLowerInvariant())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray()
+        ?? [];
+
+    private static bool TagsContainAll(IReadOnlyList<string> passageTags, IReadOnlyList<string> requestedTags)
+    {
+        var tagSet = passageTags.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return requestedTags.All(tagSet.Contains);
+    }
+
+    private static IReadOnlyList<LoreSeedEntry> ReadLoreSeedEntries(string gameProjectId)
+    {
+        var loreDir = Path.Combine(GetGameProjectsRootStatic(), gameProjectId, "lore");
+        var csvPath = Path.Combine(loreDir, "default_lore_entries.csv");
+        if (!File.Exists(csvPath))
+        {
+            if (Directory.Exists(loreDir))
+            {
+                Console.WriteLine(
+                    $"[SessionStore] WARNING: No default_lore_entries.csv under '{loreDir}' for game project '{gameProjectId}'. Lore table will not be seeded from disk.");
+            }
+
+            return [];
+        }
+
+        var lines = CsvRfc4180.SplitRecords(File.ReadAllText(csvPath))
+            .Where(static line => !string.IsNullOrWhiteSpace(line) && !line.TrimStart().StartsWith('#'))
+            .ToArray();
+        if (lines.Length == 0)
+        {
+            return [];
+        }
+
+        var headers = CsvRfc4180.ParseRecordFields(lines[0]).Select(static h => h.ToLowerInvariant()).ToArray();
+        var subjectIndex = Array.IndexOf(headers, "subject");
+        var dataIndex = Array.FindIndex(headers, static h => h is "data" or "description" or "entry");
+        if (subjectIndex < 0 || dataIndex < 0)
+        {
+            return [];
+        }
+
+        var rows = new List<LoreSeedEntry>();
+        for (var i = 1; i < lines.Length; i++)
+        {
+            var columns = CsvRfc4180.ParseRecordFields(lines[i]);
+            if (subjectIndex >= columns.Count || dataIndex >= columns.Count)
+            {
+                continue;
+            }
+
+            var subject = columns[subjectIndex].Trim();
+            var data = columns[dataIndex].Trim();
+            if (string.IsNullOrWhiteSpace(subject) || string.IsNullOrWhiteSpace(data))
+            {
+                continue;
+            }
+
+            rows.Add(new LoreSeedEntry(subject, data));
+        }
+
+        return rows;
+    }
+
+    private static string GetGameProjectsRootStatic()
+    {
+        var repositoryRoot = EngineConfigLoader.FindRepositoryRoot()
+            ?? throw new InvalidOperationException("Repository root could not be resolved for lore seeding.");
+        return Path.Combine(repositoryRoot, "game_projects");
+    }
+
+    private static string CreateStableArchivalId(string source, string subject)
+    {
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(source + "\n" + subject.Trim().ToLowerInvariant()));
+        return "lore:default:" + Convert.ToHexString(hash)[..24].ToLowerInvariant();
+    }
+
+    private static float[] DeserializeFloatArray(string json)
+    {
+        var values = JsonSerializer.Deserialize<float[]>(json);
+        return values is { Length: > 0 } ? values : [];
+    }
+
+    private static string[] DeserializeStringArray(string json)
+    {
+        var values = JsonSerializer.Deserialize<string[]>(json);
+        return NormalizeTags(values);
+    }
+
+    private static double CosineSimilarity(IReadOnlyList<float> left, IReadOnlyList<float> right)
+    {
+        if (left.Count != right.Count || left.Count == 0)
+        {
+            throw new InvalidOperationException("Cosine similarity requires non-empty vectors with matching dimensions.");
+        }
+
+        double dot = 0;
+        double leftMagnitude = 0;
+        double rightMagnitude = 0;
+        for (var i = 0; i < left.Count; i++)
+        {
+            dot += left[i] * right[i];
+            leftMagnitude += left[i] * left[i];
+            rightMagnitude += right[i] * right[i];
+        }
+
+        if (leftMagnitude <= 0 || rightMagnitude <= 0)
+        {
+            return 0;
+        }
+
+        return dot / (Math.Sqrt(leftMagnitude) * Math.Sqrt(rightMagnitude));
+    }
+
+    private static void ValidateArchivalPassage(ArchivalPassageDto passage)
+    {
+        if (string.IsNullOrWhiteSpace(passage.Id))
+        {
+            throw new InvalidOperationException("Archival passage id must be non-empty.");
+        }
+
+        if (passage.Scope.Trim().ToLowerInvariant() is not ("project" or "run"))
+        {
+            throw new InvalidOperationException("Archival passage scope must be either 'project' or 'run'.");
+        }
+
+        if (string.IsNullOrWhiteSpace(passage.Source) || string.IsNullOrWhiteSpace(passage.Content))
+        {
+            throw new InvalidOperationException("Archival passage source and content must be non-empty.");
+        }
+
+        if (string.IsNullOrWhiteSpace(passage.EmbeddingModel))
+        {
+            throw new InvalidOperationException("Archival passage embeddingModel must be non-empty.");
+        }
+
+        if (passage.Embedding.Count == 0 || passage.EmbeddingDimensions != passage.Embedding.Count)
+        {
+            throw new InvalidOperationException("Archival passage embeddingDimensions must match the non-empty embedding vector.");
+        }
+
+        if (passage.MetadataJson is not null)
+        {
+            using var _ = JsonDocument.Parse(passage.MetadataJson);
+        }
+    }
+
+    private static string BuildFtsQuery(string query)
+    {
+        var terms = query
+            .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(static term => new string(term.Where(static ch => char.IsLetterOrDigit(ch) || ch == '_' || ch == '-').ToArray()))
+            .Where(static term => term.Length > 0)
+            .Select(static term => "\"" + term.Replace("\"", "\"\"") + "\"")
+            .ToArray();
+
+        if (terms.Length == 0)
+        {
+            return "\"\"";
+        }
+
+        return string.Join(" OR ", terms);
+    }
+
+    private static bool PayloadMatchesEventType(string payloadJson, string? eventType)
+    {
+        if (string.IsNullOrWhiteSpace(eventType))
+        {
+            return true;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(payloadJson);
+            return doc.RootElement.TryGetProperty("eventType", out var eventTypeElement)
+                && eventTypeElement.ValueKind == JsonValueKind.String
+                && string.Equals(eventTypeElement.GetString(), eventType.Trim(), StringComparison.OrdinalIgnoreCase);
+        }
+        catch (JsonException)
+        {
+            return false;
         }
     }
 

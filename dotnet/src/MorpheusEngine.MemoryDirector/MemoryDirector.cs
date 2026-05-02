@@ -18,6 +18,30 @@ public sealed class MemoryDirector
         IReadOnlyList<MemoryBlockDto> BlockUpdates,
         IReadOnlyList<MemoryMutationDto> Mutations,
         string? FinalMessage);
+
+    private sealed record CompiledContext(
+        IReadOnlyList<ChatGenerateRequest.ChatMessageDto> Messages,
+        MemoryContextAccountingDto Accounting);
+
+    private sealed class ContextBudget
+    {
+        public int TargetChars { get; }
+
+        public int RemainingChars { get; private set; }
+
+        public ContextBudget(int targetChars)
+        {
+            TargetChars = Math.Max(0, targetChars);
+            RemainingChars = TargetChars;
+        }
+
+        public int Consume(int requestedChars)
+        {
+            var allowed = Math.Min(Math.Max(0, requestedChars), RemainingChars);
+            RemainingChars -= allowed;
+            return allowed;
+        }
+    }
     #endregion
 
     #region Private data
@@ -288,8 +312,8 @@ public sealed class MemoryDirector
             for (var step = 1; step <= _options.MaxStepsPerTurn; step++)
             {
                 var memoryContext = await LoadContextAsync(request.Turn);
-                var chatMessages = CompileContext(memoryContext);
-                var llmResponse = await ChatAsync(chatMessages);
+                var compiledContext = await CompileContextAsync(memoryContext);
+                var llmResponse = await ChatAsync(compiledContext.Messages);
                 if (llmResponse.Payload is null || !llmResponse.Payload.Ok || string.IsNullOrWhiteSpace(llmResponse.Payload.Response))
                 {
                     await RespondJsonAsync(context, 502, new ErrorResponse(false, "LLM chat failed or returned empty response.", llmResponse.RawBody));
@@ -305,9 +329,11 @@ public sealed class MemoryDirector
                         "parse:" + parseError,
                         parseError,
                         failureCounts,
-                        lastThought);
+                        lastThought,
+                        compiledContext.Accounting);
                     if (finalFromParse is not null)
                     {
+                        await CompactRecallIfNeededAsync(request.Turn);
                         await RespondJsonAsync(context, 200, new DirectorMessageResponse(true, finalFromParse));
                         return;
                     }
@@ -317,7 +343,7 @@ public sealed class MemoryDirector
 
                 lastThought = action.Thought;
                 var canonicalToolCall = action.Tool + ":" + CanonicalizeJson(action.Arguments);
-                var toolResult = ExecuteTool(request.Turn, step, memoryContext, action);
+                var toolResult = await ExecuteToolAsync(request.Turn, step, memoryContext, action);
 
                 var assistantMessage = new AgentMessageDto(
                     request.Turn,
@@ -327,8 +353,10 @@ public sealed class MemoryDirector
                     llmResponse.Payload.Response,
                     action.Tool);
                 var toolMessages = new List<AgentMessageDto> { assistantMessage };
+                var contextAccounting = compiledContext.Accounting;
                 if (action.Tool != "send_message")
                 {
+                    contextAccounting = AddToolResultTelemetry(contextAccounting, action.Tool, toolResult.ToolResultContent);
                     toolMessages.Add(new AgentMessageDto(
                         request.Turn,
                         step,
@@ -344,10 +372,12 @@ public sealed class MemoryDirector
                         step,
                         toolMessages,
                         toolResult.Mutations,
-                        toolResult.BlockUpdates));
+                        toolResult.BlockUpdates,
+                        contextAccounting));
 
                 if (toolResult.FinalMessage is not null)
                 {
+                    await CompactRecallIfNeededAsync(request.Turn);
                     await RespondJsonAsync(context, 200, new DirectorMessageResponse(true, toolResult.FinalMessage));
                     return;
                 }
@@ -365,6 +395,7 @@ public sealed class MemoryDirector
                         alreadyPersisted: true);
                     if (finalFromTool is not null)
                     {
+                        await CompactRecallIfNeededAsync(request.Turn);
                         await RespondJsonAsync(context, 200, new DirectorMessageResponse(true, finalFromTool));
                         return;
                     }
@@ -372,6 +403,7 @@ public sealed class MemoryDirector
             }
 
             var final = await SynthesizeAndPersistFinalAsync(request.Turn, _options.MaxStepsPerTurn + 1, lastThought);
+            await CompactRecallIfNeededAsync(request.Turn);
             await RespondJsonAsync(context, 200, new DirectorMessageResponse(true, final));
         }
         finally
@@ -388,6 +420,7 @@ public sealed class MemoryDirector
         string error,
         Dictionary<string, int> failureCounts,
         string? lastThought,
+        MemoryContextAccountingDto? contextAccounting = null,
         bool alreadyPersisted = false)
     {
         failureCounts.TryGetValue(canonicalFailureKey, out var previousFailures);
@@ -400,7 +433,8 @@ public sealed class MemoryDirector
                     step,
                     [new AgentMessageDto(turn, step, "tool", "tool_error", TruncateToolResult(error), toolName)],
                     [],
-                    []));
+                    [],
+                    contextAccounting));
         }
 
         if (previousFailures > 0)
@@ -426,7 +460,7 @@ public sealed class MemoryDirector
         return final;
     }
 
-    private ToolExecutionResult ExecuteTool(int turn, int step, MemoryLoadContextResponse memoryContext, AgentAction action)
+    private async Task<ToolExecutionResult> ExecuteToolAsync(int turn, int step, MemoryLoadContextResponse memoryContext, AgentAction action)
     {
         try
         {
@@ -437,6 +471,9 @@ public sealed class MemoryDirector
                 "core_memory_replace" => ExecuteCoreMemoryReplace(turn, step, memoryContext, action.Arguments),
                 "core_memory_set" => ExecuteCoreMemorySet(turn, step, memoryContext, action.Arguments),
                 "get_current_snapshot" => ExecuteGetCurrentSnapshot(memoryContext),
+                "recall_search" => await ExecuteRecallSearchAsync(action.Arguments),
+                "archival_memory_insert" => await ExecuteArchivalMemoryInsertAsync(turn, step, action.Arguments),
+                "archival_memory_search" => await ExecuteArchivalMemorySearchAsync(action.Arguments),
                 _ => new ToolExecutionResult(false, "Unknown tool: " + action.Tool, [], [], null)
             };
         }
@@ -495,6 +532,87 @@ public sealed class MemoryDirector
         return new ToolExecutionResult(true, JsonSerializer.Serialize(memoryContext.LatestSnapshot), [], [], null);
     }
 
+    private async Task<ToolExecutionResult> ExecuteRecallSearchAsync(JsonElement arguments)
+    {
+        var query = RequireString(arguments, "query").Trim();
+        var limit = TryGetInt(arguments, "limit") is { } requestedLimit ? Math.Clamp(requestedLimit, 1, 20) : 5;
+        var roles = TryGetStringArray(arguments, "roles");
+        var response = await _routerProxy.PostAsync<MemoryRecallSearchRequest, MemoryRecallSearchResponse>(
+            "session_store",
+            "/memory/recall_search",
+            new MemoryRecallSearchRequest(query, roles, limit));
+        if (response.Payload is null || !response.Payload.Ok)
+        {
+            return new ToolExecutionResult(false, "Recall search failed: " + response.RawBody, [], [], null);
+        }
+
+        return new ToolExecutionResult(true, FormatSearchResults(response.Payload.Results), [], [], null);
+    }
+
+    private async Task<ToolExecutionResult> ExecuteArchivalMemorySearchAsync(JsonElement arguments)
+    {
+        var query = RequireString(arguments, "query").Trim();
+        var topK = TryGetInt(arguments, "topK") is { } requestedTopK ? Math.Clamp(requestedTopK, 1, 20) : 5;
+        var tags = TryGetStringArray(arguments, "tags");
+        var embedding = await EmbedTextAsync(query);
+        var response = await _routerProxy.PostAsync<MemoryArchivalSearchRequest, MemoryArchivalSearchResponse>(
+            "session_store",
+            "/memory/archival_search",
+            new MemoryArchivalSearchRequest(query, tags, topK, embedding.Vector, embedding.Model));
+        if (response.Payload is null || !response.Payload.Ok)
+        {
+            return new ToolExecutionResult(false, "Archival search failed: " + response.RawBody, [], [], null);
+        }
+
+        return new ToolExecutionResult(true, FormatSearchResults(response.Payload.Results), [], [], null);
+    }
+
+    private async Task<ToolExecutionResult> ExecuteArchivalMemoryInsertAsync(int turn, int step, JsonElement arguments)
+    {
+        var content = RequireString(arguments, "content").Trim();
+        var scope = TryGetString(arguments, "scope")?.Trim().ToLowerInvariant() ?? "run";
+        if (scope is not ("project" or "run"))
+        {
+            throw new InvalidOperationException("archival_memory_insert scope must be 'project' or 'run'.");
+        }
+
+        var source = TryGetString(arguments, "source")?.Trim() ?? "memory_director";
+        var tags = TryGetStringArray(arguments, "tags") ?? ["agent"];
+        var embedding = await EmbedTextAsync(content);
+        var passage = new ArchivalPassageDto(
+            "agent:" + Guid.NewGuid().ToString("N"),
+            scope,
+            source,
+            content,
+            tags,
+            JsonSerializer.Serialize(new { turn, stepNumber = step, insertedBy = "memory_director" }),
+            embedding.Model,
+            embedding.Vector.Count,
+            embedding.Vector);
+        var response = await _routerProxy.PostAsync<MemoryArchivalUpsertRequest, MemoryArchivalUpsertResponse>(
+            "session_store",
+            "/memory/archival_upsert",
+            new MemoryArchivalUpsertRequest(passage));
+        if (response.Payload is null || !response.Payload.Ok)
+        {
+            return new ToolExecutionResult(false, "Archival insert failed: " + response.RawBody, [], [], null);
+        }
+
+        var mutation = new MemoryMutationDto(
+            turn,
+            step,
+            "archival_memory_insert",
+            "archival:" + response.Payload.Passage.Id,
+            null,
+            JsonSerializer.Serialize(response.Payload.Passage));
+        return new ToolExecutionResult(
+            true,
+            JsonSerializer.Serialize(new { inserted = response.Payload.Passage.Id, scope = response.Payload.Passage.Scope }),
+            [],
+            [mutation],
+            null);
+    }
+
     private static ToolExecutionResult BuildBlockUpdateResult(int turn, int step, string toolName, MemoryBlockDto before, MemoryBlockDto after)
     {
         if (before.ReadOnly)
@@ -518,34 +636,109 @@ public sealed class MemoryDirector
         return new ToolExecutionResult(true, JsonSerializer.Serialize(new { updated = after.Label }), [after], [mutation], null);
     }
 
-    private IReadOnlyList<ChatGenerateRequest.ChatMessageDto> CompileContext(MemoryLoadContextResponse memoryContext)
+    private async Task<CompiledContext> CompileContextAsync(MemoryLoadContextResponse memoryContext)
     {
         var system = new StringBuilder();
-        system.AppendLine(_agentPrompt);
-        system.AppendLine();
-        system.AppendLine("You must answer with exactly one JSON action matching the provided schema. Do not include markdown.");
-        system.AppendLine("Tool rules: send_message is terminal. Memory-edit and snapshot tools are non-terminal.");
-        system.AppendLine("Core memory blocks:");
+        var budget = CreateContextBudget(memoryContext);
+        var omissions = new List<string>();
+        var items = new List<MemoryContextItemDto>();
+        AppendWithinBudget(system, _agentPrompt, budget, omissions, items, "agent_prompt", "system");
+        AppendWithinBudget(system, Environment.NewLine, budget, omissions, items, "separator", "system");
+        AppendWithinBudget(system, "You must answer with exactly one JSON action matching the provided schema. Do not include markdown.\n", budget, omissions, items, "tool_rule_intro", "system");
+        AppendWithinBudget(system, "Tool rules: send_message is terminal. Memory-edit, snapshot, recall_search, and archival memory tools are non-terminal.\n", budget, omissions, items, "tool_rules", "system");
+        AppendWithinBudget(system, "Use recall_search when the player references prior turns or when recent context is insufficient.\n", budget, omissions, items, "recall_rule", "system");
+        AppendWithinBudget(system, "Use archival_memory_search for durable lore/facts. Use archival_memory_insert only for stable facts worth future semantic retrieval.\n", budget, omissions, items, "archival_rule", "system");
+        AppendWithinBudget(system, "Core memory blocks:\n", budget, omissions, items, "core_header", "core_header");
         foreach (var block in memoryContext.Blocks.OrderBy(static block => block.Label, StringComparer.OrdinalIgnoreCase))
         {
-            system.AppendLine($"[{block.Label}] {block.Description}");
-            system.AppendLine(block.Value);
+            AppendWithinBudget(system, $"[{block.Label}] {block.Description}\n{block.Value}\n", budget, omissions, items, "core:" + block.Label, "core");
         }
 
-        system.AppendLine("Latest snapshot:");
-        system.AppendLine(memoryContext.LatestSnapshot.WorldStateJson);
-        system.AppendLine(memoryContext.LatestSnapshot.ViewStateJson);
-
-        var messages = new List<ChatGenerateRequest.ChatMessageDto>
+        if (memoryContext.Summaries is { Count: > 0 })
         {
-            new("system", system.ToString())
-        };
+            AppendWithinBudget(system, "Compacted recall summaries:\n", budget, omissions, items, "summaries_header", "summary_header");
+            foreach (var summary in memoryContext.Summaries)
+            {
+                AppendWithinBudget(system, $"Turns {summary.StartTurn}-{summary.EndTurn}: {summary.Summary}\n", budget, omissions, items, "summary:" + summary.StartTurn + "-" + summary.EndTurn, "summary");
+            }
+        }
+
+        AppendWithinBudget(system, "Latest snapshot:\n", budget, omissions, items, "snapshot_header", "snapshot_header");
+        AppendWithinBudget(system, memoryContext.LatestSnapshot.WorldStateJson + "\n", budget, omissions, items, "world_snapshot", "snapshot");
+        AppendWithinBudget(system, memoryContext.LatestSnapshot.ViewStateJson + "\n", budget, omissions, items, "view_snapshot", "snapshot");
+
+        var recentMessages = new List<ChatGenerateRequest.ChatMessageDto>();
+        var recentItemIndexes = new List<int>();
         foreach (var message in memoryContext.RecentMessages)
         {
-            messages.Add(new ChatGenerateRequest.ChatMessageDto(MapRoleForChat(message.Role), FormatMemoryMessage(message)));
+            var formatted = FormatMemoryMessage(message);
+            var label = $"message:{message.Turn}:{message.StepNumber}:{message.Role}";
+            if (budget.RemainingChars <= 0)
+            {
+                omissions.Add(label);
+                items.Add(new MemoryContextItemDto(label, "recent_message", "omitted", formatted.Length, 0, "context_budget"));
+                continue;
+            }
+
+            var allowed = budget.Consume(formatted.Length);
+            var status = allowed == formatted.Length ? "included" : "truncated";
+            var reason = allowed == formatted.Length ? null : "context_budget";
+            var itemIndex = items.Count;
+            items.Add(new MemoryContextItemDto(label, "recent_message", status, formatted.Length, allowed, reason));
+            recentItemIndexes.Add(itemIndex);
+            recentMessages.Add(new ChatGenerateRequest.ChatMessageDto(MapRoleForChat(message.Role), TruncateWithSentinel(formatted, allowed)));
+            if (reason is not null)
+            {
+                omissions.Add(label);
+            }
         }
 
-        return messages;
+        var messages = BuildCompiledMessages(system.ToString(), omissions, recentMessages);
+        var tokenCount = await CountTokensAsync(FlattenMessagesForTokenCount(messages));
+        if (tokenCount.Exact && tokenCount.EstimatedTokens > memoryContext.Budget.TargetContextTokens && recentMessages.Count > 0)
+        {
+            var ratio = Math.Max(1.0, tokenCount.EstimatedTokens / (double)Math.Max(1, FlattenMessagesForTokenCount(messages).Length));
+            while (recentMessages.Count > 0
+                   && (int)Math.Ceiling(FlattenMessagesForTokenCount(BuildCompiledMessages(system.ToString(), omissions, recentMessages)).Length * ratio) > memoryContext.Budget.TargetContextTokens)
+            {
+                var removeIndex = recentMessages.Count - 1;
+                recentMessages.RemoveAt(removeIndex);
+                var itemIndex = recentItemIndexes[removeIndex];
+                recentItemIndexes.RemoveAt(removeIndex);
+                var item = items[itemIndex];
+                items[itemIndex] = item with { Status = "omitted", IncludedChars = 0, Reason = "exact_token_budget" };
+                omissions.Add(item.Label);
+            }
+
+            messages = BuildCompiledMessages(system.ToString(), omissions, recentMessages);
+            tokenCount = await CountTokensAsync(FlattenMessagesForTokenCount(messages));
+        }
+
+        if (tokenCount.Exact && tokenCount.EstimatedTokens > memoryContext.Budget.TargetContextTokens)
+        {
+            items.Add(new MemoryContextItemDto(
+                "compiled_prompt",
+                "budget",
+                "over_target",
+                FlattenMessagesForTokenCount(messages).Length,
+                FlattenMessagesForTokenCount(messages).Length,
+                "core_system_exceeds_target",
+                tokenCount.EstimatedTokens,
+                tokenCount.Exact));
+            omissions.Add("compiled_prompt:over_target");
+        }
+
+        var finalChars = FlattenMessagesForTokenCount(messages).Length;
+        var accounting = new MemoryContextAccountingDto(
+            finalChars,
+            budget.TargetChars,
+            omissions.Distinct(StringComparer.Ordinal).ToArray(),
+            memoryContext.Budget.NumCtx,
+            memoryContext.Budget.TargetContextTokens,
+            tokenCount.EstimatedTokens,
+            tokenCount.Exact,
+            items);
+        return new CompiledContext(messages, accounting);
     }
 
     private async Task<RouterProxyResponse<ChatGenerateResponse>> ChatAsync(IReadOnlyList<ChatGenerateRequest.ChatMessageDto> messages)
@@ -559,6 +752,43 @@ public sealed class MemoryDirector
                 Format = _actionSchema,
                 KeepAlive = _options.KeepAlive
             });
+    }
+
+    private async Task<TokenCountResponse> CountTokensAsync(string text)
+    {
+        var provider = _configuration.GetRequiredGenericLlmProviderModule();
+        var model = provider.QwenOptions?.OllamaModel ?? string.Empty;
+        var response = await _routerProxy.PostAsync<TokenCountRequest, TokenCountResponse>(
+            "generic_llm_provider",
+            "/token_count",
+            new TokenCountRequest(model, text));
+        if (response.Payload is not null && response.Payload.Ok)
+        {
+            return response.Payload;
+        }
+
+        return new TokenCountResponse(true, model, EstimateTokensFromChars(text.Length), false);
+    }
+
+    private async Task<(string Model, IReadOnlyList<float> Vector)> EmbedTextAsync(string text)
+    {
+        var embeddingsOptions = _configuration.GetRequiredGenericEmbeddingsModule().EmbeddingsOptions
+            ?? throw new InvalidOperationException("generic_embeddings module must expose embeddings options.");
+        var response = await _routerProxy.PostAsync<EmbeddingRequest, EmbeddingResponse>(
+            "generic_embeddings",
+            "/embed",
+            new EmbeddingRequest(embeddingsOptions.DefaultEmbeddingModel, [text]));
+        if (response.Payload is null || !response.Payload.Ok)
+        {
+            throw new InvalidOperationException("Embedding request failed: " + response.RawBody);
+        }
+
+        if (response.Payload.Vectors.Count != 1 || response.Payload.Vectors[0].Index != 0)
+        {
+            throw new InvalidOperationException("Embedding response for one text must contain exactly one vector at index 0.");
+        }
+
+        return (response.Payload.Model, response.Payload.Vectors[0].Vector);
     }
 
     private async Task<MemoryLoadContextResponse> LoadContextAsync(int turn)
@@ -584,6 +814,51 @@ public sealed class MemoryDirector
         if (response.Payload is null || !response.Payload.Ok)
         {
             throw new InvalidOperationException("Failed to persist memory step: " + response.RawBody);
+        }
+    }
+
+    private async Task CompactRecallIfNeededAsync(int turn)
+    {
+        var recent = await _routerProxy.PostAsync<MemoryMessagesRecentRequest, MemoryMessagesRecentResponse>(
+            "session_store",
+            "/memory/messages/recent",
+            new MemoryMessagesRecentRequest(Math.Max(_options.RecentMessageCount * 3, _options.RecentMessageCount + 1), null));
+        if (recent.Payload is null || !recent.Payload.Ok)
+        {
+            throw new InvalidOperationException("Failed to inspect messages for compaction: " + recent.RawBody);
+        }
+
+        var compactable = recent.Payload.Messages
+            .Where(message => message.Turn < turn)
+            .OrderBy(message => message.Turn)
+            .ThenBy(message => message.StepNumber)
+            .ToArray();
+        if (compactable.Length <= _options.RecentMessageCount)
+        {
+            return;
+        }
+
+        var messagesToSummarize = compactable.Take(compactable.Length - _options.RecentMessageCount).ToArray();
+        if (messagesToSummarize.Length == 0)
+        {
+            return;
+        }
+
+        var startTurn = messagesToSummarize.Min(static message => message.Turn);
+        var endTurn = messagesToSummarize.Max(static message => message.Turn);
+        var summary = BuildDeterministicSummary(messagesToSummarize);
+        var compact = await _routerProxy.PostAsync<MemoryCompactRecallRequest, MemoryCompactRecallResponse>(
+            "session_store",
+            "/memory/recall/compact",
+            new MemoryCompactRecallRequest(
+                startTurn,
+                endTurn,
+                summary,
+                messagesToSummarize.Length,
+                JsonSerializer.Serialize(new { reason = "post_turn_budget", turn })));
+        if (compact.Payload is null || !compact.Payload.Ok)
+        {
+            throw new InvalidOperationException("Failed to persist recall compaction: " + compact.RawBody);
         }
     }
 
@@ -703,6 +978,56 @@ public sealed class MemoryDirector
         return value;
     }
 
+    private static int? TryGetInt(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var property))
+        {
+            return null;
+        }
+
+        return property.ValueKind == JsonValueKind.Number && property.TryGetInt32(out var value)
+            ? value
+            : throw new InvalidOperationException($"Expected integer property '{propertyName}'.");
+    }
+
+    private static string? TryGetString(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var property))
+        {
+            return null;
+        }
+
+        return property.ValueKind == JsonValueKind.String
+            ? property.GetString()
+            : throw new InvalidOperationException($"Expected string property '{propertyName}'.");
+    }
+
+    private static IReadOnlyList<string>? TryGetStringArray(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var property))
+        {
+            return null;
+        }
+
+        if (property.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidOperationException($"Expected array property '{propertyName}'.");
+        }
+
+        var values = new List<string>();
+        foreach (var item in property.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(item.GetString()))
+            {
+                throw new InvalidOperationException($"Expected '{propertyName}' to contain only non-empty strings.");
+            }
+
+            values.Add(item.GetString()!.Trim());
+        }
+
+        return values;
+    }
+
     private static string CanonicalizeJson(JsonElement element) =>
         JsonSerializer.Serialize(element);
 
@@ -714,6 +1039,189 @@ public sealed class MemoryDirector
         }
 
         return value[.._options.MaxToolResultChars] + "\n[tool result truncated]";
+    }
+
+    private MemoryContextAccountingDto AddToolResultTelemetry(MemoryContextAccountingDto accounting, string toolName, string toolResult)
+    {
+        var existingItems = accounting.Items?.ToList() ?? [];
+        var status = toolResult.Length <= _options.MaxToolResultChars ? "included" : "truncated";
+        var includedChars = Math.Min(toolResult.Length, _options.MaxToolResultChars);
+        existingItems.Add(new MemoryContextItemDto(
+            "tool_result:" + toolName,
+            "tool_result",
+            status,
+            toolResult.Length,
+            includedChars,
+            status == "truncated" ? "max_tool_result_chars" : null,
+            EstimateTokensFromChars(includedChars),
+            false));
+        var omissions = accounting.Omissions.ToList();
+        if (status == "truncated")
+        {
+            omissions.Add("tool_result:" + toolName);
+        }
+
+        return accounting with
+        {
+            Omissions = omissions.Distinct(StringComparer.Ordinal).ToArray(),
+            Items = existingItems
+        };
+    }
+
+    private static ContextBudget CreateContextBudget(MemoryLoadContextResponse memoryContext)
+    {
+        var estimatedTargetChars = Math.Max(1000, memoryContext.Budget.TargetContextTokens * 4);
+        return new ContextBudget(estimatedTargetChars);
+    }
+
+    private static void AppendWithinBudget(
+        StringBuilder builder,
+        string value,
+        ContextBudget budget,
+        List<string> omissions,
+        List<MemoryContextItemDto> items,
+        string label,
+        string type)
+    {
+        var allowed = budget.Consume(value.Length);
+        if (allowed == value.Length)
+        {
+            builder.Append(value);
+            items.Add(new MemoryContextItemDto(label, type, "included", value.Length, allowed, null, EstimateTokensFromChars(value.Length), false));
+            return;
+        }
+
+        if (allowed > 0)
+        {
+            builder.Append(TruncateWithSentinel(value, allowed));
+            items.Add(new MemoryContextItemDto(label, type, "truncated", value.Length, allowed, "context_budget", EstimateTokensFromChars(allowed), false));
+        }
+        else
+        {
+            items.Add(new MemoryContextItemDto(label, type, "omitted", value.Length, 0, "context_budget", 0, false));
+        }
+
+        omissions.Add(label);
+    }
+
+    private static string TruncateWithSentinel(string value, int maxChars)
+    {
+        const string sentinel = "\n[omitted due to context budget]";
+        if (value.Length <= maxChars)
+        {
+            return value;
+        }
+
+        if (maxChars <= sentinel.Length)
+        {
+            return sentinel;
+        }
+
+        return value[..(maxChars - sentinel.Length)] + sentinel;
+    }
+
+    private static IReadOnlyList<ChatGenerateRequest.ChatMessageDto> BuildCompiledMessages(
+        string system,
+        IReadOnlyList<string> omissions,
+        IReadOnlyList<ChatGenerateRequest.ChatMessageDto> recentMessages)
+    {
+        var finalSystem = new StringBuilder(system);
+        if (omissions.Count > 0)
+        {
+            finalSystem.AppendLine("[context omissions: " + string.Join("; ", omissions.Distinct(StringComparer.Ordinal)) + "]");
+        }
+
+        var messages = new List<ChatGenerateRequest.ChatMessageDto>
+        {
+            new("system", finalSystem.ToString())
+        };
+        messages.AddRange(recentMessages);
+        return messages;
+    }
+
+    private static string FlattenMessagesForTokenCount(IReadOnlyList<ChatGenerateRequest.ChatMessageDto> messages)
+    {
+        var builder = new StringBuilder();
+        foreach (var message in messages)
+        {
+            builder.Append(message.Role);
+            builder.Append(": ");
+            builder.AppendLine(message.Content);
+        }
+
+        return builder.ToString();
+    }
+
+    private static int EstimateTokensFromChars(int chars) =>
+        Math.Max(1, (int)Math.Ceiling(chars / 4.0));
+
+    private string FormatSearchResults(IReadOnlyList<MemorySearchResultDto> results)
+    {
+        if (results.Count == 0)
+        {
+            return "{\"results\":[]}";
+        }
+
+        var builder = new StringBuilder();
+        builder.AppendLine("{\"results\":[");
+        var usedChars = 0;
+        var included = 0;
+        foreach (var result in results)
+        {
+            var line = JsonSerializer.Serialize(new
+            {
+                result.Id,
+                result.Source,
+                result.Content,
+                result.Score,
+                result.MetadataJson
+            });
+            if (usedChars + line.Length > _options.MaxToolResultChars)
+            {
+                if (included > 0)
+                {
+                    builder.AppendLine(",");
+                }
+
+                builder.AppendLine(JsonSerializer.Serialize(new { omitted = results.Count - included, reason = "maxToolResultChars" }));
+                break;
+            }
+
+            if (included > 0)
+            {
+                builder.AppendLine(",");
+            }
+
+            builder.Append(line);
+            usedChars += line.Length;
+            included++;
+        }
+
+        builder.AppendLine("]}");
+        return builder.ToString();
+    }
+
+    private static string BuildDeterministicSummary(IReadOnlyList<AgentMessageDto> messages)
+    {
+        var builder = new StringBuilder();
+        builder.Append($"Summary of turns {messages.Min(static message => message.Turn)}-{messages.Max(static message => message.Turn)}: ");
+        foreach (var message in messages.Take(8))
+        {
+            builder.Append('[');
+            builder.Append(message.Role);
+            builder.Append(" t");
+            builder.Append(message.Turn);
+            builder.Append("] ");
+            builder.Append(message.Content.Length <= 160 ? message.Content : message.Content[..160] + " [truncated]");
+            builder.Append(' ');
+        }
+
+        if (messages.Count > 8)
+        {
+            builder.Append($"[{messages.Count - 8} additional messages omitted from deterministic summary]");
+        }
+
+        return builder.ToString().Trim();
     }
 
     private static string MapRoleForChat(string role) => role switch

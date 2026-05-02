@@ -106,6 +106,33 @@ public sealed record MemoryBudgetDto(
     [property: JsonPropertyName("recentMessageCount")] int RecentMessageCount,
     [property: JsonPropertyName("maxToolResultChars")] int MaxToolResultChars);
 
+public sealed record MemorySummaryDto(
+    [property: JsonPropertyName("startTurn")] int StartTurn,
+    [property: JsonPropertyName("endTurn")] int EndTurn,
+    [property: JsonPropertyName("summary")] string Summary,
+    [property: JsonPropertyName("sourceMessageCount")] int SourceMessageCount,
+    [property: JsonPropertyName("metadataJson")] string? MetadataJson = null);
+
+public sealed record MemoryContextItemDto(
+    [property: JsonPropertyName("label")] string Label,
+    [property: JsonPropertyName("type")] string Type,
+    [property: JsonPropertyName("status")] string Status,
+    [property: JsonPropertyName("estimatedChars")] int EstimatedChars,
+    [property: JsonPropertyName("includedChars")] int IncludedChars,
+    [property: JsonPropertyName("reason")] string? Reason = null,
+    [property: JsonPropertyName("estimatedTokens")] int? EstimatedTokens = null,
+    [property: JsonPropertyName("exact")] bool Exact = false);
+
+public sealed record MemoryContextAccountingDto(
+    [property: JsonPropertyName("estimatedChars")] int EstimatedChars,
+    [property: JsonPropertyName("targetChars")] int TargetChars,
+    [property: JsonPropertyName("omissions")] IReadOnlyList<string> Omissions,
+    [property: JsonPropertyName("numCtx")] int NumCtx = 0,
+    [property: JsonPropertyName("targetTokens")] int TargetTokens = 0,
+    [property: JsonPropertyName("estimatedTokens")] int EstimatedTokens = 0,
+    [property: JsonPropertyName("exact")] bool Exact = false,
+    [property: JsonPropertyName("items")] IReadOnlyList<MemoryContextItemDto>? Items = null);
+
 public sealed record MemoryLoadContextRequest(
     [property: JsonPropertyName("turn")] int Turn,
     [property: JsonPropertyName("recentMessageCount")] int RecentMessageCount = 12);
@@ -115,14 +142,17 @@ public sealed record MemoryLoadContextResponse(
     [property: JsonPropertyName("blocks")] IReadOnlyList<MemoryBlockDto> Blocks,
     [property: JsonPropertyName("recentMessages")] IReadOnlyList<AgentMessageDto> RecentMessages,
     [property: JsonPropertyName("latestSnapshot")] LatestSnapshotDto LatestSnapshot,
-    [property: JsonPropertyName("budget")] MemoryBudgetDto Budget);
+    [property: JsonPropertyName("budget")] MemoryBudgetDto Budget,
+    [property: JsonPropertyName("summaries")] IReadOnlyList<MemorySummaryDto>? Summaries = null,
+    [property: JsonPropertyName("accounting")] MemoryContextAccountingDto? Accounting = null);
 
 public sealed record MemoryPersistStepRequest(
     [property: JsonPropertyName("turn")] int Turn,
     [property: JsonPropertyName("stepNumber")] int StepNumber,
     [property: JsonPropertyName("messages")] IReadOnlyList<AgentMessageDto> Messages,
     [property: JsonPropertyName("mutations")] IReadOnlyList<MemoryMutationDto> Mutations,
-    [property: JsonPropertyName("blockUpdates")] IReadOnlyList<MemoryBlockDto> BlockUpdates);
+    [property: JsonPropertyName("blockUpdates")] IReadOnlyList<MemoryBlockDto> BlockUpdates,
+    [property: JsonPropertyName("contextAccounting")] MemoryContextAccountingDto? ContextAccounting = null);
 
 public sealed record MemoryPersistStepResponse([property: JsonPropertyName("ok")] bool Ok);
 
@@ -145,11 +175,47 @@ public sealed record MemoryRecallSearchResponse(
 public sealed record MemoryArchivalSearchRequest(
     [property: JsonPropertyName("query")] string Query,
     [property: JsonPropertyName("tags")] IReadOnlyList<string>? Tags = null,
-    [property: JsonPropertyName("topK")] int TopK = 5);
+    [property: JsonPropertyName("topK")] int TopK = 5,
+    [property: JsonPropertyName("queryEmbedding")] IReadOnlyList<float>? QueryEmbedding = null,
+    [property: JsonPropertyName("embeddingModel")] string? EmbeddingModel = null);
 
 public sealed record MemoryArchivalSearchResponse(
     [property: JsonPropertyName("ok")] bool Ok,
     [property: JsonPropertyName("results")] IReadOnlyList<MemorySearchResultDto> Results);
+
+public sealed record ArchivalPassageDto(
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("scope")] string Scope,
+    [property: JsonPropertyName("source")] string Source,
+    [property: JsonPropertyName("content")] string Content,
+    [property: JsonPropertyName("tags")] IReadOnlyList<string> Tags,
+    [property: JsonPropertyName("metadataJson")] string? MetadataJson,
+    [property: JsonPropertyName("embeddingModel")] string EmbeddingModel,
+    [property: JsonPropertyName("embeddingDimensions")] int EmbeddingDimensions,
+    [property: JsonPropertyName("embedding")] IReadOnlyList<float> Embedding);
+
+public sealed record MemoryArchivalUpsertRequest([property: JsonPropertyName("passage")] ArchivalPassageDto Passage);
+
+public sealed record MemoryArchivalUpsertResponse(
+    [property: JsonPropertyName("ok")] bool Ok,
+    [property: JsonPropertyName("passage")] ArchivalPassageDto Passage);
+
+public sealed record MemorySummariesRecentRequest([property: JsonPropertyName("limit")] int Limit = 5);
+
+public sealed record MemorySummariesRecentResponse(
+    [property: JsonPropertyName("ok")] bool Ok,
+    [property: JsonPropertyName("summaries")] IReadOnlyList<MemorySummaryDto> Summaries);
+
+public sealed record MemoryCompactRecallRequest(
+    [property: JsonPropertyName("startTurn")] int StartTurn,
+    [property: JsonPropertyName("endTurn")] int EndTurn,
+    [property: JsonPropertyName("summary")] string Summary,
+    [property: JsonPropertyName("sourceMessageCount")] int SourceMessageCount,
+    [property: JsonPropertyName("metadataJson")] string? MetadataJson = null);
+
+public sealed record MemoryCompactRecallResponse(
+    [property: JsonPropertyName("ok")] bool Ok,
+    [property: JsonPropertyName("summary")] MemorySummaryDto Summary);
 
 public sealed record MemoryBlocksGetAllRequest([property: JsonPropertyName("includeReadOnly")] bool IncludeReadOnly = true);
 
@@ -182,6 +248,20 @@ public sealed record MemorySnapshotLatestRequest([property: JsonPropertyName("in
 public sealed record MemorySnapshotLatestResponse(
     [property: JsonPropertyName("ok")] bool Ok,
     [property: JsonPropertyName("snapshot")] LatestSnapshotDto Snapshot);
+
+public sealed record MemoryPipelineEventsRecentRequest(
+    [property: JsonPropertyName("limit")] int Limit = 10,
+    [property: JsonPropertyName("eventType")] string? EventType = null);
+
+public sealed record MemoryPipelineEventDto(
+    [property: JsonPropertyName("turn")] int Turn,
+    [property: JsonPropertyName("stepNumber")] int StepNumber,
+    [property: JsonPropertyName("payloadJson")] string PayloadJson,
+    [property: JsonPropertyName("createdAtUtc")] string CreatedAtUtc);
+
+public sealed record MemoryPipelineEventsRecentResponse(
+    [property: JsonPropertyName("ok")] bool Ok,
+    [property: JsonPropertyName("events")] IReadOnlyList<MemoryPipelineEventDto> Events);
 
 public sealed record EmbeddingRequest(
     [property: JsonPropertyName("model")] string Model,
@@ -333,8 +413,22 @@ public static class EngineContractExamples
             Serialize(new MemoryRecallSearchRequest("recent decisions", ["assistant"], 5)),
             Serialize(new MemoryRecallSearchResponse(true, [ExampleMemorySearchResult("recall")]))),
         "memory_archival_search" => new EndpointTemplatePair(
-            Serialize(new MemoryArchivalSearchRequest("ancient ruins", ["lore"], 5)),
+            Serialize(new MemoryArchivalSearchRequest("ancient ruins", ["lore"], 5, [0.12f, -0.04f, 0.88f], "nomic-embed-text")),
             Serialize(new MemoryArchivalSearchResponse(true, [ExampleMemorySearchResult("archival")]))),
+        "memory_archival_upsert" => new EndpointTemplatePair(
+            Serialize(new MemoryArchivalUpsertRequest(ExampleArchivalPassage())),
+            Serialize(new MemoryArchivalUpsertResponse(true, ExampleArchivalPassage()))),
+        "memory_summaries_recent" => new EndpointTemplatePair(
+            Serialize(new MemorySummariesRecentRequest(5)),
+            Serialize(new MemorySummariesRecentResponse(true, [ExampleMemorySummary()]))),
+        "memory_recall_compact" => new EndpointTemplatePair(
+            Serialize(new MemoryCompactRecallRequest(
+                1,
+                6,
+                "The party entered the ruin and learned the north door is sealed.",
+                18,
+                "{\"reason\":\"budget\"}")),
+            Serialize(new MemoryCompactRecallResponse(true, ExampleMemorySummary()))),
         "memory_blocks_get_all" => new EndpointTemplatePair(
             Serialize(new MemoryBlocksGetAllRequest(true)),
             Serialize(new MemoryBlocksGetAllResponse(true, [ExampleMemoryBlock()]))),
@@ -353,6 +447,9 @@ public static class EngineContractExamples
         "memory_snapshot_latest" => new EndpointTemplatePair(
             Serialize(new MemorySnapshotLatestRequest(true)),
             Serialize(new MemorySnapshotLatestResponse(true, ExampleSnapshot()))),
+        "memory_pipeline_events_recent" => new EndpointTemplatePair(
+            Serialize(new MemoryPipelineEventsRecentRequest(10, "memory_context_budget")),
+            Serialize(new MemoryPipelineEventsRecentResponse(true, [ExamplePipelineEvent()]))),
         "embed" => new EndpointTemplatePair(
             Serialize(new EmbeddingRequest("nomic-embed-text", ["The party enters the ruin."])),
             Serialize(new EmbeddingResponse(true, "nomic-embed-text", 3, [new EmbeddingVectorDto(0, [0.12f, -0.04f, 0.88f])]))),
@@ -398,6 +495,39 @@ public static class EngineContractExamples
         new(4096, 2867, 12, 4000);
 
     private static MemorySearchResultDto ExampleMemorySearchResult(string source) =>
-        new("example-1", "The party entered the ruin.", source, 0.92, "{\"turn\":1}");
+        new("example-1", "The party entered the ruin.", source, 0.92, "{\"turn\":1,\"stepNumber\":0,\"role\":\"player\",\"messageType\":\"player_input\"}");
+
+    private static ArchivalPassageDto ExampleArchivalPassage() =>
+        new(
+            "lore:default:ancient-ruins",
+            "project",
+            "lore/default_lore_entries.csv",
+            "Ancient ruins contain sealed northern doors.",
+            ["lore", "seed"],
+            "{\"subject\":\"Ancient Ruins\"}",
+            "nomic-embed-text",
+            3,
+            [0.12f, -0.04f, 0.88f]);
+
+    private static MemoryPipelineEventDto ExamplePipelineEvent() =>
+        new(
+            1,
+            1,
+            JsonSerializer.Serialize(new { eventType = "memory_context_budget", accounting = ExampleAccounting() }),
+            "2026-05-02T08:00:00Z");
+
+    private static MemoryContextAccountingDto ExampleAccounting() =>
+        new(
+            480,
+            11468,
+            [],
+            4096,
+            2867,
+            120,
+            false,
+            [new MemoryContextItemDto("agent_prompt", "system", "included", 120, 120)]);
+
+    private static MemorySummaryDto ExampleMemorySummary() =>
+        new(1, 6, "The party entered the ruin and learned the north door is sealed.", 18, "{\"reason\":\"budget\"}");
 }
 #endregion

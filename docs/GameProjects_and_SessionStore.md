@@ -6,7 +6,7 @@ Per-game content lives under **`game_projects/<gameProjectId>/`**. The **`gamePr
 
 ```
 game_projects/<gameProjectId>/
-  manifest.json              # Optional human metadata (id/title); not read by the .NET engine today
+  manifest.json              # Project metadata, required modules, and selected turn_pipeline
   lore/
     default_lore_entries.csv # Seeded into SQLite lore table on /initialize (subject + data columns). Sandcrawler includes general lore plus rows prefixed faction … (former tables/factions.yaml).
   system/
@@ -15,7 +15,14 @@ game_projects/<gameProjectId>/
     world_state.db           # Created by session_store POST /initialize
 ```
 
-The WPF app’s default `gameProjectId` is **`sandcrawler`** (`MainWindow.xaml.cs`). **`InitializeModuleRequest`** carries `gameProjectId` / `runId` for **`POST /initialize`**. **`TurnRequest`** still carries those fields for router **`POST /turn`**; **`session_store` `POST /persist_turn`** does not — it writes to the run established by the **last successful `POST /initialize` on that session_store process** (the router always initializes session_store right after director with the same body). **`RunPersistence`** and **`Director`** resolve paths as `game_projects/<gameProjectId>/...` with **no** engine-level fallback to another folder if files are missing (Director fails fast on missing `system/instructions.md` or lore CSV; session store logs a warning if the lore CSV is absent on initialize).
+The WPF app’s default `gameProjectId` is **`sandcrawler`** (`MainWindow.xaml.cs`). **`InitializeModuleRequest`** carries `gameProjectId` / `runId` for **`POST /initialize`**. The router loads `manifest.json`, validates its selected **`turn_pipeline`**, and ensures every pipeline-referenced module is required by either the engine or the manifest. **`TurnRequest`** still carries project/run fields for router **`POST /turn`**; **`session_store` `POST /persist_turn`** does not — it writes to the run established by the **last successful `POST /initialize` on that session_store process**. **`RunPersistence`**, **`Director`**, and **`MemoryDirector`** resolve paths as `game_projects/<gameProjectId>/...` with **no** engine-level fallback to another folder if files are missing.
+
+## Manifest fields
+
+- **`id`** — Must match the game project folder name.
+- **`title`** — Human-readable project title.
+- **`turn_pipeline`** — Optional; defaults to `memory_director_default` if omitted. `sandcrawler` selects `memory_director_default`.
+- **`required_modules`** — Additional module keys or aliases required by this project. Pipeline steps must reference modules present here or modules marked `required_by_engine`.
 
 ## SQLite (`world_state.db`)
 
@@ -27,7 +34,7 @@ Notable tables (see `RunPersistence.InitializeSessionSchema`):
 - **`events`** — append-only log (`turn`, `event_type`, `payload` JSON).
 - **`snapshots`** — one row per completed turn (`turn`, `world_state` JSON, `view_state` JSON).
 - **`lore`** — canonical rows (`subject` PK, `data`, `source`); seeded from **`lore/default_lore_entries.csv`** if present when the DB is first created.
-- **`turn_execution`**, **`pipeline_events`** — reserved / forward-looking; not on the hot `/turn` path for Director today.
+- **`turn_execution`**, **`pipeline_events`** — `pipeline_events` stores MemoryDirector diagnostics such as context-budget telemetry; `turn_execution` remains reserved.
 
 ## Lore CSV format
 
@@ -52,7 +59,7 @@ If the client sends the wrong turn index, **`409`** / **`InvalidOperationExcepti
 - Copies latest **`world_state`** JSON into the new snapshot (Director path does not yet mutate world state in DB).
 - Stores **`view_state`** envelope derived from the Director/intent JSON body.
 
-So the database records **player text + engine response JSON** each turn even though the Director’s **conversation memory** is in-process only.
+So the database records **player text + engine response JSON** each turn for pipelines that include the `session_store /persist_turn` step. MemoryDirector also persists agent memory through its dedicated `/memory/*` endpoints.
 
 ## Extending toward long-term memory
 

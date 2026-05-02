@@ -23,7 +23,10 @@
         "core_memory_append",
         "core_memory_replace",
         "core_memory_set",
-        "get_current_snapshot"
+        "get_current_snapshot",
+        "recall_search",
+        "archival_memory_insert",
+        "archival_memory_search"
       ]
     },
     "arguments": {
@@ -139,6 +142,115 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {}
+        }
+      }
+    },
+    {
+      "properties": {
+        "tool": {
+          "const": "recall_search"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "query"
+          ],
+          "properties": {
+            "query": {
+              "type": "string",
+              "minLength": 1
+            },
+            "roles": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "player",
+                  "assistant",
+                  "tool"
+                ]
+              },
+              "uniqueItems": true
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20
+            }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "tool": {
+          "const": "archival_memory_insert"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "content"
+          ],
+          "properties": {
+            "content": {
+              "type": "string",
+              "minLength": 1
+            },
+            "scope": {
+              "type": "string",
+              "enum": [
+                "project",
+                "run"
+              ]
+            },
+            "source": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tags": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "uniqueItems": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "tool": {
+          "const": "archival_memory_search"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "query"
+          ],
+          "properties": {
+            "query": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tags": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "uniqueItems": true
+            },
+            "topK": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20
+            }
+          }
         }
       }
     }

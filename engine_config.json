@@ -1,7 +1,54 @@
 {
   "module_aliases": {
     "generic_llm_provider": "llm_provider_qwen",
-    "generic_director": "memory_director"
+    "generic_director": "memory_director",
+    "generic_embeddings": "embeddings_ollama"
+  },
+  "turn_pipelines": {
+    "memory_director_default": {
+      "steps": [
+        {
+          "id": "director_message",
+          "target_module": "generic_director",
+          "path": "/message",
+          "method": "POST",
+          "body_template": "{\"turn\":{{turn}},\"playerInput\":{{playerInputJson}}}"
+        },
+        {
+          "id": "persist_turn",
+          "target_module": "session_store",
+          "path": "/persist_turn",
+          "method": "POST",
+          "body_template": "{\"turn\":{{turn}},\"playerInput\":{{playerInputJson}},\"directorResponseBody\":{{step.director_message.rawBodyJson}}}"
+        }
+      ],
+      "response_mapping": {
+        "source_step": "director_message",
+        "type": "director_message_response"
+      }
+    },
+    "simple_director_default": {
+      "steps": [
+        {
+          "id": "director_message",
+          "target_module": "generic_director",
+          "path": "/message",
+          "method": "POST",
+          "body_template": "{\"turn\":{{turn}},\"playerInput\":{{playerInputJson}}}"
+        },
+        {
+          "id": "persist_turn",
+          "target_module": "session_store",
+          "path": "/persist_turn",
+          "method": "POST",
+          "body_template": "{\"turn\":{{turn}},\"playerInput\":{{playerInputJson}},\"directorResponseBody\":{{step.director_message.rawBodyJson}}}"
+        }
+      ],
+      "response_mapping": {
+        "source_step": "director_message",
+        "type": "director_message_response"
+      }
+    }
   },
   "modules": [
     {
@@ -139,6 +186,24 @@
           "template_contracts_id": "memory_archival_search"
         },
         {
+          "path": "/memory/archival_upsert",
+          "description": "Insert or replace an archival passage for the run bound by host POST /initialize on this process",
+          "method": "POST",
+          "template_contracts_id": "memory_archival_upsert"
+        },
+        {
+          "path": "/memory/summaries/recent",
+          "description": "Get recent compacted recall summaries for the run bound by host POST /initialize on this process",
+          "method": "POST",
+          "template_contracts_id": "memory_summaries_recent"
+        },
+        {
+          "path": "/memory/recall/compact",
+          "description": "Persist a synchronous recall compaction summary for the run bound by host POST /initialize on this process",
+          "method": "POST",
+          "template_contracts_id": "memory_recall_compact"
+        },
+        {
           "path": "/memory/blocks/get_all",
           "description": "Get core memory blocks for the run bound by host POST /initialize on this process",
           "method": "POST",
@@ -173,6 +238,12 @@
           "description": "Get the latest world/view snapshot for the run bound by host POST /initialize on this process",
           "method": "POST",
           "template_contracts_id": "memory_snapshot_latest"
+        },
+        {
+          "path": "/memory/pipeline_events/recent",
+          "description": "Get recent memory pipeline diagnostic events for the run bound by host POST /initialize on this process",
+          "method": "POST",
+          "template_contracts_id": "memory_pipeline_events_recent"
         }
       ]
     },
@@ -216,6 +287,61 @@
           "description": "LLM chat (Ollama /api/chat)",
           "method": "POST",
           "template_contracts_id": "chat"
+        },
+        {
+          "path": "/token_count",
+          "description": "Estimate or count prompt tokens for the configured LLM provider model",
+          "method": "POST",
+          "template_contracts_id": "token_count"
+        }
+      ]
+    },
+    {
+      "port_key": "embeddings_ollama",
+      "port": 8797,
+      "load_order": 25,
+      "display_name": "Embeddings_ollama",
+      "required_by_engine": true,
+      "ollama_port": 8795,
+      "default_embedding_model": "nomic-embed-text",
+      "keep_alive": "30m",
+      "launch": "dotnet/src/MorpheusEngine.Embeddings_ollama/bin/Debug/net9.0/MorpheusEngine.Embeddings_ollama.exe",
+      "endpoints": [
+        {
+          "path": "/info",
+          "description": "Module metadata",
+          "method": "GET",
+          "template_contracts_id": "module_info"
+        },
+        {
+          "path": "/health",
+          "description": "Health check",
+          "method": "GET",
+          "template_contracts_id": "module_health"
+        },
+        {
+          "path": "/initialize",
+          "description": "Host binds run identity (game project id and run id) for this module process",
+          "method": "POST",
+          "template_contracts_id": "initialize"
+        },
+        {
+          "path": "/embed",
+          "description": "Generate embeddings using the configured local Ollama embedding model",
+          "method": "POST",
+          "template_contracts_id": "embed"
+        },
+        {
+          "path": "/embed_batch",
+          "description": "Generate batched embeddings using the configured local Ollama embedding model",
+          "method": "POST",
+          "template_contracts_id": "embed"
+        },
+        {
+          "path": "/shutdown",
+          "description": "Request module shutdown",
+          "method": "POST",
+          "template_contracts_id": "module_shutdown"
         }
       ]
     },

@@ -48,7 +48,7 @@ namespace MorpheusEngine
         private volatile bool _initializing;
         private string _boundGameProjectId = string.Empty;
         private string _boundRunId = string.Empty;
-        private bool _sessionStoreEnabled = false;
+        private EngineTurnPipelineInfo? _turnPipeline;
 
         // Proxied module calls include LLM /chat; same 60s ceiling as LlmProvider_qwen outbound calls (provider primes the model before initialized=true).
         private static readonly HttpClient _httpClient = new()
@@ -205,11 +205,10 @@ namespace MorpheusEngine
                 throw new InvalidOperationException("Router is already bound for this process; restart the router to bind another run.");
             }
 
-            _boundGameProjectId = request.GameProjectId.Trim();
-            _boundRunId = request.RunId.Trim();
-            _runBound = true;
-
-            var manifest = GameProjectManifestLoader.Load(_configuration.RepositoryRoot, _boundGameProjectId);
+            var gameProjectId = request.GameProjectId.Trim();
+            var runId = request.RunId.Trim();
+            var manifest = GameProjectManifestLoader.Load(_configuration.RepositoryRoot, gameProjectId);
+            var selectedPipeline = _configuration.GetRequiredTurnPipeline(manifest.TurnPipeline);
             var requiredForRun = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var module in _configuration.ModulesInfos)
             {
@@ -221,11 +220,42 @@ namespace MorpheusEngine
 
             foreach (var moduleKey in manifest.RequiredModules)
             {
-                requiredForRun.Add(moduleKey);
+                var trimmedModuleKey = moduleKey.Trim();
+                var resolvedModuleKey = _configuration.ResolveProxyTargetModuleKey(trimmedModuleKey);
+                if (_configuration.FindModule(resolvedModuleKey) is null)
+                {
+                    throw new InvalidOperationException($"Manifest required_modules contains unknown module or alias '{trimmedModuleKey}'.");
+                }
+
+                requiredForRun.Add(trimmedModuleKey);
+                requiredForRun.Add(resolvedModuleKey);
             }
 
-            _sessionStoreEnabled = requiredForRun.Contains("session_store");
-            Console.WriteLine($"[Router] Bound run runId={_boundRunId} gameProjectId={_boundGameProjectId}.");
+            foreach (var step in selectedPipeline.Steps)
+            {
+                var resolvedStepModuleKey = _configuration.ResolveProxyTargetModuleKey(step.TargetModule);
+                var module = _configuration.FindModule(resolvedStepModuleKey);
+                if (module is null)
+                {
+                    throw new InvalidOperationException(
+                        $"Selected turn_pipeline '{selectedPipeline.Id}' references unknown module or alias '{step.TargetModule}'.");
+                }
+
+                if (!requiredForRun.Contains(step.TargetModule)
+                    && !requiredForRun.Contains(resolvedStepModuleKey))
+                {
+                    throw new InvalidOperationException(
+                        $"Selected turn_pipeline '{selectedPipeline.Id}' step '{step.Id}' references module '{step.TargetModule}', "
+                        + "but that module is not required by the engine or the game project manifest.");
+                }
+            }
+
+            _boundGameProjectId = gameProjectId;
+            _boundRunId = runId;
+            _turnPipeline = selectedPipeline;
+            _runBound = true;
+
+            Console.WriteLine($"[Router] Bound run runId={_boundRunId} gameProjectId={_boundGameProjectId} turnPipeline={selectedPipeline.Id}.");
             return Task.CompletedTask;
         }
 
@@ -290,8 +320,8 @@ namespace MorpheusEngine
         }
 
         /// <summary>
-        /// Player turn: call director with <see cref="DirectorMessageRequest"/>, then persist events + snapshot through session_store
-        /// (which enforces sequencing). Returns a router-owned <see cref="TurnResponse"/> on success.
+        /// Player turn: execute the manifest-selected turn pipeline, then map the configured terminal step into
+        /// the router-owned <see cref="TurnResponse"/> shape.
         /// </summary>
         private async Task ProcessRequest_turn(HttpListenerContext context)
         {
@@ -339,31 +369,90 @@ namespace MorpheusEngine
             var finalStatusCode = 500;
             try
             {
-                var directorPayload = JsonSerializer.Serialize(
-                    new DirectorMessageRequest(request.Turn, playerInputTrimmed));
-                var directorResult = await ForwardModuleCallAsync(
-                    "router",
-                    "generic_director",
-                    "/message",
-                    "POST",
-                    directorPayload);
+                var pipeline = _turnPipeline
+                    ?? throw new InvalidOperationException("Router run is bound but no turn pipeline was selected.");
+                var stepResults = new Dictionary<string, ForwardedModuleResult>(StringComparer.OrdinalIgnoreCase);
+                ForwardedModuleResult? previousResult = null;
 
-                if (directorResult.StatusCode is < 200 or >= 300)
+                foreach (var step in pipeline.Steps)
                 {
-                    finalStatusCode = directorResult.StatusCode;
-                    await WriteForwardedResultAsync(context, directorResult);
-                    return;
+                    var payload = RenderTurnPipelineStepBody(
+                        step.BodyTemplate,
+                        request.Turn,
+                        playerInputTrimmed,
+                        previousResult,
+                        stepResults);
+
+                    var stepResult = await ForwardModuleCallAsync(
+                        "router",
+                        step.TargetModule,
+                        step.Path,
+                        step.Method,
+                        payload);
+                    stepResults[step.Id] = stepResult;
+                    previousResult = stepResult;
+
+                    if (stepResult.StatusCode is < 200 or >= 300)
+                    {
+                        finalStatusCode = stepResult.StatusCode;
+                        if (IsPersistTurnStep(step))
+                        {
+                            Console.WriteLine(
+                                "session_store /persist_turn failed after director /message succeeded; "
+                                + "Director in-memory history may be ahead of SQLite.");
+                        }
+
+                        if (!step.ContinueOnFailure)
+                        {
+                            await WriteForwardedResultAsync(context, stepResult);
+                            return;
+                        }
+                    }
+
+                    if (IsPersistTurnStep(step) && stepResult.StatusCode is >= 200 and < 300)
+                    {
+                        TurnPersistResponse? persistBody;
+                        try
+                        {
+                            persistBody = JsonSerializer.Deserialize<TurnPersistResponse>(stepResult.Body, _jsonOptions);
+                        }
+                        catch (JsonException e)
+                        {
+                            finalStatusCode = 500;
+                            await RespondAsync(
+                                context,
+                                500,
+                                new ErrorResponse(false, "Session store returned invalid JSON for turn persistence.", e.Message));
+                            return;
+                        }
+
+                        if (persistBody is null || !persistBody.Ok)
+                        {
+                            finalStatusCode = 500;
+                            await RespondAsync(
+                                context,
+                                500,
+                                new ErrorResponse(false, "Session store reported persistence failure.", stepResult.Body));
+                            return;
+                        }
+                    }
+                }
+
+                if (!stepResults.TryGetValue(pipeline.ResponseMapping.SourceStep, out var terminalResult))
+                {
+                    throw new InvalidOperationException(
+                        $"Turn pipeline '{pipeline.Id}' response_mapping.source_step '{pipeline.ResponseMapping.SourceStep}' did not execute.");
                 }
 
                 DirectorMessageResponse? parsedDirector;
                 try
                 {
-                    parsedDirector = JsonSerializer.Deserialize<DirectorMessageResponse>(directorResult.Body, _jsonOptions);
+                    parsedDirector = JsonSerializer.Deserialize<DirectorMessageResponse>(terminalResult.Body, _jsonOptions);
                 }
                 catch (JsonException)
                 {
-                    finalStatusCode = directorResult.StatusCode;
-                    await WriteForwardedResultAsync(context, directorResult);
+                    finalStatusCode = terminalResult.StatusCode;
+                    await WriteForwardedResultAsync(context, terminalResult);
                     return;
                 }
 
@@ -373,65 +462,7 @@ namespace MorpheusEngine
                     finalStatusCode = 422;
                     await WriteForwardedResultAsync(
                         context,
-                        new ForwardedModuleResult(422, directorResult.ContentType, directorResult.Body));
-                    return;
-                }
-
-                if (!_sessionStoreEnabled)
-                {
-                    finalStatusCode = 200;
-                    await RespondAsync(
-                        context,
-                        200,
-                        new TurnResponse(true, parsedDirector.Text.Trim()));
-                    return;
-                }
-
-                var persistJson = JsonSerializer.Serialize(
-                    new TurnPersistRequest(
-                        request.Turn,
-                        playerInputTrimmed,
-                        directorResult.Body));
-
-                var persistResult = await ForwardModuleCallAsync(
-                    "router",
-                    "session_store",
-                    "/persist_turn",
-                    "POST",
-                    persistJson);
-
-                if (persistResult.StatusCode != 200)
-                {
-                    finalStatusCode = persistResult.StatusCode;
-                    Console.WriteLine(
-                        "session_store /persist_turn failed after director /message succeeded; "
-                        + "Director in-memory history may be ahead of SQLite.");
-                    await WriteForwardedResultAsync(context, persistResult);
-                    return;
-                }
-
-                TurnPersistResponse? persistBody;
-                try
-                {
-                    persistBody = JsonSerializer.Deserialize<TurnPersistResponse>(persistResult.Body, _jsonOptions);
-                }
-                catch (JsonException e)
-                {
-                    finalStatusCode = 500;
-                    await RespondAsync(
-                        context,
-                        500,
-                        new ErrorResponse(false, "Session store returned invalid JSON for turn persistence.", e.Message));
-                    return;
-                }
-
-                if (persistBody is null || !persistBody.Ok)
-                {
-                    finalStatusCode = 500;
-                    await RespondAsync(
-                        context,
-                        500,
-                        new ErrorResponse(false, "Session store reported persistence failure.", persistResult.Body));
+                        new ForwardedModuleResult(422, terminalResult.ContentType, terminalResult.Body));
                     return;
                 }
 
@@ -586,6 +617,105 @@ namespace MorpheusEngine
         }
 
         #region Helpers
+
+        private static bool IsPersistTurnStep(EngineTurnPipelineStepInfo step)
+        {
+            return string.Equals(step.TargetModule, "session_store", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(EngineConfiguration.NormalizePath(step.Path), "/persist_turn", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(step.Method, "POST", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string RenderTurnPipelineStepBody(
+            string template,
+            int turn,
+            string playerInput,
+            ForwardedModuleResult? previousResult,
+            IReadOnlyDictionary<string, ForwardedModuleResult> stepResults)
+        {
+            var rendered = new StringBuilder(template.Length + playerInput.Length);
+            var cursor = 0;
+            while (cursor < template.Length)
+            {
+                var open = template.IndexOf("{{", cursor, StringComparison.Ordinal);
+                if (open < 0)
+                {
+                    rendered.Append(template, cursor, template.Length - cursor);
+                    break;
+                }
+
+                var close = template.IndexOf("}}", open + 2, StringComparison.Ordinal);
+                if (close < 0)
+                {
+                    throw new InvalidOperationException("Turn pipeline body_template contains an unterminated placeholder.");
+                }
+
+                rendered.Append(template, cursor, open - cursor);
+                var placeholder = template[(open + 2)..close].Trim();
+                rendered.Append(ResolveTurnPipelinePlaceholder(placeholder, turn, playerInput, previousResult, stepResults));
+                cursor = close + 2;
+            }
+
+            var renderedJson = rendered.ToString();
+            // Validate the rendered body before forwarding so configuration mistakes fail inside the router.
+            using var _ = JsonDocument.Parse(renderedJson);
+            return renderedJson;
+        }
+
+        private static string ResolveTurnPipelinePlaceholder(
+            string placeholder,
+            int turn,
+            string playerInput,
+            ForwardedModuleResult? previousResult,
+            IReadOnlyDictionary<string, ForwardedModuleResult> stepResults)
+        {
+            if (placeholder == "turn")
+            {
+                return turn.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            }
+
+            if (placeholder == "playerInputJson")
+            {
+                return JsonSerializer.Serialize(playerInput);
+            }
+
+            if (placeholder is "previous.rawBody" or "previous.rawBodyJson")
+            {
+                if (previousResult is null)
+                {
+                    throw new InvalidOperationException("Turn pipeline body_template referenced previous.rawBody before any step executed.");
+                }
+
+                return placeholder.EndsWith("Json", StringComparison.Ordinal)
+                    ? JsonSerializer.Serialize(previousResult.Body)
+                    : previousResult.Body;
+            }
+
+            const string stepPrefix = "step.";
+            if (placeholder.StartsWith(stepPrefix, StringComparison.Ordinal))
+            {
+                var suffixStart = placeholder.IndexOf(".rawBody", stepPrefix.Length, StringComparison.Ordinal);
+                if (suffixStart < 0)
+                {
+                    throw new InvalidOperationException($"Unsupported turn pipeline placeholder '{{{{{placeholder}}}}}'.");
+                }
+
+                var stepId = placeholder[stepPrefix.Length..suffixStart];
+                if (string.IsNullOrWhiteSpace(stepId) || !stepResults.TryGetValue(stepId, out var stepResult))
+                {
+                    throw new InvalidOperationException($"Turn pipeline body_template referenced step '{stepId}' before it executed.");
+                }
+
+                var suffix = placeholder[suffixStart..];
+                return suffix switch
+                {
+                    ".rawBody" => stepResult.Body,
+                    ".rawBodyJson" => JsonSerializer.Serialize(stepResult.Body),
+                    _ => throw new InvalidOperationException($"Unsupported turn pipeline placeholder '{{{{{placeholder}}}}}'.")
+                };
+            }
+
+            throw new InvalidOperationException($"Unsupported turn pipeline placeholder '{{{{{placeholder}}}}}'.");
+        }
 
         private static string TruncateForLog(string text, int maxLen = 160)
         {

@@ -16,6 +16,11 @@ public sealed class SessionStoreHost
     private readonly HttpListener _listener = new();
     private readonly EngineConfiguration _configuration = EngineConfigLoader.GetConfiguration();
     private readonly RunPersistence _persistence;
+    private readonly HttpClient _httpClient = new()
+    {
+        Timeout = TimeSpan.FromSeconds(60)
+    };
+    private readonly RouterProxyClient _routerProxy;
     private readonly object _sessionLock = new();
     private volatile bool _initializing;
     private bool _shutdownRequested = false;
@@ -34,6 +39,7 @@ public sealed class SessionStoreHost
     public SessionStoreHost()
     {
         _persistence = new RunPersistence(_configuration.RepositoryRoot);
+        _routerProxy = new RouterProxyClient(_httpClient, _configuration, "session_store", JsonOptions);
     }
 
     #region Public methods
@@ -80,6 +86,7 @@ public sealed class SessionStoreHost
     {
         _listener.Stop();
         _listener.Close();
+        _httpClient.Dispose();
         Console.WriteLine("SessionStore shut down.");
     }
 
@@ -191,6 +198,30 @@ public sealed class SessionStoreHost
                 return;
             }
 
+            if (path.Equals("/memory/archival_upsert", StringComparison.OrdinalIgnoreCase) && method == "POST")
+            {
+                await HandleMemoryRequest<MemoryArchivalUpsertRequest>(
+                    context,
+                    (gameProjectId, runId, request) => _persistence.UpsertArchivalPassage(gameProjectId, runId, request));
+                return;
+            }
+
+            if (path.Equals("/memory/summaries/recent", StringComparison.OrdinalIgnoreCase) && method == "POST")
+            {
+                await HandleMemoryRequest<MemorySummariesRecentRequest>(
+                    context,
+                    (gameProjectId, runId, request) => _persistence.GetRecentSummaries(gameProjectId, runId, request));
+                return;
+            }
+
+            if (path.Equals("/memory/recall/compact", StringComparison.OrdinalIgnoreCase) && method == "POST")
+            {
+                await HandleMemoryRequest<MemoryCompactRecallRequest>(
+                    context,
+                    (gameProjectId, runId, request) => _persistence.CompactRecall(gameProjectId, runId, request));
+                return;
+            }
+
             if (path.Equals("/memory/blocks/get_all", StringComparison.OrdinalIgnoreCase) && method == "POST")
             {
                 await HandleMemoryRequest<MemoryBlocksGetAllRequest>(
@@ -239,6 +270,14 @@ public sealed class SessionStoreHost
                 return;
             }
 
+            if (path.Equals("/memory/pipeline_events/recent", StringComparison.OrdinalIgnoreCase) && method == "POST")
+            {
+                await HandleMemoryRequest<MemoryPipelineEventsRecentRequest>(
+                    context,
+                    (gameProjectId, runId, request) => _persistence.GetRecentPipelineEvents(gameProjectId, runId, request));
+                return;
+            }
+
             await RespondJsonAsync(context, 404, new ErrorResponse(false, "Not found: " + path));
         }
         catch (Exception e)
@@ -282,6 +321,12 @@ public sealed class SessionStoreHost
                 lock (_sessionLock)
                 {
                     response = _persistence.InitializeRun(request.GameProjectId.Trim(), request.RunId.Trim());
+                }
+
+                await SeedArchivalLoreAsync(request.GameProjectId.Trim(), request.RunId.Trim());
+
+                lock (_sessionLock)
+                {
                     _boundGameProjectId = request.GameProjectId.Trim();
                     _boundRunId = request.RunId.Trim();
                 }
@@ -365,6 +410,55 @@ public sealed class SessionStoreHost
         catch (Exception e)
         {
             await RespondJsonAsync(context, 500, new ErrorResponse(false, "Failed to persist turn.", e.Message));
+        }
+    }
+
+    private async Task SeedArchivalLoreAsync(string gameProjectId, string runId)
+    {
+        var candidates = _persistence.BuildArchivalLoreSeedCandidates(gameProjectId, runId);
+        if (candidates.Count == 0)
+        {
+            return;
+        }
+
+        var embeddingsOptions = _configuration.GetRequiredGenericEmbeddingsModule().EmbeddingsOptions
+            ?? throw new InvalidOperationException("generic_embeddings module must expose embeddings options for archival lore seeding.");
+        var embeddingResponse = await _routerProxy.PostAsync<EmbeddingRequest, EmbeddingResponse>(
+            "generic_embeddings",
+            "/embed",
+            new EmbeddingRequest(embeddingsOptions.DefaultEmbeddingModel, candidates.Select(static candidate => candidate.Content).ToArray()));
+        if (embeddingResponse.Payload is null || !embeddingResponse.Payload.Ok)
+        {
+            throw new InvalidOperationException("Archival lore seeding failed to embed lore rows: " + embeddingResponse.RawBody);
+        }
+
+        if (embeddingResponse.Payload.Vectors.Count != candidates.Count)
+        {
+            throw new InvalidOperationException("Archival lore seeding received a mismatched embedding count.");
+        }
+
+        lock (_sessionLock)
+        {
+            foreach (var vector in embeddingResponse.Payload.Vectors.OrderBy(static vector => vector.Index))
+            {
+                if (vector.Index < 0 || vector.Index >= candidates.Count)
+                {
+                    throw new InvalidOperationException("Archival lore seeding received an out-of-range embedding index.");
+                }
+
+                var candidate = candidates[vector.Index];
+                var passage = new ArchivalPassageDto(
+                    candidate.Id,
+                    candidate.Scope,
+                    candidate.Source,
+                    candidate.Content,
+                    candidate.Tags,
+                    candidate.MetadataJson,
+                    embeddingResponse.Payload.Model,
+                    embeddingResponse.Payload.Dimensions,
+                    vector.Vector);
+                _ = _persistence.UpsertArchivalPassage(gameProjectId, runId, new MemoryArchivalUpsertRequest(passage));
+            }
         }
     }
 
