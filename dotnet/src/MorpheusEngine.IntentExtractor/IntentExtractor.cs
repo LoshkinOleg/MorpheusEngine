@@ -10,7 +10,7 @@ namespace MorpheusEngine
         #region Nested types
 
         // Structured intent plus string parameters after JSON parse (before or after catalog validation).
-        private sealed record IntentExtractionResult(string Intent, IReadOnlyDictionary<string, string> Parameters);
+        internal sealed record IntentExtractionResult(string Intent, IReadOnlyDictionary<string, string> Parameters);
 
         #endregion
 
@@ -25,12 +25,9 @@ namespace MorpheusEngine
 
         // Instance-owned HttpClient: we dispose it in Shutdown() after the listener stops so sockets are released cleanly for this process.
         // Intent extraction hits the LLM provider via the router; same 60s ceiling as Director/LlmProvider_qwen (weights are primed in the provider before initialized=true).
-        private readonly HttpClient _httpClient = new()
-        {
-            Timeout = TimeSpan.FromSeconds(60)
-        };
+        private readonly HttpClient _httpClient;
 
-        private readonly EngineConfiguration _configuration = EngineConfigLoader.GetConfiguration();
+        private readonly EngineConfiguration _configuration;
         private readonly RouterProxyClient _routerProxy;
 
         private readonly JsonSerializerOptions _jsonOptions = new()
@@ -50,7 +47,19 @@ namespace MorpheusEngine
         #region Public methods
 
         public IntentExtractor()
+            : this(
+                EngineConfigLoader.GetConfiguration(),
+                new HttpClient
+                {
+                    Timeout = TimeSpan.FromSeconds(60)
+                })
         {
+        }
+
+        internal IntentExtractor(EngineConfiguration configuration, HttpClient httpClient)
+        {
+            _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
+            _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
             _routerProxy = new RouterProxyClient(_httpClient, _configuration, "intent_extractor", _jsonOptions);
         }
 
@@ -289,6 +298,17 @@ namespace MorpheusEngine
             }
             // IntentRequest validated.
 
+            if (!_runBound)
+            {
+                await Respond(
+                    context,
+                    400,
+                    new ErrorResponse(
+                        false,
+                        "No bound run: the host must bind the run on this intent_extractor process before POST /intent."));
+                return;
+            }
+
             // Assemble the generic LLM payload; router resolves generic_llm_provider to the configured provider module.
             // Model is chosen by the provider from its own engine_config (callers do not pass a model name).
             var qwenRequest = new LlmGenerateRequest(
@@ -396,7 +416,7 @@ namespace MorpheusEngine
         }
 
         // Extracts intent + params from the LLM text; rejects "parameters" alias and non-object params.
-        private static bool TryParseIntentResult(
+        internal static bool TryParseIntentResult(
             string rawResponse,
             [NotNullWhen(true)] out IntentExtractionResult? extraction)
         {
@@ -476,7 +496,7 @@ namespace MorpheusEngine
         }
 
         // Maps LLM output to catalog intent names and enforces params.target / params.text rules.
-        private static bool TryNormalizeAndValidateIntent(
+        internal static bool TryNormalizeAndValidateIntent(
             IntentExtractionResult parsed,
             [NotNullWhen(true)] out IntentExtractionResult? valid,
             out string? error)
@@ -514,7 +534,7 @@ namespace MorpheusEngine
         }
 
         // Returns catalog spelling (lowercase) or null if the LLM emitted an unknown intent.
-        private static string? NormalizeIntentName(string intent)
+        internal static string? NormalizeIntentName(string intent)
         {
             var trimmed = intent.Trim();
             foreach (var allowed in AllowedIntents)
@@ -529,17 +549,17 @@ namespace MorpheusEngine
         }
 
         // Verbs that need an explicit object of attention in params.target.
-        private static bool RequiresTarget(string canonicalIntent) => canonicalIntent switch
+        internal static bool RequiresTarget(string canonicalIntent) => canonicalIntent switch
         {
             "inspect" or "move_self" or "attack" or "take" or "talk" => true,
             _ => false
         };
 
         // Catch-all intent: natural language preserved in params.text.
-        private static bool RequiresText(string canonicalIntent) => canonicalIntent == "freeform_action";
+        internal static bool RequiresText(string canonicalIntent) => canonicalIntent == "freeform_action";
 
         // Strips common ```json fences, then takes the substring from first '{' to last '}'.
-        private static string? ExtractJsonObject(string rawResponse)
+        internal static string? ExtractJsonObject(string rawResponse)
         {
             var trimmed = rawResponse.Trim();
             if (trimmed.StartsWith("```", StringComparison.Ordinal))
@@ -570,7 +590,7 @@ namespace MorpheusEngine
         }
 
         // Flattens JSON scalar values to strings for the IntentResponse contract.
-        private static void CopyStringMap(JsonElement element, Dictionary<string, string> destination)
+        internal static void CopyStringMap(JsonElement element, Dictionary<string, string> destination)
         {
             if (element.ValueKind != JsonValueKind.Object)
             {

@@ -31,10 +31,8 @@ namespace MorpheusEngine
         private const int OllamaResponseLogMaxChars = 500;
 
         // Instance-owned HttpClient for Ollama (GET /, /api/chat, /api/generate); disposed in Shutdown().
-        private readonly HttpClient _httpClient = new()
-        {
-            Timeout = OllamaHttpTimeout
-        };
+        private readonly HttpClient _httpClient;
+        private readonly EngineConfiguration _configuration;
 
         private readonly HttpListener _listener = new HttpListener(); // Inbound listener for responding to http messages.
         private readonly SemaphoreSlim _ollamaRestartGate = new(1, 1);
@@ -55,6 +53,7 @@ namespace MorpheusEngine
         private bool _ollamaStopping = false;
         private int _ollamaRestartAttempts = 0;
         private Process? _ollamaProcess;
+        private bool _disableBundledOllamaBootstrapForTesting = false;
 
         /// <summary>Repository root resolved once at startup for locating bundled Ollama assets.</summary>
         private string _repositoryRoot = "";
@@ -70,6 +69,22 @@ namespace MorpheusEngine
         #endregion
 
         #region Public methods
+        public LlmProviderQwen()
+            : this(
+                EngineConfigLoader.GetConfiguration(),
+                new HttpClient
+                {
+                    Timeout = OllamaHttpTimeout
+                })
+        {
+        }
+
+        internal LlmProviderQwen(EngineConfiguration configuration, HttpClient httpClient)
+        {
+            _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
+            _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
+        }
+
         public async Task Run()
         {
             try
@@ -113,15 +128,29 @@ namespace MorpheusEngine
         }
 
         public void RequestShutdown() => _shutdownRequested = true;
+
+        internal void DisableBundledOllamaBootstrapForTesting()
+        {
+            _disableBundledOllamaBootstrapForTesting = true;
+        }
+
+        internal void SetOllamaStateForTesting(bool httpReady, bool ready, bool bootstrapFailed)
+        {
+            lock (_ollamaStateSync)
+            {
+                _ollamaHttpReady = httpReady;
+                _ollamaReady = ready;
+                _ollamaBootstrapFailed = bootstrapFailed;
+            }
+        }
         #endregion
 
         #region Private methods
         // Intentional single use method: binds the HTTP listener immediately, then starts bundled Ollama on a background task so GET /health can answer during long Ollama cold start.
         private Task InitializeAsync()
         {
-            var configuration = EngineConfigLoader.GetConfiguration();
-            _repositoryRoot = configuration.RepositoryRoot;
-            var providerRow = configuration.GetRequiredGenericLlmProviderModule();
+            _repositoryRoot = _configuration.RepositoryRoot;
+            var providerRow = _configuration.GetRequiredGenericLlmProviderModule();
             var qwenOpts = providerRow.QwenOptions
                 ?? throw new InvalidOperationException(
                     "llm_provider_qwen: generic_llm_provider target module has no qwen options (ollama_port, default_chat_model).");
@@ -137,16 +166,25 @@ namespace MorpheusEngine
                     "llm_provider_qwen: default_chat_model from engine configuration is empty (check engine_config.json).");
             }
 
-            var qwenListen = configuration.PortMap.GetRequiredPort("llm_provider_qwen");
+            var qwenListen = _configuration.PortMap.GetRequiredPort("llm_provider_qwen");
             _listener.Prefixes.Add($"http://127.0.0.1:{qwenListen}/");
             _listener.Start();
 
             // Bundled Ollama inherits the host module job (see MorpheusEngine Run); no nested Job Object here.
             _ollamaBootstrapFailed = false;
-            _bundledOllamaBootstrapTask = RunBundledOllamaBootstrapAsync();
+            if (_disableBundledOllamaBootstrapForTesting)
+            {
+                _bundledOllamaBootstrapTask = Task.CompletedTask;
+            }
+            else
+            {
+                _bundledOllamaBootstrapTask = RunBundledOllamaBootstrapAsync();
+            }
 
             Console.WriteLine(
-                $"ready listen=http://127.0.0.1:{qwenListen}/ model='{_chatModel}' ollama=http://127.0.0.1:{_ollamaPort}/ num_ctx={_ollamaNumCtx} awaiting_initialize=true (ollama bootstrap in background)");
+                _disableBundledOllamaBootstrapForTesting
+                    ? $"ready listen=http://127.0.0.1:{qwenListen}/ model='{_chatModel}' ollama=http://127.0.0.1:{_ollamaPort}/ num_ctx={_ollamaNumCtx} awaiting_initialize=true (test bootstrap disabled)"
+                    : $"ready listen=http://127.0.0.1:{qwenListen}/ model='{_chatModel}' ollama=http://127.0.0.1:{_ollamaPort}/ num_ctx={_ollamaNumCtx} awaiting_initialize=true (ollama bootstrap in background)");
             return Task.CompletedTask;
         }
 
@@ -898,15 +936,18 @@ namespace MorpheusEngine
         // Single minimal /api/generate so Ollama loads the configured model before external /chat traffic (lazy load otherwise).
         private async Task PrimeBundledOllamaModelAsync(string logTag)
         {
-            Process? proc;
-            lock (_ollamaStateSync)
+            if (!_disableBundledOllamaBootstrapForTesting)
             {
-                proc = _ollamaProcess;
-            }
+                Process? proc;
+                lock (_ollamaStateSync)
+                {
+                    proc = _ollamaProcess;
+                }
 
-            if (proc is null || proc.HasExited)
-            {
-                throw new InvalidOperationException("Bundled Ollama process is not running; cannot prime model.");
+                if (proc is null || proc.HasExited)
+                {
+                    throw new InvalidOperationException("Bundled Ollama process is not running; cannot prime model.");
+                }
             }
 
             var options = BuildOllamaOptionsPayload();
@@ -1098,6 +1139,11 @@ namespace MorpheusEngine
         {
             lock (_ollamaStateSync)
             {
+                if (_disableBundledOllamaBootstrapForTesting)
+                {
+                    return _ollamaReady;
+                }
+
                 return _ollamaReady && _ollamaProcess is not null && !_ollamaProcess.HasExited;
             }
         }

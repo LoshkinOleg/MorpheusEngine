@@ -187,8 +187,27 @@ public static class EngineLog
         _rawOut.WriteLine(BuildLinePrefix(isError, logicalSource.Trim()) + message); // This bypasses the PrefixingTextWriter so that we don't end up double tagging the log with both the logicalSource and the host.
     }
 
+    internal static void ResetForTesting()
+    {
+        if (_rawOut is not null)
+        {
+            Console.SetOut(_rawOut);
+        }
+
+        if (_rawErr is not null)
+        {
+            Console.SetError(_rawErr);
+        }
+
+        _initialized = false;
+        _source = string.Empty;
+        _rawOut = null;
+        _rawErr = null;
+        currentLogId = 0;
+    }
+
     /// <summary>Builds one prefix line segment including trailing space (before the message body).</summary>
-    private static string BuildLinePrefix(bool isError, string source)
+    internal static string BuildLinePrefix(bool isError, string source)
     {
         if (string.IsNullOrWhiteSpace(source))
         {

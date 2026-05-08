@@ -45,6 +45,33 @@ Prerequisites
    - .NET SDK 9
    - Local Ollama assets configured per this repo (`third_party/ollama`, model files)
 
+## Testing
+
+The repo now has an automated .NET test harness under `dotnet/tests/`:
+
+- `dotnet/tests/MorpheusEngine.Tests.Unit`
+- `dotnet/tests/MorpheusEngine.Tests.Integration`
+
+Run everything:
+
+```powershell
+dotnet test dotnet/MorpheusEngine.sln
+```
+
+Run only unit tests:
+
+```powershell
+dotnet test dotnet/tests/MorpheusEngine.Tests.Unit/MorpheusEngine.Tests.Unit.csproj --filter "Category=Unit"
+```
+
+Run only integration tests:
+
+```powershell
+dotnet test dotnet/tests/MorpheusEngine.Tests.Integration/MorpheusEngine.Tests.Integration.csproj --filter "Category=Integration"
+```
+
+For the full harness guide, shared fixtures, and test-authoring rules, see `docs/Testing_Harness.md`.
+
 ## Configuration and contracts
 
 Primary configuration file: `engine_config.json`.

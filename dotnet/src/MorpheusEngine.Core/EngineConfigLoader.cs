@@ -409,6 +409,7 @@ public static class EngineConfigLoader
     };
 
     private static EngineConfiguration? _cached;
+    private static string? _repositoryRootOverrideForTesting;
 
     /// <summary>Protects double-checked initialization of <see cref="_cached"/> together with <see cref="GetConfiguration"/>.</summary>
     // Mutex for the cache: only one thread runs <see cref="LoadConfigurationUncached"/> when cache is cold.
@@ -497,6 +498,12 @@ public static class EngineConfigLoader
                     {
                         throw new EngineConfigurationException(
                             $"modules[] entry in '{configPath}' is missing port_key (required to build the port map).");
+                    }
+
+                    if (dict.ContainsKey(key))
+                    {
+                        throw new EngineConfigurationException(
+                            $"Duplicate port_key '{key}' in '{configPath}' (each module must have a unique port_key).");
                     }
 
                     if (module.Port is null)
@@ -1082,12 +1089,39 @@ public static class EngineConfigLoader
         }
     }
 
+    internal static void ResetForTesting()
+    {
+        lock (Sync)
+        {
+            _cached = null;
+            _repositoryRootOverrideForTesting = null;
+        }
+    }
+
+    internal static void SetRepositoryRootOverrideForTesting(string? repositoryRoot)
+    {
+        lock (Sync)
+        {
+            _repositoryRootOverrideForTesting = string.IsNullOrWhiteSpace(repositoryRoot)
+                ? null
+                : repositoryRoot.Trim();
+        }
+    }
+
     public static EnginePortMap GetPorts() => GetConfiguration().PortMap;
     #endregion
 
     #region Helpers
     public static string? FindRepositoryRoot()
     {
+        lock (Sync)
+        {
+            if (!string.IsNullOrWhiteSpace(_repositoryRootOverrideForTesting))
+            {
+                return _repositoryRootOverrideForTesting;
+            }
+        }
+
         return FindRepositoryRoot(new DirectoryInfo(AppContext.BaseDirectory))
             ?? FindRepositoryRoot(new DirectoryInfo(Environment.CurrentDirectory));
     }

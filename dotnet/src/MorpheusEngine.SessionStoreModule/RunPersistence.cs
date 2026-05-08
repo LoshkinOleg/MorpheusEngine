@@ -64,8 +64,13 @@ internal sealed class RunPersistence
         {
             cmd.CommandText =
                 """
-                INSERT OR IGNORE INTO snapshots (turn, world_state, view_state)
-                VALUES (@turn, @world, @view);
+                INSERT INTO snapshots (turn, world_state, view_state)
+                SELECT @turn, @world, @view
+                WHERE NOT EXISTS (
+                  SELECT 1
+                  FROM snapshots
+                  WHERE turn = @turn
+                );
                 """;
             cmd.Parameters.AddWithValue("@turn", 0);
             cmd.Parameters.AddWithValue(
@@ -530,6 +535,7 @@ internal sealed class RunPersistence
         try
         {
             var summary = InsertConversationSummary(connection, transaction, request);
+            DeleteCompactedAgentMessages(connection, transaction, runId, request.StartTurn, request.EndTurn);
             transaction.Commit();
             return new MemoryCompactRecallResponse(true, summary);
         }
@@ -842,7 +848,6 @@ internal sealed class RunPersistence
                 reader.IsDBNull(4) ? null : reader.GetString(4)));
         }
 
-        rows.Reverse();
         return rows;
     }
 
@@ -877,6 +882,27 @@ internal sealed class RunPersistence
             request.Summary.Trim(),
             request.SourceMessageCount,
             request.MetadataJson);
+    }
+
+    private static void DeleteCompactedAgentMessages(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string runId,
+        int startTurn,
+        int endTurn)
+    {
+        using var cmd = connection.CreateCommand();
+        cmd.Transaction = transaction;
+        cmd.CommandText =
+            """
+            DELETE FROM agent_messages
+            WHERE run_id = @runId
+              AND turn BETWEEN @startTurn AND @endTurn;
+            """;
+        cmd.Parameters.AddWithValue("@runId", runId);
+        cmd.Parameters.AddWithValue("@startTurn", startTurn);
+        cmd.Parameters.AddWithValue("@endTurn", endTurn);
+        cmd.ExecuteNonQuery();
     }
 
     private static IReadOnlyList<AgentMessageDto> ReadRecentMessages(
@@ -1247,7 +1273,7 @@ internal sealed class RunPersistence
         var asLong = Convert.ToInt64(scalar);
         return (int)asLong;
     }
-    private static string BuildModuleTracePayload(string playerInput, string directorResponseBody)
+    internal static string BuildModuleTracePayload(string playerInput, string directorResponseBody)
     {
         static bool TryBuildNarrationFromDirectorResponse(string body, out string narration)
         {
@@ -1413,7 +1439,7 @@ internal sealed class RunPersistence
         return Path.Combine(repositoryRoot, "game_projects");
     }
 
-    private static string CreateStableArchivalId(string source, string subject)
+    internal static string CreateStableArchivalId(string source, string subject)
     {
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(source + "\n" + subject.Trim().ToLowerInvariant()));
         return "lore:default:" + Convert.ToHexString(hash)[..24].ToLowerInvariant();
@@ -1431,7 +1457,7 @@ internal sealed class RunPersistence
         return NormalizeTags(values);
     }
 
-    private static double CosineSimilarity(IReadOnlyList<float> left, IReadOnlyList<float> right)
+    internal static double CosineSimilarity(IReadOnlyList<float> left, IReadOnlyList<float> right)
     {
         if (left.Count != right.Count || left.Count == 0)
         {
@@ -1456,7 +1482,7 @@ internal sealed class RunPersistence
         return dot / (Math.Sqrt(leftMagnitude) * Math.Sqrt(rightMagnitude));
     }
 
-    private static void ValidateArchivalPassage(ArchivalPassageDto passage)
+    internal static void ValidateArchivalPassage(ArchivalPassageDto passage)
     {
         if (string.IsNullOrWhiteSpace(passage.Id))
         {
@@ -1489,7 +1515,7 @@ internal sealed class RunPersistence
         }
     }
 
-    private static string BuildFtsQuery(string query)
+    internal static string BuildFtsQuery(string query)
     {
         var terms = query
             .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -1506,7 +1532,7 @@ internal sealed class RunPersistence
         return string.Join(" OR ", terms);
     }
 
-    private static bool PayloadMatchesEventType(string payloadJson, string? eventType)
+    internal static bool PayloadMatchesEventType(string payloadJson, string? eventType)
     {
         if (string.IsNullOrWhiteSpace(eventType))
         {
@@ -1547,7 +1573,7 @@ internal sealed class RunPersistence
         return connection;
     }
 
-    private static string BuildViewStateEnvelope(string directorResponseBody)
+    internal static string BuildViewStateEnvelope(string directorResponseBody)
     {
         try
         {

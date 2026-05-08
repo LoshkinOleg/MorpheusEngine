@@ -12,18 +12,18 @@ public sealed class MemoryDirector
     #region Nested types
     private sealed record AgentAction(string Thought, string Tool, JsonElement Arguments);
 
-    private sealed record ToolExecutionResult(
+    internal sealed record ToolExecutionResult(
         bool Ok,
         string ToolResultContent,
         IReadOnlyList<MemoryBlockDto> BlockUpdates,
         IReadOnlyList<MemoryMutationDto> Mutations,
         string? FinalMessage);
 
-    private sealed record CompiledContext(
+    internal sealed record CompiledContext(
         IReadOnlyList<ChatGenerateRequest.ChatMessageDto> Messages,
         MemoryContextAccountingDto Accounting);
 
-    private sealed class ContextBudget
+    internal sealed class ContextBudget
     {
         public int TargetChars { get; }
 
@@ -50,11 +50,8 @@ public sealed class MemoryDirector
         PropertyNameCaseInsensitive = true
     };
 
-    private readonly EngineConfiguration _configuration = EngineConfigLoader.GetConfiguration();
-    private readonly HttpClient _httpClient = new()
-    {
-        Timeout = TimeSpan.FromSeconds(60)
-    };
+    private readonly EngineConfiguration _configuration;
+    private readonly HttpClient _httpClient;
     private readonly RouterProxyClient _routerProxy;
     private readonly HttpListener _listener = new();
     private readonly SemaphoreSlim _sessionGate = new(1, 1);
@@ -71,7 +68,19 @@ public sealed class MemoryDirector
 
     #region Public methods
     public MemoryDirector()
+        : this(
+            EngineConfigLoader.GetConfiguration(),
+            new HttpClient
+            {
+                Timeout = TimeSpan.FromSeconds(60)
+            })
     {
+    }
+
+    internal MemoryDirector(EngineConfiguration configuration, HttpClient httpClient)
+    {
+        _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
+        _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _routerProxy = new RouterProxyClient(_httpClient, _configuration, "memory_director", JsonOptions);
         _actionSchema = LoadActionSchema();
     }
@@ -99,6 +108,11 @@ public sealed class MemoryDirector
     }
 
     public void RequestShutdown() => _shutdownRequested = true;
+
+    internal void SetAgentPromptForTesting(string agentPrompt)
+    {
+        _agentPrompt = agentPrompt ?? throw new ArgumentNullException(nameof(agentPrompt));
+    }
     #endregion
 
     #region Private methods
@@ -483,13 +497,13 @@ public sealed class MemoryDirector
         }
     }
 
-    private static ToolExecutionResult ExecuteSendMessage(JsonElement arguments)
+    internal static ToolExecutionResult ExecuteSendMessage(JsonElement arguments)
     {
         var message = RequireString(arguments, "message").Trim();
         return new ToolExecutionResult(true, JsonSerializer.Serialize(new { sent = true }), [], [], message);
     }
 
-    private static ToolExecutionResult ExecuteCoreMemoryAppend(int turn, int step, MemoryLoadContextResponse memoryContext, JsonElement arguments)
+    internal static ToolExecutionResult ExecuteCoreMemoryAppend(int turn, int step, MemoryLoadContextResponse memoryContext, JsonElement arguments)
     {
         var label = RequireString(arguments, "label").Trim();
         var content = RequireString(arguments, "content");
@@ -498,7 +512,7 @@ public sealed class MemoryDirector
         return BuildBlockUpdateResult(turn, step, "core_memory_append", block, block with { Value = newValue });
     }
 
-    private static ToolExecutionResult ExecuteCoreMemoryReplace(int turn, int step, MemoryLoadContextResponse memoryContext, JsonElement arguments)
+    internal static ToolExecutionResult ExecuteCoreMemoryReplace(int turn, int step, MemoryLoadContextResponse memoryContext, JsonElement arguments)
     {
         var label = RequireString(arguments, "label").Trim();
         var oldValue = RequireString(arguments, "oldValue");
@@ -519,7 +533,7 @@ public sealed class MemoryDirector
         return BuildBlockUpdateResult(turn, step, "core_memory_replace", block, block with { Value = updated });
     }
 
-    private static ToolExecutionResult ExecuteCoreMemorySet(int turn, int step, MemoryLoadContextResponse memoryContext, JsonElement arguments)
+    internal static ToolExecutionResult ExecuteCoreMemorySet(int turn, int step, MemoryLoadContextResponse memoryContext, JsonElement arguments)
     {
         var label = RequireString(arguments, "label").Trim();
         var value = RequireString(arguments, "value");
@@ -527,7 +541,7 @@ public sealed class MemoryDirector
         return BuildBlockUpdateResult(turn, step, "core_memory_set", block, block with { Value = value });
     }
 
-    private static ToolExecutionResult ExecuteGetCurrentSnapshot(MemoryLoadContextResponse memoryContext)
+    internal static ToolExecutionResult ExecuteGetCurrentSnapshot(MemoryLoadContextResponse memoryContext)
     {
         return new ToolExecutionResult(true, JsonSerializer.Serialize(memoryContext.LatestSnapshot), [], [], null);
     }
@@ -613,7 +627,7 @@ public sealed class MemoryDirector
             null);
     }
 
-    private static ToolExecutionResult BuildBlockUpdateResult(int turn, int step, string toolName, MemoryBlockDto before, MemoryBlockDto after)
+    internal static ToolExecutionResult BuildBlockUpdateResult(int turn, int step, string toolName, MemoryBlockDto before, MemoryBlockDto after)
     {
         if (before.ReadOnly)
         {
@@ -636,7 +650,7 @@ public sealed class MemoryDirector
         return new ToolExecutionResult(true, JsonSerializer.Serialize(new { updated = after.Label }), [after], [mutation], null);
     }
 
-    private async Task<CompiledContext> CompileContextAsync(MemoryLoadContextResponse memoryContext)
+    internal async Task<CompiledContext> CompileContextAsync(MemoryLoadContextResponse memoryContext)
     {
         var system = new StringBuilder();
         var budget = CreateContextBudget(memoryContext);

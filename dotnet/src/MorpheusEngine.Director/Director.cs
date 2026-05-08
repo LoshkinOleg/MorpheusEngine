@@ -23,13 +23,10 @@ public sealed class Director
         PropertyNameCaseInsensitive = true
     };
 
-    private readonly EngineConfiguration _configuration = EngineConfigLoader.GetConfiguration(); // Note: each module loads the config independantly because that's where the http ports are defined. Can't pass them via /initialize since that would require the HTTP client to already be listening on a port.
+    private readonly EngineConfiguration _configuration;
 
     // LLM proxy calls share the same per-request ceiling as LlmProvider_qwen's outbound HttpClient (60s). Model weights are primed inside the provider before /health reports initialized.
-    private readonly HttpClient _httpClient = new()
-    {
-        Timeout = TimeSpan.FromSeconds(60)
-    };
+    private readonly HttpClient _httpClient;
 
     private readonly RouterProxyClient _routerProxy;
 
@@ -52,7 +49,19 @@ public sealed class Director
     #region Public methods
 
     public Director()
+        : this(
+            EngineConfigLoader.GetConfiguration(),
+            new HttpClient
+            {
+                Timeout = TimeSpan.FromSeconds(60)
+            })
     {
+    }
+
+    internal Director(EngineConfiguration configuration, HttpClient httpClient)
+    {
+        _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
+        _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _routerProxy = new RouterProxyClient(_httpClient, _configuration, "director", JsonOptions);
     }
 

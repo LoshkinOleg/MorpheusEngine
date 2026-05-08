@@ -339,6 +339,12 @@
           "template_contracts_id": "embed"
         },
         {
+          "path": "/token_count",
+          "description": "Estimate or count prompt tokens for the configured embedding model",
+          "method": "POST",
+          "template_contracts_id": "token_count"
+        },
+        {
           "path": "/shutdown",
           "description": "Request module shutdown",
           "method": "POST",

@@ -12,6 +12,14 @@ namespace MorpheusEngine
     /// </summary>
     public sealed class ManagedModule
     {
+        private sealed class TerminalModuleHealthException : InvalidOperationException
+        {
+            public TerminalModuleHealthException(string message)
+                : base(message)
+            {
+            }
+        }
+
         #region Public data
         public string DisplayName => _definition.DisplayName;
         public string PortKey => _definition.PortKey; // PortKey =/= port! PortKey is the name of the module, like "intent_extractor" that can be used to resolve to the module's actual port.
@@ -22,10 +30,7 @@ namespace MorpheusEngine
         #region Private data
         // Intentional exception to "public static readonly" guidance: these are mutable framework objects and are kept private to
         // prevent external callers from mutating shared process-wide behavior.
-        private static readonly HttpClient Http = new()
-        {
-            Timeout = TimeSpan.FromSeconds(3)
-        };
+        private readonly HttpClient _httpClient;
         private static readonly JsonSerializerOptions HealthJsonOptions = new()
         {
             PropertyNameCaseInsensitive = true
@@ -39,9 +44,26 @@ namespace MorpheusEngine
 
         #region Public methods
         public ManagedModule(EngineConfiguration configuration, EngineModuleInfo definition, bool requiredForRun)
+            : this(
+                configuration,
+                definition,
+                requiredForRun,
+                new HttpClient
+                {
+                    Timeout = TimeSpan.FromSeconds(3)
+                })
         {
-            _configuration = configuration;
-            _definition = definition;
+        }
+
+        internal ManagedModule(
+            EngineConfiguration configuration,
+            EngineModuleInfo definition,
+            bool requiredForRun,
+            HttpClient httpClient)
+        {
+            _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
+            _definition = definition ?? throw new ArgumentNullException(nameof(definition));
+            _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
             Port = _configuration.GetRequiredListenPort(definition.PortKey);
             Required = requiredForRun;
         }
@@ -100,7 +122,7 @@ namespace MorpheusEngine
 
                 try
                 {
-                    using var response = await Http.GetAsync(GetModuleUri("/health"), cancellationToken);
+                    using var response = await _httpClient.GetAsync(GetModuleUri("/health"), cancellationToken);
                     var body = await response.Content.ReadAsStringAsync(cancellationToken);
                     var health = JsonSerializer.Deserialize<ModuleHealthResponse>(body, HealthJsonOptions);
 
@@ -108,7 +130,7 @@ namespace MorpheusEngine
                     if (string.Equals(health?.Status, "ollama_startup_failed", StringComparison.OrdinalIgnoreCase)
                         || string.Equals(health?.Status, "initialize_failed", StringComparison.OrdinalIgnoreCase))
                     {
-                        throw new InvalidOperationException(
+                        throw new TerminalModuleHealthException(
                             $"{DisplayName} reported terminal health status '{health?.Status}' while waiting for listen (see module logs). Body: {body}");
                     }
 
@@ -126,6 +148,10 @@ namespace MorpheusEngine
                         lastError = new InvalidOperationException(
                             $"{DisplayName} /health returned 2xx but missing or unexpected body (expected initialized=false).");
                     }
+                }
+                catch (TerminalModuleHealthException)
+                {
+                    throw;
                 }
                 catch (Exception e)
                 {
@@ -162,7 +188,7 @@ namespace MorpheusEngine
                 Content = new StringContent(json, Encoding.UTF8, "application/json")
             };
 
-            using var response = await Http.SendAsync(httpRequest, cancellationToken);
+            using var response = await _httpClient.SendAsync(httpRequest, cancellationToken);
             var body = await response.Content.ReadAsStringAsync(cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
@@ -188,7 +214,7 @@ namespace MorpheusEngine
 
                 try
                 {
-                    using var response = await Http.GetAsync(GetModuleUri("/health"), cancellationToken);
+                    using var response = await _httpClient.GetAsync(GetModuleUri("/health"), cancellationToken);
                     var body = await response.Content.ReadAsStringAsync(cancellationToken);
                     var health = JsonSerializer.Deserialize<ModuleHealthResponse>(body, HealthJsonOptions);
 
@@ -196,7 +222,7 @@ namespace MorpheusEngine
                     if (string.Equals(health?.Status, "initialize_failed", StringComparison.OrdinalIgnoreCase)
                         || string.Equals(health?.Status, "ollama_startup_failed", StringComparison.OrdinalIgnoreCase))
                     {
-                        throw new InvalidOperationException(
+                        throw new TerminalModuleHealthException(
                             $"{DisplayName} reported terminal health status '{health?.Status}' during startup (see module logs). Body: {body}");
                     }
 
@@ -215,6 +241,10 @@ namespace MorpheusEngine
                         lastError = new InvalidOperationException(
                             $"{DisplayName} health check returned {(int)response.StatusCode} (status={health?.Status ?? "(null)"}).");
                     }
+                }
+                catch (TerminalModuleHealthException)
+                {
+                    throw;
                 }
                 catch (Exception e)
                 {
@@ -266,7 +296,7 @@ namespace MorpheusEngine
                 // Best-effort cooperative stop first.
                 using var request = new HttpRequestMessage(HttpMethod.Post, GetModuleUri("/shutdown"));
                 request.Content = new ByteArrayContent(Array.Empty<byte>());
-                using var response = await Http.SendAsync(request);
+                using var response = await _httpClient.SendAsync(request);
                 if (!response.IsSuccessStatusCode)
                 {
                     Console.WriteLine($"{DisplayName} shutdown endpoint returned {(int)response.StatusCode}.");

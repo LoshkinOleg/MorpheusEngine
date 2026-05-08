@@ -18,7 +18,7 @@ namespace MorpheusEngine
         /// <see cref="sealed"/> + <see cref="record"/>: immutable value type; sealed documents that this type is not meant to be extended
         /// (subclassing a private nested type is already impossible from outside, but sealing keeps intent obvious and can help the compiler).
         /// </summary>
-        private sealed record ForwardedModuleResult(int StatusCode, string ContentType, string Body)
+        internal sealed record ForwardedModuleResult(int StatusCode, string ContentType, string Body)
         {
             public static ForwardedModuleResult FromError(int statusCode, string error, string? details = null) =>
                 new(
@@ -34,7 +34,7 @@ namespace MorpheusEngine
         /// <summary>Accepts incoming HTTP requests for this process (router port from config).</summary>
         private readonly HttpListener _listener = new();
 
-        private readonly EngineConfiguration _configuration = EngineConfigLoader.GetConfiguration();
+        private readonly EngineConfiguration _configuration;
 
         /// <summary>Set when /shutdown is received or <see cref="RequestShutdown"/> is called; exits the accept loop.</summary>
         private bool _shutdownRequested;
@@ -51,10 +51,7 @@ namespace MorpheusEngine
         private EngineTurnPipelineInfo? _turnPipeline;
 
         // Proxied module calls include LLM /chat; same 60s ceiling as LlmProvider_qwen outbound calls (provider primes the model before initialized=true).
-        private static readonly HttpClient _httpClient = new()
-        {
-            Timeout = TimeSpan.FromSeconds(60)
-        };
+        private readonly HttpClient _httpClient;
 
         /// <summary>
         /// Proxied responses from downstream modules must declare this media type (no silent fallback to JSON).
@@ -62,6 +59,22 @@ namespace MorpheusEngine
         private const string ExpectedProxiedResponseMediaType = "application/json";
 
         #endregion
+
+        public Router()
+            : this(
+                EngineConfigLoader.GetConfiguration(),
+                new HttpClient
+                {
+                    Timeout = TimeSpan.FromSeconds(60)
+                })
+        {
+        }
+
+        internal Router(EngineConfiguration configuration, HttpClient httpClient)
+        {
+            _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
+            _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
+        }
 
         public async Task Run()
         {
@@ -618,14 +631,14 @@ namespace MorpheusEngine
 
         #region Helpers
 
-        private static bool IsPersistTurnStep(EngineTurnPipelineStepInfo step)
+        internal static bool IsPersistTurnStep(EngineTurnPipelineStepInfo step)
         {
             return string.Equals(step.TargetModule, "session_store", StringComparison.OrdinalIgnoreCase)
                 && string.Equals(EngineConfiguration.NormalizePath(step.Path), "/persist_turn", StringComparison.OrdinalIgnoreCase)
                 && string.Equals(step.Method, "POST", StringComparison.OrdinalIgnoreCase);
         }
 
-        private static string RenderTurnPipelineStepBody(
+        internal static string RenderTurnPipelineStepBody(
             string template,
             int turn,
             string playerInput,
@@ -661,7 +674,7 @@ namespace MorpheusEngine
             return renderedJson;
         }
 
-        private static string ResolveTurnPipelinePlaceholder(
+        internal static string ResolveTurnPipelinePlaceholder(
             string placeholder,
             int turn,
             string playerInput,
@@ -717,7 +730,7 @@ namespace MorpheusEngine
             throw new InvalidOperationException($"Unsupported turn pipeline placeholder '{{{{{placeholder}}}}}'.");
         }
 
-        private static string TruncateForLog(string text, int maxLen = 160)
+        internal static string TruncateForLog(string text, int maxLen = 160)
         {
             if (string.IsNullOrEmpty(text))
             {
@@ -728,7 +741,7 @@ namespace MorpheusEngine
         }
 
         /// <summary>Same shape as LlmProvider_qwen log previews: long text keeps head and tail with an ellipsis gap in the middle.</summary>
-        private static string TruncateMiddle(string text, int headChars = 80, int tailChars = 60)
+        internal static string TruncateMiddle(string text, int headChars = 80, int tailChars = 60)
         {
             if (string.IsNullOrEmpty(text))
             {

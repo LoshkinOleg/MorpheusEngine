@@ -1,0 +1,10 @@
+<Project>
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>MorpheusEngine.Tests.Unit</_Parameter1>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>MorpheusEngine.Tests.Integration</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+</Project>

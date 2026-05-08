@@ -14,12 +14,9 @@ public sealed class SessionStoreHost
     #region Private data
 
     private readonly HttpListener _listener = new();
-    private readonly EngineConfiguration _configuration = EngineConfigLoader.GetConfiguration();
+    private readonly EngineConfiguration _configuration;
     private readonly RunPersistence _persistence;
-    private readonly HttpClient _httpClient = new()
-    {
-        Timeout = TimeSpan.FromSeconds(60)
-    };
+    private readonly HttpClient _httpClient;
     private readonly RouterProxyClient _routerProxy;
     private readonly object _sessionLock = new();
     private volatile bool _initializing;
@@ -37,7 +34,19 @@ public sealed class SessionStoreHost
     #endregion
 
     public SessionStoreHost()
+        : this(
+            EngineConfigLoader.GetConfiguration(),
+            new HttpClient
+            {
+                Timeout = TimeSpan.FromSeconds(60)
+            })
     {
+    }
+
+    internal SessionStoreHost(EngineConfiguration configuration, HttpClient httpClient)
+    {
+        _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
+        _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _persistence = new RunPersistence(_configuration.RepositoryRoot);
         _routerProxy = new RouterProxyClient(_httpClient, _configuration, "session_store", JsonOptions);
     }
