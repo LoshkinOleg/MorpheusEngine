@@ -10,6 +10,7 @@ namespace MorpheusEngine.Tests.Integration.SessionStore;
 [Trait("Category", "Integration")]
 public sealed class SessionStoreHostIntegrationTests
 {
+    // Verifies that the initialize endpoint creates the run directory and database.
     [Fact]
     public async Task SessionStoreHost_PostInitialize_CreatesRunDirectoryAndDatabase()
     {
@@ -28,6 +29,7 @@ public sealed class SessionStoreHostIntegrationTests
         File.Exists(harness.DatabasePath).Should().BeTrue();
     }
 
+    // Verifies that the persist-turn endpoint dispatches to run persistence.
     [Fact]
     public async Task SessionStoreHost_PostPersistTurn_DispatchesToRunPersistence()
     {
@@ -48,6 +50,7 @@ public sealed class SessionStoreHostIntegrationTests
         CountRows(connection, "snapshots", "turn = 1").Should().Be(1);
     }
 
+    // Verifies that the memory load-context endpoint returns assembled memory context.
     [Fact]
     public async Task SessionStoreHost_PostMemoryLoadContext_ReturnsAssembledContext()
     {
@@ -94,6 +97,7 @@ public sealed class SessionStoreHostIntegrationTests
         payload.Summaries.Should().ContainSingle(summary => summary.Summary == "The player inspected the ruins.");
     }
 
+    // Verifies that the memory persist-step endpoint saves the step data.
     [Fact]
     public async Task SessionStoreHost_PostMemoryPersistStep_PersistsStepData()
     {
@@ -135,6 +139,7 @@ public sealed class SessionStoreHostIntegrationTests
         blocks.Blocks.Should().ContainSingle(block => block.Label == "human" && block.Value == "Updated by memory step.");
     }
 
+    // Verifies that memory endpoints return bad requests before initialization.
     [Theory]
     [MemberData(nameof(MemoryEndpointRequests))]
     public async Task SessionStoreHost_MemoryEndpoints_BeforeInitializeReturnBadRequest(string path, object request)

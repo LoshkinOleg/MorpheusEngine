@@ -9,6 +9,7 @@ namespace MorpheusEngine.Tests.Unit.Core;
 public sealed class GameProjectManifestLoaderTests
 {
     [Fact]
+    // Verifies that a valid manifest loads with the expected values.
     public void GameProjectManifestLoader_Load_ValidManifest_ReturnsExpectedManifest()
     {
         using var tempGameProject = new TempGameProject(TestPayloads.MinimalManifestJson);
@@ -22,6 +23,7 @@ public sealed class GameProjectManifestLoaderTests
     }
 
     [Fact]
+    // Verifies that an empty game project ID is rejected.
     public void GameProjectManifestLoader_Load_EmptyGameProjectId_ThrowsArgumentException()
     {
         using var tempGameProject = new TempGameProject(TestPayloads.MinimalManifestJson);
@@ -32,6 +34,7 @@ public sealed class GameProjectManifestLoaderTests
     }
 
     [Fact]
+    // Verifies that a game project ID containing '..' is rejected.
     public void GameProjectManifestLoader_Load_GameProjectIdContainingDotDot_ThrowsArgumentException()
     {
         using var tempGameProject = new TempGameProject(TestPayloads.MinimalManifestJson);
@@ -44,6 +47,7 @@ public sealed class GameProjectManifestLoaderTests
     [Theory]
     [InlineData("bad/id")]
     [InlineData("bad\\id")]
+    // Verifies that game project IDs containing path separators are rejected.
     public void GameProjectManifestLoader_Load_GameProjectIdContainingPathSeparators_ThrowsArgumentException(string invalidGameProjectId)
     {
         using var tempGameProject = new TempGameProject(TestPayloads.MinimalManifestJson);
@@ -54,6 +58,7 @@ public sealed class GameProjectManifestLoaderTests
     }
 
     [Fact]
+    // Verifies that loading a missing manifest file throws a file-not-found error.
     public void GameProjectManifestLoader_Load_MissingManifestFile_ThrowsFileNotFoundException()
     {
         using var tempGameProject = new TempGameProject(writeManifest: false);
@@ -64,6 +69,7 @@ public sealed class GameProjectManifestLoaderTests
     }
 
     [Fact]
+    // Verifies that malformed manifest JSON is wrapped in an invalid-operation error.
     public void GameProjectManifestLoader_Load_MalformedJson_ThrowsInvalidOperationExceptionWrappingJsonException()
     {
         using var tempGameProject = new TempGameProject("{ invalid json }");
@@ -74,6 +80,7 @@ public sealed class GameProjectManifestLoaderTests
     }
 
     [Fact]
+    // Verifies that the manifest ID must match the game project folder name.
     public void GameProjectManifestLoader_Load_ManifestIdNotMatchingFolderName_ThrowsInvalidOperationException()
     {
         var manifest = CreateMinimalManifestNode();
@@ -87,6 +94,7 @@ public sealed class GameProjectManifestLoaderTests
     }
 
     [Fact]
+    // Verifies that a manifest missing its ID field is rejected.
     public void GameProjectManifestLoader_Load_MissingIdField_ThrowsInvalidOperationException()
     {
         var manifest = CreateMinimalManifestNode();
@@ -100,6 +108,7 @@ public sealed class GameProjectManifestLoaderTests
     }
 
     [Fact]
+    // Verifies that a manifest missing its title field is rejected.
     public void GameProjectManifestLoader_Load_MissingTitleField_ThrowsInvalidOperationException()
     {
         var manifest = CreateMinimalManifestNode();
@@ -113,6 +122,7 @@ public sealed class GameProjectManifestLoaderTests
     }
 
     [Fact]
+    // Verifies that required_modules cannot contain empty entries.
     public void GameProjectManifestLoader_Load_RequiredModulesContainingEmptyEntry_ThrowsInvalidOperationException()
     {
         var manifest = CreateMinimalManifestNode();
@@ -126,6 +136,7 @@ public sealed class GameProjectManifestLoaderTests
     }
 
     [Fact]
+    // Verifies that required_modules cannot contain '..' entries.
     public void GameProjectManifestLoader_Load_RequiredModulesContainingDotDot_ThrowsInvalidOperationException()
     {
         var manifest = CreateMinimalManifestNode();
@@ -139,6 +150,7 @@ public sealed class GameProjectManifestLoaderTests
     }
 
     [Fact]
+    // Verifies that the default turn pipeline is used when the manifest omits one.
     public void GameProjectManifestLoader_Load_MissingTurnPipeline_UsesDefault()
     {
         var manifest = CreateMinimalManifestNode();

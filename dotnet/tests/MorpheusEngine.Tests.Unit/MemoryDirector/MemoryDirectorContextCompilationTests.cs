@@ -10,6 +10,7 @@ namespace MorpheusEngine.Tests.Unit.MemoryDirector;
 [Trait("Category", "Unit")]
 public sealed class MemoryDirectorContextCompilationTests
 {
+    // Verifies that compiled context includes the prompt, core blocks, snapshot, and recent messages.
     [Fact]
     public async Task MemoryDirector_CompileContextAsync_IncludesAgentPromptCoreBlocksSnapshotAndRecentMessages()
     {
@@ -47,6 +48,7 @@ public sealed class MemoryDirectorContextCompilationTests
         compiled.Messages[2].Content.Should().Be("inspect the airlock");
     }
 
+    // Verifies that messages are omitted when the character budget is exceeded.
     [Fact]
     public async Task MemoryDirector_CompileContextAsync_CharacterBudget_OmitsMessagesWhenExceeded()
     {
@@ -73,6 +75,7 @@ public sealed class MemoryDirectorContextCompilationTests
             && (item.Status == "truncated" || item.Status == "omitted"));
     }
 
+    // Verifies that compiled context includes summaries when they are present.
     [Fact]
     public async Task MemoryDirector_CompileContextAsync_IncludesSummariesWhenPresent()
     {
@@ -92,6 +95,7 @@ public sealed class MemoryDirectorContextCompilationTests
         compiled.Messages[0].Content.Should().Contain("Turns 1-3: The player crossed the desert and found the airlock.");
     }
 
+    // Verifies that consuming budget returns the available amount and reduces the remainder.
     [Fact]
     public void MemoryDirector_ContextBudget_Consume_ReturnsMinimumAndDecrementsRemaining()
     {
@@ -106,6 +110,7 @@ public sealed class MemoryDirectorContextCompilationTests
         budget.RemainingChars.Should().Be(0);
     }
 
+    // Verifies that exact token budget enforcement removes trailing messages.
     [Fact]
     public async Task MemoryDirector_CompileContextAsync_ExactTokenBudget_RemovesTrailingMessages()
     {

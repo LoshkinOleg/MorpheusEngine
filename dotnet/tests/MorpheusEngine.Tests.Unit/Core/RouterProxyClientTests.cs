@@ -14,6 +14,7 @@ public sealed class RouterProxyClientTests
     };
 
     [Fact]
+    // Verifies that a successful JSON proxy response is deserialized into the typed payload.
     public async Task RouterProxyClient_PostAsync_SuccessfulJsonResponse_DeserializesPayload()
     {
         var handler = new MockHttpHandler();
@@ -39,6 +40,7 @@ public sealed class RouterProxyClientTests
     }
 
     [Fact]
+    // Verifies that non-success responses return status and raw body without a payload.
     public async Task RouterProxyClient_PostAsync_NonSuccessStatus_ReturnsStatusCodeAndRawBodyWithoutPayload()
     {
         var handler = new MockHttpHandler();
@@ -58,6 +60,7 @@ public sealed class RouterProxyClientTests
     }
 
     [Fact]
+    // Verifies that invalid JSON on a successful response surfaces a deserialize error.
     public async Task RouterProxyClient_PostAsync_SuccessStatusWithUnparseableJson_ReturnsDeserializeError()
     {
         var handler = new MockHttpHandler();
@@ -77,6 +80,7 @@ public sealed class RouterProxyClientTests
     }
 
     [Fact]
+    // Verifies that an empty target module is rejected.
     public async Task RouterProxyClient_PostAsync_EmptyTargetModule_ThrowsArgumentException()
     {
         var handler = new MockHttpHandler();
@@ -93,6 +97,7 @@ public sealed class RouterProxyClientTests
     }
 
     [Fact]
+    // Verifies that an empty target path is rejected.
     public async Task RouterProxyClient_PostAsync_EmptyTargetPath_ThrowsArgumentException()
     {
         var handler = new MockHttpHandler();
@@ -109,6 +114,7 @@ public sealed class RouterProxyClientTests
     }
 
     [Fact]
+    // Verifies that HTTP request failures are wrapped in an invalid-operation error.
     public async Task RouterProxyClient_PostAsync_HttpRequestException_IsWrappedInInvalidOperationException()
     {
         var handler = new MockHttpHandler();

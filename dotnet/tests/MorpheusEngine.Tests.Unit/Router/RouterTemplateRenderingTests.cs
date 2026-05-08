@@ -7,6 +7,7 @@ namespace MorpheusEngine.Tests.Unit.Router;
 [Trait("Category", "Unit")]
 public sealed class RouterTemplateRenderingTests
 {
+    // Verifies that the turn placeholder renders as an integer literal.
     [Fact]
     public void Router_RenderTurnPipelineStepBody_ReplacesTurnPlaceholderWithInteger()
     {
@@ -20,6 +21,7 @@ public sealed class RouterTemplateRenderingTests
         result.Should().Be("""{"turn":7}""");
     }
 
+    // Verifies that player input is JSON-escaped when rendered into a body.
     [Fact]
     public void Router_RenderTurnPipelineStepBody_ReplacesPlayerInputJsonWithEscapedString()
     {
@@ -34,6 +36,7 @@ public sealed class RouterTemplateRenderingTests
         document.RootElement.GetProperty("playerInput").GetString().Should().Be("say \"hello\"\nand wave");
     }
 
+    // Verifies that previous.rawBody injects the prior step response as JSON.
     [Fact]
     public void Router_RenderTurnPipelineStepBody_ReplacesPreviousRawBodyWithPriorStepBody()
     {
@@ -49,6 +52,7 @@ public sealed class RouterTemplateRenderingTests
         result.Should().Be("""{"previous":{"ok":true,"text":"prior"}}""");
     }
 
+    // Verifies that previous.rawBodyJson serializes the prior step body as a string.
     [Fact]
     public void Router_RenderTurnPipelineStepBody_ReplacesPreviousRawBodyJsonWithSerializedPriorBody()
     {
@@ -65,6 +69,7 @@ public sealed class RouterTemplateRenderingTests
         document.RootElement.GetProperty("previous").GetString().Should().Be("""{"ok":true,"text":"prior"}""");
     }
 
+    // Verifies that named step placeholders resolve to earlier step output.
     [Fact]
     public void Router_RenderTurnPipelineStepBody_ReplacesNamedStepRawBody()
     {
@@ -83,6 +88,7 @@ public sealed class RouterTemplateRenderingTests
         result.Should().Be("""{"director":{"ok":true,"text":"director"}}""");
     }
 
+    // Verifies that previous.rawBody fails before any step result exists.
     [Fact]
     public void Router_RenderTurnPipelineStepBody_PreviousRawBodyBeforeAnyStep_ThrowsInvalidOperationException()
     {
@@ -97,6 +103,7 @@ public sealed class RouterTemplateRenderingTests
             .WithMessage("*previous.rawBody before any step executed*");
     }
 
+    // Verifies that references to unknown steps fail during rendering.
     [Fact]
     public void Router_RenderTurnPipelineStepBody_UnknownStepId_ThrowsInvalidOperationException()
     {
@@ -111,6 +118,7 @@ public sealed class RouterTemplateRenderingTests
             .WithMessage("*referenced step 'missing_step' before it executed*");
     }
 
+    // Verifies that unterminated placeholders are rejected.
     [Fact]
     public void Router_RenderTurnPipelineStepBody_UnterminatedPlaceholder_ThrowsInvalidOperationException()
     {
@@ -125,6 +133,7 @@ public sealed class RouterTemplateRenderingTests
             .WithMessage("*unterminated placeholder*");
     }
 
+    // Verifies that unsupported placeholders are rejected.
     [Fact]
     public void Router_RenderTurnPipelineStepBody_UnsupportedPlaceholder_ThrowsInvalidOperationException()
     {
@@ -139,6 +148,7 @@ public sealed class RouterTemplateRenderingTests
             .WithMessage("*Unsupported turn pipeline placeholder*");
     }
 
+    // Verifies that invalid rendered JSON surfaces a JSON parse error.
     [Fact]
     public void Router_RenderTurnPipelineStepBody_InvalidRenderedJson_ThrowsJsonException()
     {

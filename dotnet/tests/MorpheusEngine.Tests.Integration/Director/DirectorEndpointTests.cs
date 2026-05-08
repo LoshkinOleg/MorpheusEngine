@@ -10,6 +10,7 @@ namespace MorpheusEngine.Tests.Integration.Director;
 [Trait("Category", "Integration")]
 public sealed class DirectorEndpointTests
 {
+    // Verifies that valid message requests return assistant text and proxy the chat payload.
     [Fact]
     public async Task Director_PostMessage_ValidInput_ReturnsDirectorMessageResponseWithText()
     {
@@ -46,6 +47,7 @@ public sealed class DirectorEndpointTests
         document.RootElement.GetProperty("body").GetProperty("messages")[1].GetProperty("content").GetString().Should().Be("look around");
     }
 
+    // Verifies that message requests are rejected before initialization.
     [Fact]
     public async Task Director_PostMessage_BeforeBind_ReturnsBadRequest()
     {
@@ -60,6 +62,7 @@ public sealed class DirectorEndpointTests
         payload.Error.Should().Contain("Director run is not bound");
     }
 
+    // Verifies that message requests reject blank player input.
     [Fact]
     public async Task Director_PostMessage_EmptyPlayerInput_ReturnsBadRequest()
     {
@@ -75,6 +78,7 @@ public sealed class DirectorEndpointTests
         payload!.Error.Should().Be("Request must include non-empty playerInput.");
     }
 
+    // Verifies that message requests reject turn numbers below one.
     [Fact]
     public async Task Director_PostMessage_TurnLessThanOne_ReturnsBadRequest()
     {
@@ -90,6 +94,7 @@ public sealed class DirectorEndpointTests
         payload!.Error.Should().Be("Turn must be >= 1.");
     }
 
+    // Verifies that successful turns append user and assistant messages to history.
     [Fact]
     public async Task Director_PostMessage_SuccessiveSuccessfulCalls_AppendUserAndAssistantToHistory()
     {
@@ -135,6 +140,7 @@ public sealed class DirectorEndpointTests
         secondMessages[3].Content.Should().Be("open the door");
     }
 
+    // Verifies that failed LLM calls do not leave an orphaned user history entry.
     [Fact]
     public async Task Director_PostMessage_LlmFailure_DoesNotAppendOrphanUserRow()
     {
@@ -172,6 +178,7 @@ public sealed class DirectorEndpointTests
         secondMessages[1].Content.Should().Be("look around");
     }
 
+    // Verifies that ok=false chat responses return an unprocessable entity error.
     [Fact]
     public async Task Director_PostMessage_LlmReturnsOkFalse_ReturnsUnprocessableEntity()
     {
@@ -192,6 +199,7 @@ public sealed class DirectorEndpointTests
         payload!.Error.Should().Be("LLM chat response was empty or missing 'response'.");
     }
 
+    // Verifies that invalid JSON from the proxied LLM returns an unprocessable entity error.
     [Fact]
     public async Task Director_PostMessage_NonJsonLlmResponse_ReturnsUnprocessableEntity()
     {
@@ -215,6 +223,7 @@ public sealed class DirectorEndpointTests
         payload!.Error.Should().Be("Proxied LLM response was not valid JSON.");
     }
 
+    // Verifies that router proxy connectivity failures surface as bad gateway errors.
     [Fact]
     public async Task Director_PostMessage_RouterProxyUnreachable_ReturnsBadGateway()
     {
@@ -235,6 +244,7 @@ public sealed class DirectorEndpointTests
         payload!.Error.Should().Be("Failed to reach router proxy for LLM chat.");
     }
 
+    // Verifies that initialization loads the system prompt and lore into chat history.
     [Fact]
     public async Task Director_PostInitialize_LoadsSystemPromptAndLoreIntoHistory()
     {
@@ -267,6 +277,7 @@ public sealed class DirectorEndpointTests
         messages[0].Content.Should().Contain("Oasis City");
     }
 
+    // Verifies that concurrent message requests are serialized before reaching the LLM.
     [Fact]
     public async Task Director_ConcurrentPostMessageCalls_AreSerializedBySemaphoreSlim()
     {

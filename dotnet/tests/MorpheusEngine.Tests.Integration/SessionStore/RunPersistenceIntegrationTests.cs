@@ -45,6 +45,7 @@ public sealed class RunPersistenceIntegrationTests
         "agent_messages_au"
     ];
 
+    // Verifies that initializing a run creates the expected SQLite schema.
     [Fact]
     public void RunPersistence_InitializeRun_CreatesSchema()
     {
@@ -64,6 +65,7 @@ public sealed class RunPersistenceIntegrationTests
         });
     }
 
+    // Verifies that initializing a run stores the expected meta values.
     [Fact]
     public void RunPersistence_InitializeRun_SetsMetaValues()
     {
@@ -79,6 +81,7 @@ public sealed class RunPersistenceIntegrationTests
         });
     }
 
+    // Verifies that initializing a run inserts an empty turn-zero snapshot.
     [Fact]
     public void RunPersistence_InitializeRun_InsertsTurnZeroSnapshotWithEmptyWorldAndViewState()
     {
@@ -121,6 +124,7 @@ public sealed class RunPersistenceIntegrationTests
         });
     }
 
+    // Verifies that initializing the same run twice is idempotent.
     [Fact]
     public void RunPersistence_InitializeRun_IsIdempotent()
     {
@@ -142,6 +146,7 @@ public sealed class RunPersistenceIntegrationTests
         });
     }
 
+    // Verifies that initializing a run seeds lore from the default CSV.
     [Fact]
     public void RunPersistence_InitializeRun_SeedsLoreFromDefaultLoreEntriesCsv()
     {
@@ -161,6 +166,7 @@ public sealed class RunPersistenceIntegrationTests
         });
     }
 
+    // Verifies that initializing a run rejects an empty game project ID.
     [Fact]
     public void RunPersistence_InitializeRun_EmptyGameProjectId_ThrowsArgumentException()
     {
@@ -173,6 +179,7 @@ public sealed class RunPersistenceIntegrationTests
         });
     }
 
+    // Verifies that persisting turn one after initialization creates events and a snapshot.
     [Fact]
     public void RunPersistence_PersistTurn_TurnOneAfterInitializeRun_SucceedsAndCreatesEventsAndSnapshot()
     {
@@ -190,6 +197,7 @@ public sealed class RunPersistenceIntegrationTests
         });
     }
 
+    // Verifies that persisting turn two after turn one succeeds.
     [Fact]
     public void RunPersistence_PersistTurn_TurnTwoAfterTurnOne_Succeeds()
     {
@@ -211,6 +219,7 @@ public sealed class RunPersistenceIntegrationTests
         });
     }
 
+    // Verifies that persisting turn two without turn one throws a sequencing error.
     [Fact]
     public void RunPersistence_PersistTurn_TurnTwoWithoutTurnOne_ThrowsInvalidOperationException()
     {
@@ -225,6 +234,7 @@ public sealed class RunPersistenceIntegrationTests
         });
     }
 
+    // Verifies that persisting turn zero is rejected.
     [Fact]
     public void RunPersistence_PersistTurn_TurnZero_ThrowsInvalidOperationException()
     {
@@ -239,6 +249,7 @@ public sealed class RunPersistenceIntegrationTests
         });
     }
 
+    // Verifies that persisting a turn before initialization is rejected.
     [Fact]
     public void RunPersistence_PersistTurn_BeforeInitializeRun_ThrowsInvalidOperationException()
     {
@@ -251,6 +262,7 @@ public sealed class RunPersistenceIntegrationTests
         });
     }
 
+    // Verifies that persisting a turn writes player input and module trace events.
     [Fact]
     public void RunPersistence_PersistTurn_InsertsPlayerInputAndModuleTraceEvents()
     {
@@ -278,6 +290,7 @@ public sealed class RunPersistenceIntegrationTests
         });
     }
 
+    // Verifies that a persisted turn carries forward the latest world state.
     [Fact]
     public void RunPersistence_PersistTurn_SnapshotCarriesForwardLatestWorldState()
     {
@@ -302,6 +315,7 @@ public sealed class RunPersistenceIntegrationTests
         });
     }
 
+    // Verifies that upserted memory blocks round-trip through retrieval.
     [Fact]
     public void RunPersistence_UpsertMemoryBlock_ThenGetMemoryBlocks_RoundTripsCorrectly()
     {
@@ -318,6 +332,7 @@ public sealed class RunPersistenceIntegrationTests
         });
     }
 
+    // Verifies that upserting a memory block updates an existing block with the same label.
     [Fact]
     public void RunPersistence_UpsertMemoryBlock_UpdatesExistingBlock()
     {
@@ -338,6 +353,7 @@ public sealed class RunPersistenceIntegrationTests
         });
     }
 
+    // Verifies that read-only blocks are excluded when requested.
     [Fact]
     public void RunPersistence_GetMemoryBlocks_IncludeReadOnlyFalse_ExcludesReadOnlyBlocks()
     {
@@ -359,6 +375,7 @@ public sealed class RunPersistenceIntegrationTests
         });
     }
 
+    // Verifies that an appended message is returned by recent-message retrieval.
     [Fact]
     public void RunPersistence_AppendMessage_ThenGetRecentMessages_ReturnsIt()
     {
@@ -375,6 +392,7 @@ public sealed class RunPersistenceIntegrationTests
         });
     }
 
+    // Verifies that recent-message retrieval respects the requested limit.
     [Fact]
     public void RunPersistence_GetRecentMessages_RespectsLimit()
     {
@@ -392,6 +410,7 @@ public sealed class RunPersistenceIntegrationTests
         });
     }
 
+    // Verifies that recent-message retrieval applies role filters.
     [Fact]
     public void RunPersistence_GetRecentMessages_WithRoleFilter_ReturnsOnlyMatchingRoles()
     {
@@ -408,6 +427,7 @@ public sealed class RunPersistenceIntegrationTests
         });
     }
 
+    // Verifies that appended memory mutations are persisted.
     [Fact]
     public void RunPersistence_AppendMutation_PersistsMutation()
     {
@@ -425,6 +445,7 @@ public sealed class RunPersistenceIntegrationTests
         });
     }
 
+    // Verifies that the latest snapshot request returns the highest-turn snapshot.
     [Fact]
     public void RunPersistence_GetLatestSnapshot_ReturnsMostRecentSnapshotByTurn()
     {
@@ -440,6 +461,7 @@ public sealed class RunPersistenceIntegrationTests
         });
     }
 
+    // Verifies that persisting a memory step writes all step artifacts together.
     [Fact]
     public void RunPersistence_PersistMemoryStep_WritesMessagesMutationsBlocksAndPipelineEventAtomically()
     {
@@ -484,6 +506,7 @@ public sealed class RunPersistenceIntegrationTests
         });
     }
 
+    // Verifies that recall search returns matching messages ranked by relevance.
     [Fact]
     public void RunPersistence_SearchRecall_ReturnsMatchingMessagesRankedByRelevance()
     {
@@ -508,6 +531,7 @@ public sealed class RunPersistenceIntegrationTests
         });
     }
 
+    // Verifies that recall search applies role filters to its results.
     [Fact]
     public void RunPersistence_SearchRecall_WithRoleFilter_AppliesCorrectly()
     {
@@ -526,6 +550,7 @@ public sealed class RunPersistenceIntegrationTests
         });
     }
 
+    // Verifies that recall search returns an empty list when nothing matches.
     [Fact]
     public void RunPersistence_SearchRecall_NoMatches_ReturnsEmptyList()
     {
@@ -541,6 +566,7 @@ public sealed class RunPersistenceIntegrationTests
         });
     }
 
+    // Verifies that archival search returns top results ordered by cosine similarity.
     [Fact]
     public void RunPersistence_SearchArchival_ReturnsTopKOrderedByCosineSimilarity()
     {
@@ -568,6 +594,7 @@ public sealed class RunPersistenceIntegrationTests
         });
     }
 
+    // Verifies that archival search restricts results to the requested tags.
     [Fact]
     public void RunPersistence_SearchArchival_WithTagFilter_RestrictsResults()
     {
@@ -588,6 +615,7 @@ public sealed class RunPersistenceIntegrationTests
         });
     }
 
+    // Verifies that a valid archival passage can be inserted and then updated.
     [Fact]
     public void RunPersistence_UpsertArchivalPassage_ValidPassage_InsertsAndUpdates()
     {
@@ -630,6 +658,7 @@ public sealed class RunPersistenceIntegrationTests
         });
     }
 
+    // Verifies that invalid archival passages are rejected during upsert.
     [Fact]
     public void RunPersistence_UpsertArchivalPassage_InvalidPassage_Throws()
     {
@@ -660,6 +689,7 @@ public sealed class RunPersistenceIntegrationTests
         });
     }
 
+    // Verifies that lore CSV rows are converted into archival seed candidates.
     [Fact]
     public void RunPersistence_BuildArchivalLoreSeedCandidates_ConvertsCsvRowsToCandidates()
     {
@@ -680,6 +710,7 @@ public sealed class RunPersistenceIntegrationTests
         });
     }
 
+    // Verifies that recall compaction stores a summary with the correct turn range.
     [Fact]
     public void RunPersistence_CompactRecall_InsertsConversationSummaryWithCorrectTurnRange()
     {
@@ -706,6 +737,7 @@ public sealed class RunPersistenceIntegrationTests
         });
     }
 
+    // Verifies that recall compaction deletes the compacted agent messages.
     [Fact]
     public void RunPersistence_CompactRecall_DeletesCompactedAgentMessagesRows()
     {
@@ -724,6 +756,7 @@ public sealed class RunPersistenceIntegrationTests
         });
     }
 
+    // Verifies that recent-summary retrieval returns the most recent summaries within the limit.
     [Fact]
     public void RunPersistence_GetRecentSummaries_ReturnsMostRecentSummariesLimitedByCount()
     {

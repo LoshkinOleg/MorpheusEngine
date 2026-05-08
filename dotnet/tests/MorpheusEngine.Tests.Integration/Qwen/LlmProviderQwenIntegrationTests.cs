@@ -9,6 +9,7 @@ namespace MorpheusEngine.Tests.Integration.Qwen;
 [Trait("Category", "Integration")]
 public sealed class LlmProviderQwenIntegrationTests
 {
+    // Verifies that chat requests return assistant text and forward the expected Ollama payload.
     [Fact]
     public async Task LlmProviderQwen_PostChat_ValidMessages_ReturnsAssistantText()
     {
@@ -48,6 +49,7 @@ public sealed class LlmProviderQwenIntegrationTests
         document.RootElement.GetProperty("options").GetProperty("num_ctx").GetInt32().Should().Be(4096);
     }
 
+    // Verifies that chat requests forward the requested schema format and keep-alive value.
     [Fact]
     public async Task LlmProviderQwen_PostChat_WithFormat_ForwardsSchemaAndKeepAlive()
     {
@@ -94,6 +96,7 @@ public sealed class LlmProviderQwenIntegrationTests
         document.RootElement.GetProperty("keep_alive").GetString().Should().Be("10m");
     }
 
+    // Verifies that generate requests return the generated text response.
     [Fact]
     public async Task LlmProviderQwen_PostGenerate_ValidPrompt_ReturnsGeneratedText()
     {
@@ -124,6 +127,7 @@ public sealed class LlmProviderQwenIntegrationTests
         document.RootElement.GetProperty("model").GetString().Should().Be("qwen2.5:7b");
     }
 
+    // Verifies that token counting returns the prompt evaluation count from Ollama.
     [Fact]
     public async Task LlmProviderQwen_PostTokenCount_ReturnsPromptEvalCount()
     {
@@ -155,6 +159,7 @@ public sealed class LlmProviderQwenIntegrationTests
         document.RootElement.GetProperty("options").GetProperty("num_predict").GetInt32().Should().Be(0);
     }
 
+    // Verifies that health reports Ollama as starting during bootstrap.
     [Fact]
     public async Task LlmProviderQwen_Health_DuringBootstrap_ReturnsOllamaStarting()
     {
@@ -163,6 +168,7 @@ public sealed class LlmProviderQwenIntegrationTests
         await WaitForHealthStatusAsync(harness, "ollama_starting");
     }
 
+    // Verifies that health reports Ollama startup failure after bootstrap fails.
     [Fact]
     public async Task LlmProviderQwen_Health_AfterBootstrapFailure_ReturnsOllamaStartupFailed()
     {
@@ -172,6 +178,7 @@ public sealed class LlmProviderQwenIntegrationTests
         await WaitForHealthStatusAsync(harness, "ollama_startup_failed");
     }
 
+    // Verifies that initialization skips model download when the model is already present.
     [Fact]
     public async Task LlmProviderQwen_PostInitialize_ModelAlreadyPresent_DoesNotRedownloadModel()
     {

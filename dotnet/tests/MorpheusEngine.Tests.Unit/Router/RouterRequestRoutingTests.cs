@@ -13,6 +13,7 @@ namespace MorpheusEngine.Tests.Unit.Router;
 [Trait("Category", "Unit")]
 public sealed class RouterRequestRoutingTests
 {
+    // Verifies that the info endpoint returns the router module metadata.
     [Fact]
     public async Task Router_GetInfo_Returns200WithRouterModuleName()
     {
@@ -25,6 +26,7 @@ public sealed class RouterRequestRoutingTests
         payload.Should().Be(new ModuleInfoResponse(true, "router"));
     }
 
+    // Verifies that health reports awaiting initialization before binding a run.
     [Fact]
     public async Task Router_GetHealth_BeforeBind_ReturnsAwaitingInitialize()
     {
@@ -37,6 +39,7 @@ public sealed class RouterRequestRoutingTests
         payload.Should().Be(new ModuleHealthResponse(false, "awaiting_initialize", false));
     }
 
+    // Verifies that health reports healthy after a run is bound.
     [Fact]
     public async Task Router_GetHealth_AfterBind_ReturnsHealthy()
     {
@@ -50,6 +53,7 @@ public sealed class RouterRequestRoutingTests
         payload.Should().Be(new ModuleHealthResponse(true, "healthy", true));
     }
 
+    // Verifies that shutdown succeeds and marks the router as stopping.
     [Fact]
     public async Task Router_PostShutdown_Returns200AndSetsShutdownRequested()
     {
@@ -64,6 +68,7 @@ public sealed class RouterRequestRoutingTests
         harness.GetPrivateField<bool>("_shutdownRequested").Should().BeTrue();
     }
 
+    // Verifies that unknown routes return a not found error.
     [Fact]
     public async Task Router_UnknownPath_Returns404()
     {
@@ -76,6 +81,7 @@ public sealed class RouterRequestRoutingTests
         payload.Error.Should().Contain("Not found");
     }
 
+    // Verifies that initialize binds the run and loads the default pipeline.
     [Fact]
     public async Task Router_PostInitialize_ValidPayload_BindsRun()
     {
@@ -94,6 +100,7 @@ public sealed class RouterRequestRoutingTests
         harness.GetPrivateField<EngineTurnPipelineInfo>("_turnPipeline").Id.Should().Be("memory_director_default");
     }
 
+    // Verifies that initialize rejects requests missing the run ID.
     [Fact]
     public async Task Router_PostInitialize_MissingRunId_Returns400()
     {
@@ -108,6 +115,7 @@ public sealed class RouterRequestRoutingTests
         payload.Error.Should().Contain("runId");
     }
 
+    // Verifies that initialize rejects requests missing the game project ID.
     [Fact]
     public async Task Router_PostInitialize_MissingGameProjectId_Returns400()
     {
@@ -122,6 +130,7 @@ public sealed class RouterRequestRoutingTests
         payload.Error.Should().Contain("gameProjectId");
     }
 
+    // Verifies that initialize rejects rebinding an already bound run.
     [Fact]
     public async Task Router_PostInitialize_WhenAlreadyBound_Returns409()
     {
@@ -137,6 +146,7 @@ public sealed class RouterRequestRoutingTests
         payload.Error.Should().Contain("already bound");
     }
 
+    // Verifies that initialize only accepts POST requests.
     [Fact]
     public async Task Router_GetInitialize_Returns405()
     {
@@ -149,6 +159,7 @@ public sealed class RouterRequestRoutingTests
         payload.Error.Should().Contain("Method not allowed");
     }
 
+    // Verifies that turn requests are unavailable before initialization.
     [Fact]
     public async Task Router_PostTurn_BeforeBind_Returns503()
     {
@@ -163,6 +174,7 @@ public sealed class RouterRequestRoutingTests
         payload.Error.Should().Contain("not bound");
     }
 
+    // Verifies that turn requests reject turn numbers below one.
     [Fact]
     public async Task Router_PostTurn_TurnLessThanOne_Returns400()
     {
@@ -178,6 +190,7 @@ public sealed class RouterRequestRoutingTests
         payload.Error.Should().Contain("Turn must be >= 1");
     }
 
+    // Verifies that turn requests reject blank player input.
     [Fact]
     public async Task Router_PostTurn_EmptyPlayerInput_Returns400()
     {

@@ -8,6 +8,7 @@ namespace MorpheusEngine.Tests.Integration.IntentExtractor;
 [Trait("Category", "Integration")]
 public sealed class IntentExtractorEndpointTests
 {
+    // Verifies that valid input returns a structured intent and proxies the LLM request.
     [Fact]
     public async Task IntentExtractor_PostIntent_ValidPlayerInput_ReturnsStructuredIntentResponse()
     {
@@ -48,6 +49,7 @@ public sealed class IntentExtractorEndpointTests
         proxyDocument.RootElement.GetProperty("body").GetProperty("prompt").GetString().Should().Contain("inspect the airlock");
     }
 
+    // Verifies that the intent endpoint rejects requests before initialization.
     [Fact]
     public async Task IntentExtractor_PostIntent_BeforeBind_ReturnsError()
     {
@@ -71,6 +73,7 @@ public sealed class IntentExtractorEndpointTests
         payload.Error.Should().Contain("No bound run");
     }
 
+    // Verifies that unparseable LLM output returns the fallback parse error.
     [Fact]
     public async Task IntentExtractor_PostIntent_UnparseableLlmResponse_ReturnsFallbackError()
     {
@@ -98,6 +101,7 @@ public sealed class IntentExtractorEndpointTests
         payload.Details.Should().Contain("not valid intent output");
     }
 
+    // Verifies that initialization binds the run and reports a healthy state.
     [Fact]
     public async Task IntentExtractor_PostInitialize_BindsRunSuccessfully()
     {

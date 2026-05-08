@@ -6,6 +6,7 @@ namespace MorpheusEngine.Tests.Unit.SessionStore;
 [Trait("Category", "Unit")]
 public sealed class RunPersistenceHelperTests
 {
+    // Verifies that cosine similarity returns one for identical vectors.
     [Fact]
     public void RunPersistence_CosineSimilarity_IdenticalVectors_ReturnsOne()
     {
@@ -14,6 +15,7 @@ public sealed class RunPersistenceHelperTests
         result.Should().BeApproximately(1.0, 1e-9);
     }
 
+    // Verifies that cosine similarity returns zero for orthogonal vectors.
     [Fact]
     public void RunPersistence_CosineSimilarity_OrthogonalVectors_ReturnsZero()
     {
@@ -22,6 +24,7 @@ public sealed class RunPersistenceHelperTests
         result.Should().BeApproximately(0.0, 1e-9);
     }
 
+    // Verifies that cosine similarity returns negative one for opposite vectors.
     [Fact]
     public void RunPersistence_CosineSimilarity_OppositeVectors_ReturnsNegativeOne()
     {
@@ -30,6 +33,7 @@ public sealed class RunPersistenceHelperTests
         result.Should().BeApproximately(-1.0, 1e-9);
     }
 
+    // Verifies that cosine similarity rejects vectors with mismatched dimensions.
     [Fact]
     public void RunPersistence_CosineSimilarity_MismatchedDimensions_ThrowsInvalidOperationException()
     {
@@ -39,6 +43,7 @@ public sealed class RunPersistenceHelperTests
             .WithMessage("*matching dimensions*");
     }
 
+    // Verifies that cosine similarity rejects empty vectors.
     [Fact]
     public void RunPersistence_CosineSimilarity_EmptyVectors_ThrowsInvalidOperationException()
     {
@@ -48,6 +53,7 @@ public sealed class RunPersistenceHelperTests
             .WithMessage("*non-empty vectors*");
     }
 
+    // Verifies that cosine similarity returns zero when a vector has zero magnitude.
     [Fact]
     public void RunPersistence_CosineSimilarity_ZeroMagnitudeVector_ReturnsZero()
     {
@@ -56,6 +62,7 @@ public sealed class RunPersistenceHelperTests
         result.Should().Be(0.0);
     }
 
+    // Verifies that valid JSON is wrapped as a director response envelope.
     [Fact]
     public void RunPersistence_BuildViewStateEnvelope_ValidJson_WrapsDirectorResponse()
     {
@@ -67,6 +74,7 @@ public sealed class RunPersistenceHelperTests
         directorResponse.GetProperty("text").GetString().Should().Be("The door creaks open.");
     }
 
+    // Verifies that invalid JSON is wrapped as raw director text.
     [Fact]
     public void RunPersistence_BuildViewStateEnvelope_InvalidJson_WrapsDirectorRawText()
     {
@@ -76,6 +84,7 @@ public sealed class RunPersistenceHelperTests
         document.RootElement.GetProperty("directorRawText").GetString().Should().Be("non-json response text");
     }
 
+    // Verifies that the module trace payload contains the expected JSON fields.
     [Fact]
     public void RunPersistence_BuildModuleTracePayload_ProducesExpectedJsonStructure()
     {
@@ -89,6 +98,7 @@ public sealed class RunPersistenceHelperTests
         document.RootElement.GetProperty("playerInputEcho").GetString().Should().Be("look around");
     }
 
+    // Verifies that the FTS query sanitizes special characters and joins terms with OR.
     [Fact]
     public void RunPersistence_BuildFtsQuery_SanitizesSpecialCharactersAndJoinsTermsWithOr()
     {
@@ -97,6 +107,7 @@ public sealed class RunPersistenceHelperTests
         result.Should().Be("\"ancient\" OR \"ruins\" OR \"templedoor\"");
     }
 
+    // Verifies that whitespace-only input produces the empty-query fallback.
     [Fact]
     public void RunPersistence_BuildFtsQuery_WhitespaceOnlyInput_ReturnsEmptyQueryFallback()
     {
@@ -105,6 +116,7 @@ public sealed class RunPersistenceHelperTests
         result.Should().Be("\"\"");
     }
 
+    // Verifies that stable archival IDs are deterministic for the same inputs.
     [Fact]
     public void RunPersistence_CreateStableArchivalId_SameInputs_IsDeterministic()
     {
@@ -114,6 +126,7 @@ public sealed class RunPersistenceHelperTests
         first.Should().Be(second);
     }
 
+    // Verifies that different archival inputs produce different stable IDs.
     [Fact]
     public void RunPersistence_CreateStableArchivalId_DifferentInputs_ProduceDifferentIds()
     {
@@ -123,6 +136,7 @@ public sealed class RunPersistenceHelperTests
         first.Should().NotBe(second);
     }
 
+    // Verifies that matching payload event types return true.
     [Fact]
     public void RunPersistence_PayloadMatchesEventType_MatchingEventType_ReturnsTrue()
     {
@@ -131,6 +145,7 @@ public sealed class RunPersistenceHelperTests
         result.Should().BeTrue();
     }
 
+    // Verifies that null or empty event type filters match any payload.
     [Fact]
     public void RunPersistence_PayloadMatchesEventType_NullOrEmptyEventType_MatchesAnything()
     {
@@ -139,6 +154,7 @@ public sealed class RunPersistenceHelperTests
         RunPersistence.PayloadMatchesEventType("""{"eventType":"memory_context_budget"}""", "   ").Should().BeTrue();
     }
 
+    // Verifies that malformed payload JSON does not match an event type.
     [Fact]
     public void RunPersistence_PayloadMatchesEventType_MalformedJson_ReturnsFalse()
     {
@@ -147,6 +163,7 @@ public sealed class RunPersistenceHelperTests
         result.Should().BeFalse();
     }
 
+    // Verifies that a valid archival passage passes validation.
     [Fact]
     public void RunPersistence_ValidateArchivalPassage_ValidPassage_DoesNotThrow()
     {
@@ -155,6 +172,7 @@ public sealed class RunPersistenceHelperTests
         act.Should().NotThrow();
     }
 
+    // Verifies that invalid archival passage fields throw validation errors.
     [Fact]
     public void RunPersistence_ValidateArchivalPassage_InvalidFields_Throw()
     {

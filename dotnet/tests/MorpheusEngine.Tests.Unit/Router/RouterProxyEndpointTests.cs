@@ -13,6 +13,7 @@ namespace MorpheusEngine.Tests.Unit.Router;
 [Trait("Category", "Unit")]
 public sealed class RouterProxyEndpointTests
 {
+    // Verifies that allowlisted proxy requests are forwarded and return the downstream response.
     [Fact]
     public async Task Router_PostProxy_ValidAllowlistedPair_ForwardsAndReturnsResponse()
     {
@@ -60,6 +61,7 @@ public sealed class RouterProxyEndpointTests
         forwardedDocument.RootElement.GetProperty("playerInput").GetString().Should().Be("look around");
     }
 
+    // Verifies that proxy requests reject target paths outside the allowlist.
     [Fact]
     public async Task Router_PostProxy_TargetPathNotAllowlisted_Returns403()
     {
@@ -86,6 +88,7 @@ public sealed class RouterProxyEndpointTests
         payload.Error.Should().Contain("not allowed");
     }
 
+    // Verifies that proxy requests reject unknown target modules.
     [Fact]
     public async Task Router_PostProxy_UnknownTargetModule_Returns400()
     {
@@ -112,6 +115,7 @@ public sealed class RouterProxyEndpointTests
         payload.Error.Should().Contain("Unknown target module");
     }
 
+    // Verifies that proxy requests require a non-empty source module.
     [Fact]
     public async Task Router_PostProxy_EmptySourceModule_Returns400()
     {
@@ -138,6 +142,7 @@ public sealed class RouterProxyEndpointTests
         payload.Error.Should().Contain("sourceModule");
     }
 
+    // Verifies that proxy requests reject unsupported HTTP methods.
     [Fact]
     public async Task Router_PostProxy_UnsupportedMethod_Returns400()
     {
@@ -161,6 +166,7 @@ public sealed class RouterProxyEndpointTests
         payload.Error.Should().Contain("Unsupported proxy method");
     }
 
+    // Verifies that non-JSON downstream responses surface as router errors.
     [Fact]
     public async Task Router_PostProxy_DownstreamNonJsonContentType_Returns500()
     {
@@ -198,6 +204,7 @@ public sealed class RouterProxyEndpointTests
         payload.Details.Should().Contain("Content-Type 'application/json'");
     }
 
+    // Verifies that unreachable downstream modules return a bad gateway error.
     [Fact]
     public async Task Router_PostProxy_DownstreamUnreachable_Returns502()
     {

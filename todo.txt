@@ -1,8 +1,3 @@
-- Engine init failure isn't displayed by UI.
-- No ollama monitor output.
-
-- Improve logs. Time stamp. Ordering. filter console by module
-
 - UI: once engine is initialized, display "ready!"
 
 - Make intent extractor actions data driven instead of hardcoded.

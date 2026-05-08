@@ -7,6 +7,7 @@ namespace MorpheusEngine.Tests.Unit.Router;
 public sealed class RouterHelpersTests
 {
     [Fact]
+    // Verifies that short strings are returned unchanged by log truncation.
     public void Router_TruncateForLog_ShortString_PassesThrough()
     {
         var text = "short text";
@@ -17,6 +18,7 @@ public sealed class RouterHelpersTests
     }
 
     [Fact]
+    // Verifies that long strings are truncated and suffixed with an ellipsis for logs.
     public void Router_TruncateForLog_LongString_TruncatesAndAppendsEllipsis()
     {
         var text = new string('a', 200);
@@ -27,6 +29,7 @@ public sealed class RouterHelpersTests
     }
 
     [Fact]
+    // Verifies that middle truncation preserves the head and tail around an ellipsis.
     public void Router_TruncateMiddle_LongText_KeepsHeadAndTailWithMiddleEllipsis()
     {
         const string text = "abcdefghijklmnopqrstuvwxyz";
@@ -37,6 +40,7 @@ public sealed class RouterHelpersTests
     }
 
     [Fact]
+    // Verifies that short strings are returned unchanged by middle truncation.
     public void Router_TruncateMiddle_ShortText_PassesThrough()
     {
         const string text = "short text";
@@ -47,6 +51,7 @@ public sealed class RouterHelpersTests
     }
 
     [Fact]
+    // Verifies that only the session_store POST /persist_turn step is recognized as a persist-turn step.
     public void Router_IsPersistTurnStep_ReturnsTrueOnlyForSessionStorePostPersistTurn()
     {
         var persistStep = new EngineTurnPipelineStepInfo(

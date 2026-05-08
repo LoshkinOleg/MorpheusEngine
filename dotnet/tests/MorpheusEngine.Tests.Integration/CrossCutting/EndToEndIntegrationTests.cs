@@ -10,6 +10,7 @@ namespace MorpheusEngine.Tests.Integration.CrossCutting;
 [Collection("EngineProcessState")]
 public sealed class EndToEndIntegrationTests
 {
+    // Verifies that a full router turn persists the expected turn artifacts.
     [Fact]
     public async Task RouterTurn_FullPipeline_PersistsExpectedTurnArtifacts()
     {
@@ -49,6 +50,7 @@ public sealed class EndToEndIntegrationTests
         tracePayload.RootElement.GetProperty("playerInputEcho").GetString().Should().Be("look around");
     }
 
+    // Verifies that a core-memory edit persists and appears in the next turn context.
     [Fact]
     public async Task MemoryDirector_CoreMemoryEdit_PersistsAndAppearsInNextTurnContext()
     {
@@ -82,6 +84,7 @@ public sealed class EndToEndIntegrationTests
         CombineContents(capturedRequests[2].Messages).Should().Contain("Carries a humming brass key.");
     }
 
+    // Verifies that an inserted archival passage is found through the real embedding flow.
     [Fact]
     public async Task ArchivalInsert_ThenSearch_FindsInsertedPassageThroughRealEmbeddingFlow()
     {
@@ -120,6 +123,7 @@ public sealed class EndToEndIntegrationTests
         CombineContents(capturedRequests[3].Messages).Should().Contain("moon gate opens with a humming brass key");
     }
 
+    // Verifies that recall compaction replaces older messages and surfaces a summary later.
     [Fact]
     public async Task RecallCompaction_ReplacesOlderMessagesAndSummaryAppearsInLaterContext()
     {
@@ -148,6 +152,7 @@ public sealed class EndToEndIntegrationTests
         CombineContents(capturedRequests[^1].Messages).Should().Contain("Summary of turns");
     }
 
+    // Verifies that default lore is seeded into archival memory and can be searched.
     [Fact]
     public async Task DefaultLoreCsv_IsSeededIntoArchivalStore_AndSearchReturnsRelevantEntry()
     {
@@ -171,6 +176,7 @@ public sealed class EndToEndIntegrationTests
         searchResponse.Results[0].Content.Should().Contain("Ancient Ruins");
     }
 
+    // Verifies that swapping the generic LLM alias reroutes turns to the configured provider.
     [Fact]
     public async Task GenericLlmAliasSwap_ReroutesTurnTrafficToConfiguredConcreteModule()
     {
@@ -201,6 +207,7 @@ public sealed class EndToEndIntegrationTests
         alternateHarness.AlternateProvider.ChatRequests.Should().ContainSingle();
     }
 
+    // Verifies that later turns do not reach the LLM stage before earlier turns finish.
     [Fact]
     public async Task ConcurrentTurns_DoNotReachTheLlmStageUntilTheEarlierTurnFinishes()
     {

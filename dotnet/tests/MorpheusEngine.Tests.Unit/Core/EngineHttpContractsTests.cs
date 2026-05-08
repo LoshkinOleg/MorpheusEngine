@@ -10,6 +10,7 @@ namespace MorpheusEngine.Tests.Unit.Core;
 public sealed class EngineHttpContractsTests
 {
     [Fact]
+    // Verifies that known contract example templates exist and contain valid JSON where provided.
     public void EngineContractExamples_KnownTemplateIds_ReturnNonNullPairsWithValidJson()
     {
         foreach (var templateId in KnownTemplateIds)
@@ -31,6 +32,7 @@ public sealed class EngineHttpContractsTests
     }
 
     [Fact]
+    // Verifies that all HTTP contract DTO samples round-trip through JSON serialization without payload drift.
     public void EngineHttpContracts_AllDtoRecords_RoundTripThroughJsonSerializer()
     {
         foreach (var sample in CreateRoundTripSamples())
@@ -47,6 +49,7 @@ public sealed class EngineHttpContractsTests
     }
 
     [Fact]
+    // Verifies that public wire properties declare camelCase JSON property names.
     public void EngineHttpContracts_PublicWireProperties_UseCamelCaseJsonPropertyNames()
     {
         foreach (var contractType in ContractTypes)

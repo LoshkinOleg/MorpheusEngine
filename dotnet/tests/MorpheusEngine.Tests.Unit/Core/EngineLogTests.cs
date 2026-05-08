@@ -13,6 +13,7 @@ public sealed class EngineLogTests : IDisposable
     private readonly TextWriter _originalErr = Console.Error;
 
     [Fact]
+    // Verifies that allowed-source initialization prefixes later console output.
     public void EngineLog_Initialize_AllowedSource_PrefixesSubsequentConsoleWrites()
     {
         using var stdout = new StringWriter(new StringBuilder());
@@ -26,6 +27,7 @@ public sealed class EngineLogTests : IDisposable
     }
 
     [Fact]
+    // Verifies that initializing with a disallowed source throws an invalid-operation error.
     public void EngineLog_Initialize_DisallowedSource_ThrowsInvalidOperationException()
     {
         var act = () => EngineLog.Initialize("Router");
@@ -35,6 +37,7 @@ public sealed class EngineLogTests : IDisposable
     }
 
     [Fact]
+    // Verifies that repeated initialization with the same source is idempotent.
     public void EngineLog_Initialize_CalledTwice_IsIdempotent()
     {
         using var stdout = new StringWriter(new StringBuilder());
@@ -54,6 +57,7 @@ public sealed class EngineLogTests : IDisposable
     }
 
     [Fact]
+    // Verifies that hosted child logging cannot run before initialization.
     public void EngineLog_WriteHostedChildLine_BeforeInitialize_ThrowsInvalidOperationException()
     {
         var act = () => EngineLog.WriteHostedChildLine("child_module", isError: false, "hello");
@@ -63,6 +67,7 @@ public sealed class EngineLogTests : IDisposable
     }
 
     [Fact]
+    // Verifies that multiline string writes prefix each emitted line exactly once.
     public void EngineLog_PrefixingTextWriter_MultilineWriteString_PrefixesEachLineExactlyOnce()
     {
         using var stdout = new StringWriter(new StringBuilder());
@@ -87,6 +92,7 @@ public sealed class EngineLogTests : IDisposable
     }
 
     [Fact]
+    // Verifies that character-by-character writes across line breaks prefix each line exactly once.
     public void EngineLog_PrefixingTextWriter_CharByCharAcrossLineBoundaries_PrefixesEachLineExactlyOnce()
     {
         using var stdout = new StringWriter(new StringBuilder());
@@ -114,6 +120,7 @@ public sealed class EngineLogTests : IDisposable
     }
 
     [Fact]
+    // Verifies that building line prefixes across threads yields monotonically increasing sequence IDs.
     public void EngineLog_BuildLinePrefix_AcrossThreads_ProducesMonotonicallyIncreasingSequenceIds()
     {
         const int iterations = 200;

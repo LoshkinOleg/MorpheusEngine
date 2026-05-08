@@ -6,6 +6,7 @@ namespace MorpheusEngine.Tests.Unit.Core;
 public sealed class CsvRfc4180Tests
 {
     [Fact]
+    // Verifies that splitting an empty CSV string returns no records.
     public void CsvRfc4180_SplitRecords_EmptyString_ReturnsEmptyList()
     {
         var records = CsvRfc4180.SplitRecords(string.Empty);
@@ -14,6 +15,7 @@ public sealed class CsvRfc4180Tests
     }
 
     [Fact]
+    // Verifies that a single CSV row without a newline stays as one record.
     public void CsvRfc4180_SplitRecords_SingleRecordWithoutNewline_ReturnsOneRecord()
     {
         var records = CsvRfc4180.SplitRecords("alpha,beta");
@@ -22,6 +24,7 @@ public sealed class CsvRfc4180Tests
     }
 
     [Fact]
+    // Verifies that CRLF line endings split CSV input into separate records.
     public void CsvRfc4180_SplitRecords_CrlfLineEndings_SplitsRecords()
     {
         var records = CsvRfc4180.SplitRecords("alpha,beta\r\ngamma,delta\r\nepsilon,zeta");
@@ -33,6 +36,7 @@ public sealed class CsvRfc4180Tests
     }
 
     [Fact]
+    // Verifies that carriage-return-only line endings split CSV input into separate records.
     public void CsvRfc4180_SplitRecords_CarriageReturnOnly_SplitsRecords()
     {
         var records = CsvRfc4180.SplitRecords("alpha,beta\rgamma,delta\repsilon,zeta");
@@ -44,6 +48,7 @@ public sealed class CsvRfc4180Tests
     }
 
     [Fact]
+    // Verifies that a newline inside a quoted field does not split the record.
     public void CsvRfc4180_SplitRecords_NewlineInsideQuotedField_DoesNotSplitRecord()
     {
         var records = CsvRfc4180.SplitRecords("\"alpha\nbeta\",gamma\ndelta,epsilon");
@@ -54,6 +59,7 @@ public sealed class CsvRfc4180Tests
     }
 
     [Fact]
+    // Verifies that doubled quotes inside a quoted field do not break record splitting.
     public void CsvRfc4180_SplitRecords_DoubledQuotesInsideQuotedField_DoesNotBreakSplitting()
     {
         var records = CsvRfc4180.SplitRecords("\"alpha\"\"beta\",gamma\ndelta,epsilon");
@@ -64,6 +70,7 @@ public sealed class CsvRfc4180Tests
     }
 
     [Fact]
+    // Verifies that an unclosed quoted field throws an invalid-operation error.
     public void CsvRfc4180_SplitRecords_UnclosedQuote_ThrowsInvalidOperationException()
     {
         var act = () => CsvRfc4180.SplitRecords("\"alpha,beta");
@@ -73,6 +80,7 @@ public sealed class CsvRfc4180Tests
     }
 
     [Fact]
+    // Verifies that parsing a simple CSV row returns each comma-separated field.
     public void CsvRfc4180_ParseRecordFields_SimpleCommaSeparatedValues_ReturnsFields()
     {
         var fields = CsvRfc4180.ParseRecordFields("alpha,beta,gamma");
@@ -81,6 +89,7 @@ public sealed class CsvRfc4180Tests
     }
 
     [Fact]
+    // Verifies that quoted-field whitespace is preserved while unquoted-field whitespace is trimmed.
     public void CsvRfc4180_ParseRecordFields_QuotedFieldPreservesWhitespaceWhileUnquotedFieldIsTrimmed()
     {
         var fields = CsvRfc4180.ParseRecordFields("\"  alpha  \",  beta  ");
@@ -89,6 +98,7 @@ public sealed class CsvRfc4180Tests
     }
 
     [Fact]
+    // Verifies that an empty field between commas is preserved during parsing.
     public void CsvRfc4180_ParseRecordFields_EmptyFieldBetweenCommas_IsPreserved()
     {
         var fields = CsvRfc4180.ParseRecordFields("alpha,,gamma");
@@ -97,6 +107,7 @@ public sealed class CsvRfc4180Tests
     }
 
     [Fact]
+    // Verifies that a comma inside a quoted field stays within the same parsed field.
     public void CsvRfc4180_ParseRecordFields_CommaInsideQuotedField_RemainsSingleField()
     {
         var fields = CsvRfc4180.ParseRecordFields("\"alpha,beta\",gamma");
@@ -105,6 +116,7 @@ public sealed class CsvRfc4180Tests
     }
 
     [Fact]
+    // Verifies that doubled quotes inside a quoted field collapse to a single quote.
     public void CsvRfc4180_ParseRecordFields_DoubledQuotesInsideQuotedField_CollapseToOneQuote()
     {
         var fields = CsvRfc4180.ParseRecordFields("\"alpha\"\"beta\",gamma");
@@ -113,6 +125,7 @@ public sealed class CsvRfc4180Tests
     }
 
     [Fact]
+    // Verifies that the checked-in lore CSV round-trips to the expected row and column counts.
     public void CsvRfc4180_Roundtrip_RealLoreCsv_YieldsExpectedRowAndColumnCount()
     {
         // This intentionally reads the checked-in lore CSV because the test plan calls for one real-data roundtrip case.

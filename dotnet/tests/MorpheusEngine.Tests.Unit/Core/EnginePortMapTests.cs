@@ -6,6 +6,7 @@ namespace MorpheusEngine.Tests.Unit.Core;
 public sealed class EnginePortMapTests
 {
     [Fact]
+    // Verifies that a known module key returns its configured listen port.
     public void EnginePortMap_GetRequiredPort_KnownKey_ReturnsConfiguredPort()
     {
         var portMap = CreatePortMap();
@@ -14,6 +15,7 @@ public sealed class EnginePortMapTests
     }
 
     [Fact]
+    // Verifies that requesting an unknown module key throws a configuration error.
     public void EnginePortMap_GetRequiredPort_UnknownKey_ThrowsEngineConfigurationException()
     {
         var portMap = CreatePortMap();
@@ -24,6 +26,7 @@ public sealed class EnginePortMapTests
     }
 
     [Fact]
+    // Verifies that listen-port presence checks return the expected boolean for known and unknown modules.
     public void EnginePortMap_HasListenPortForModule_ReturnsExpectedBoolean()
     {
         var portMap = CreatePortMap();

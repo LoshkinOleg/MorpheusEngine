@@ -8,6 +8,7 @@ namespace MorpheusEngine.Tests.Integration.Embeddings;
 [Trait("Category", "Integration")]
 public sealed class EmbeddingsOllamaIntegrationTests
 {
+    // Verifies that embedding valid text returns a vector payload with expected metadata.
     [Fact]
     public async Task EmbeddingsOllama_PostEmbed_ValidText_ReturnsVectorWithExpectedDimensions()
     {
@@ -45,6 +46,7 @@ public sealed class EmbeddingsOllamaIntegrationTests
         requestDocument.RootElement.GetProperty("options").GetProperty("num_ctx").GetInt32().Should().Be(2048);
     }
 
+    // Verifies that embedding multiple texts returns one vector per input.
     [Fact]
     public async Task EmbeddingsOllama_PostEmbed_MultipleTexts_ReturnsOneVectorPerText()
     {
@@ -80,6 +82,7 @@ public sealed class EmbeddingsOllamaIntegrationTests
             .Should().Equal("first clue", "second clue");
     }
 
+    // Verifies that token counting returns the model prompt evaluation count.
     [Fact]
     public async Task EmbeddingsOllama_PostTokenCount_ReturnsPromptEvalCount()
     {
@@ -114,6 +117,7 @@ public sealed class EmbeddingsOllamaIntegrationTests
         requestDocument.RootElement.GetProperty("options").GetProperty("num_predict").GetInt32().Should().Be(0);
     }
 
+    // Verifies that health transitions from startup to awaiting initialization when Ollama becomes ready.
     [Fact]
     public async Task EmbeddingsOllama_Health_ReportsStartupThenReadyStates()
     {
@@ -137,6 +141,7 @@ public sealed class EmbeddingsOllamaIntegrationTests
         await WaitForHealthStatusAsync(harness, "awaiting_initialize");
     }
 
+    // Verifies that embedding requests fail before the module is initialized.
     [Fact]
     public async Task EmbeddingsOllama_PostEmbed_BeforeBind_ReturnsConflict()
     {

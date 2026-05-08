@@ -7,6 +7,7 @@ namespace MorpheusEngine.Tests.Integration.MemoryDirector;
 [Trait("Category", "Integration")]
 public sealed class MemoryDirectorAgentLoopTests
 {
+    // Verifies that a first-step send_message returns player-facing text.
     [Fact]
     public async Task MemoryDirector_PostMessage_FirstStepSendMessage_ReturnsPlayerFacingText()
     {
@@ -38,6 +39,7 @@ public sealed class MemoryDirectorAgentLoopTests
             && message.Content.Contains("\"tool\":\"send_message\"", StringComparison.Ordinal));
     }
 
+    // Verifies that a memory append is reflected in the next loop step.
     [Fact]
     public async Task MemoryDirector_PostMessage_CoreMemoryAppendThenSendMessage_UsesUpdatedBlockOnNextStep()
     {
@@ -77,6 +79,7 @@ public sealed class MemoryDirectorAgentLoopTests
             && message.ToolName == "core_memory_append");
     }
 
+    // Verifies that exceeding max steps returns a synthesized fallback message.
     [Fact]
     public async Task MemoryDirector_PostMessage_WhenMaxStepsExceeded_ReturnsSynthesizedFallback()
     {
@@ -109,6 +112,7 @@ public sealed class MemoryDirectorAgentLoopTests
             && message.Content == "The scene settles for a moment. Still not ready; continue inspecting.");
     }
 
+    // Verifies that an unknown tool is persisted as an error and the loop recovers.
     [Fact]
     public async Task MemoryDirector_PostMessage_UnknownTool_PersistsErrorAndContinuesLoop()
     {
@@ -141,6 +145,7 @@ public sealed class MemoryDirectorAgentLoopTests
         harness.ProxyHandler.ChatRequests.Should().HaveCount(2);
     }
 
+    // Verifies that unparseable JSON is persisted as a schema violation and the loop recovers.
     [Fact]
     public async Task MemoryDirector_PostMessage_UnparseableJson_PersistsSchemaViolationAndRecovers()
     {
@@ -170,6 +175,7 @@ public sealed class MemoryDirectorAgentLoopTests
         harness.ProxyHandler.ChatRequests.Should().HaveCount(2);
     }
 
+    // Verifies that initialization loads the agent prompt and seeds core memory blocks.
     [Fact]
     public async Task MemoryDirector_PostInitialize_LoadsAgentPromptAndSeedsCoreMemoryBlocks()
     {
@@ -203,6 +209,7 @@ public sealed class MemoryDirectorAgentLoopTests
         harness.ProxyHandler.ChatRequests[0].Messages[0].Content.Should().Contain("You are the memory-managed test game master.");
     }
 
+    // Verifies that posting a message before bind returns a bad request error.
     [Fact]
     public async Task MemoryDirector_PostMessage_BeforeBind_ReturnsBadRequest()
     {
@@ -217,6 +224,7 @@ public sealed class MemoryDirectorAgentLoopTests
         payload.Error.Should().Contain("MemoryDirector run is not bound");
     }
 
+    // Verifies that recall compaction runs when message history exceeds the threshold.
     [Fact]
     public async Task MemoryDirector_PostMessage_WhenHistoryExceedsThreshold_TriggersRecallCompaction()
     {

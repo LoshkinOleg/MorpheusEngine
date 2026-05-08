@@ -7,6 +7,7 @@ namespace MorpheusEngine.Tests.Unit.MemoryDirector;
 [Trait("Category", "Unit")]
 public sealed class MemoryDirectorToolExecutionTests
 {
+    // Verifies that send_message returns a terminal message payload.
     [Fact]
     public void MemoryDirector_ExecuteSendMessage_ReturnsTerminalMessage()
     {
@@ -18,6 +19,7 @@ public sealed class MemoryDirectorToolExecutionTests
         document.RootElement.GetProperty("sent").GetBoolean().Should().BeTrue();
     }
 
+    // Verifies that appending to a non-empty block inserts a newline separator.
     [Fact]
     public void MemoryDirector_ExecuteCoreMemoryAppend_NonEmptyBlock_AppendsWithNewlineSeparator()
     {
@@ -36,6 +38,7 @@ public sealed class MemoryDirectorToolExecutionTests
         result.BlockUpdates[0].Value.Should().Be("Knows the access code." + Environment.NewLine + "Carries a lantern.");
     }
 
+    // Verifies that appending to an empty block sets the content directly.
     [Fact]
     public void MemoryDirector_ExecuteCoreMemoryAppend_EmptyBlock_SetsContentDirectly()
     {
@@ -54,6 +57,7 @@ public sealed class MemoryDirectorToolExecutionTests
         result.BlockUpdates[0].Value.Should().Be("Carries a lantern.");
     }
 
+    // Verifies that replacing a matching old value updates the block content.
     [Fact]
     public void MemoryDirector_ExecuteCoreMemoryReplace_ReplacesOldValueWithNewValue()
     {
@@ -72,6 +76,7 @@ public sealed class MemoryDirectorToolExecutionTests
         result.BlockUpdates[0].Value.Should().Be("The bronze door is open.");
     }
 
+    // Verifies that replace throws when the requested old value is missing.
     [Fact]
     public void MemoryDirector_ExecuteCoreMemoryReplace_MissingOldValue_ThrowsInvalidOperationException()
     {
@@ -89,6 +94,7 @@ public sealed class MemoryDirectorToolExecutionTests
             .WithMessage("Memory block 'current_scene' does not contain the requested oldValue.");
     }
 
+    // Verifies that replace throws when the requested old value is ambiguous.
     [Fact]
     public void MemoryDirector_ExecuteCoreMemoryReplace_DuplicateOldValue_ThrowsInvalidOperationException()
     {
@@ -106,6 +112,7 @@ public sealed class MemoryDirectorToolExecutionTests
             .WithMessage("Memory block 'current_scene' contains oldValue more than once; replacement is ambiguous.");
     }
 
+    // Verifies that set overwrites the entire memory block value.
     [Fact]
     public void MemoryDirector_ExecuteCoreMemorySet_OverwritesEntireBlockValue()
     {
@@ -124,6 +131,7 @@ public sealed class MemoryDirectorToolExecutionTests
         result.BlockUpdates[0].Value.Should().Be("Escape before sunrise.");
     }
 
+    // Verifies that block updates reject writes to read-only blocks.
     [Fact]
     public void MemoryDirector_BuildBlockUpdateResult_ReadOnlyBlock_ThrowsInvalidOperationException()
     {
@@ -136,6 +144,7 @@ public sealed class MemoryDirectorToolExecutionTests
             .WithMessage("Memory block 'persona' is read-only.");
     }
 
+    // Verifies that block updates reject values that exceed the character limit.
     [Fact]
     public void MemoryDirector_BuildBlockUpdateResult_ValueExceedsCharLimit_ThrowsInvalidOperationException()
     {
@@ -148,6 +157,7 @@ public sealed class MemoryDirectorToolExecutionTests
             .WithMessage("Memory block 'player' value length 22 exceeds charLimit 10.");
     }
 
+    // Verifies that the current snapshot tool returns the latest snapshot payload.
     [Fact]
     public void MemoryDirector_ExecuteGetCurrentSnapshot_ReturnsSerializedLatestSnapshot()
     {

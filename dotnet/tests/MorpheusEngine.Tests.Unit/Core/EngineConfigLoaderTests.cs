@@ -19,6 +19,7 @@ public sealed class EngineConfigLoaderTests : IDisposable
     }
 
     [Fact]
+    // Verifies that a valid engine config loads with the expected modules, aliases, and pipelines.
     public void EngineConfigLoader_ValidConfig_LoadsSuccessfully()
     {
         var configuration = LoadConfiguration(TestPayloads.BuildMinimalEngineConfigJson());
@@ -34,6 +35,7 @@ public sealed class EngineConfigLoaderTests : IDisposable
     }
 
     [Fact]
+    // Verifies that loading without an engine config file throws a configuration error.
     public void EngineConfigLoader_MissingEngineConfig_ThrowsEngineConfigurationException()
     {
         using var tempRepository = new TempRepository(writeEngineConfig: false);
@@ -46,6 +48,7 @@ public sealed class EngineConfigLoaderTests : IDisposable
     }
 
     [Fact]
+    // Verifies that malformed engine config JSON is wrapped in a configuration exception.
     public void EngineConfigLoader_MalformedJson_ThrowsEngineConfigurationExceptionWrappingJsonException()
     {
         var act = () => LoadConfiguration("{ not valid json }");
@@ -55,6 +58,7 @@ public sealed class EngineConfigLoaderTests : IDisposable
     }
 
     [Fact]
+    // Verifies that an empty modules array is rejected.
     public void EngineConfigLoader_EmptyModulesArray_ThrowsEngineConfigurationException()
     {
         var config = CreateMinimalConfigNode();
@@ -67,6 +71,7 @@ public sealed class EngineConfigLoaderTests : IDisposable
     }
 
     [Fact]
+    // Verifies that missing module aliases are rejected.
     public void EngineConfigLoader_MissingModuleAliases_ThrowsEngineConfigurationException()
     {
         var config = CreateMinimalConfigNode();
@@ -79,6 +84,7 @@ public sealed class EngineConfigLoaderTests : IDisposable
     }
 
     [Fact]
+    // Verifies that the generic LLM provider alias is required.
     public void EngineConfigLoader_MissingGenericLlmProviderAlias_ThrowsEngineConfigurationException()
     {
         var config = CreateMinimalConfigNode();
@@ -91,6 +97,7 @@ public sealed class EngineConfigLoaderTests : IDisposable
     }
 
     [Fact]
+    // Verifies that the generic director alias is required.
     public void EngineConfigLoader_MissingGenericDirectorAlias_ThrowsEngineConfigurationException()
     {
         var config = CreateMinimalConfigNode();
@@ -103,6 +110,7 @@ public sealed class EngineConfigLoaderTests : IDisposable
     }
 
     [Fact]
+    // Verifies that the generic embeddings alias is required.
     public void EngineConfigLoader_MissingGenericEmbeddingsAlias_ThrowsEngineConfigurationException()
     {
         var config = CreateMinimalConfigNode();
@@ -115,6 +123,7 @@ public sealed class EngineConfigLoaderTests : IDisposable
     }
 
     [Fact]
+    // Verifies that duplicate port keys across modules are rejected.
     public void EngineConfigLoader_DuplicatePortKeyAcrossModules_ThrowsEngineConfigurationException()
     {
         var config = CreateMinimalConfigNode();
@@ -128,6 +137,7 @@ public sealed class EngineConfigLoaderTests : IDisposable
     }
 
     [Fact]
+    // Verifies that duplicate listen ports across modules are rejected.
     public void EngineConfigLoader_DuplicatePortAcrossModules_ThrowsEngineConfigurationException()
     {
         var config = CreateMinimalConfigNode();
@@ -141,6 +151,7 @@ public sealed class EngineConfigLoaderTests : IDisposable
     }
 
     [Fact]
+    // Verifies that a module missing its port key is rejected.
     public void EngineConfigLoader_ModuleWithoutPortKey_ThrowsEngineConfigurationException()
     {
         var config = CreateMinimalConfigNode();
@@ -154,6 +165,7 @@ public sealed class EngineConfigLoaderTests : IDisposable
     }
 
     [Fact]
+    // Verifies that a module missing its port is rejected.
     public void EngineConfigLoader_ModuleWithoutPort_ThrowsEngineConfigurationException()
     {
         var config = CreateMinimalConfigNode();
@@ -167,6 +179,7 @@ public sealed class EngineConfigLoaderTests : IDisposable
     }
 
     [Fact]
+    // Verifies that a module missing its launch command is rejected.
     public void EngineConfigLoader_ModuleWithoutLaunch_ThrowsEngineConfigurationException()
     {
         var config = CreateMinimalConfigNode();
@@ -180,24 +193,28 @@ public sealed class EngineConfigLoaderTests : IDisposable
     }
 
     [Fact]
+    // Verifies that normalizing an empty path returns the root slash.
     public void EngineConfiguration_NormalizePath_EmptyString_ReturnsSlash()
     {
         EngineConfiguration.NormalizePath(string.Empty).Should().Be("/");
     }
 
     [Fact]
+    // Verifies that normalizing a path adds a leading slash when missing.
     public void EngineConfiguration_NormalizePath_MissingLeadingSlash_ReturnsNormalizedPath()
     {
         EngineConfiguration.NormalizePath("health").Should().Be("/health");
     }
 
     [Fact]
+    // Verifies that normalizing an already rooted path leaves it unchanged.
     public void EngineConfiguration_NormalizePath_ExistingLeadingSlash_PassesThrough()
     {
         EngineConfiguration.NormalizePath("/health").Should().Be("/health");
     }
 
     [Fact]
+    // Verifies that resolving an alias returns its concrete module key.
     public void EngineConfiguration_ResolveProxyTargetModuleKey_Alias_ReturnsConcreteKey()
     {
         var configuration = LoadConfiguration(TestPayloads.BuildMinimalEngineConfigJson());
@@ -206,6 +223,7 @@ public sealed class EngineConfigLoaderTests : IDisposable
     }
 
     [Fact]
+    // Verifies that resolving a non-alias module key returns it unchanged.
     public void EngineConfiguration_ResolveProxyTargetModuleKey_NonAlias_ReturnsInput()
     {
         var configuration = LoadConfiguration(TestPayloads.BuildMinimalEngineConfigJson());
@@ -214,6 +232,7 @@ public sealed class EngineConfigLoaderTests : IDisposable
     }
 
     [Fact]
+    // Verifies that requesting an unknown listen port throws a configuration error.
     public void EngineConfiguration_GetRequiredListenPort_UnknownKey_ThrowsEngineConfigurationException()
     {
         var configuration = LoadConfiguration(TestPayloads.BuildMinimalEngineConfigJson());
@@ -224,6 +243,7 @@ public sealed class EngineConfigLoaderTests : IDisposable
     }
 
     [Fact]
+    // Verifies that looking up an unknown module returns null.
     public void EngineConfiguration_FindModule_UnknownKey_ReturnsNull()
     {
         var configuration = LoadConfiguration(TestPayloads.BuildMinimalEngineConfigJson());
@@ -232,6 +252,7 @@ public sealed class EngineConfigLoaderTests : IDisposable
     }
 
     [Fact]
+    // Verifies that requesting an unknown turn pipeline throws a configuration error.
     public void EngineConfiguration_GetRequiredTurnPipeline_UnknownId_ThrowsEngineConfigurationException()
     {
         var configuration = LoadConfiguration(TestPayloads.BuildMinimalEngineConfigJson());
@@ -242,6 +263,7 @@ public sealed class EngineConfigLoaderTests : IDisposable
     }
 
     [Fact]
+    // Verifies that a turn pipeline step cannot target an unknown module or alias.
     public void EngineConfigLoader_TurnPipelineReferencingUnknownModule_ThrowsEngineConfigurationException()
     {
         var config = CreateMinimalConfigNode();
@@ -254,6 +276,7 @@ public sealed class EngineConfigLoaderTests : IDisposable
     }
 
     [Fact]
+    // Verifies that response mapping source steps must reference an existing pipeline step.
     public void EngineConfigLoader_TurnPipelineResponseMappingReferencingUnknownStep_ThrowsEngineConfigurationException()
     {
         var config = CreateMinimalConfigNode();
@@ -266,6 +289,7 @@ public sealed class EngineConfigLoaderTests : IDisposable
     }
 
     [Fact]
+    // Verifies that repository root discovery finds the repo by locating engine_config.json.
     public void EngineConfigLoader_FindRepositoryRoot_FindsCurrentRepoRootByEngineConfigPresence()
     {
         var repositoryRoot = EngineConfigLoader.FindRepositoryRoot();
@@ -276,6 +300,7 @@ public sealed class EngineConfigLoaderTests : IDisposable
     }
 
     [Fact]
+    // Verifies that the active generic LLM provider must define Qwen-specific options.
     public void EngineConfigLoader_ActiveGenericLlmProviderWithoutQwenOptions_ThrowsEngineConfigurationException()
     {
         var config = CreateMinimalConfigNode();
@@ -290,6 +315,7 @@ public sealed class EngineConfigLoaderTests : IDisposable
     }
 
     [Fact]
+    // Verifies that the active generic LLM provider must define a default chat model.
     public void EngineConfigLoader_ActiveGenericLlmProviderWithoutDefaultChatModel_ThrowsEngineConfigurationException()
     {
         var config = CreateMinimalConfigNode();

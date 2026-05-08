@@ -15,6 +15,7 @@ public sealed class MorpheusEngineCoreIntegrationTests : IDisposable
 {
     private string? _originalCurrentDirectory;
 
+    // Verifies that startup spawns modules in load order and initializes them after readiness.
     [Fact]
     public async Task MorpheusEngine_StartupSequence_SpawnsModulesInLoadOrder_WaitsForReadiness_AndInitializes()
     {
@@ -43,6 +44,7 @@ public sealed class MorpheusEngineCoreIntegrationTests : IDisposable
         ]);
     }
 
+    // Verifies that a module exiting during bootstrap fails fast before the listen timeout.
     [Fact]
     public async Task MorpheusEngine_ModuleThatExitsDuringBootstrap_FailsFastBeforeListenTimeout()
     {
@@ -63,6 +65,7 @@ public sealed class MorpheusEngineCoreIntegrationTests : IDisposable
         await runTask.WaitAsync(TimeSpan.FromSeconds(10));
     }
 
+    // Verifies that initialization fails when a module reports initialize_failed on health checks.
     [Fact]
     public async Task MorpheusEngine_ModuleReportingInitializeFailedOnHealth_Throws()
     {
@@ -80,6 +83,7 @@ public sealed class MorpheusEngineCoreIntegrationTests : IDisposable
         await runTask.WaitAsync(TimeSpan.FromSeconds(10));
     }
 
+    // Verifies that shutdown notifies every module and force-kills stragglers.
     [Fact]
     public async Task MorpheusEngine_Shutdown_SendsShutdownToAllModules_AndForceKillsStragglers()
     {
@@ -104,6 +108,7 @@ public sealed class MorpheusEngineCoreIntegrationTests : IDisposable
         ProcessExists(stubbornPid).Should().BeFalse();
     }
 
+    // Verifies that the Windows job object prevents orphan child processes.
     [Fact]
     public async Task WindowsJobObject_OnWindows_PreventsOrphanProcesses()
     {

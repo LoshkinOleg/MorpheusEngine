@@ -7,6 +7,7 @@ namespace MorpheusEngine.Tests.Unit.IntentExtractor;
 [Trait("Category", "Unit")]
 public sealed class IntentExtractorParsingTests
 {
+    // Verifies that a clean JSON string is returned unchanged.
     [Fact]
     public void IntentExtractor_ExtractJsonObject_CleanJsonString_ReturnsJson()
     {
@@ -17,6 +18,7 @@ public sealed class IntentExtractorParsingTests
         result.Should().Be(raw);
     }
 
+    // Verifies that fenced JSON is extracted without Markdown fences.
     [Fact]
     public void IntentExtractor_ExtractJsonObject_FencedJson_StripsMarkdownFences()
     {
@@ -32,6 +34,7 @@ public sealed class IntentExtractorParsingTests
         result.Should().Be("""{"intent":"inspect","params":{"target":"door"}}""");
     }
 
+    // Verifies that JSON embedded in prose is extracted correctly.
     [Fact]
     public void IntentExtractor_ExtractJsonObject_ProseWrappedJson_ExtractsJsonObject()
     {
@@ -42,6 +45,7 @@ public sealed class IntentExtractorParsingTests
         result.Should().Be("""{"intent":"wait","params":{}}""");
     }
 
+    // Verifies that missing JSON content returns null.
     [Fact]
     public void IntentExtractor_ExtractJsonObject_NoJsonObject_ReturnsNull()
     {
@@ -50,6 +54,7 @@ public sealed class IntentExtractorParsingTests
         result.Should().BeNull();
     }
 
+    // Verifies that valid intent JSON parses and normalizes parameters.
     [Fact]
     public void IntentExtractor_TryParseIntentResult_ValidIntentAndParams_Succeeds()
     {
@@ -64,6 +69,7 @@ public sealed class IntentExtractorParsingTests
         extraction.Parameters.Should().ContainKey("count").WhoseValue.Should().Be("2");
     }
 
+    // Verifies that the unsupported parameters alias is rejected.
     [Fact]
     public void IntentExtractor_TryParseIntentResult_ParametersAlias_Fails()
     {
@@ -75,6 +81,7 @@ public sealed class IntentExtractorParsingTests
         extraction.Should().BeNull();
     }
 
+    // Verifies that parsing fails when the intent field is missing.
     [Fact]
     public void IntentExtractor_TryParseIntentResult_MissingIntent_Fails()
     {
@@ -86,6 +93,7 @@ public sealed class IntentExtractorParsingTests
         extraction.Should().BeNull();
     }
 
+    // Verifies that parsing fails when the intent field is blank.
     [Fact]
     public void IntentExtractor_TryParseIntentResult_EmptyIntent_Fails()
     {
@@ -97,6 +105,7 @@ public sealed class IntentExtractorParsingTests
         extraction.Should().BeNull();
     }
 
+    // Verifies that parsing fails when params is not a JSON object.
     [Fact]
     public void IntentExtractor_TryParseIntentResult_NonObjectParams_Fails()
     {
@@ -108,6 +117,7 @@ public sealed class IntentExtractorParsingTests
         extraction.Should().BeNull();
     }
 
+    // Verifies that known intent name variants normalize to canonical names.
     [Theory]
     [InlineData("INSPECT", "inspect")]
     [InlineData(" move_self ", "move_self")]
@@ -120,6 +130,7 @@ public sealed class IntentExtractorParsingTests
         result.Should().Be(canonicalIntent);
     }
 
+    // Verifies that unknown intent names do not normalize.
     [Fact]
     public void IntentExtractor_NormalizeIntentName_UnknownIntent_ReturnsNull()
     {
@@ -128,6 +139,7 @@ public sealed class IntentExtractorParsingTests
         result.Should().BeNull();
     }
 
+    // Verifies that inspect intents require a non-empty target parameter.
     [Fact]
     public void IntentExtractor_TryNormalizeAndValidateIntent_InspectWithoutTarget_Fails()
     {
@@ -142,6 +154,7 @@ public sealed class IntentExtractorParsingTests
         error.Should().Be("Intent 'inspect' requires a non-empty params.target.");
     }
 
+    // Verifies that move_self intents validate after canonical normalization.
     [Fact]
     public void IntentExtractor_TryNormalizeAndValidateIntent_MoveSelfWithTarget_Succeeds()
     {
@@ -161,6 +174,7 @@ public sealed class IntentExtractorParsingTests
         valid.Parameters.Should().ContainKey("target").WhoseValue.Should().Be("north");
     }
 
+    // Verifies that freeform_action intents require a non-empty text parameter.
     [Fact]
     public void IntentExtractor_TryNormalizeAndValidateIntent_FreeformActionWithoutText_Fails()
     {
@@ -175,6 +189,7 @@ public sealed class IntentExtractorParsingTests
         error.Should().Be("Intent 'freeform_action' requires a non-empty params.text.");
     }
 
+    // Verifies that wait intents validate successfully without parameters.
     [Fact]
     public void IntentExtractor_TryNormalizeAndValidateIntent_WaitWithoutParams_Succeeds()
     {
@@ -191,6 +206,7 @@ public sealed class IntentExtractorParsingTests
         valid.Parameters.Should().BeEmpty();
     }
 
+    // Verifies that scalar JSON values are flattened into string map entries.
     [Fact]
     public void IntentExtractor_CopyStringMap_Scalars_FlattensValuesToStrings()
     {
