@@ -1,4 +1,6 @@
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Globalization;
 using System.IO;
 using System.Net.Http;
 using System.Text;
@@ -52,6 +54,22 @@ public partial class MainWindow : Window
         Brush BubbleBackground,
         Brush BubbleBorderBrush,
         Brush BubbleForeground);
+
+    private enum EngineStatusState
+    {
+        Stopped,
+        Initializing,
+        ShuttingDown,
+        Ready,
+        Processing,
+        Error,
+    }
+
+    private static readonly SolidColorBrush EngineStatusBrushStopped = new(Color.FromRgb(90, 95, 106));
+    private static readonly SolidColorBrush EngineStatusBrushReady = new(Color.FromRgb(61, 204, 119));
+    private static readonly SolidColorBrush EngineStatusBrushTransition = new(Color.FromRgb(230, 195, 82));
+    private static readonly SolidColorBrush EngineStatusBrushProcessing = new(Color.FromRgb(80, 150, 240));
+    private static readonly SolidColorBrush EngineStatusBrushError = new(Color.FromRgb(220, 80, 80));
     #endregion
 
     #region Private data
@@ -72,6 +90,10 @@ public partial class MainWindow : Window
     private bool _engineModulesInitializedForGame = false;
     private bool _allowClose;
     private bool _shutdownInProgress;
+    /// <summary>True while <see cref="StopEngineAsync"/> is tearing down the engine (yellow LED).</summary>
+    private bool _engineStopInProgress;
+    /// <summary>True after a lifecycle failure for the current run; cleared on next start and when the engine is fully stopped.</summary>
+    private bool _engineLifecycleError;
     private bool _suppressEndpointPresetEvents;
     private bool _applyingEndpointFromPreset;
     private bool _gameRequestInFlight;
@@ -81,7 +103,26 @@ public partial class MainWindow : Window
     private string _runId = string.Empty;
     /// <summary>Next turn index to send (1-based; must match MAX(snapshots.turn)+1).</summary>
     private int _nextTurn = 1;
-    private string[] _qwenMonitorModuleNames = ["Qwen", "LlmProvider_qwen"];
+    private string[] _qwenMonitorModuleNames = ["Qwen", "LlmProvider_qwen", "llm_provider_qwen"];
+
+    /// <summary>Full console log lines (including newline) for filter re-render.</summary>
+    private readonly List<string> _consoleLogBuffer = [];
+
+    /// <summary>Accumulates partial chunks until a newline completes a logical line.</summary>
+    private readonly StringBuilder _consoleCurrentLine = new();
+
+    /// <summary>Include filter tokens (module port_key), case-insensitive; empty with no excludes = show all.</summary>
+    private string[] _consoleFilterIncludePortKeys = [];
+
+    /// <summary>Exclude filter tokens (module port_key), case-insensitive; lines matching these are dropped (excludes win over includes).</summary>
+    private string[] _consoleFilterExcludePortKeys = [];
+
+    /// <summary>Include ranges on EngineLog seq id (union). Empty with no exclude ranges = no range filter.</summary>
+    private (long? Start, long? End)[] _consoleFilterIncludeRanges = [];
+
+    /// <summary>Exclude ranges on EngineLog seq id (union).</summary>
+    private (long? Start, long? End)[] _consoleFilterExcludeRanges = [];
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
@@ -131,11 +172,11 @@ public partial class MainWindow : Window
         {
             _qwenMonitorModuleNames = _config.ModulesInfos
                 .Where(module => module.PortKey.Equals("llm_provider_qwen", StringComparison.OrdinalIgnoreCase))
-                .Select(module => module.DisplayName)
+                .SelectMany(module => new[] { module.DisplayName, module.PortKey })
                 .Append("Qwen")
                 .Append("LlmProvider_qwen")
                 .Where(name => !string.IsNullOrWhiteSpace(name))
-                .Distinct(StringComparer.Ordinal)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToArray();
         }
 
@@ -247,7 +288,7 @@ public partial class MainWindow : Window
 
     private void ClearQwenMonitorButton_Click(object sender, RoutedEventArgs e)
     {
-        QwenMonitorPane.Clear();
+        // Intentionally no-op: qwen monitor log is append-only for the full app session.
     }
 
     private void CopyConsoleToClipboardButton_Click(object sender, RoutedEventArgs e)
@@ -361,6 +402,8 @@ public partial class MainWindow : Window
         _nextTurn = 1;
         RefreshGameTurnHeader();
 
+        _engineLifecycleError = false;
+
         var engine = new MorpheusEngine(_gameProjectId, _runId);
         _engine = engine;
         _engineModulesInitializedForGame = false;
@@ -371,13 +414,18 @@ public partial class MainWindow : Window
             {
                 engine.Run();
             }
-                finally
-                {
-                    // Clear task reference on the completing thread so _engineRunTask is not left non-null until a dispatcher tick.
-                    _engineRunTask = null;
-                    _engineModulesInitializedForGame = false;
-                    Dispatcher.BeginInvoke(UpdateButtonState);
-                }
+            catch
+            {
+                _engineLifecycleError = true;
+                throw;
+            }
+            finally
+            {
+                // Clear task reference on the completing thread so _engineRunTask is not left non-null until a dispatcher tick.
+                _engineRunTask = null;
+                _engineModulesInitializedForGame = false;
+                Dispatcher.BeginInvoke(UpdateButtonState);
+            }
         });
 
         _ = ObserveEngineInitializationAsync(engine);
@@ -399,7 +447,6 @@ public partial class MainWindow : Window
                 }
 
                 _engineModulesInitializedForGame = true;
-                QwenMonitorPane.Clear();
                 UpdateButtonState();
             });
         }
@@ -412,6 +459,7 @@ public partial class MainWindow : Window
                     return;
                 }
 
+                _engineLifecycleError = true;
                 _engineModulesInitializedForGame = false;
                 UpdateButtonState();
             });
@@ -426,41 +474,85 @@ public partial class MainWindow : Window
             return;
         }
 
-        _engineModulesInitializedForGame = false;
-        var engineRef = _engine;
-        engineRef?.RequestShutdown();
+        _engineStopInProgress = true;
+        Dispatcher.Invoke(UpdateButtonState, DispatcherPriority.Normal);
 
-        if (runTask is not null)
+        try
         {
-            var grace = TimeSpan.FromSeconds(EngineStopGraceSeconds);
-            await Task.WhenAny(runTask, Task.Delay(grace)).ConfigureAwait(false);
-            if (!runTask.IsCompleted && engineRef is not null)
-            {
-                Console.WriteLine(
-                    $"[App] Engine did not stop within {EngineStopGraceSeconds}s; killing child module processes.");
-                engineRef.KillChildProcesses();
-                await Task.WhenAny(runTask, Task.Delay(TimeSpan.FromSeconds(EngineStopKillFollowupSeconds)))
-                    .ConfigureAwait(false);
-            }
+            _engineModulesInitializedForGame = false;
+            var engineRef = _engine;
+            engineRef?.RequestShutdown();
 
-            try
+            if (runTask is not null)
             {
-                await runTask.ConfigureAwait(false);
+                var grace = TimeSpan.FromSeconds(EngineStopGraceSeconds);
+                await Task.WhenAny(runTask, Task.Delay(grace)).ConfigureAwait(false);
+                if (!runTask.IsCompleted && engineRef is not null)
+                {
+                    Console.WriteLine(
+                        $"[App] Engine did not stop within {EngineStopGraceSeconds}s; killing child module processes.");
+                    _engineLifecycleError = true;
+                    engineRef.KillChildProcesses();
+                    await Task.WhenAny(runTask, Task.Delay(TimeSpan.FromSeconds(EngineStopKillFollowupSeconds)))
+                        .ConfigureAwait(false);
+                }
+
+                try
+                {
+                    await runTask.ConfigureAwait(false);
+                }
+                catch (Exception e)
+                {
+                    _engineLifecycleError = true;
+                    Console.WriteLine("[App] Engine task completed with error: " + e.Message);
+                }
             }
-            catch (Exception e)
-            {
-                Console.WriteLine("[App] Engine task completed with error: " + e.Message);
-            }
+        }
+        finally
+        {
+            _engineStopInProgress = false;
         }
 
         await Dispatcher.InvokeAsync(() =>
         {
             _engine = null;
+            _engineLifecycleError = false;
             _runId = string.Empty;
             _nextTurn = 1;
             RefreshGameTurnHeader();
             UpdateButtonState();
         });
+    }
+
+    private EngineStatusState ResolveEngineStatusState()
+    {
+        var running = IsEngineRunning();
+        if (_engineLifecycleError)
+        {
+            return EngineStatusState.Error;
+        }
+
+        if (running && (_engineStopInProgress || _shutdownInProgress))
+        {
+            return EngineStatusState.ShuttingDown;
+        }
+
+        if (running && !_engineModulesInitializedForGame)
+        {
+            return EngineStatusState.Initializing;
+        }
+
+        if (running && _gameRequestInFlight)
+        {
+            return EngineStatusState.Processing;
+        }
+
+        if (running)
+        {
+            return EngineStatusState.Ready;
+        }
+
+        return EngineStatusState.Stopped;
     }
 
     private void UpdateButtonState()
@@ -471,11 +563,24 @@ public partial class MainWindow : Window
 
         if (EngineStatusEllipse is not null)
         {
-            // Running: green; stopped: dim gray (fail loud in UI, no ambiguous yellow).
-            EngineStatusEllipse.Fill = running
-                ? new SolidColorBrush(Color.FromRgb(61, 204, 119))
-                : new SolidColorBrush(Color.FromRgb(90, 95, 106));
-            EngineStatusEllipse.ToolTip = running ? "Engine running" : "Engine stopped";
+            var status = ResolveEngineStatusState();
+            EngineStatusEllipse.Fill = status switch
+            {
+                EngineStatusState.Ready => EngineStatusBrushReady,
+                EngineStatusState.Initializing or EngineStatusState.ShuttingDown => EngineStatusBrushTransition,
+                EngineStatusState.Processing => EngineStatusBrushProcessing,
+                EngineStatusState.Error => EngineStatusBrushError,
+                _ => EngineStatusBrushStopped,
+            };
+            EngineStatusEllipse.ToolTip = status switch
+            {
+                EngineStatusState.Ready => "Engine running",
+                EngineStatusState.Initializing => "Engine initializing",
+                EngineStatusState.ShuttingDown => "Engine shutting down",
+                EngineStatusState.Processing => "Engine processing turn",
+                EngineStatusState.Error => "Engine error (see console)",
+                _ => "Engine stopped",
+            };
         }
 
         if (GameChatInteractionRoot is not null)
@@ -499,15 +604,350 @@ public partial class MainWindow : Window
     {
         Dispatcher.BeginInvoke(() =>
         {
-            ConsolePane.AppendText(text);
-            ConsolePane.CaretIndex = ConsolePane.Text.Length;
-            ConsolePane.ScrollToEnd();
-
+            // Qwen monitor: unchanged extraction per chunk (may span partial EngineLog lines).
             if (TryExtractQwenLogLine(text, out var qwenLogLine))
             {
                 AppendQwenMonitorEntry(qwenLogLine);
             }
+
+            // Main console: buffer at full-line granularity so the [source] tag is intact (EngineLog splits prefix and body).
+            _consoleCurrentLine.Append(text);
+            while (true)
+            {
+                var current = _consoleCurrentLine.ToString();
+                var nlIndex = current.IndexOf('\n');
+                if (nlIndex < 0)
+                {
+                    break;
+                }
+
+                var completedLine = current[..(nlIndex + 1)];
+                _consoleCurrentLine.Remove(0, nlIndex + 1);
+
+                _consoleLogBuffer.Add(completedLine);
+                if (LinePassesConsoleFilter(completedLine))
+                {
+                    ConsolePane.AppendText(completedLine);
+                    ConsolePane.CaretIndex = ConsolePane.Text.Length;
+                    ConsolePane.ScrollToEnd();
+                }
+            }
         });
+    }
+
+    private void ConsoleFilterTextBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (ConsoleFilterTextBox is null || ConsolePane is null)
+        {
+            return;
+        }
+
+        var raw = ConsoleFilterTextBox.Text ?? string.Empty;
+        var includeSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var excludeSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var includes = new List<string>();
+        var excludes = new List<string>();
+        var includeRanges = new List<(long? Start, long? End)>();
+        var excludeRanges = new List<(long? Start, long? End)>();
+        foreach (var part in raw.Split(',', StringSplitOptions.None))
+        {
+            var t = part.Trim();
+            if (t.Length == 0)
+            {
+                continue;
+            }
+
+            if (t == "-")
+            {
+                continue;
+            }
+
+            if (t.Length >= 3 && t[0] == '-' && t[1] == '(' && t[^1] == ')')
+            {
+                var inner = t[2..^1];
+                if (TryParseRangeBody(inner, out var rs, out var re))
+                {
+                    excludeRanges.Add((rs, re));
+                }
+
+                continue;
+            }
+
+            if (t.Length >= 2 && t[0] == '(' && t[^1] == ')')
+            {
+                var inner = t[1..^1];
+                if (TryParseRangeBody(inner, out var rs, out var re))
+                {
+                    includeRanges.Add((rs, re));
+                }
+
+                continue;
+            }
+
+            if (t[0] == '-')
+            {
+                var key = t[1..].Trim();
+                if (key.Length == 0 || !excludeSeen.Add(key))
+                {
+                    continue;
+                }
+
+                excludes.Add(key);
+            }
+            else
+            {
+                if (!includeSeen.Add(t))
+                {
+                    continue;
+                }
+
+                includes.Add(t);
+            }
+        }
+
+        _consoleFilterIncludePortKeys = includes.ToArray();
+        _consoleFilterExcludePortKeys = excludes.ToArray();
+        _consoleFilterIncludeRanges = includeRanges.ToArray();
+        _consoleFilterExcludeRanges = excludeRanges.ToArray();
+
+        ConsolePane.Clear();
+        foreach (var line in _consoleLogBuffer)
+        {
+            if (LinePassesConsoleFilter(line))
+            {
+                ConsolePane.AppendText(line);
+            }
+        }
+
+        ConsolePane.CaretIndex = ConsolePane.Text.Length;
+        ConsolePane.ScrollToEnd();
+    }
+
+    /// <summary>Parses EngineLog line shape: <c>[seq ; time] [source] body</c>. Returns false if the second bracket pair is missing.</summary>
+    private static bool TryParseConsoleLogSourceTag(string line, out string sourceTag)
+    {
+        sourceTag = string.Empty;
+        var trimmed = line.TrimStart('\r', '\n');
+        if (trimmed.Length < 5 || trimmed[0] != '[')
+        {
+            return false;
+        }
+
+        var firstClose = trimmed.IndexOf(']');
+        if (firstClose < 0)
+        {
+            return false;
+        }
+
+        var secondOpen = trimmed.IndexOf('[', firstClose + 1);
+        if (secondOpen < 0)
+        {
+            return false;
+        }
+
+        var secondClose = trimmed.IndexOf(']', secondOpen + 1);
+        if (secondClose <= secondOpen)
+        {
+            return false;
+        }
+
+        sourceTag = trimmed.Substring(secondOpen + 1, secondClose - secondOpen - 1);
+        if (sourceTag.EndsWith(":ERR", StringComparison.OrdinalIgnoreCase))
+        {
+            sourceTag = sourceTag[..^4];
+        }
+
+        return true;
+    }
+
+    /// <summary>Parses the seq id from the first bracket group of an EngineLog line: <c>[seq ; time]</c>.</summary>
+    private static bool TryParseConsoleLogSeq(string line, out long seq)
+    {
+        seq = 0;
+        var trimmed = line.TrimStart('\r', '\n');
+        if (trimmed.Length < 5 || trimmed[0] != '[')
+        {
+            return false;
+        }
+
+        var firstClose = trimmed.IndexOf(']');
+        if (firstClose < 0)
+        {
+            return false;
+        }
+
+        var inner = trimmed.Substring(1, firstClose - 1);
+        var sep = inner.IndexOf(" ;", StringComparison.Ordinal);
+        if (sep < 0)
+        {
+            return false;
+        }
+
+        var seqPart = inner[..sep].Trim();
+        if (seqPart.Length == 0 || !long.TryParse(seqPart, NumberStyles.Integer, CultureInfo.InvariantCulture, out seq) || seq < 0)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>Parses <c>start;end</c> with empty sides as open bounds. Rejects literal <c>-</c> as a bound.</summary>
+    private static bool TryParseRangeBody(string body, out long? start, out long? end)
+    {
+        start = null;
+        end = null;
+        var semi = body.IndexOf(';');
+        if (semi < 0)
+        {
+            return false;
+        }
+
+        var left = body[..semi].Trim();
+        var right = body[(semi + 1)..].Trim();
+        if (right.Contains(';'))
+        {
+            return false;
+        }
+
+        if (left == "-")
+        {
+            return false;
+        }
+
+        if (right == "-")
+        {
+            return false;
+        }
+
+        if (left.Length > 0)
+        {
+            if (!long.TryParse(left, NumberStyles.Integer, CultureInfo.InvariantCulture, out var s) || s < 0)
+            {
+                return false;
+            }
+
+            start = s;
+        }
+
+        if (right.Length > 0)
+        {
+            if (!long.TryParse(right, NumberStyles.Integer, CultureInfo.InvariantCulture, out var e) || e < 0)
+            {
+                return false;
+            }
+
+            end = e;
+        }
+
+        if (start is { } a && end is { } b && a > b)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool SeqInRange(long seq, (long? Start, long? End) r) =>
+        (r.Start is null || seq >= r.Start) && (r.End is null || seq <= r.End);
+
+    private bool LinePassesRangeFilter(string line)
+    {
+        var hasIncl = _consoleFilterIncludeRanges.Length > 0;
+        var hasExcl = _consoleFilterExcludeRanges.Length > 0;
+        if (!hasIncl && !hasExcl)
+        {
+            return true;
+        }
+
+        var hasSeq = TryParseConsoleLogSeq(line, out var seq);
+        if (!hasSeq)
+        {
+            if (hasIncl)
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        if (hasIncl)
+        {
+            var inAny = false;
+            foreach (var r in _consoleFilterIncludeRanges)
+            {
+                if (SeqInRange(seq, r))
+                {
+                    inAny = true;
+                    break;
+                }
+            }
+
+            if (!inAny)
+            {
+                return false;
+            }
+        }
+
+        foreach (var r in _consoleFilterExcludeRanges)
+        {
+            if (SeqInRange(seq, r))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private bool LinePassesConsoleFilter(string line)
+    {
+        if (!LinePassesRangeFilter(line))
+        {
+            return false;
+        }
+
+        var hasIncludes = _consoleFilterIncludePortKeys.Length > 0;
+        var hasExcludes = _consoleFilterExcludePortKeys.Length > 0;
+        if (!hasIncludes && !hasExcludes)
+        {
+            return true;
+        }
+
+        var hasTag = TryParseConsoleLogSourceTag(line, out var tag);
+
+        // Excludes win when the line has a parseable tag.
+        if (hasExcludes && hasTag)
+        {
+            foreach (var key in _consoleFilterExcludePortKeys)
+            {
+                if (string.Equals(tag, key, StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+            }
+        }
+
+        if (!hasIncludes)
+        {
+            // Pure-exclude mode: untagged lines are shown (cannot match an exclude).
+            return true;
+        }
+
+        if (!hasTag)
+        {
+            return false;
+        }
+
+        foreach (var key in _consoleFilterIncludePortKeys)
+        {
+            if (string.Equals(tag, key, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private void PopulatePortComboBox()
@@ -881,33 +1321,33 @@ public partial class MainWindow : Window
         foreach (var moduleName in _qwenMonitorModuleNames)
         {
             var normalPrefix = $"[{moduleName}] OLLAMA_IO ";
-            if (text.StartsWith(normalPrefix, StringComparison.Ordinal))
+            if (text.StartsWith(normalPrefix, StringComparison.OrdinalIgnoreCase))
             {
-                qwenLogLine = text.Substring(normalPrefix.Length);
+                qwenLogLine = text;
                 return true;
             }
 
             var errorPrefix = $"[{moduleName}:ERR] OLLAMA_IO ";
-            if (text.StartsWith(errorPrefix, StringComparison.Ordinal))
+            if (text.StartsWith(errorPrefix, StringComparison.OrdinalIgnoreCase))
             {
-                qwenLogLine = "ERR: " + text.Substring(errorPrefix.Length);
+                qwenLogLine = text;
                 return true;
             }
 
             // New EngineLog prefix: [entryId ; HH:MM:SS::cc] [LlmProvider_qwen] OLLAMA_IO ...
             var newNormalMarker = $"] [{moduleName}] OLLAMA_IO ";
-            var newNormalIdx = text.IndexOf(newNormalMarker, StringComparison.Ordinal);
+            var newNormalIdx = text.IndexOf(newNormalMarker, StringComparison.OrdinalIgnoreCase);
             if (newNormalIdx >= 0)
             {
-                qwenLogLine = text.Substring(newNormalIdx + newNormalMarker.Length);
+                qwenLogLine = text;
                 return true;
             }
 
             var newErrMarker = $"] [{moduleName}:ERR] OLLAMA_IO ";
-            var newErrIdx = text.IndexOf(newErrMarker, StringComparison.Ordinal);
+            var newErrIdx = text.IndexOf(newErrMarker, StringComparison.OrdinalIgnoreCase);
             if (newErrIdx >= 0)
             {
-                qwenLogLine = "ERR: " + text.Substring(newErrIdx + newErrMarker.Length);
+                qwenLogLine = text;
                 return true;
             }
 
@@ -921,8 +1361,8 @@ public partial class MainWindow : Window
                     if (tagEnd > tagStart)
                     {
                         var tag = text.Substring(tagStart + 1, tagEnd - tagStart - 1);
-                        if (string.Equals(tag, moduleName, StringComparison.Ordinal)
-                            || string.Equals(tag, moduleName + ":ERR", StringComparison.Ordinal))
+                        if (string.Equals(tag, moduleName, StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(tag, moduleName + ":ERR", StringComparison.OrdinalIgnoreCase))
                         {
                             var afterTag = tagEnd + 1;
                             if (afterTag < text.Length && text[afterTag] == ' ')
@@ -932,10 +1372,9 @@ public partial class MainWindow : Window
 
                             const string ollamaPrefix = "OLLAMA_IO ";
                             if (afterTag + ollamaPrefix.Length <= text.Length
-                                && string.Equals(text.Substring(afterTag, ollamaPrefix.Length), ollamaPrefix, StringComparison.Ordinal))
+                                && string.Equals(text.Substring(afterTag, ollamaPrefix.Length), ollamaPrefix, StringComparison.OrdinalIgnoreCase))
                             {
-                                var payload = text.Substring(afterTag + ollamaPrefix.Length);
-                                qwenLogLine = tag.EndsWith(":ERR", StringComparison.Ordinal) ? "ERR: " + payload : payload;
+                                qwenLogLine = text;
                                 return true;
                             }
                         }

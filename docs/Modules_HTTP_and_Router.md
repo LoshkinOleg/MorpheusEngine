@@ -1,5 +1,7 @@
 # Modules, HTTP surface, and router
 
+Last reviewed: 2026-05-08.
+
 All backend modules are **standalone executables** that bind **`HttpListener`** to **`http://127.0.0.1:{port}/`** where `{port}` comes from `engine_config.json` → `ports.<port_key>`.
 
 ## Common endpoints
@@ -60,7 +62,7 @@ Host: `SessionStoreHost.cs`; persistence: `RunPersistence.cs`.
 | Method | Path | Role |
 |--------|------|------|
 | POST | `/initialize` | Accept **`InitializeModuleRequest`** (`gameProjectId`, `runId`); load **`system/instructions.md`** + lore CSV once; bind that single run in memory. Second call in the same process → **409**. |
-| POST | `/message` | Accept **`DirectorMessageRequest`** (`turn`, `playerInput`); requires prior **`/initialize`** in this process; call LLM via **`router /proxy`** → **`generic_llm_provider` `/chat`**; return **`IntentResponse`** narration shim. |
+| POST | `/message` | Accept **`DirectorMessageRequest`** (`turn`, `playerInput`); requires prior **`/initialize`** in this process; call LLM via **`router /proxy`** → **`generic_llm_provider` `/chat`**; return **`DirectorMessageResponse`**. |
 
 State is **in-process memory** for **one run per Director process** (lost if Director restarts). Lore and GM instructions are read at **`/initialize`**, not lazily on first **`/message`**.
 

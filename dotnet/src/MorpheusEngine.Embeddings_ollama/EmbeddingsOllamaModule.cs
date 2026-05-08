@@ -7,11 +7,14 @@ namespace MorpheusEngine;
 public sealed class EmbeddingsOllamaModule
 {
     #region Nested types
+    private sealed record OllamaEmbedOptions(int num_ctx);
+
     private sealed record OllamaEmbedRequest(
         string model,
         IReadOnlyList<string> input,
         bool truncate,
-        string keep_alive);
+        string keep_alive,
+        OllamaEmbedOptions options);
     #endregion
 
     #region Private data
@@ -34,6 +37,7 @@ public sealed class EmbeddingsOllamaModule
     private int _ollamaPort = 0;
     private string _defaultEmbeddingModel = string.Empty;
     private string _keepAlive = string.Empty;
+    private int _numCtx;
     #endregion
 
     #region Public methods
@@ -84,11 +88,12 @@ public sealed class EmbeddingsOllamaModule
         _ollamaPort = options.OllamaPort;
         _defaultEmbeddingModel = options.DefaultEmbeddingModel.Trim();
         _keepAlive = options.KeepAlive.Trim();
+        _numCtx = options.NumCtx;
 
         var port = _configuration.GetRequiredListenPort("embeddings_ollama");
         _listener.Prefixes.Add($"http://127.0.0.1:{port}/");
         _listener.Start();
-        Console.WriteLine($"ready listen=http://127.0.0.1:{port}/ model='{_defaultEmbeddingModel}' ollama=http://127.0.0.1:{_ollamaPort}/");
+        Console.WriteLine($"ready listen=http://127.0.0.1:{port}/ model='{_defaultEmbeddingModel}' ollama=http://127.0.0.1:{_ollamaPort}/ num_ctx={_numCtx}");
     }
 
     private void Shutdown()
@@ -240,7 +245,12 @@ public sealed class EmbeddingsOllamaModule
         }
 
         var model = string.IsNullOrWhiteSpace(request.Model) ? _defaultEmbeddingModel : request.Model.Trim();
-        var ollamaRequest = new OllamaEmbedRequest(model, request.Texts.Select(static text => text.Trim()).ToArray(), truncate: false, _keepAlive);
+        var ollamaRequest = new OllamaEmbedRequest(
+            model,
+            request.Texts.Select(static text => text.Trim()).ToArray(),
+            truncate: false,
+            _keepAlive,
+            new OllamaEmbedOptions(_numCtx));
         var requestJson = JsonSerializer.Serialize(ollamaRequest, JsonOptions);
         using var content = new StringContent(requestJson, Encoding.UTF8, "application/json");
 

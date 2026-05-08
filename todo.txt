@@ -1,8 +1,9 @@
+- Engine init failure isn't displayed by UI.
+- No ollama monitor output.
+
 - Improve logs. Time stamp. Ordering. filter console by module
 
 - UI: once engine is initialized, display "ready!"
-
-- Good start for the Director, needs polishing. UI output is wrong, mentions of intent extraction.
 
 - Make intent extractor actions data driven instead of hardcoded.
 
@@ -21,8 +22,6 @@
   - called regularly by the Director to consolidate the new story diff:
     - upsert a global plot document, hidden from the player, to explain most of the inconsistencies that have happened.
     - The Director should then be able to rely on that plot document to decide where to move the narrative in the following answers to prompts.
-
-- get rid of the TS implementation
 
 - implement tool capabilities for the LLM provider
 

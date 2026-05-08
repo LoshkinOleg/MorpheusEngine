@@ -23,10 +23,6 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MorpheusEngine.MemoryDirect
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MorpheusEngine.Embeddings_ollama", "src\MorpheusEngine.Embeddings_ollama\MorpheusEngine.Embeddings_ollama.csproj", "{3D346502-2C2D-4B5B-8A2A-9A345C2991E3}"
 EndProject
-Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{0AB3BF05-4346-4AA6-1389-037BE0695223}"
-EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MorpheusEngine.Phase1SmokeTests", "tests\MorpheusEngine.Phase1SmokeTests\MorpheusEngine.Phase1SmokeTests.csproj", "{F63760CA-073F-4552-A891-BD16025B6B78}"
-EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -145,18 +141,6 @@ Global
 		{3D346502-2C2D-4B5B-8A2A-9A345C2991E3}.Release|x64.Build.0 = Release|Any CPU
 		{3D346502-2C2D-4B5B-8A2A-9A345C2991E3}.Release|x86.ActiveCfg = Release|Any CPU
 		{3D346502-2C2D-4B5B-8A2A-9A345C2991E3}.Release|x86.Build.0 = Release|Any CPU
-		{F63760CA-073F-4552-A891-BD16025B6B78}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{F63760CA-073F-4552-A891-BD16025B6B78}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{F63760CA-073F-4552-A891-BD16025B6B78}.Debug|x64.ActiveCfg = Debug|Any CPU
-		{F63760CA-073F-4552-A891-BD16025B6B78}.Debug|x64.Build.0 = Debug|Any CPU
-		{F63760CA-073F-4552-A891-BD16025B6B78}.Debug|x86.ActiveCfg = Debug|Any CPU
-		{F63760CA-073F-4552-A891-BD16025B6B78}.Debug|x86.Build.0 = Debug|Any CPU
-		{F63760CA-073F-4552-A891-BD16025B6B78}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{F63760CA-073F-4552-A891-BD16025B6B78}.Release|Any CPU.Build.0 = Release|Any CPU
-		{F63760CA-073F-4552-A891-BD16025B6B78}.Release|x64.ActiveCfg = Release|Any CPU
-		{F63760CA-073F-4552-A891-BD16025B6B78}.Release|x64.Build.0 = Release|Any CPU
-		{F63760CA-073F-4552-A891-BD16025B6B78}.Release|x86.ActiveCfg = Release|Any CPU
-		{F63760CA-073F-4552-A891-BD16025B6B78}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -171,6 +155,5 @@ Global
 		{6F1A2B3C-4D5E-6F70-A1B2-C3D4E5F60718} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{ED83DAA9-9F56-4C28-A04A-1AB5AB698442} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{3D346502-2C2D-4B5B-8A2A-9A345C2991E3} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
-		{F63760CA-073F-4552-A891-BD16025B6B78} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 	EndGlobalSection
 EndGlobal

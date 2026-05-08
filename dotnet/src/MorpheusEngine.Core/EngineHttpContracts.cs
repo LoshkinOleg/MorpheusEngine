@@ -103,7 +103,7 @@ public sealed record LatestSnapshotDto(
 public sealed record MemoryBudgetDto(
     [property: JsonPropertyName("numCtx")] int NumCtx,
     [property: JsonPropertyName("targetContextTokens")] int TargetContextTokens,
-    [property: JsonPropertyName("recentMessageCount")] int RecentMessageCount,
+    [property: JsonPropertyName("maxFullMessages")] int MaxFullMessages,
     [property: JsonPropertyName("maxToolResultChars")] int MaxToolResultChars);
 
 public sealed record MemorySummaryDto(
@@ -135,7 +135,7 @@ public sealed record MemoryContextAccountingDto(
 
 public sealed record MemoryLoadContextRequest(
     [property: JsonPropertyName("turn")] int Turn,
-    [property: JsonPropertyName("recentMessageCount")] int RecentMessageCount = 12);
+    [property: JsonPropertyName("maxFullMessages")] int MaxFullMessages = 12);
 
 public sealed record MemoryLoadContextResponse(
     [property: JsonPropertyName("ok")] bool Ok,

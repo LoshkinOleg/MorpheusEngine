@@ -1,5 +1,7 @@
 # Game projects and session store
 
+Last reviewed: 2026-05-08.
+
 Per-game content lives under **`game_projects/<gameProjectId>/`**. The **`gameProjectId`** is a **single path segment** (no slashes, no `..`); it is validated when building filesystem paths for SQLite.
 
 ## Layout
@@ -55,7 +57,7 @@ If the client sends the wrong turn index, **`409`** / **`InvalidOperationExcepti
 
 `RunPersistence.PersistTurn`:
 
-- Inserts **`player_input`** event and **`module_trace`** event (the trace tries to interpret `intentResponseBody` as **`IntentResponse`** for readable narration text).
+- Inserts **`player_input`** event and **`module_trace`** event (the trace uses `directorResponseBody` and attempts to parse **`DirectorMessageResponse`** for readable narration text).
 - Copies latest **`world_state`** JSON into the new snapshot (Director path does not yet mutate world state in DB).
 - Stores **`view_state`** envelope derived from the Director/intent JSON body.
 

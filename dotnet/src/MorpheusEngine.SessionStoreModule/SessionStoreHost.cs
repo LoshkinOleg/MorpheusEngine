@@ -170,7 +170,7 @@ public sealed class SessionStoreHost
             {
                 await HandleMemoryRequest<MemoryLoadContextRequest>(
                     context,
-                    (gameProjectId, runId, request) => _persistence.LoadMemoryContext(gameProjectId, runId, request, CreateMemoryBudget(request.RecentMessageCount)));
+                    (gameProjectId, runId, request) => _persistence.LoadMemoryContext(gameProjectId, runId, request, CreateMemoryBudget(request.MaxFullMessages)));
                 return;
             }
 
@@ -525,7 +525,7 @@ public sealed class SessionStoreHost
         }
     }
 
-    private MemoryBudgetDto CreateMemoryBudget(int recentMessageCount)
+    private MemoryBudgetDto CreateMemoryBudget(int maxFullMessages)
     {
         var llmProvider = _configuration.GetRequiredGenericLlmProviderModule();
         if (llmProvider.GenericLlmProviderOptions is null)
@@ -535,7 +535,7 @@ public sealed class SessionStoreHost
 
         var numCtx = llmProvider.GenericLlmProviderOptions.NumCtx;
         var maxToolResultChars = _configuration.GetRequiredGenericDirectorModule().MemoryDirectorOptions?.MaxToolResultChars ?? 4000;
-        return new MemoryBudgetDto(numCtx, numCtx * 70 / 100, recentMessageCount, maxToolResultChars);
+        return new MemoryBudgetDto(numCtx, numCtx * 70 / 100, maxFullMessages, maxToolResultChars);
     }
 
     #endregion

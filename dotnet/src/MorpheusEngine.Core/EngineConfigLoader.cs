@@ -96,14 +96,15 @@ public sealed record QwenModuleOptions(
 public sealed record MemoryDirectorModuleOptions(
     int MaxStepsPerTurn,
     int MaxToolResultChars,
-    int RecentMessageCount,
+    int MaxFullMessages,
     string KeepAlive);
 
 /// <summary>Options specific to the Ollama-backed embeddings module implementation.</summary>
 public sealed record EmbeddingsModuleOptions(
     int OllamaPort,
     string DefaultEmbeddingModel,
-    string KeepAlive);
+    string KeepAlive,
+    int NumCtx);
 
 public sealed record EngineModuleInfo(
     string PortKey, // stable module id (e.g. router); actual port is in EngineConfiguration.PortMap.
@@ -365,16 +366,19 @@ public static class EngineConfigLoader
         [JsonPropertyName("num_ctx")]
         public int? NumCtx { get; set; }
 
+        [JsonPropertyName("embeddings_num_ctx")]
+        public int? EmbeddingsNumCtx { get; set; }
+
         [JsonPropertyName("max_steps_per_turn")]
         public int? MaxStepsPerTurn { get; set; }
 
         [JsonPropertyName("max_tool_result_chars")]
         public int? MaxToolResultChars { get; set; }
 
-        [JsonPropertyName("recent_message_count")]
-        public int? RecentMessageCount { get; set; }
+        [JsonPropertyName("max_full_messages")]
+        public int? MaxFullMessages { get; set; }
 
-        [JsonPropertyName("keep_alive")]
+        [JsonPropertyName("keep_model_loaded_for")]
         public string? KeepAlive { get; set; }
     }
 
@@ -699,9 +703,10 @@ public static class EngineConfigLoader
                 string? ollamaModel,
                 string? defaultEmbeddingModel,
                 int? numCtx,
+                int? embeddingsNumCtx,
                 int? maxStepsPerTurn,
                 int? maxToolResultChars,
-                int? recentMessageCount,
+                int? maxFullMessages,
                 string? keepAlive,
                 string path)
             {
@@ -718,6 +723,12 @@ public static class EngineConfigLoader
                 {
                     throw new EngineConfigurationException(
                         $"Module '{portKey}' in '{path}' must not set num_ctx (only the module resolved from generic_llm_provider may).");
+                }
+
+                if (!isActiveGenericEmbeddings && embeddingsNumCtx is not null)
+                {
+                    throw new EngineConfigurationException(
+                        $"Module '{portKey}' in '{path}' must not set embeddings_num_ctx (only the module resolved from generic_embeddings may).");
                 }
 
                 if (isQwen)
@@ -766,7 +777,13 @@ public static class EngineConfigLoader
                     if (string.IsNullOrWhiteSpace(keepAlive))
                     {
                         throw new EngineConfigurationException(
-                            $"Module '{portKey}' in '{path}' (resolved from generic_embeddings) must set keep_alive to a non-empty Ollama duration string.");
+                            $"Module '{portKey}' in '{path}' (resolved from generic_embeddings) must set keep_model_loaded_for to a non-empty Ollama duration string.");
+                    }
+
+                    if (embeddingsNumCtx is null or < 256 or > 131072)
+                    {
+                        throw new EngineConfigurationException(
+                            $"Module '{portKey}' in '{path}' (resolved from generic_embeddings) must set embeddings_num_ctx to an integer between 256 and 131072.");
                     }
                 }
                 else if (!string.IsNullOrWhiteSpace(defaultEmbeddingModel))
@@ -789,23 +806,23 @@ public static class EngineConfigLoader
                             $"Module '{portKey}' in '{path}' (memory_director) must set max_tool_result_chars to an integer between 256 and 131072.");
                     }
 
-                    if (recentMessageCount is null or < 0 or > 200)
+                    if (maxFullMessages is null or < 0 or > 200)
                     {
                         throw new EngineConfigurationException(
-                            $"Module '{portKey}' in '{path}' (memory_director) must set recent_message_count to an integer between 0 and 200.");
+                            $"Module '{portKey}' in '{path}' (memory_director) must set max_full_messages to an integer between 0 and 200.");
                     }
 
                     if (string.IsNullOrWhiteSpace(keepAlive))
                     {
                         throw new EngineConfigurationException(
-                            $"Module '{portKey}' in '{path}' (memory_director) must set keep_alive to a non-empty Ollama duration string.");
+                            $"Module '{portKey}' in '{path}' (memory_director) must set keep_model_loaded_for to a non-empty Ollama duration string.");
                     }
                 }
                 else
                 {
                     if (maxStepsPerTurn is not null
                         || maxToolResultChars is not null
-                        || recentMessageCount is not null
+                        || maxFullMessages is not null
                         || (!isActiveGenericEmbeddings && !string.IsNullOrWhiteSpace(keepAlive)))
                     {
                         throw new EngineConfigurationException(
@@ -918,9 +935,10 @@ public static class EngineConfigLoader
                         module.OllamaModel,
                         module.DefaultEmbeddingModel,
                         module.NumCtx,
+                        module.EmbeddingsNumCtx,
                         module.MaxStepsPerTurn,
                         module.MaxToolResultChars,
-                        module.RecentMessageCount,
+                        module.MaxFullMessages,
                         module.KeepAlive,
                         path);
 
@@ -938,7 +956,7 @@ public static class EngineConfigLoader
                         ? new MemoryDirectorModuleOptions(
                             module.MaxStepsPerTurn!.Value,
                             module.MaxToolResultChars!.Value,
-                            module.RecentMessageCount!.Value,
+                            module.MaxFullMessages!.Value,
                             module.KeepAlive!.Trim())
                         : null;
 
@@ -946,7 +964,8 @@ public static class EngineConfigLoader
                         ? new EmbeddingsModuleOptions(
                             module.OllamaPort!.Value,
                             module.DefaultEmbeddingModel!.Trim(),
-                            module.KeepAlive!.Trim())
+                            module.KeepAlive!.Trim(),
+                            module.EmbeddingsNumCtx!.Value)
                         : null;
 
                     list.Add(new EngineModuleInfo(

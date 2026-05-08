@@ -1,5 +1,7 @@
 # Configuration reference
 
+Last reviewed: 2026-05-08.
+
 ## `engine_config.json` (repository root)
 
 Loaded by **`EngineConfigLoader.GetConfiguration()`**. The loader walks upward from the executable / current directory until it finds **`engine_config.json`**.
@@ -47,6 +49,7 @@ The default config defines **`memory_director_default`** and **`simple_director_
 
 - **`module_aliases.generic_llm_provider`** must point at a concrete **`port_key`** (typically **`llm_provider_qwen`**). The loader merges **`generic_llm_provider`** JSON options onto that row.
 - **That resolved row** must carry **`GenericLlmProviderOptions`** (**`num_ctx`** from the generic provider JSON). When the concrete key is **`llm_provider_qwen`**, the same row must also have **`QwenOptions`** (**`ollama_port`**, **`default_chat_model`**).
+- **`module_aliases.generic_embeddings`** must point at a concrete **`port_key`** (typically **`embeddings_ollama`**). The resolved row must carry **`EmbeddingsModuleOptions`**: **`ollama_port`**, **`default_embedding_model`**, **`keep_model_loaded_for`**, and **`embeddings_num_ctx`** (integer **256–131072**, forwarded to Ollama as **`options.num_ctx`** on `/api/embed`; use a value that matches the embedding model’s trained context, e.g. **2048** for **`nomic-embed-text`**). No other module row may set **`embeddings_num_ctx`**.
 
 ## `EngineConfiguration` (runtime object)
 
@@ -54,10 +57,11 @@ Built once; exposes:
 
 - **`RepositoryRoot`** — Directory containing `engine_config.json`.
 - **`PortMap` / `GetRequiredListenPort(portKey)`**
-- **`ModulesInfos`** — Full module metadata including endpoints and per-row **`QwenOptions`** / **`GenericLlmProviderOptions`** (see `EngineModuleInfo` in `EngineConfigLoader.cs`) where applicable.
+- **`ModulesInfos`** — Full module metadata including endpoints and per-row **`QwenOptions`** / **`GenericLlmProviderOptions`** / **`EmbeddingsModuleOptions`** (see `EngineModuleInfo` in `EngineConfigLoader.cs`) where applicable.
 - **`ModuleAliases`** — Merged defaults + file overrides.
 - **`TurnPipelines` / `GetRequiredTurnPipeline(id)`** — Validated turn pipeline definitions.
 - **`ResolveProxyTargetModuleKey`**, **`FindModule`**, **`GetRequiredGenericLlmProviderModule()`** — Resolve **`generic_llm_provider`** to the concrete module row; provider code reads Ollama and **`num_ctx`** from that row’s option records.
+- **`GetRequiredGenericEmbeddingsModule()`** — Resolve **`generic_embeddings`**; embeddings provider reads **`embeddings_num_ctx`** (and Ollama/model fields) from that row’s **`EmbeddingsOptions`**.
 
 ## Token counting and budget telemetry
 

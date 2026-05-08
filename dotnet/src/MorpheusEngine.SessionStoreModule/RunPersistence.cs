@@ -176,7 +176,7 @@ internal sealed class RunPersistence
         return new MemoryLoadContextResponse(
             true,
             ReadMemoryBlocks(connection, includeReadOnly: true),
-            ReadRecentMessages(connection, request.RecentMessageCount, roles: null),
+            ReadRecentMessages(connection, request.MaxFullMessages, roles: null),
             ReadLatestSnapshot(connection),
             budget,
             ReadRecentSummaries(connection, limit: 5));

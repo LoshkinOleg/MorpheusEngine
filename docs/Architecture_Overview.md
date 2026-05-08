@@ -2,6 +2,8 @@
 
 MorpheusEngine is a **local-first orchestration stack** for a text-heavy game engine: multiple **.NET console processes** communicate over **HTTP on localhost**, coordinated by a shared JSON configuration. A **WPF desktop app** is the primary operator UI; it can start the same engine process graph the headless `MorpheusEngine` class would start.
 
+Last reviewed: 2026-05-08.
+
 ## High-level diagram
 
 ```mermaid
@@ -12,18 +14,25 @@ flowchart LR
     R[Router]
     SS[SessionStore]
     Dir[Director]
+    MDir[MemoryDirector]
     IE[IntentExtractor]
     Qwen[LlmProvider_qwen]
+    Emb[Embeddings_ollama]
     UI -->|HTTP localhost| R
     Eng -->|spawns| R
     Eng -->|spawns| SS
     Eng -->|spawns| Dir
+    Eng -->|spawns| MDir
     Eng -->|spawns| IE
     Eng -->|spawns| Qwen
+    Eng -->|spawns| Emb
     R --> SS
     R --> Dir
+    R --> MDir
     R --> Qwen
+    R --> Emb
     Dir -->|proxy| R
+    MDir -->|proxy| R
     IE -->|proxy| R
     Qwen --> Ollama[Ollama]
   end
@@ -45,8 +54,10 @@ dotnet/
     MorpheusEngine.RouterModule/   # HTTP API gateway
     MorpheusEngine.SessionStoreModule/
     MorpheusEngine.Director/
+    MorpheusEngine.MemoryDirector/
     MorpheusEngine.IntentExtractor/
     MorpheusEngine.LlmProvider_qwen/
+    MorpheusEngine.Embeddings_ollama/
 ```
 
 ## Engine host (`MorpheusEngine` class)

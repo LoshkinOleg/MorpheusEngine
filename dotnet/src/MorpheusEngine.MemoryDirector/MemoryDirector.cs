@@ -796,7 +796,7 @@ public sealed class MemoryDirector
         var response = await _routerProxy.PostAsync<MemoryLoadContextRequest, MemoryLoadContextResponse>(
             "session_store",
             "/memory/load_context",
-            new MemoryLoadContextRequest(turn, _options.RecentMessageCount));
+            new MemoryLoadContextRequest(turn, _options.MaxFullMessages));
         if (response.Payload is null || !response.Payload.Ok)
         {
             throw new InvalidOperationException("Failed to load memory context: " + response.RawBody);
@@ -822,7 +822,7 @@ public sealed class MemoryDirector
         var recent = await _routerProxy.PostAsync<MemoryMessagesRecentRequest, MemoryMessagesRecentResponse>(
             "session_store",
             "/memory/messages/recent",
-            new MemoryMessagesRecentRequest(Math.Max(_options.RecentMessageCount * 3, _options.RecentMessageCount + 1), null));
+            new MemoryMessagesRecentRequest(Math.Max(_options.MaxFullMessages * 3, _options.MaxFullMessages + 1), null));
         if (recent.Payload is null || !recent.Payload.Ok)
         {
             throw new InvalidOperationException("Failed to inspect messages for compaction: " + recent.RawBody);
@@ -833,12 +833,12 @@ public sealed class MemoryDirector
             .OrderBy(message => message.Turn)
             .ThenBy(message => message.StepNumber)
             .ToArray();
-        if (compactable.Length <= _options.RecentMessageCount)
+        if (compactable.Length <= _options.MaxFullMessages)
         {
             return;
         }
 
-        var messagesToSummarize = compactable.Take(compactable.Length - _options.RecentMessageCount).ToArray();
+        var messagesToSummarize = compactable.Take(compactable.Length - _options.MaxFullMessages).ToArray();
         if (messagesToSummarize.Length == 0)
         {
             return;

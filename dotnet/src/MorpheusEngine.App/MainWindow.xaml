@@ -317,12 +317,40 @@
                                     <RowDefinition Height="8" />
                                     <RowDefinition Height="*" />
                                 </Grid.RowDefinitions>
-                                <Button Grid.Row="0"
-                                        Width="72"
-                                        Height="26"
-                                        HorizontalAlignment="Right"
-                                        Content="Copy"
-                                        Click="CopyConsoleToClipboardButton_Click" />
+                                <Grid Grid.Row="0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="8" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0"
+                                                Orientation="Horizontal"
+                                                VerticalAlignment="Center">
+                                        <TextBlock Text="Filter (modules):"
+                                                   Margin="0,0,8,0"
+                                                   VerticalAlignment="Center"
+                                                   Foreground="#AEB5C4" />
+                                        <TextBox x:Name="ConsoleFilterTextBox"
+                                                 MinWidth="200"
+                                                 Height="26"
+                                                 VerticalContentAlignment="Center"
+                                                 Padding="8,0"
+                                                 FontFamily="Consolas"
+                                                 FontSize="12"
+                                                 Background="#171C26"
+                                                 Foreground="#DDDDDD"
+                                                 BorderBrush="#324055"
+                                                 BorderThickness="1"
+                                                 ToolTip="Comma-separated module port keys (e.g. llm_provider_qwen, router). Prefix - to exclude a module (e.g. -router). Log id ranges: (startSeq;endSeq) keeps that inclusive range; -(startSeq;endSeq) drops it. Leave either side empty for an open bound (e.g. (;100), (50;), (;)). Combine ranges, e.g. (0;300), -(25;30). Empty = show all."
+                                                 TextChanged="ConsoleFilterTextBox_TextChanged" />
+                                    </StackPanel>
+                                    <Button Grid.Column="2"
+                                            Width="72"
+                                            Height="26"
+                                            VerticalAlignment="Center"
+                                            Content="Copy"
+                                            Click="CopyConsoleToClipboardButton_Click" />
+                                </Grid>
                                 <Border Grid.Row="2"
                                         BorderThickness="1"
                                         BorderBrush="#4A4A4A"

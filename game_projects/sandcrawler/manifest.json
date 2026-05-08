@@ -3,7 +3,5 @@
   "title": "Sandcrawler Captain",
   "turn_pipeline": "memory_director_default",
   "required_modules": [
-    "generic_director",
-    "session_store"
   ]
 }
