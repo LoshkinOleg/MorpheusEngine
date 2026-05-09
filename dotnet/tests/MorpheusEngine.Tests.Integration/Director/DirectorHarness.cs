@@ -10,8 +10,11 @@ namespace MorpheusEngine.Tests.Integration.Director;
 
 internal sealed class DirectorHarness : IAsyncDisposable
 {
+    private static readonly TimeSpan SHUTDOWN_WAIT_TIMEOUT = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan READINESS_TIMEOUT = TimeSpan.FromSeconds(5);
+
     private readonly TempGameProject _gameProject;
-    private readonly Task _runTask;
+    private readonly SingleListenerLifecycle _lifecycle;
     private readonly HttpClient _outboundHttpClient;
     private readonly DirectorType _host;
 
@@ -37,7 +40,7 @@ internal sealed class DirectorHarness : IAsyncDisposable
             BaseAddress = new Uri($"http://127.0.0.1:{DirectorPort}/"),
             Timeout = TimeSpan.FromSeconds(10)
         };
-        _runTask = _host.Run();
+        _lifecycle = new SingleListenerLifecycle(Client, _host.Run(), "Director", DirectorPort);
     }
 
     public HttpClient Client { get; }
@@ -89,64 +92,21 @@ internal sealed class DirectorHarness : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        try
-        {
-            if (!_runTask.IsCompleted)
-            {
-                using var _ = await Client.PostAsync(
-                    "/shutdown",
-                    new StringContent("{}", Encoding.UTF8, "application/json"));
-            }
-        }
-        catch
-        {
-            // Best-effort shutdown for temporary Director listeners.
-        }
-
-        Client.Dispose();
-
-        try
-        {
-            await _runTask.WaitAsync(TimeSpan.FromSeconds(5));
-        }
-        catch
-        {
-            // Best-effort wait; cleanup still needs to continue.
-        }
-
-        EngineConfigLoader.ResetForTesting();
-        _gameProject.Dispose();
+        // Every step runs in registration order; collected failures are surfaced as a single
+        // AggregateException at the end so a stuck listener / locked temp dir stops being a
+        // silent leak (see docs/LLM_TestHarnessAudit.md, lines 3-54).
+        var collector = new HarnessTeardownErrorCollector(nameof(DirectorHarness));
+        await collector.RunAsync(
+            "director.shutdown",
+            () => _lifecycle.ShutdownAsync(SHUTDOWN_WAIT_TIMEOUT));
+        collector.Run("temp_project.dispose", _gameProject.Dispose);
+        collector.Run("engine_config_loader.reset", EngineConfigLoader.ResetForTesting);
+        collector.ThrowIfAny();
     }
 
-    private async Task WaitUntilReadyAsync()
+    private Task WaitUntilReadyAsync()
     {
-        var deadline = DateTime.UtcNow.AddSeconds(5);
-        while (DateTime.UtcNow < deadline)
-        {
-            if (_runTask.IsFaulted)
-            {
-                await _runTask;
-            }
-
-            try
-            {
-                using var response = await Client.GetAsync("/health");
-                if (response.StatusCode == HttpStatusCode.OK || response.StatusCode == HttpStatusCode.ServiceUnavailable)
-                {
-                    return;
-                }
-            }
-            catch (HttpRequestException)
-            {
-            }
-            catch (TaskCanceledException)
-            {
-            }
-
-            await Task.Delay(50);
-        }
-
-        throw new TimeoutException($"Director did not start listening on port {DirectorPort} within the allotted time.");
+        return _lifecycle.WaitUntilHealthyAsync(READINESS_TIMEOUT);
     }
 
     private static void WriteDirectorSchema(TempGameProject gameProject)
@@ -162,25 +122,12 @@ internal sealed class DirectorHarness : IAsyncDisposable
             Path.Combine(schemaDirectory, "director_action.schema.json"),
             File.ReadAllText(
                 Path.Combine(
-                    GetRepositoryRoot(),
+                    RepositoryRootLocator.GetRepositoryRoot(),
                     "dotnet",
                     "src",
                     "MorpheusEngine.LlmProvider_qwen",
                     "schemas",
                     "director_action.schema.json")));
-    }
-
-    private static string GetRepositoryRoot()
-    {
-        return Path.GetFullPath(
-            Path.Combine(
-                AppContext.BaseDirectory,
-                "..",
-                "..",
-                "..",
-                "..",
-                "..",
-                ".."));
     }
 }
 

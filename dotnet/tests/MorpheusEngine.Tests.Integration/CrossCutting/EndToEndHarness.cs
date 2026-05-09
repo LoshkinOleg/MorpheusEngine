@@ -53,12 +53,14 @@ internal sealed class EndToEndHarness : IAsyncDisposable
         PropertyNameCaseInsensitive = true
     };
 
+    private static readonly TimeSpan SHUTDOWN_WAIT_TIMEOUT = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan READINESS_TIMEOUT = TimeSpan.FromSeconds(5);
+
     private readonly TempGameProject _gameProject;
-    private readonly Task _routerTask;
-    private readonly Task _memoryDirectorTask;
-    private readonly Task _sessionStoreTask;
-    private readonly Task _embeddingsTask;
-    private readonly Task? _qwenTask;
+    // Per-listener lifecycles in startup order. Stored as a list so DisposeAsync can route every
+    // shutdown through HarnessTeardownErrorCollector with a single foreach instead of one
+    // hand-rolled call per module.
+    private readonly List<SingleListenerLifecycle> _lifecycles = new();
     private readonly Task? _alternateProviderTask;
     private readonly HttpClient _routerOutboundHttpClient;
     private readonly HttpClient _memoryDirectorOutboundHttpClient;
@@ -140,24 +142,35 @@ internal sealed class EndToEndHarness : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        await ShutdownClientAsync(RouterClient, _routerTask);
-        await ShutdownClientAsync(SessionStoreClient, _sessionStoreTask);
-        await ShutdownClientAsync(MemoryDirectorClient, _memoryDirectorTask);
-        await ShutdownClientAsync(EmbeddingsClient, _embeddingsTask);
-
-        if (QwenClient is not null && _qwenTask is not null)
+        // Same teardown contract as the per-module harnesses: every step runs in registration
+        // order, errors are collected, and the AggregateException at the end fails the test if
+        // anything went wrong. The lifecycles already shut down listeners in router-first order
+        // so cross-module dependencies (router -> memory_director -> session_store) unwind in
+        // a sane sequence.
+        var collector = new HarnessTeardownErrorCollector(nameof(EndToEndHarness));
+        foreach (var lifecycle in _lifecycles)
         {
-            await ShutdownClientAsync(QwenClient, _qwenTask);
+            await collector.RunAsync(
+                $"{lifecycle.ModuleName}.shutdown",
+                () => lifecycle.ShutdownAsync(SHUTDOWN_WAIT_TIMEOUT));
         }
 
         if (AlternateProvider is not null && _alternateProviderTask is not null)
         {
-            await AlternateProvider.DisposeAsync();
-            await WaitForCompletionAsync(_alternateProviderTask);
+            // AlternateChatProviderHost owns its own HttpListener-based shutdown path and has a
+            // dedicated DisposeAsync; route both through the collector so its failures surface
+            // identically to the lifecycle-managed listeners.
+            await collector.RunAsync(
+                "alternate_llm_provider.dispose",
+                () => AlternateProvider.DisposeAsync().AsTask());
+            await collector.RunAsync(
+                "alternate_llm_provider.wait_for_completion",
+                () => _alternateProviderTask.WaitAsync(SHUTDOWN_WAIT_TIMEOUT));
         }
 
-        _gameProject.Dispose();
-        EngineConfigLoader.ResetForTesting();
+        collector.Run("temp_project.dispose", _gameProject.Dispose);
+        collector.Run("engine_config_loader.reset", EngineConfigLoader.ResetForTesting);
+        collector.ThrowIfAny();
     }
 
     #endregion
@@ -193,6 +206,9 @@ internal sealed class EndToEndHarness : IAsyncDisposable
         }
         else
         {
+            // Qwen host construction happens here, but Run() is called later when the lifecycle
+            // entry is appended so it stays consistent with the other listeners and isn't started
+            // twice.
             QwenOllama = new ScriptedQwenOllama();
             _qwenOutboundHttpClient = new HttpClient(QwenOllama.Handler, disposeHandler: false)
             {
@@ -200,7 +216,6 @@ internal sealed class EndToEndHarness : IAsyncDisposable
             };
             _qwenHost = new QwenProviderType(configuration, _qwenOutboundHttpClient);
             _qwenHost.DisableBundledOllamaBootstrapForTesting();
-            _qwenTask = _qwenHost.Run();
             QwenClient = new HttpClient
             {
                 BaseAddress = new Uri($"http://127.0.0.1:{qwenPort}/"),
@@ -247,28 +262,68 @@ internal sealed class EndToEndHarness : IAsyncDisposable
             Timeout = TimeSpan.FromSeconds(10)
         };
 
-        _routerTask = _routerHost.Run();
-        _memoryDirectorTask = _memoryDirectorHost.RunAsync();
-        _sessionStoreTask = _sessionStoreHost.RunAsync();
-        _embeddingsTask = _embeddingsHost.RunAsync();
+        // Lifecycle order matters during teardown: router unbinds first so it stops dispatching
+        // turns into the memory_director / session_store / embeddings modules before they are
+        // told to shut down. Qwen, when present, is the leaf provider so it goes last.
+        _lifecycles.Add(new SingleListenerLifecycle(RouterClient, _routerHost.Run(), "router", routerPort));
+        _lifecycles.Add(new SingleListenerLifecycle(MemoryDirectorClient, _memoryDirectorHost.RunAsync(), "memory_director", memoryDirectorPort));
+        _lifecycles.Add(new SingleListenerLifecycle(SessionStoreClient, _sessionStoreHost.RunAsync(), "session_store", sessionStorePort));
+        _lifecycles.Add(new SingleListenerLifecycle(EmbeddingsClient, _embeddingsHost.RunAsync(), "embeddings_ollama", embeddingsPort));
+        if (QwenClient is not null && _qwenHost is not null)
+        {
+            _lifecycles.Add(new SingleListenerLifecycle(QwenClient, _qwenHost.Run(), "llm_provider_qwen", qwenPort));
+        }
     }
 
     private async Task WaitUntilListeningAsync()
     {
-        // Each module listens independently; the harness only binds the run after all listeners are accepting requests.
-        await WaitUntilHealthyEndpointRespondsAsync(RouterClient, _routerTask, "router");
-        await WaitUntilHealthyEndpointRespondsAsync(SessionStoreClient, _sessionStoreTask, "session_store");
-        await WaitUntilHealthyEndpointRespondsAsync(EmbeddingsClient, _embeddingsTask, "embeddings_ollama");
-
-        if (QwenClient is not null && _qwenTask is not null)
+        // Each module listens independently; the harness only binds the run after all listeners
+        // are accepting requests. Iterating the lifecycle list keeps this in lockstep with the
+        // listener set declared in the constructor.
+        foreach (var lifecycle in _lifecycles)
         {
-            await WaitUntilHealthyEndpointRespondsAsync(QwenClient, _qwenTask, "llm_provider_qwen");
+            await lifecycle.WaitUntilHealthyAsync(READINESS_TIMEOUT);
         }
 
-        if (AlternateProvider is not null)
+        if (AlternateProvider is not null && _alternateProviderTask is not null)
         {
-            await WaitUntilHealthyEndpointRespondsAsync(AlternateProvider.Client, _alternateProviderTask!, "alternate_llm_provider");
+            // AlternateChatProviderHost predates SingleListenerLifecycle (HttpListener-based, not
+            // ModuleHost-based) and is wired up by hand. The polling loop below mirrors what the
+            // lifecycle helper does for the in-process module hosts.
+            await WaitUntilAlternateProviderHealthyAsync(_alternateProviderTask);
         }
+    }
+
+    private async Task WaitUntilAlternateProviderHealthyAsync(Task runTask)
+    {
+        var deadline = DateTime.UtcNow.Add(READINESS_TIMEOUT);
+        while (DateTime.UtcNow < deadline)
+        {
+            if (runTask.IsFaulted)
+            {
+                await runTask.ConfigureAwait(false);
+            }
+
+            try
+            {
+                using var response = await AlternateProvider!.Client.GetAsync("/health");
+                if (response.StatusCode == HttpStatusCode.OK || response.StatusCode == HttpStatusCode.ServiceUnavailable)
+                {
+                    return;
+                }
+            }
+            catch (HttpRequestException)
+            {
+            }
+            catch (TaskCanceledException)
+            {
+            }
+
+            await Task.Delay(50);
+        }
+
+        throw new TimeoutException(
+            $"alternate_llm_provider did not start listening within {READINESS_TIMEOUT.TotalSeconds:0.###}s.");
     }
 
     private async Task InitializeAsync()
@@ -318,67 +373,6 @@ internal sealed class EndToEndHarness : IAsyncDisposable
             await EnsureStatusCodeAsync(routerResponse, HttpStatusCode.OK, "router /initialize");
         }
         await WaitForModuleStatusAsync(RouterClient, "healthy", "router");
-    }
-
-    private static async Task ShutdownClientAsync(HttpClient client, Task runTask)
-    {
-        try
-        {
-            if (!runTask.IsCompleted)
-            {
-                using var _ = await client.PostAsync("/shutdown", new StringContent("{}", Encoding.UTF8, "application/json"));
-            }
-        }
-        catch
-        {
-            // Best-effort shutdown is enough for ephemeral test listeners.
-        }
-
-        client.Dispose();
-        await WaitForCompletionAsync(runTask);
-    }
-
-    private static async Task WaitForCompletionAsync(Task task)
-    {
-        try
-        {
-            await task.WaitAsync(TimeSpan.FromSeconds(5));
-        }
-        catch
-        {
-            // Listener teardown is best-effort; temp directories must still be cleaned up.
-        }
-    }
-
-    private static async Task WaitUntilHealthyEndpointRespondsAsync(HttpClient client, Task runTask, string moduleName)
-    {
-        var deadline = DateTime.UtcNow.AddSeconds(5);
-        while (DateTime.UtcNow < deadline)
-        {
-            if (runTask.IsFaulted)
-            {
-                await runTask;
-            }
-
-            try
-            {
-                using var response = await client.GetAsync("/health");
-                if (response.StatusCode == HttpStatusCode.OK || response.StatusCode == HttpStatusCode.ServiceUnavailable)
-                {
-                    return;
-                }
-            }
-            catch (HttpRequestException)
-            {
-            }
-            catch (TaskCanceledException)
-            {
-            }
-
-            await Task.Delay(50);
-        }
-
-        throw new TimeoutException($"{moduleName} did not start listening within the allotted time.");
     }
 
     private static async Task WaitForModuleStatusAsync(HttpClient client, string expectedStatus, string moduleName)
@@ -446,7 +440,7 @@ internal sealed class EndToEndHarness : IAsyncDisposable
             Path.Combine(schemaDirectory, "memory_director_action.schema.json"),
             File.ReadAllText(
                 Path.Combine(
-                    GetRepositoryRoot(),
+                    RepositoryRootLocator.GetRepositoryRoot(),
                     "dotnet",
                     "src",
                     "MorpheusEngine.LlmProvider_qwen",
@@ -465,19 +459,6 @@ internal sealed class EndToEndHarness : IAsyncDisposable
               "turn_pipeline": "memory_director_default"
             }
             """;
-    }
-
-    private static string GetRepositoryRoot()
-    {
-        return Path.GetFullPath(
-            Path.Combine(
-                AppContext.BaseDirectory,
-                "..",
-                "..",
-                "..",
-                "..",
-                "..",
-                ".."));
     }
 
     #endregion
@@ -782,6 +763,9 @@ internal sealed class EndToEndHarness : IAsyncDisposable
 
         public async ValueTask DisposeAsync()
         {
+            // Mirror the SingleListenerLifecycle contract: propagate POST /shutdown failures so
+            // the surrounding HarnessTeardownErrorCollector can surface them, and dispose the
+            // Client unconditionally via finally so a hung shutdown doesn't leak the socket.
             try
             {
                 if (!_shutdownRequested)
@@ -789,11 +773,10 @@ internal sealed class EndToEndHarness : IAsyncDisposable
                     using var _ = await Client.PostAsync("/shutdown", new StringContent("{}", Encoding.UTF8, "application/json"));
                 }
             }
-            catch
+            finally
             {
+                Client.Dispose();
             }
-
-            Client.Dispose();
         }
 
         private async Task ProcessRequestAsync(HttpListenerContext context)

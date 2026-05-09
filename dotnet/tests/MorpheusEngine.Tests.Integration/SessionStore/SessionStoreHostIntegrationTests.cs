@@ -267,9 +267,12 @@ public sealed class SessionStoreHostIntegrationTests
 
     private sealed class SessionStoreHostHarness : IAsyncDisposable
     {
+        private static readonly TimeSpan SHUTDOWN_WAIT_TIMEOUT = TimeSpan.FromSeconds(5);
+        private static readonly TimeSpan READINESS_TIMEOUT = TimeSpan.FromSeconds(5);
+
         private readonly SessionStoreHost _host;
         private readonly HttpClient _hostHttpClient;
-        private readonly Task _runTask;
+        private readonly SingleListenerLifecycle _lifecycle;
         private readonly TempGameProject _gameProject;
 
         private SessionStoreHostHarness(TempGameProject gameProject, EngineConfiguration configuration)
@@ -292,7 +295,7 @@ public sealed class SessionStoreHostIntegrationTests
                 BaseAddress = new Uri($"http://127.0.0.1:{Port}/"),
                 Timeout = TimeSpan.FromSeconds(10)
             };
-            _runTask = _host.RunAsync();
+            _lifecycle = new SingleListenerLifecycle(Client, _host.RunAsync(), "SessionStoreHost", Port);
         }
 
         public HttpClient Client { get; }
@@ -345,62 +348,18 @@ public sealed class SessionStoreHostIntegrationTests
 
         public async ValueTask DisposeAsync()
         {
-            try
-            {
-                if (!_runTask.IsCompleted)
-                {
-                    using var _ = await Client.PostAsync("/shutdown", new StringContent("{}", System.Text.Encoding.UTF8, "application/json"));
-                }
-            }
-            catch
-            {
-                // Best-effort host shutdown for temp listener cleanup.
-            }
-
-            Client.Dispose();
-
-            try
-            {
-                await _runTask.WaitAsync(TimeSpan.FromSeconds(5));
-            }
-            catch
-            {
-                // Best-effort wait; temp directory cleanup still needs to run.
-            }
-
-            EngineConfigLoader.ResetForTesting();
-            _gameProject.Dispose();
+            var collector = new HarnessTeardownErrorCollector(nameof(SessionStoreHostHarness));
+            await collector.RunAsync(
+                "session_store.shutdown",
+                () => _lifecycle.ShutdownAsync(SHUTDOWN_WAIT_TIMEOUT));
+            collector.Run("temp_project.dispose", _gameProject.Dispose);
+            collector.Run("engine_config_loader.reset", EngineConfigLoader.ResetForTesting);
+            collector.ThrowIfAny();
         }
 
-        private async Task WaitUntilReadyAsync()
+        private Task WaitUntilReadyAsync()
         {
-            var deadline = DateTime.UtcNow.AddSeconds(5);
-            while (DateTime.UtcNow < deadline)
-            {
-                if (_runTask.IsFaulted)
-                {
-                    await _runTask;
-                }
-
-                try
-                {
-                    using var response = await Client.GetAsync("/health");
-                    if (response.StatusCode == HttpStatusCode.OK || response.StatusCode == HttpStatusCode.ServiceUnavailable)
-                    {
-                        return;
-                    }
-                }
-                catch (HttpRequestException)
-                {
-                }
-                catch (TaskCanceledException)
-                {
-                }
-
-                await Task.Delay(50);
-            }
-
-            throw new TimeoutException($"SessionStoreHost did not start listening on port {Port} within the allotted time.");
+            return _lifecycle.WaitUntilHealthyAsync(READINESS_TIMEOUT);
         }
     }
 }

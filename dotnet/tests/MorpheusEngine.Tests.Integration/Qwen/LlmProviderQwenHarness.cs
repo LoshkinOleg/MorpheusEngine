@@ -1,6 +1,4 @@
-using System.Net;
 using System.Net.Http.Json;
-using System.Text;
 using MorpheusEngine;
 using MorpheusEngine.Tests.Integration.Fixtures;
 using MorpheusEngine.Tests.Integration.Helpers;
@@ -10,8 +8,11 @@ namespace MorpheusEngine.Tests.Integration.Qwen;
 
 internal sealed class LlmProviderQwenHarness : IAsyncDisposable
 {
+    private static readonly TimeSpan SHUTDOWN_WAIT_TIMEOUT = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan READINESS_TIMEOUT = TimeSpan.FromSeconds(5);
+
     private readonly TempGameProject _gameProject;
-    private readonly Task _runTask;
+    private readonly SingleListenerLifecycle _lifecycle;
     private readonly HttpClient _outboundHttpClient;
     private readonly QwenProviderType _host;
 
@@ -37,7 +38,7 @@ internal sealed class LlmProviderQwenHarness : IAsyncDisposable
             BaseAddress = new Uri($"http://127.0.0.1:{ProviderPort}/"),
             Timeout = TimeSpan.FromSeconds(10)
         };
-        _runTask = _host.Run();
+        _lifecycle = new SingleListenerLifecycle(Client, _host.Run(), "LlmProviderQwen", ProviderPort);
     }
 
     public HttpClient Client { get; }
@@ -106,63 +107,17 @@ internal sealed class LlmProviderQwenHarness : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        try
-        {
-            if (!_runTask.IsCompleted)
-            {
-                using var _ = await Client.PostAsync(
-                    "/shutdown",
-                    new StringContent("{}", Encoding.UTF8, "application/json"));
-            }
-        }
-        catch
-        {
-            // Best-effort shutdown for temporary integration hosts.
-        }
-
-        Client.Dispose();
-
-        try
-        {
-            await _runTask.WaitAsync(TimeSpan.FromSeconds(5));
-        }
-        catch
-        {
-            // Best-effort wait; cleanup still needs to proceed.
-        }
-
-        EngineConfigLoader.ResetForTesting();
-        _gameProject.Dispose();
+        var collector = new HarnessTeardownErrorCollector(nameof(LlmProviderQwenHarness));
+        await collector.RunAsync(
+            "llm_provider_qwen.shutdown",
+            () => _lifecycle.ShutdownAsync(SHUTDOWN_WAIT_TIMEOUT));
+        collector.Run("temp_project.dispose", _gameProject.Dispose);
+        collector.Run("engine_config_loader.reset", EngineConfigLoader.ResetForTesting);
+        collector.ThrowIfAny();
     }
 
-    private async Task WaitUntilReadyAsync()
+    private Task WaitUntilReadyAsync()
     {
-        var deadline = DateTime.UtcNow.AddSeconds(5);
-        while (DateTime.UtcNow < deadline)
-        {
-            if (_runTask.IsFaulted)
-            {
-                await _runTask;
-            }
-
-            try
-            {
-                using var response = await Client.GetAsync("/health");
-                if (response.StatusCode == HttpStatusCode.OK || response.StatusCode == HttpStatusCode.ServiceUnavailable)
-                {
-                    return;
-                }
-            }
-            catch (HttpRequestException)
-            {
-            }
-            catch (TaskCanceledException)
-            {
-            }
-
-            await Task.Delay(50);
-        }
-
-        throw new TimeoutException($"LlmProviderQwen did not start listening on port {ProviderPort} within the allotted time.");
+        return _lifecycle.WaitUntilHealthyAsync(READINESS_TIMEOUT);
     }
 }

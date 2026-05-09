@@ -514,7 +514,21 @@ public sealed class MorpheusEngineCoreIntegrationTests : IDisposable
 
         public void Dispose()
         {
-            _gameProject.Dispose();
+            // TestEnvironment manages out-of-process module subprocesses spawned by the engine
+            // under test; their lifetime is the engine's responsibility, not the harness's. The
+            // OS often hasn't finalized handles on the temp tree by the time this Dispose runs,
+            // so we keep the same best-effort semantics here that File.Delete(EventLogPath) and
+            // moduleRoot deletion already use below. The harness teardown audit
+            // (docs/LLM_TestHarnessAudit.md, lines 3-54) targets in-process listener teardown,
+            // not these spawned-process cleanup paths.
+            try
+            {
+                _gameProject.Dispose();
+            }
+            catch
+            {
+            }
+
             try
             {
                 if (File.Exists(EventLogPath))
