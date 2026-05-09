@@ -1,8 +1,9 @@
 using System.Net;
 using System.Net.Http.Json;
-using System.Net.Sockets;
 using System.Text;
+using MorpheusEngine;
 using MorpheusEngine.Tests.Integration.Fixtures;
+using MorpheusEngine.Tests.Integration.Helpers;
 using IntentExtractorType = global::MorpheusEngine.IntentExtractor;
 
 namespace MorpheusEngine.Tests.Integration.IntentExtractor;
@@ -14,24 +15,25 @@ internal sealed class IntentExtractorHarness : IAsyncDisposable
     private readonly HttpClient _outboundHttpClient;
     private readonly IntentExtractorType _host;
 
-    private IntentExtractorHarness(TempGameProject gameProject, int intentExtractorPort, int routerPort)
+    private IntentExtractorHarness(TempGameProject gameProject, EngineConfiguration configuration)
     {
         _gameProject = gameProject;
         RepositoryRoot = gameProject.RepositoryRoot;
         GameProjectId = gameProject.GameProjectId;
         RunId = "test_run_001";
-        IntentExtractorPort = intentExtractorPort;
-        RouterPort = routerPort;
+        IntentExtractorPort = configuration.GetRequiredListenPort("intent_extractor");
+        RouterPort = configuration.GetRequiredListenPort("router");
 
         ProxyHandler = new MockRouterProxyHandler();
         _outboundHttpClient = new HttpClient(ProxyHandler)
         {
             Timeout = TimeSpan.FromSeconds(10)
         };
-        _host = new IntentExtractorType(CreateConfiguration(RepositoryRoot, intentExtractorPort, routerPort), _outboundHttpClient);
+
+        _host = new IntentExtractorType(configuration, _outboundHttpClient);
         Client = new HttpClient
         {
-            BaseAddress = new Uri($"http://127.0.0.1:{intentExtractorPort}/"),
+            BaseAddress = new Uri($"http://127.0.0.1:{IntentExtractorPort}/"),
             Timeout = TimeSpan.FromSeconds(10)
         };
         _runTask = _host.Run();
@@ -53,14 +55,19 @@ internal sealed class IntentExtractorHarness : IAsyncDisposable
 
     public static async Task<IntentExtractorHarness> CreateAsync()
     {
-        var intentExtractorPort = GetFreeTcpPort();
-        var routerPort = GetFreeTcpPort();
+        var document =
+            IntegrationEngineConfigurationFixture.LoadConfigurationsFixture("integration_intent_extractor.engine_config.json");
+
         var gameProject = new TempGameProject(
             "test_game",
             TestPayloads.MinimalManifestJson,
             loreCsv: null,
             systemInstructions: null);
-        var harness = new IntentExtractorHarness(gameProject, intentExtractorPort, routerPort);
+
+        IntegrationEngineConfigurationFixture.WriteEngineConfigJson(gameProject.RepositoryRoot, document);
+        var configurationAfterWrite =
+            IntegrationEngineConfigurationFixture.LoadConfigurationViaEngineConfigLoader(gameProject.RepositoryRoot);
+        var harness = new IntentExtractorHarness(gameProject, configurationAfterWrite);
         await harness.WaitUntilReadyAsync();
         return harness;
     }
@@ -104,6 +111,7 @@ internal sealed class IntentExtractorHarness : IAsyncDisposable
             // Best-effort wait; cleanup still needs to proceed.
         }
 
+        EngineConfigLoader.ResetForTesting();
         _gameProject.Dispose();
     }
 
@@ -136,62 +144,6 @@ internal sealed class IntentExtractorHarness : IAsyncDisposable
         }
 
         throw new TimeoutException($"IntentExtractor did not start listening on port {IntentExtractorPort} within the allotted time.");
-    }
-
-    private static EngineConfiguration CreateConfiguration(string repositoryRoot, int intentExtractorPort, int routerPort)
-    {
-        var ports = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["router"] = routerPort,
-            ["intent_extractor"] = intentExtractorPort,
-            ["llm_provider_qwen"] = routerPort + 1
-        };
-
-        var modules = new[]
-        {
-            new EngineModuleInfo(
-                "router",
-                "Router",
-                true,
-                10,
-                new EngineModuleLaunchInfo("router.dll"),
-                []),
-            new EngineModuleInfo(
-                "intent_extractor",
-                "Intent Extractor",
-                true,
-                20,
-                new EngineModuleLaunchInfo("intent_extractor.dll"),
-                []),
-            new EngineModuleInfo(
-                "llm_provider_qwen",
-                "LLM Provider",
-                true,
-                30,
-                new EngineModuleLaunchInfo("llm_provider_qwen.dll"),
-                [],
-                new GenericLlmProviderModuleOptions(4096),
-                new QwenModuleOptions(19112, "qwen2.5:7b"))
-        };
-
-        var aliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["generic_llm_provider"] = "llm_provider_qwen"
-        };
-
-        return new EngineConfiguration(
-            repositoryRoot,
-            new EnginePortMap(ports),
-            modules,
-            aliases,
-            new Dictionary<string, EngineTurnPipelineInfo>(StringComparer.OrdinalIgnoreCase));
-    }
-
-    private static int GetFreeTcpPort()
-    {
-        using var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        return ((IPEndPoint)listener.LocalEndpoint).Port;
     }
 }
 

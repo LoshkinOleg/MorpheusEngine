@@ -7,7 +7,7 @@ namespace MorpheusEngine.Tests.Integration.MemoryDirector;
 [Trait("Category", "Integration")]
 public sealed class MemoryDirectorAgentLoopTests
 {
-    // Verifies that a first-step send_message returns player-facing text.
+    // Verifies that a first-step generate_prose action returns player-facing text.
     [Fact]
     public async Task MemoryDirector_PostMessage_FirstStepSendMessage_ReturnsPlayerFacingText()
     {
@@ -17,7 +17,7 @@ public sealed class MemoryDirectorAgentLoopTests
 
         harness.ProxyHandler.EnqueueChatAction(
             "Narrate the immediate result.",
-            "send_message",
+            "generate_prose",
             """{"message":"You ease the vault door open."}""");
 
         using var response = await harness.PostMessageAsync(1, "open the vault");
@@ -35,13 +35,13 @@ public sealed class MemoryDirectorAgentLoopTests
             && message.StepNumber == 1
             && message.Role == "assistant"
             && message.MessageType == "send_message"
-            && message.ToolName == "send_message"
-            && message.Content.Contains("\"tool\":\"send_message\"", StringComparison.Ordinal));
+            && message.ToolName == "generate_prose"
+            && message.Content.Contains("\"tool\":\"generate_prose\"", StringComparison.Ordinal));
     }
 
     // Verifies that a memory append is reflected in the next loop step.
     [Fact]
-    public async Task MemoryDirector_PostMessage_CoreMemoryAppendThenSendMessage_UsesUpdatedBlockOnNextStep()
+    public async Task MemoryDirector_PostMessage_CoreMemoryAppendThenGenerateProse_UsesUpdatedBlockOnNextStep()
     {
         await using var harness = await MemoryDirectorHarness.CreateAsync();
         using var initializeResponse = await harness.InitializeAsync();
@@ -53,7 +53,7 @@ public sealed class MemoryDirectorAgentLoopTests
             """{"label":"player","content":"Carries a humming brass key."}""");
         harness.ProxyHandler.EnqueueChatAction(
             "Now narrate using the updated memory.",
-            "send_message",
+            "generate_prose",
             """{"message":"The brass key vibrates in your palm as the vault responds."}""");
 
         using var response = await harness.PostMessageAsync(2, "hold up the brass key");
@@ -126,7 +126,7 @@ public sealed class MemoryDirectorAgentLoopTests
             "{}");
         harness.ProxyHandler.EnqueueChatAction(
             "Recover and narrate plainly.",
-            "send_message",
+            "generate_prose",
             """{"message":"You hesitate, then simply study the sealed archway."}""");
 
         using var response = await harness.PostMessageAsync(1, "use the portal controls");
@@ -156,7 +156,7 @@ public sealed class MemoryDirectorAgentLoopTests
         harness.ProxyHandler.EnqueueChatResponse(new ChatGenerateResponse(true, "not-json", """{"done":true}"""));
         harness.ProxyHandler.EnqueueChatAction(
             "Recover with a direct answer.",
-            "send_message",
+            "generate_prose",
             """{"message":"A dry wind crosses the chamber, but nothing else changes."}""");
 
         using var response = await harness.PostMessageAsync(1, "look around");
@@ -199,7 +199,7 @@ public sealed class MemoryDirectorAgentLoopTests
 
         harness.ProxyHandler.EnqueueChatAction(
             "Prove the initialized prompt is in context.",
-            "send_message",
+            "generate_prose",
             """{"message":"You steady your breath and study the room."}""");
 
         using var response = await harness.PostMessageAsync(1, "look around");
@@ -235,7 +235,7 @@ public sealed class MemoryDirectorAgentLoopTests
         SeedHistoricalMessages(harness.ProxyHandler);
         harness.ProxyHandler.EnqueueChatAction(
             "End the turn quickly.",
-            "send_message",
+            "generate_prose",
             """{"message":"The old patrol routes click into focus."}""");
 
         using var response = await harness.PostMessageAsync(4, "review the patrol notes");

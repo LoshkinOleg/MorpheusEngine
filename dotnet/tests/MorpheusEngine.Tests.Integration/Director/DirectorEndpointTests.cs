@@ -27,7 +27,7 @@ public sealed class DirectorEndpointTests
                 forwardedBody = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
                 return BuildJsonHttpResponse(
                     HttpStatusCode.OK,
-                    new ChatGenerateResponse(true, "You stand still and listen.", """{"done":true}"""));
+                    BuildGenerateProseResponse("You stand still and listen."));
             });
 
         using var response = await harness.PostMessageAsync(1, "look around");
@@ -45,6 +45,8 @@ public sealed class DirectorEndpointTests
         document.RootElement.GetProperty("targetPath").GetString().Should().Be("/chat");
         document.RootElement.GetProperty("method").GetString().Should().Be("POST");
         document.RootElement.GetProperty("body").GetProperty("messages")[1].GetProperty("content").GetString().Should().Be("look around");
+        document.RootElement.GetProperty("body").TryGetProperty("format", out var format).Should().BeTrue();
+        format.GetProperty("required")[0].GetString().Should().Be("message");
     }
 
     // Verifies that message requests are rejected before initialization.
@@ -105,8 +107,8 @@ public sealed class DirectorEndpointTests
         var forwardedBodies = new List<string>();
         var responses = new Queue<ChatGenerateResponse>(
         [
-            new ChatGenerateResponse(true, "You stand still and listen.", """{"done":true}"""),
-            new ChatGenerateResponse(true, "The door creaks open.", """{"done":true}""")
+            BuildGenerateProseResponse("You stand still and listen."),
+            BuildGenerateProseResponse("The door creaks open.")
         ]);
         harness.ProxyHandler.On(
             "POST",
@@ -159,7 +161,7 @@ public sealed class DirectorEndpointTests
                 handlerCallCount++;
                 return handlerCallCount == 1
                     ? BuildJsonHttpResponse(HttpStatusCode.OK, new ChatGenerateResponse(false, null, """{"done":true}"""))
-                    : BuildJsonHttpResponse(HttpStatusCode.OK, new ChatGenerateResponse(true, "You stand still and listen.", """{"done":true}"""));
+                    : BuildJsonHttpResponse(HttpStatusCode.OK, BuildGenerateProseResponse("You stand still and listen."));
             });
 
         using var failedResponse = await harness.PostMessageAsync(1, "look around");
@@ -199,9 +201,9 @@ public sealed class DirectorEndpointTests
         payload!.Error.Should().Be("LLM chat response was empty or missing 'response'.");
     }
 
-    // Verifies that invalid JSON from the proxied LLM returns an unprocessable entity error.
+    // Verifies that non-JSON response text from the proxied LLM returns an unprocessable entity error.
     [Fact]
-    public async Task Director_PostMessage_NonJsonLlmResponse_ReturnsUnprocessableEntity()
+    public async Task Director_PostMessage_NonJsonResponse_ReturnsUnprocessableEntity()
     {
         await using var harness = await DirectorHarness.CreateAsync();
         using var initializeResponse = await harness.InitializeAsync();
@@ -210,17 +212,56 @@ public sealed class DirectorEndpointTests
         harness.ProxyHandler.On(
             "POST",
             "/proxy",
-            _ => new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent("not-json", System.Text.Encoding.UTF8, "application/json")
-            });
+            BuildJsonHandler(HttpStatusCode.OK, new ChatGenerateResponse(true, "not-json", """{"done":true}""")));
 
         using var response = await harness.PostMessageAsync(1, "look around");
 
         response.StatusCode.Should().Be((HttpStatusCode)422);
         var payload = await response.Content.ReadFromJsonAsync<ErrorResponse>();
         payload.Should().NotBeNull();
-        payload!.Error.Should().Be("Proxied LLM response was not valid JSON.");
+        payload!.Error.Should().Be("LLM response did not match director action schema.");
+    }
+
+    // Verifies that missing message from the proxied LLM returns an unprocessable entity error.
+    [Fact]
+    public async Task Director_PostMessage_ResponseMissingMessage_ReturnsUnprocessableEntity()
+    {
+        await using var harness = await DirectorHarness.CreateAsync();
+        using var initializeResponse = await harness.InitializeAsync();
+        initializeResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        harness.ProxyHandler.On(
+            "POST",
+            "/proxy",
+            BuildJsonHandler(HttpStatusCode.OK, new ChatGenerateResponse(true, """{"text":"hello"}""", """{"done":true}""")));
+
+        using var response = await harness.PostMessageAsync(1, "look around");
+
+        response.StatusCode.Should().Be((HttpStatusCode)422);
+        var payload = await response.Content.ReadFromJsonAsync<ErrorResponse>();
+        payload.Should().NotBeNull();
+        payload!.Error.Should().Be("LLM response did not match director action schema.");
+    }
+
+    // Verifies that a wrong message field type from the proxied LLM returns an unprocessable entity error.
+    [Fact]
+    public async Task Director_PostMessage_ResponseWithWrongMessageType_ReturnsUnprocessableEntity()
+    {
+        await using var harness = await DirectorHarness.CreateAsync();
+        using var initializeResponse = await harness.InitializeAsync();
+        initializeResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        harness.ProxyHandler.On(
+            "POST",
+            "/proxy",
+            BuildJsonHandler(HttpStatusCode.OK, new ChatGenerateResponse(true, """{"message":123}""", """{"done":true}""")));
+
+        using var response = await harness.PostMessageAsync(1, "look around");
+
+        response.StatusCode.Should().Be((HttpStatusCode)422);
+        var payload = await response.Content.ReadFromJsonAsync<ErrorResponse>();
+        payload.Should().NotBeNull();
+        payload!.Error.Should().Be("LLM response did not match director action schema.");
     }
 
     // Verifies that router proxy connectivity failures surface as bad gateway errors.
@@ -259,7 +300,7 @@ public sealed class DirectorEndpointTests
                 forwardedBody = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
                 return BuildJsonHttpResponse(
                     HttpStatusCode.OK,
-                    new ChatGenerateResponse(true, "You stand still and listen.", """{"done":true}"""));
+                    BuildGenerateProseResponse("You stand still and listen."));
             });
 
         using var initializeResponse = await harness.InitializeAsync();
@@ -303,12 +344,12 @@ public sealed class DirectorEndpointTests
                     releaseFirstRequest.Task.GetAwaiter().GetResult();
                     return BuildJsonHttpResponse(
                         HttpStatusCode.OK,
-                        new ChatGenerateResponse(true, "First response", """{"done":true}"""));
+                        BuildGenerateProseResponse("First response"));
                 }
 
                 return BuildJsonHttpResponse(
                     HttpStatusCode.OK,
-                    new ChatGenerateResponse(true, "Second response", """{"done":true}"""));
+                    BuildGenerateProseResponse("Second response"));
             });
 
         var firstTask = harness.PostMessageAsync(1, "look around");
@@ -360,5 +401,14 @@ public sealed class DirectorEndpointTests
         {
             Content = JsonContent.Create(payload)
         };
+    }
+
+    private static ChatGenerateResponse BuildGenerateProseResponse(string message)
+    {
+        var payload = JsonSerializer.Serialize(new
+        {
+            message
+        });
+        return new ChatGenerateResponse(true, payload, """{"done":true}""");
     }
 }

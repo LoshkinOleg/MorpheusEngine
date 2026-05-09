@@ -17,7 +17,7 @@ public sealed class EndToEndIntegrationTests
         await using var harness = await EndToEndHarness.CreateAsync();
         harness.QwenOllama!.EnqueueChatAction(
             "Narrate the scene outcome directly.",
-            "send_message",
+            "generate_prose",
             """{"message":"A cold draft slips through the ruin."}""");
 
         using var response = await harness.PostTurnAsync(1, "look around");
@@ -61,11 +61,11 @@ public sealed class EndToEndIntegrationTests
             """{"label":"player","content":"Carries a humming brass key."}""");
         harness.QwenOllama.EnqueueChatAction(
             "Now narrate the visible result.",
-            "send_message",
+            "generate_prose",
             """{"message":"The brass key hums softly in your hand."}""");
         harness.QwenOllama.EnqueueChatAction(
             "Use the remembered detail naturally.",
-            "send_message",
+            "generate_prose",
             """{"message":"The brass key answers the lock with a low vibration."}""");
 
         using var firstTurn = await harness.PostTurnAsync(1, "lift the brass key");
@@ -95,7 +95,7 @@ public sealed class EndToEndIntegrationTests
             """{"scope":"project","source":"player_discovery","tags":["vault","key"],"content":"The moon gate opens with a humming brass key."}""");
         harness.QwenOllama.EnqueueChatAction(
             "Confirm the archival write to the player.",
-            "send_message",
+            "generate_prose",
             """{"message":"You commit the moon gate clue to long-term memory."}""");
         harness.QwenOllama.EnqueueChatAction(
             "Search the archival store for the clue.",
@@ -103,7 +103,7 @@ public sealed class EndToEndIntegrationTests
             """{"query":"moon gate brass key","topK":3}""");
         harness.QwenOllama.EnqueueChatAction(
             "Narrate after reviewing the retrieved archival result.",
-            "send_message",
+            "generate_prose",
             """{"message":"The archived clue confirms the brass key opens the moon gate."}""");
 
         using var firstTurn = await harness.PostTurnAsync(1, "memorize the moon gate clue");
@@ -128,11 +128,11 @@ public sealed class EndToEndIntegrationTests
     public async Task RecallCompaction_ReplacesOlderMessagesAndSummaryAppearsInLaterContext()
     {
         await using var harness = await EndToEndHarness.CreateAsync(maxFullMessages: 2);
-        harness.QwenOllama!.EnqueueChatAction("Resolve turn one.", "send_message", """{"message":"Turn one settles into memory."}""");
-        harness.QwenOllama.EnqueueChatAction("Resolve turn two.", "send_message", """{"message":"Turn two adds a fresh detail."}""");
-        harness.QwenOllama.EnqueueChatAction("Resolve turn three.", "send_message", """{"message":"Turn three shifts the patrol route."}""");
-        harness.QwenOllama.EnqueueChatAction("Resolve turn four.", "send_message", """{"message":"Turn four closes the scouting loop."}""");
-        harness.QwenOllama.EnqueueChatAction("Resolve turn five with the summary in context.", "send_message", """{"message":"Turn five acts on the summarized patrol notes."}""");
+        harness.QwenOllama!.EnqueueChatAction("Resolve turn one.", "generate_prose", """{"message":"Turn one settles into memory."}""");
+        harness.QwenOllama.EnqueueChatAction("Resolve turn two.", "generate_prose", """{"message":"Turn two adds a fresh detail."}""");
+        harness.QwenOllama.EnqueueChatAction("Resolve turn three.", "generate_prose", """{"message":"Turn three shifts the patrol route."}""");
+        harness.QwenOllama.EnqueueChatAction("Resolve turn four.", "generate_prose", """{"message":"Turn four closes the scouting loop."}""");
+        harness.QwenOllama.EnqueueChatAction("Resolve turn five with the summary in context.", "generate_prose", """{"message":"Turn five acts on the summarized patrol notes."}""");
 
         for (var turn = 1; turn <= 5; turn++)
         {
@@ -183,7 +183,7 @@ public sealed class EndToEndIntegrationTests
         await using var qwenHarness = await EndToEndHarness.CreateAsync();
         qwenHarness.QwenOllama!.EnqueueChatAction(
             "Answer through the default qwen-backed provider.",
-            "send_message",
+            "generate_prose",
             """{"message":"The qwen-backed route handled this turn."}""");
 
         using var qwenTurn = await qwenHarness.PostTurnAsync(1, "test the default llm alias");
@@ -196,7 +196,7 @@ public sealed class EndToEndIntegrationTests
         await using var alternateHarness = await EndToEndHarness.CreateAsync(useAlternateLlmProvider: true);
         alternateHarness.AlternateProvider!.EnqueueChatAction(
             "Answer through the alternate provider.",
-            "send_message",
+            "generate_prose",
             """{"message":"The alternate provider handled this turn."}""");
 
         using var alternateTurn = await alternateHarness.PostTurnAsync(1, "test the swapped llm alias");
@@ -219,11 +219,11 @@ public sealed class EndToEndIntegrationTests
             firstRequestStarted,
             releaseFirstTurn.Task,
             "Hold the first turn open until the test releases it.",
-            "send_message",
+            "generate_prose",
             """{"message":"The first turn resolves cleanly."}""");
         harness.QwenOllama.EnqueueChatAction(
             "Resolve the queued second turn once the first finishes.",
-            "send_message",
+            "generate_prose",
             """{"message":"The second turn resolves afterward."}""");
 
         var firstTurnTask = harness.PostTurnAsync(1, "inspect the vault");

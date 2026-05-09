@@ -785,7 +785,6 @@ public sealed class RunPersistenceIntegrationTests
 
         var originalCurrentDirectory = Environment.CurrentDirectory;
         Environment.CurrentDirectory = gameProject.RepositoryRoot;
-        EngineConfigLoader.SetRepositoryRootOverrideForTesting(gameProject.RepositoryRoot);
 
         try
         {
@@ -794,7 +793,6 @@ public sealed class RunPersistenceIntegrationTests
         }
         finally
         {
-            EngineConfigLoader.ResetForTesting();
             Environment.CurrentDirectory = originalCurrentDirectory;
         }
     }

@@ -26,3 +26,7 @@ alwaysApply: true
 - In comments, do not use the <c> tag as it makes reading of comments in the source file cumbersome.
 
 - Unless explicitly prompted to, when modifying existing code, don't add legacy guards. The modified code is by default expected to work according to any updated preconditions.
+
+- Use plain ASCII symbols in source comments and docs; never HTML-escape punctuation in code files (<, >, <=, >=, &&, etc. must be written literally, not as &lt;, &gt;, etc.).
+
+- Don't put anything other than documentation under docs/ .

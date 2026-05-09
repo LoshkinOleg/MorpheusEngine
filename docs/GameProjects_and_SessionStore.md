@@ -4,6 +4,12 @@ Last reviewed: 2026-05-08.
 
 Per-game content lives under **`game_projects/<gameProjectId>/`**. The **`gameProjectId`** is a **single path segment** (no slashes, no `..`); it is validated when building filesystem paths for SQLite.
 
+## Terminology: run vs session
+
+- **Run** — durable game state identity: the pair (`gameProjectId`, `runId`) persisted at `game_projects/<gameProjectId>/saved/<runId>/world_state.db`.
+- **Session (module process)** — runtime binding scope inside one module process after `POST /initialize`. A process is bound to exactly one run until restart.
+- **Session (UI)** — player/app interaction lifetime. The UI usually initializes once per play session, but this does not create a separate persistence identity beyond the run.
+
 ## Layout
 
 ```
@@ -17,7 +23,7 @@ game_projects/<gameProjectId>/
     world_state.db           # Created by session_store POST /initialize
 ```
 
-The WPF app’s default `gameProjectId` is **`sandcrawler`** (`MainWindow.xaml.cs`). **`InitializeModuleRequest`** carries `gameProjectId` / `runId` for **`POST /initialize`**. The router loads `manifest.json`, validates its selected **`turn_pipeline`**, and ensures every pipeline-referenced module is required by either the engine or the manifest. **`TurnRequest`** still carries project/run fields for router **`POST /turn`**; **`session_store` `POST /persist_turn`** does not — it writes to the run established by the **last successful `POST /initialize` on that session_store process**. **`RunPersistence`**, **`Director`**, and **`MemoryDirector`** resolve paths as `game_projects/<gameProjectId>/...` with **no** engine-level fallback to another folder if files are missing.
+The WPF app’s default `gameProjectId` is **`sandcrawler`** (`MainWindow.xaml.cs`). **`InitializeModuleRequest`** carries `gameProjectId` / `runId` for **`POST /initialize`**. The router loads `manifest.json`, validates its selected **`turn_pipeline`**, and ensures every pipeline-referenced module is required by either the engine or the manifest. **`TurnRequest`** still carries project/run fields for router **`POST /turn`**; **`session_store` `POST /persist_turn`** does not — it writes to the run established by the **last successful `POST /initialize` on that `session_store` module process**. **`RunPersistence`**, **`Director`**, and **`MemoryDirector`** resolve paths as `game_projects/<gameProjectId>/...` with **no** engine-level fallback to another folder if files are missing.
 
 ## Manifest fields
 

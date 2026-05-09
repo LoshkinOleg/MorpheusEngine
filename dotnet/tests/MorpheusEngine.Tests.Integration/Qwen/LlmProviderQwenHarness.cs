@@ -1,7 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
-using System.Net.Sockets;
 using System.Text;
+using MorpheusEngine;
 using MorpheusEngine.Tests.Integration.Fixtures;
 using MorpheusEngine.Tests.Integration.Helpers;
 using QwenProviderType = global::MorpheusEngine.LlmProviderQwen;
@@ -15,25 +15,26 @@ internal sealed class LlmProviderQwenHarness : IAsyncDisposable
     private readonly HttpClient _outboundHttpClient;
     private readonly QwenProviderType _host;
 
-    private LlmProviderQwenHarness(TempGameProject gameProject, int providerPort, int ollamaPort)
+    private LlmProviderQwenHarness(TempGameProject gameProject, EngineConfiguration configuration)
     {
         _gameProject = gameProject;
         RepositoryRoot = gameProject.RepositoryRoot;
         GameProjectId = gameProject.GameProjectId;
         RunId = "test_run_001";
-        ProviderPort = providerPort;
-        OllamaPort = ollamaPort;
+        ProviderPort = configuration.GetRequiredListenPort("llm_provider_qwen");
+        OllamaPort = EngineConfigurationHarnessPorts.GetOutboundOllamaPortForLlmProviderQwen(configuration);
 
         OllamaHandler = new MockOllamaHandler();
         _outboundHttpClient = new HttpClient(OllamaHandler)
         {
             Timeout = TimeSpan.FromSeconds(10)
         };
-        _host = new QwenProviderType(CreateConfiguration(RepositoryRoot, providerPort, ollamaPort), _outboundHttpClient);
+
+        _host = new QwenProviderType(configuration, _outboundHttpClient);
         _host.DisableBundledOllamaBootstrapForTesting();
         Client = new HttpClient
         {
-            BaseAddress = new Uri($"http://127.0.0.1:{providerPort}/"),
+            BaseAddress = new Uri($"http://127.0.0.1:{ProviderPort}/"),
             Timeout = TimeSpan.FromSeconds(10)
         };
         _runTask = _host.Run();
@@ -55,14 +56,18 @@ internal sealed class LlmProviderQwenHarness : IAsyncDisposable
 
     public static async Task<LlmProviderQwenHarness> CreateAsync()
     {
-        var providerPort = GetFreeTcpPort();
-        var ollamaPort = GetFreeTcpPort();
+        var document = IntegrationEngineConfigurationFixture.LoadConfigurationsFixture("integration_director.engine_config.json");
+
         var gameProject = new TempGameProject(
             "test_game",
             TestPayloads.MinimalManifestJson,
             TestPayloads.MinimalLoreCsv,
             TestPayloads.MinimalSystemInstructions);
-        var harness = new LlmProviderQwenHarness(gameProject, providerPort, ollamaPort);
+
+        IntegrationEngineConfigurationFixture.WriteEngineConfigJson(gameProject.RepositoryRoot, document);
+        var configurationAfterWrite =
+            IntegrationEngineConfigurationFixture.LoadConfigurationViaEngineConfigLoader(gameProject.RepositoryRoot);
+        var harness = new LlmProviderQwenHarness(gameProject, configurationAfterWrite);
         await harness.WaitUntilReadyAsync();
         return harness;
     }
@@ -126,6 +131,7 @@ internal sealed class LlmProviderQwenHarness : IAsyncDisposable
             // Best-effort wait; cleanup still needs to proceed.
         }
 
+        EngineConfigLoader.ResetForTesting();
         _gameProject.Dispose();
     }
 
@@ -158,45 +164,5 @@ internal sealed class LlmProviderQwenHarness : IAsyncDisposable
         }
 
         throw new TimeoutException($"LlmProviderQwen did not start listening on port {ProviderPort} within the allotted time.");
-    }
-
-    private static EngineConfiguration CreateConfiguration(string repositoryRoot, int providerPort, int ollamaPort)
-    {
-        var ports = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["llm_provider_qwen"] = providerPort
-        };
-
-        var modules = new[]
-        {
-            new EngineModuleInfo(
-                "llm_provider_qwen",
-                "LLM Provider",
-                true,
-                10,
-                new EngineModuleLaunchInfo("llm_provider_qwen.dll"),
-                [],
-                new GenericLlmProviderModuleOptions(4096),
-                new QwenModuleOptions(ollamaPort, "qwen2.5:7b"))
-        };
-
-        var aliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["generic_llm_provider"] = "llm_provider_qwen"
-        };
-
-        return new EngineConfiguration(
-            repositoryRoot,
-            new EnginePortMap(ports),
-            modules,
-            aliases,
-            new Dictionary<string, EngineTurnPipelineInfo>(StringComparer.OrdinalIgnoreCase));
-    }
-
-    private static int GetFreeTcpPort()
-    {
-        using var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        return ((IPEndPoint)listener.LocalEndpoint).Port;
     }
 }

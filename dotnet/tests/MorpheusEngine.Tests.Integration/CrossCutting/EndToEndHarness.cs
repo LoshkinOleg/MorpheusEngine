@@ -1,9 +1,9 @@
 using Microsoft.Data.Sqlite;
 using System.Net;
 using System.Net.Http.Json;
-using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using MorpheusEngine;
 using MorpheusEngine.Tests.Integration.Fixtures;
 using MorpheusEngine.Tests.Integration.Helpers;
 using MemoryDirectorType = global::MorpheusEngine.MemoryDirector;
@@ -81,14 +81,6 @@ internal sealed class EndToEndHarness : IAsyncDisposable
         int maxToolResultChars = 4000,
         int maxFullMessages = 12)
     {
-        var routerPort = GetFreeTcpPort();
-        var memoryDirectorPort = GetFreeTcpPort();
-        var sessionStorePort = GetFreeTcpPort();
-        var embeddingsPort = GetFreeTcpPort();
-        var qwenPort = useAlternateLlmProvider ? 0 : GetFreeTcpPort();
-        var alternateProviderPort = useAlternateLlmProvider ? GetFreeTcpPort() : 0;
-        var embeddingsOllamaPort = GetFreeTcpPort();
-        var qwenOllamaPort = useAlternateLlmProvider ? 0 : GetFreeTcpPort();
         var gameProject = new TempGameProject(
             "test_game",
             BuildManifestJson(),
@@ -96,35 +88,23 @@ internal sealed class EndToEndHarness : IAsyncDisposable
             TestPayloads.MinimalSystemInstructions);
 
         WriteMemoryDirectorFiles(gameProject);
-        var configuration = CreateConfiguration(
-            gameProject.RepositoryRoot,
-            routerPort,
-            memoryDirectorPort,
-            sessionStorePort,
-            embeddingsPort,
-            embeddingsOllamaPort,
-            qwenPort,
-            qwenOllamaPort,
-            alternateProviderPort,
-            useAlternateLlmProvider,
+
+        var fixtureName = useAlternateLlmProvider
+            ? "integration_end_to_end_alternate.engine_config.json"
+            : "integration_end_to_end_qwen.engine_config.json";
+
+        var configDocument = IntegrationEngineConfigurationFixture.LoadConfigurationsFixture(fixtureName);
+        IntegrationEngineConfigurationFixture.PatchMemoryDirectorOptions(
+            configDocument,
             maxStepsPerTurn,
             maxToolResultChars,
             maxFullMessages);
 
-        var harness = new EndToEndHarness(
-            gameProject,
-            configuration,
-            routerPort,
-            memoryDirectorPort,
-            sessionStorePort,
-            embeddingsPort,
-            qwenPort,
-            alternateProviderPort,
-            embeddingsOllamaPort,
-            qwenOllamaPort,
-            useAlternateLlmProvider);
-        EngineConfigLoader.ResetForTesting();
-        EngineConfigLoader.SetRepositoryRootOverrideForTesting(gameProject.RepositoryRoot);
+        IntegrationEngineConfigurationFixture.WriteEngineConfigJson(gameProject.RepositoryRoot, configDocument);
+        var configuration =
+            IntegrationEngineConfigurationFixture.LoadConfigurationViaEngineConfigLoader(gameProject.RepositoryRoot);
+
+        var harness = new EndToEndHarness(gameProject, configuration, useAlternateLlmProvider);
         await harness.WaitUntilListeningAsync();
         await harness.InitializeAsync();
         return harness;
@@ -176,31 +156,29 @@ internal sealed class EndToEndHarness : IAsyncDisposable
             await WaitForCompletionAsync(_alternateProviderTask);
         }
 
-        EngineConfigLoader.ResetForTesting();
         _gameProject.Dispose();
+        EngineConfigLoader.ResetForTesting();
     }
 
     #endregion
 
     #region Private methods
 
-    private EndToEndHarness(
-        TempGameProject gameProject,
-        EngineConfiguration configuration,
-        int routerPort,
-        int memoryDirectorPort,
-        int sessionStorePort,
-        int embeddingsPort,
-        int qwenPort,
-        int alternateProviderPort,
-        int embeddingsOllamaPort,
-        int qwenOllamaPort,
-        bool useAlternateLlmProvider)
+    private EndToEndHarness(TempGameProject gameProject, EngineConfiguration configuration, bool useAlternateLlmProvider)
     {
         _gameProject = gameProject;
         RepositoryRoot = gameProject.RepositoryRoot;
         GameProjectId = gameProject.GameProjectId;
         RunId = "test_run_001";
+
+        var routerPort = configuration.GetRequiredListenPort("router");
+        var memoryDirectorPort = configuration.GetRequiredListenPort("memory_director");
+        var sessionStorePort = configuration.GetRequiredListenPort("session_store");
+        var embeddingsPort = configuration.GetRequiredListenPort("embeddings_ollama");
+        var qwenPort = useAlternateLlmProvider ? 0 : configuration.GetRequiredListenPort("llm_provider_qwen");
+        var alternateProviderPort = useAlternateLlmProvider
+            ? configuration.GetRequiredListenPort("alternate_llm_provider")
+            : 0;
 
         EmbeddingsOllama = new ScriptedEmbeddingsOllama();
         _embeddingsOutboundHttpClient = new HttpClient(EmbeddingsOllama.Handler, disposeHandler: false)
@@ -446,178 +424,6 @@ internal sealed class EndToEndHarness : IAsyncDisposable
         return payload ?? throw new InvalidOperationException($"{operation} returned an empty JSON payload.");
     }
 
-    private static EngineConfiguration CreateConfiguration(
-        string repositoryRoot,
-        int routerPort,
-        int memoryDirectorPort,
-        int sessionStorePort,
-        int embeddingsPort,
-        int embeddingsOllamaPort,
-        int qwenPort,
-        int qwenOllamaPort,
-        int alternateProviderPort,
-        bool useAlternateLlmProvider,
-        int maxStepsPerTurn,
-        int maxToolResultChars,
-        int maxFullMessages)
-    {
-        var ports = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["router"] = routerPort,
-            ["memory_director"] = memoryDirectorPort,
-            ["session_store"] = sessionStorePort,
-            ["embeddings_ollama"] = embeddingsPort
-        };
-
-        if (useAlternateLlmProvider)
-        {
-            ports["alternate_llm_provider"] = alternateProviderPort;
-        }
-        else
-        {
-            ports["llm_provider_qwen"] = qwenPort;
-        }
-
-        var modules = new List<EngineModuleInfo>
-        {
-            new(
-                "router",
-                "Router",
-                true,
-                10,
-                new EngineModuleLaunchInfo("router.dll"),
-                [
-                    GetEndpoint("/health", "GET"),
-                    GetEndpoint("/initialize", "POST"),
-                    GetEndpoint("/turn", "POST"),
-                    GetEndpoint("/proxy", "POST")
-                ]),
-            new(
-                "memory_director",
-                "Memory Director",
-                true,
-                20,
-                new EngineModuleLaunchInfo("memory_director.dll"),
-                [
-                    GetEndpoint("/health", "GET"),
-                    GetEndpoint("/initialize", "POST"),
-                    GetEndpoint("/message", "POST")
-                ],
-                null,
-                null,
-                new MemoryDirectorModuleOptions(maxStepsPerTurn, maxToolResultChars, maxFullMessages, "30m")),
-            new(
-                "session_store",
-                "Session Store",
-                true,
-                30,
-                new EngineModuleLaunchInfo("session_store.dll"),
-                [
-                    GetEndpoint("/health", "GET"),
-                    GetEndpoint("/initialize", "POST"),
-                    GetEndpoint("/persist_turn", "POST"),
-                    GetEndpoint("/memory/load_context", "POST"),
-                    GetEndpoint("/memory/persist_step", "POST"),
-                    GetEndpoint("/memory/recall_search", "POST"),
-                    GetEndpoint("/memory/archival_search", "POST"),
-                    GetEndpoint("/memory/archival_upsert", "POST"),
-                    GetEndpoint("/memory/blocks/get_all", "POST"),
-                    GetEndpoint("/memory/blocks/upsert", "POST"),
-                    GetEndpoint("/memory/messages/recent", "POST"),
-                    GetEndpoint("/memory/recall/compact", "POST")
-                ]),
-            new(
-                "embeddings_ollama",
-                "Embeddings",
-                true,
-                40,
-                new EngineModuleLaunchInfo("embeddings_ollama.dll"),
-                [
-                    GetEndpoint("/health", "GET"),
-                    GetEndpoint("/initialize", "POST"),
-                    GetEndpoint("/embed", "POST")
-                ],
-                null,
-                null,
-                null,
-                new EmbeddingsModuleOptions(embeddingsOllamaPort, "nomic-embed-text", "30m", 2048))
-        };
-
-        if (useAlternateLlmProvider)
-        {
-            modules.Add(new EngineModuleInfo(
-                "alternate_llm_provider",
-                "Alternate LLM Provider",
-                true,
-                50,
-                new EngineModuleLaunchInfo("alternate_llm_provider.dll"),
-                [
-                    GetEndpoint("/health", "GET"),
-                    GetEndpoint("/initialize", "POST"),
-                    GetEndpoint("/chat", "POST"),
-                    GetEndpoint("/token_count", "POST")
-                ],
-                new GenericLlmProviderModuleOptions(4096)));
-        }
-        else
-        {
-            modules.Add(new EngineModuleInfo(
-                "llm_provider_qwen",
-                "LLM Provider",
-                true,
-                50,
-                new EngineModuleLaunchInfo("llm_provider_qwen.dll"),
-                [
-                    GetEndpoint("/health", "GET"),
-                    GetEndpoint("/initialize", "POST"),
-                    GetEndpoint("/chat", "POST"),
-                    GetEndpoint("/token_count", "POST")
-                ],
-                new GenericLlmProviderModuleOptions(4096),
-                new QwenModuleOptions(qwenOllamaPort, "qwen2.5:7b")));
-        }
-
-        var aliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["generic_director"] = "memory_director",
-            ["generic_embeddings"] = "embeddings_ollama",
-            ["generic_llm_provider"] = useAlternateLlmProvider ? "alternate_llm_provider" : "llm_provider_qwen"
-        };
-
-        var turnPipelines = new Dictionary<string, EngineTurnPipelineInfo>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["memory_director_default"] = new(
-                "memory_director_default",
-                [
-                    new EngineTurnPipelineStepInfo(
-                        "director_message",
-                        "generic_director",
-                        "/message",
-                        "POST",
-                        "{\"turn\":{{turn}},\"playerInput\":{{playerInputJson}}}"),
-                    new EngineTurnPipelineStepInfo(
-                        "persist_turn",
-                        "session_store",
-                        "/persist_turn",
-                        "POST",
-                        "{\"turn\":{{turn}},\"playerInput\":{{playerInputJson}},\"directorResponseBody\":{{step.director_message.rawBodyJson}}}")
-                ],
-                new EngineTurnPipelineResponseMapping("director_message", "director_message_response"))
-        };
-
-        return new EngineConfiguration(
-            repositoryRoot,
-            new EnginePortMap(ports),
-            modules,
-            aliases,
-            turnPipelines);
-    }
-
-    private static EngineEndpointInfo GetEndpoint(string path, string method)
-    {
-        return new EngineEndpointInfo(path, path, method, null, null, null);
-    }
-
     private static void WriteMemoryDirectorFiles(TempGameProject gameProject)
     {
         var systemDirectory = Path.Combine(gameProject.GameProjectDirectory, "system");
@@ -629,11 +435,23 @@ internal sealed class EndToEndHarness : IAsyncDisposable
             Call one tool at a time and keep narration concise.
             """);
 
-        var schemaDirectory = Path.Combine(gameProject.RepositoryRoot, "docs", "schemas");
+        var schemaDirectory = Path.Combine(
+            gameProject.RepositoryRoot,
+            "dotnet",
+            "src",
+            "MorpheusEngine.LlmProvider_qwen",
+            "schemas");
         Directory.CreateDirectory(schemaDirectory);
         File.WriteAllText(
             Path.Combine(schemaDirectory, "memory_director_action.schema.json"),
-            File.ReadAllText(Path.Combine(GetRepositoryRoot(), "docs", "schemas", "memory_director_action.schema.json")));
+            File.ReadAllText(
+                Path.Combine(
+                    GetRepositoryRoot(),
+                    "dotnet",
+                    "src",
+                    "MorpheusEngine.LlmProvider_qwen",
+                    "schemas",
+                    "memory_director_action.schema.json")));
     }
 
     private static string BuildManifestJson()
@@ -660,13 +478,6 @@ internal sealed class EndToEndHarness : IAsyncDisposable
                 "..",
                 "..",
                 ".."));
-    }
-
-    private static int GetFreeTcpPort()
-    {
-        using var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        return ((IPEndPoint)listener.LocalEndpoint).Port;
     }
 
     #endregion

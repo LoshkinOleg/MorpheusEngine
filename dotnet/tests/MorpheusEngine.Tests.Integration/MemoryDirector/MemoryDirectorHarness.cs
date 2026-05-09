@@ -1,9 +1,10 @@
 using System.Net;
 using System.Net.Http.Json;
-using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using MorpheusEngine;
 using MorpheusEngine.Tests.Integration.Fixtures;
+using MorpheusEngine.Tests.Integration.Helpers;
 using MemoryDirectorType = global::MorpheusEngine.MemoryDirector;
 
 namespace MorpheusEngine.Tests.Integration.MemoryDirector;
@@ -22,30 +23,29 @@ internal sealed class MemoryDirectorHarness : IAsyncDisposable
 
     private MemoryDirectorHarness(
         TempGameProject gameProject,
-        int memoryDirectorPort,
-        int routerPort,
-        int maxStepsPerTurn,
-        int maxToolResultChars,
-        int maxFullMessages)
+        EngineConfiguration configuration,
+        int maxFullMessages,
+        int maxToolResultChars)
     {
         _gameProject = gameProject;
         RepositoryRoot = gameProject.RepositoryRoot;
         GameProjectId = gameProject.GameProjectId;
         RunId = "test_run_001";
-        MemoryDirectorPort = memoryDirectorPort;
-        RouterPort = routerPort;
+        MemoryDirectorPort = configuration.GetRequiredListenPort("memory_director");
+        RouterPort = configuration.GetRequiredListenPort("router");
 
+        // Mock limits mirror patched memory_director JSON options authored in CreateAsync (fail loudly if callers diverge later).
         ProxyHandler = new MockMemoryDirectorProxyHandler(maxFullMessages, maxToolResultChars);
+
         _outboundHttpClient = new HttpClient(ProxyHandler)
         {
             Timeout = TimeSpan.FromSeconds(10)
         };
-        _host = new MemoryDirectorType(
-            CreateConfiguration(RepositoryRoot, memoryDirectorPort, routerPort, maxStepsPerTurn, maxToolResultChars, maxFullMessages),
-            _outboundHttpClient);
+
+        _host = new MemoryDirectorType(configuration, _outboundHttpClient);
         Client = new HttpClient
         {
-            BaseAddress = new Uri($"http://127.0.0.1:{memoryDirectorPort}/"),
+            BaseAddress = new Uri($"http://127.0.0.1:{MemoryDirectorPort}/"),
             Timeout = TimeSpan.FromSeconds(10)
         };
         _runTask = _host.RunAsync();
@@ -70,22 +70,29 @@ internal sealed class MemoryDirectorHarness : IAsyncDisposable
         int maxToolResultChars = 2000,
         int maxFullMessages = 3)
     {
-        var memoryDirectorPort = GetFreeTcpPort();
-        var routerPort = GetFreeTcpPort();
+        var configDocument =
+            IntegrationEngineConfigurationFixture.LoadConfigurationsFixture("integration_memory_director.engine_config.json");
+
+        IntegrationEngineConfigurationFixture.PatchMemoryDirectorOptions(
+            configDocument,
+            maxStepsPerTurn,
+            maxToolResultChars,
+            maxFullMessages);
+
         var gameProject = new TempGameProject(
             "test_game",
             TestPayloads.MinimalManifestJson,
             TestPayloads.MinimalLoreCsv,
             TestPayloads.MinimalSystemInstructions);
+
+        IntegrationEngineConfigurationFixture.WriteEngineConfigJson(gameProject.RepositoryRoot, configDocument);
+
         WriteMemoryDirectorFiles(gameProject);
 
-        var harness = new MemoryDirectorHarness(
-            gameProject,
-            memoryDirectorPort,
-            routerPort,
-            maxStepsPerTurn,
-            maxToolResultChars,
-            maxFullMessages);
+        var configurationAfterWrite =
+            IntegrationEngineConfigurationFixture.LoadConfigurationViaEngineConfigLoader(gameProject.RepositoryRoot);
+
+        var harness = new MemoryDirectorHarness(gameProject, configurationAfterWrite, maxFullMessages, maxToolResultChars);
         await harness.WaitUntilReadyAsync();
         return harness;
     }
@@ -129,6 +136,7 @@ internal sealed class MemoryDirectorHarness : IAsyncDisposable
             // Best-effort wait; cleanup still needs to proceed.
         }
 
+        EngineConfigLoader.ResetForTesting();
         _gameProject.Dispose();
     }
 
@@ -163,86 +171,6 @@ internal sealed class MemoryDirectorHarness : IAsyncDisposable
         throw new TimeoutException($"MemoryDirector did not start listening on port {MemoryDirectorPort} within the allotted time.");
     }
 
-    private static EngineConfiguration CreateConfiguration(
-        string repositoryRoot,
-        int memoryDirectorPort,
-        int routerPort,
-        int maxStepsPerTurn,
-        int maxToolResultChars,
-        int maxFullMessages)
-    {
-        var ports = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["router"] = routerPort,
-            ["memory_director"] = memoryDirectorPort,
-            ["session_store"] = routerPort + 1,
-            ["llm_provider_qwen"] = routerPort + 2,
-            ["embeddings_ollama"] = routerPort + 3
-        };
-
-        var modules = new[]
-        {
-            new EngineModuleInfo(
-                "router",
-                "Router",
-                true,
-                10,
-                new EngineModuleLaunchInfo("router.dll"),
-                []),
-            new EngineModuleInfo(
-                "memory_director",
-                "Memory Director",
-                true,
-                20,
-                new EngineModuleLaunchInfo("memory_director.dll"),
-                [],
-                null,
-                null,
-                new MemoryDirectorModuleOptions(maxStepsPerTurn, maxToolResultChars, maxFullMessages, "30m")),
-            new EngineModuleInfo(
-                "session_store",
-                "Session Store",
-                true,
-                30,
-                new EngineModuleLaunchInfo("session_store.dll"),
-                []),
-            new EngineModuleInfo(
-                "llm_provider_qwen",
-                "LLM Provider",
-                true,
-                40,
-                new EngineModuleLaunchInfo("llm_provider_qwen.dll"),
-                [],
-                new GenericLlmProviderModuleOptions(4096),
-                new QwenModuleOptions(19112, "qwen2.5:7b")),
-            new EngineModuleInfo(
-                "embeddings_ollama",
-                "Embeddings",
-                true,
-                50,
-                new EngineModuleLaunchInfo("embeddings_ollama.dll"),
-                [],
-                null,
-                null,
-                null,
-                new EmbeddingsModuleOptions(19112, "nomic-embed-text", "30m", 2048))
-        };
-
-        var aliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["generic_director"] = "memory_director",
-            ["generic_llm_provider"] = "llm_provider_qwen",
-            ["generic_embeddings"] = "embeddings_ollama"
-        };
-
-        return new EngineConfiguration(
-            repositoryRoot,
-            new EnginePortMap(ports),
-            modules,
-            aliases,
-            new Dictionary<string, EngineTurnPipelineInfo>(StringComparer.OrdinalIgnoreCase));
-    }
-
     private static void WriteMemoryDirectorFiles(TempGameProject gameProject)
     {
         var systemDirectory = Path.Combine(gameProject.GameProjectDirectory, "system");
@@ -254,11 +182,23 @@ internal sealed class MemoryDirectorHarness : IAsyncDisposable
             Call one tool at a time and keep narration concise.
             """);
 
-        var schemaDirectory = Path.Combine(gameProject.RepositoryRoot, "docs", "schemas");
+        var schemaDirectory = Path.Combine(
+            gameProject.RepositoryRoot,
+            "dotnet",
+            "src",
+            "MorpheusEngine.LlmProvider_qwen",
+            "schemas");
         Directory.CreateDirectory(schemaDirectory);
         File.WriteAllText(
             Path.Combine(schemaDirectory, "memory_director_action.schema.json"),
-            File.ReadAllText(Path.Combine(GetRepositoryRoot(), "docs", "schemas", "memory_director_action.schema.json")));
+            File.ReadAllText(
+                Path.Combine(
+                    GetRepositoryRoot(),
+                    "dotnet",
+                    "src",
+                    "MorpheusEngine.LlmProvider_qwen",
+                    "schemas",
+                    "memory_director_action.schema.json")));
     }
 
     private static string GetRepositoryRoot()
@@ -272,13 +212,6 @@ internal sealed class MemoryDirectorHarness : IAsyncDisposable
                 "..",
                 "..",
                 ".."));
-    }
-
-    private static int GetFreeTcpPort()
-    {
-        using var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        return ((IPEndPoint)listener.LocalEndpoint).Port;
     }
 
     internal sealed class MockMemoryDirectorProxyHandler : HttpMessageHandler

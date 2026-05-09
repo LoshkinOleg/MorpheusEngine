@@ -4,6 +4,12 @@ Last reviewed: 2026-05-08.
 
 All backend modules are **standalone executables** that bind **`HttpListener`** to **`http://127.0.0.1:{port}/`** where `{port}` comes from `engine_config.json` → `ports.<port_key>`.
 
+## Terminology: run vs session
+
+- **Run** — persistent identity (`gameProjectId`, `runId`) used for filesystem/DB state.
+- **Session (module process)** — runtime binding after `POST /initialize` in a given process; many modules are single-run-per-process.
+- **Session (UI)** — human interaction lifecycle; independent from run identity.
+
 ## Common endpoints
 
 Nearly every module implements:
@@ -54,7 +60,7 @@ Host: `SessionStoreHost.cs`; persistence: `RunPersistence.cs`.
 | Method | Path | Role |
 |--------|------|------|
 | POST | `/initialize` | Create run directory + SQLite + schema + turn-0 snapshot; optional lore seed from CSV. |
-| POST | `/persist_turn` | Insert `events`, append `snapshots` for the **bound** run (last successful **`/initialize`** on this process; transactional; enforces next turn = `MAX(snapshots.turn) + 1` and `turn >= 1`). |
+| POST | `/persist_turn` | Insert `events`, append `snapshots` for the **bound** run (last successful **`/initialize`** on this `session_store` process; transactional; enforces next turn = `MAX(snapshots.turn) + 1` and `turn >= 1`). |
 | POST | `/memory/pipeline_events/recent` | Return recent diagnostic pipeline events such as MemoryDirector context-budget telemetry. These events are stored outside `agent_messages`, so they do not affect recall FTS. |
 
 ## Director (`MorpheusEngine.Director`)

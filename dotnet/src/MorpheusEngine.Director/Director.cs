@@ -29,6 +29,7 @@ public sealed class Director
     private readonly HttpClient _httpClient;
 
     private readonly RouterProxyClient _routerProxy;
+    private readonly JsonElement _outputSchema;
 
     private readonly HttpListener _listener = new();
     private bool _shutdownRequested = false;
@@ -63,6 +64,7 @@ public sealed class Director
         _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _routerProxy = new RouterProxyClient(_httpClient, _configuration, "director", JsonOptions);
+        _outputSchema = LoadOutputSchema();
     }
 
     public async Task Run()
@@ -347,7 +349,11 @@ public sealed class Director
 
             messagesForApi.Add(new ChatGenerateRequest.ChatMessageDto("user", playerInput)); // Add new player input.
 
-            var chatRequest = new ChatGenerateRequest { Messages = messagesForApi };
+            var chatRequest = new ChatGenerateRequest
+            {
+                Messages = messagesForApi,
+                Format = _outputSchema
+            };
 
             RouterProxyResponse<ChatGenerateResponse> llmResponse;
             try
@@ -388,8 +394,8 @@ public sealed class Director
                 return;
             }
 
-            var reponsePayload = llmResponse.Payload;
-            if (!reponsePayload.Ok || string.IsNullOrWhiteSpace(reponsePayload.Response))
+            var responsePayload = llmResponse.Payload;
+            if (!responsePayload.Ok || string.IsNullOrWhiteSpace(responsePayload.Response))
             {
                 Console.WriteLine("[Director] Proxied LLM chat response missing assistant text.");
                 await Respond(
@@ -402,7 +408,20 @@ public sealed class Director
                 return;
             }
 
-            var assistantText = reponsePayload.Response.Trim();
+            string assistantText;
+            try
+            {
+                using var responseDoc = JsonDocument.Parse(responsePayload.Response);
+                assistantText = RequireString(responseDoc.RootElement, "message").Trim();
+            }
+            catch (Exception e) when (e is InvalidOperationException or JsonException)
+            {
+                await Respond(
+                    context,
+                    422,
+                    new ErrorResponse(false, "LLM response did not match director action schema.", e.Message));
+                return;
+            }
             history.Add(new ChatMessage("user", playerInput));
             history.Add(new ChatMessage("assistant", assistantText));
 
@@ -422,6 +441,35 @@ public sealed class Director
         }
 
         return text.Length <= maxLen ? text : text[..maxLen] + "…";
+    }
+
+    private JsonElement LoadOutputSchema()
+    {
+        var path = Path.Combine(
+            _configuration.RepositoryRoot,
+            "dotnet",
+            "src",
+            "MorpheusEngine.LlmProvider_qwen",
+            "schemas",
+            "director_action.schema.json");
+        using var doc = JsonDocument.Parse(File.ReadAllText(path));
+        return doc.RootElement.Clone();
+    }
+
+    private static string RequireString(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var property) || property.ValueKind != JsonValueKind.String)
+        {
+            throw new InvalidOperationException($"Expected string property '{propertyName}'.");
+        }
+
+        var value = property.GetString();
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            throw new InvalidOperationException($"Expected non-empty string property '{propertyName}'.");
+        }
+
+        return value;
     }
 
     private async Task Respond(HttpListenerContext context, int statusCode, object payload)

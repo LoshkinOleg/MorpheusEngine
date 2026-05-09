@@ -40,6 +40,12 @@ flowchart LR
 
 The **router** is the only module the UI is required to hit for normal play (`/initialize`, `/turn`). Internal modules may call **`router /proxy`** to reach other modules on an **allowlisted** `(targetModule, path, method)` triple from `engine_config.json`.
 
+## Terminology: run vs session
+
+- **Run** — the persisted game timeline identity (`gameProjectId`, `runId`) backed by one SQLite DB under `game_projects/<gameProjectId>/saved/<runId>/`.
+- **Session (module process)** — in-memory runtime scope in a module process after `POST /initialize`; typically one bound run per process lifetime.
+- **Session (UI)** — player-facing app interaction lifetime; usually one initialize per play session, but persistence is still keyed by run.
+
 ## Repository layout (conceptual)
 
 ```

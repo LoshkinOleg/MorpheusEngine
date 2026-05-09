@@ -6,6 +6,18 @@ using Microsoft.Data.Sqlite;
 
 namespace MorpheusEngine;
 
+/**
+    TODO:
+        Currently, the sql db snapshots table has world_state that list the whole world state for each snapshot.
+        This creates a lot of bloat. This field only should contain diffs instead and a new method should be tasked with assemling
+        the whole world_state if it's needed.
+
+        Currently, a snapshot's view_state does not mirror the player's restricted view of the world state but contains the LLM's output
+        that is present to the player apparently. Change this. "view_state" should be renamed to "player_world_state_view" and a new field
+        should be introduced for the raw LLM's output named "engine_response". Implementation of this change should not introduce code paths
+        for backwards compatibility.
+**/
+
 /// <summary>
 /// Per-run SQLite file under game_projects/&lt;gameProjectId&gt;/saved/&lt;runId&gt;/world_state.db.
 /// Mirrors the TypeScript sessionStore schema and bootstrap rules (WAL, idempotent DDL, turn-0 snapshot, optional lore seed from CSV only).
@@ -39,29 +51,29 @@ internal sealed class RunPersistence
     /// </summary>
     public InitializeModuleResponse InitializeRun(string gameProjectId, string runId)
     {
+        // Preconditionn checks.
         if (string.IsNullOrWhiteSpace(gameProjectId))
         {
             throw new ArgumentException("gameProjectId must be non-empty.", nameof(gameProjectId));
         }
-
         if (string.IsNullOrWhiteSpace(runId))
         {
             throw new ArgumentException("runId must be non-empty.", nameof(runId));
         }
 
+        // Get sql db path.
         var dbPath = GetDbPath(gameProjectId, runId);
         var sessionDir = Path.GetDirectoryName(dbPath) ?? throw new InvalidOperationException("Failed to resolve session directory.");
-
         Directory.CreateDirectory(sessionDir);
 
+        // Initialize the sql db.
         using var connection = OpenConnection(dbPath);
         InitializeSessionSchema(connection);
         SetMeta(connection, "run_id", runId);
         SetMeta(connection, "game_project_id", gameProjectId);
-
-        // Q: why do we need a turn 0? Why can't the player's actual first turn be turn 0? Is it to make the engine generate an opening message to present to the player or something?
         using (var cmd = connection.CreateCommand())
         {
+            // Insert turn 0 if turn 0 doesn't exist yet. Usable for both new and existing run.
             cmd.CommandText =
                 """
                 INSERT INTO snapshots (turn, world_state, view_state)
@@ -87,8 +99,7 @@ internal sealed class RunPersistence
                 JsonSerializer.Serialize(new { player = new { observations = Array.Empty<object>() } }));
             cmd.ExecuteNonQuery();
         }
-
-        // Lore seed: default_lore_entries.csv under game_projects/&lt;id&gt;/lore/ only.
+        // Lore seed: default_lore_entries.csv under game_projects/<project_id>/lore/ only.
         try
         {
             foreach (var entry in ReadLoreSeedEntries(gameProjectId))
@@ -1379,9 +1390,9 @@ internal sealed class RunPersistence
         return requestedTags.All(tagSet.Contains);
     }
 
-    private static IReadOnlyList<LoreSeedEntry> ReadLoreSeedEntries(string gameProjectId)
+    private IReadOnlyList<LoreSeedEntry> ReadLoreSeedEntries(string gameProjectId)
     {
-        var loreDir = Path.Combine(GetGameProjectsRootStatic(), gameProjectId, "lore");
+        var loreDir = Path.Combine(GetGameProjectsRoot(), gameProjectId, "lore");
         var csvPath = Path.Combine(loreDir, "default_lore_entries.csv");
         if (!File.Exists(csvPath))
         {
@@ -1430,13 +1441,6 @@ internal sealed class RunPersistence
         }
 
         return rows;
-    }
-
-    private static string GetGameProjectsRootStatic()
-    {
-        var repositoryRoot = EngineConfigLoader.FindRepositoryRoot()
-            ?? throw new InvalidOperationException("Repository root could not be resolved for lore seeding.");
-        return Path.Combine(repositoryRoot, "game_projects");
     }
 
     internal static string CreateStableArchivalId(string source, string subject)

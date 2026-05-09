@@ -363,12 +363,12 @@ public sealed class MemoryDirector
                     request.Turn,
                     step,
                     "assistant",
-                    action.Tool == "send_message" ? "send_message" : "tool_call",
+                    action.Tool == "generate_prose" ? "send_message" : "tool_call",
                     llmResponse.Payload.Response,
                     action.Tool);
                 var toolMessages = new List<AgentMessageDto> { assistantMessage };
                 var contextAccounting = compiledContext.Accounting;
-                if (action.Tool != "send_message")
+                if (action.Tool != "generate_prose")
                 {
                     contextAccounting = AddToolResultTelemetry(contextAccounting, action.Tool, toolResult.ToolResultContent);
                     toolMessages.Add(new AgentMessageDto(
@@ -468,7 +468,7 @@ public sealed class MemoryDirector
             new MemoryPersistStepRequest(
                 turn,
                 step,
-                [new AgentMessageDto(turn, step, "assistant", "send_message", final, "send_message")],
+                [new AgentMessageDto(turn, step, "assistant", "send_message", final, "generate_prose")],
                 [],
                 []));
         return final;
@@ -480,7 +480,7 @@ public sealed class MemoryDirector
         {
             return action.Tool switch
             {
-                "send_message" => ExecuteSendMessage(action.Arguments),
+                "generate_prose" => ExecuteSendMessage(action.Arguments),
                 "core_memory_append" => ExecuteCoreMemoryAppend(turn, step, memoryContext, action.Arguments),
                 "core_memory_replace" => ExecuteCoreMemoryReplace(turn, step, memoryContext, action.Arguments),
                 "core_memory_set" => ExecuteCoreMemorySet(turn, step, memoryContext, action.Arguments),
@@ -659,7 +659,7 @@ public sealed class MemoryDirector
         AppendWithinBudget(system, _agentPrompt, budget, omissions, items, "agent_prompt", "system");
         AppendWithinBudget(system, Environment.NewLine, budget, omissions, items, "separator", "system");
         AppendWithinBudget(system, "You must answer with exactly one JSON action matching the provided schema. Do not include markdown.\n", budget, omissions, items, "tool_rule_intro", "system");
-        AppendWithinBudget(system, "Tool rules: send_message is terminal. Memory-edit, snapshot, recall_search, and archival memory tools are non-terminal.\n", budget, omissions, items, "tool_rules", "system");
+        AppendWithinBudget(system, "Tool rules: generate_prose is terminal. Memory-edit, snapshot, recall_search, and archival memory tools are non-terminal.\n", budget, omissions, items, "tool_rules", "system");
         AppendWithinBudget(system, "Use recall_search when the player references prior turns or when recent context is insufficient.\n", budget, omissions, items, "recall_rule", "system");
         AppendWithinBudget(system, "Use archival_memory_search for durable lore/facts. Use archival_memory_insert only for stable facts worth future semantic retrieval.\n", budget, omissions, items, "archival_rule", "system");
         AppendWithinBudget(system, "Core memory blocks:\n", budget, omissions, items, "core_header", "core_header");
@@ -945,7 +945,13 @@ public sealed class MemoryDirector
 
     private JsonElement LoadActionSchema()
     {
-        var path = Path.Combine(_configuration.RepositoryRoot, "docs", "schemas", "memory_director_action.schema.json");
+        var path = Path.Combine(
+            _configuration.RepositoryRoot,
+            "dotnet",
+            "src",
+            "MorpheusEngine.LlmProvider_qwen",
+            "schemas",
+            "memory_director_action.schema.json");
         using var doc = JsonDocument.Parse(File.ReadAllText(path));
         return doc.RootElement.Clone();
     }

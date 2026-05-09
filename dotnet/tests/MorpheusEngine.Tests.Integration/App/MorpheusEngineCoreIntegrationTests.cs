@@ -13,6 +13,9 @@ namespace MorpheusEngine.Tests.Integration.App;
 [Trait("Category", "Integration")]
 public sealed class MorpheusEngineCoreIntegrationTests : IDisposable
 {
+    // TestModuleHost sandboxes bind ephemeral OS-assigned loopback ports via GetFreeTcpPort; they deliberately avoid the
+    // fixed 59010-59109 integration harness reservation (IntegrationHarnessListenPorts).
+
     private string? _originalCurrentDirectory;
 
     // Verifies that startup spawns modules in load order and initializes them after readiness.

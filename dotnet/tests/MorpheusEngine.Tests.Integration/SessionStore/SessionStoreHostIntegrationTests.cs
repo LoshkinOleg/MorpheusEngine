@@ -1,9 +1,10 @@
 using System.Net;
 using System.Net.Http.Json;
-using System.Net.Sockets;
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
+using MorpheusEngine;
 using MorpheusEngine.Tests.Integration.Fixtures;
+using MorpheusEngine.Tests.Integration.Helpers;
 
 namespace MorpheusEngine.Tests.Integration.SessionStore;
 
@@ -271,10 +272,10 @@ public sealed class SessionStoreHostIntegrationTests
         private readonly Task _runTask;
         private readonly TempGameProject _gameProject;
 
-        private SessionStoreHostHarness(TempGameProject gameProject, int port)
+        private SessionStoreHostHarness(TempGameProject gameProject, EngineConfiguration configuration)
         {
             _gameProject = gameProject;
-            Port = port;
+            Port = configuration.GetRequiredListenPort("session_store");
             RunId = "test_run_001";
             RepositoryRoot = gameProject.RepositoryRoot;
             GameProjectId = gameProject.GameProjectId;
@@ -285,10 +286,10 @@ public sealed class SessionStoreHostIntegrationTests
             {
                 Timeout = TimeSpan.FromSeconds(10)
             };
-            _host = new SessionStoreHost(CreateConfiguration(RepositoryRoot, port), _hostHttpClient);
+            _host = new SessionStoreHost(configuration, _hostHttpClient);
             Client = new HttpClient
             {
-                BaseAddress = new Uri($"http://127.0.0.1:{port}/"),
+                BaseAddress = new Uri($"http://127.0.0.1:{Port}/"),
                 Timeout = TimeSpan.FromSeconds(10)
             };
             _runTask = _host.RunAsync();
@@ -311,13 +312,22 @@ public sealed class SessionStoreHostIntegrationTests
         public static async Task<SessionStoreHostHarness> CreateAsync()
         {
             const string gameProjectId = "test_game";
-            var port = GetFreeTcpPort();
+
+            var document =
+                IntegrationEngineConfigurationFixture.LoadConfigurationsFixture("integration_session_store_host.engine_config.json");
+
             var gameProject = new TempGameProject(
                 gameProjectId,
                 TestPayloads.MinimalManifestJson,
                 loreCsv: null,
                 systemInstructions: TestPayloads.MinimalSystemInstructions);
-            var harness = new SessionStoreHostHarness(gameProject, port);
+
+            IntegrationEngineConfigurationFixture.WriteEngineConfigJson(gameProject.RepositoryRoot, document);
+
+            var configuration =
+                IntegrationEngineConfigurationFixture.LoadConfigurationViaEngineConfigLoader(gameProject.RepositoryRoot);
+
+            var harness = new SessionStoreHostHarness(gameProject, configuration);
             await harness.WaitUntilReadyAsync();
             return harness;
         }
@@ -358,6 +368,7 @@ public sealed class SessionStoreHostIntegrationTests
                 // Best-effort wait; temp directory cleanup still needs to run.
             }
 
+            EngineConfigLoader.ResetForTesting();
             _gameProject.Dispose();
         }
 
@@ -390,86 +401,6 @@ public sealed class SessionStoreHostIntegrationTests
             }
 
             throw new TimeoutException($"SessionStoreHost did not start listening on port {Port} within the allotted time.");
-        }
-
-        private static EngineConfiguration CreateConfiguration(string repositoryRoot, int sessionStorePort)
-        {
-            var ports = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["router"] = sessionStorePort + 10,
-                ["session_store"] = sessionStorePort,
-                ["memory_director"] = sessionStorePort + 1,
-                ["llm_provider_qwen"] = sessionStorePort + 2,
-                ["embeddings_ollama"] = sessionStorePort + 3
-            };
-
-            var modules = new[]
-            {
-                new EngineModuleInfo(
-                    "router",
-                    "Router",
-                    true,
-                    10,
-                    new EngineModuleLaunchInfo("router.dll"),
-                    []),
-                new EngineModuleInfo(
-                    "session_store",
-                    "Session Store",
-                    false,
-                    50,
-                    new EngineModuleLaunchInfo("session_store.dll"),
-                    []),
-                new EngineModuleInfo(
-                    "memory_director",
-                    "Memory Director",
-                    true,
-                    20,
-                    new EngineModuleLaunchInfo("memory_director.dll"),
-                    [],
-                    null,
-                    null,
-                    new MemoryDirectorModuleOptions(12, 3210, 12, "30m")),
-                new EngineModuleInfo(
-                    "llm_provider_qwen",
-                    "LLM Provider",
-                    true,
-                    30,
-                    new EngineModuleLaunchInfo("llm_provider_qwen.dll"),
-                    [],
-                    new GenericLlmProviderModuleOptions(4096)),
-                new EngineModuleInfo(
-                    "embeddings_ollama",
-                    "Embeddings",
-                    true,
-                    40,
-                    new EngineModuleLaunchInfo("embeddings_ollama.dll"),
-                    [],
-                    null,
-                    null,
-                    null,
-                    new EmbeddingsModuleOptions(19112, "nomic-embed-text", "30m", 2048))
-            };
-
-            var aliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["generic_director"] = "memory_director",
-                ["generic_llm_provider"] = "llm_provider_qwen",
-                ["generic_embeddings"] = "embeddings_ollama"
-            };
-
-            return new EngineConfiguration(
-                repositoryRoot,
-                new EnginePortMap(ports),
-                modules,
-                aliases,
-                new Dictionary<string, EngineTurnPipelineInfo>(StringComparer.OrdinalIgnoreCase));
-        }
-
-        private static int GetFreeTcpPort()
-        {
-            using var listener = new TcpListener(IPAddress.Loopback, 0);
-            listener.Start();
-            return ((IPEndPoint)listener.LocalEndpoint).Port;
         }
     }
 }

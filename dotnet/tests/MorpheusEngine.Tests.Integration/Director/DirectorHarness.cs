@@ -1,9 +1,9 @@
 using System.Net;
 using System.Net.Http.Json;
-using System.Net.Sockets;
 using System.Text;
-using System.Text.Json;
+using MorpheusEngine;
 using MorpheusEngine.Tests.Integration.Fixtures;
+using MorpheusEngine.Tests.Integration.Helpers;
 using DirectorType = global::MorpheusEngine.Director;
 
 namespace MorpheusEngine.Tests.Integration.Director;
@@ -15,17 +15,15 @@ internal sealed class DirectorHarness : IAsyncDisposable
     private readonly HttpClient _outboundHttpClient;
     private readonly DirectorType _host;
 
-    private DirectorHarness(TempGameProject gameProject, int directorPort, int routerPort)
+    private DirectorHarness(TempGameProject gameProject, EngineConfiguration configuration)
     {
         _gameProject = gameProject;
         RepositoryRoot = gameProject.RepositoryRoot;
         GameProjectId = gameProject.GameProjectId;
         RunId = "test_run_001";
-        DirectorPort = directorPort;
-        RouterPort = routerPort;
 
-        EngineConfigLoader.ResetForTesting();
-        EngineConfigLoader.SetRepositoryRootOverrideForTesting(RepositoryRoot);
+        RouterPort = configuration.GetRequiredListenPort("router");
+        DirectorPort = configuration.GetRequiredListenPort("director");
 
         ProxyHandler = new MockRouterProxyHandler();
         _outboundHttpClient = new HttpClient(ProxyHandler)
@@ -33,10 +31,10 @@ internal sealed class DirectorHarness : IAsyncDisposable
             Timeout = TimeSpan.FromSeconds(10)
         };
 
-        _host = new DirectorType(CreateConfiguration(RepositoryRoot, directorPort, routerPort), _outboundHttpClient);
+        _host = new DirectorType(configuration, _outboundHttpClient);
         Client = new HttpClient
         {
-            BaseAddress = new Uri($"http://127.0.0.1:{directorPort}/"),
+            BaseAddress = new Uri($"http://127.0.0.1:{DirectorPort}/"),
             Timeout = TimeSpan.FromSeconds(10)
         };
         _runTask = _host.Run();
@@ -58,16 +56,21 @@ internal sealed class DirectorHarness : IAsyncDisposable
 
     public static async Task<DirectorHarness> CreateAsync()
     {
-        var directorPort = GetFreeTcpPort();
-        var routerPort = GetFreeTcpPort();
-        var engineConfigJson = BuildEngineConfigJson(directorPort, routerPort);
+        var configDocument = IntegrationEngineConfigurationFixture.LoadConfigurationsFixture("integration_director.engine_config.json");
+
         var gameProject = new TempGameProject(
             "test_game",
             TestPayloads.MinimalManifestJson,
             TestPayloads.MinimalLoreCsv,
-            TestPayloads.MinimalSystemInstructions,
-            engineConfigJson);
-        var harness = new DirectorHarness(gameProject, directorPort, routerPort);
+            TestPayloads.MinimalSystemInstructions);
+
+        IntegrationEngineConfigurationFixture.WriteEngineConfigJson(gameProject.RepositoryRoot, configDocument);
+        WriteDirectorSchema(gameProject);
+
+        var configuration =
+            IntegrationEngineConfigurationFixture.LoadConfigurationViaEngineConfigLoader(gameProject.RepositoryRoot);
+
+        var harness = new DirectorHarness(gameProject, configuration);
         await harness.WaitUntilReadyAsync();
         return harness;
     }
@@ -146,178 +149,38 @@ internal sealed class DirectorHarness : IAsyncDisposable
         throw new TimeoutException($"Director did not start listening on port {DirectorPort} within the allotted time.");
     }
 
-    private static EngineConfiguration CreateConfiguration(string repositoryRoot, int directorPort, int routerPort)
+    private static void WriteDirectorSchema(TempGameProject gameProject)
     {
-        var ports = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["router"] = routerPort,
-            ["director"] = directorPort,
-            ["llm_provider_qwen"] = routerPort + 1,
-            ["embeddings_ollama"] = routerPort + 2
-        };
-
-        var modules = new[]
-        {
-            new EngineModuleInfo(
-                "router",
-                "Router",
-                true,
-                10,
-                new EngineModuleLaunchInfo("router.dll"),
-                []),
-            new EngineModuleInfo(
-                "director",
-                "Director",
-                true,
-                20,
-                new EngineModuleLaunchInfo("director.dll"),
-                []),
-            new EngineModuleInfo(
-                "llm_provider_qwen",
-                "LLM Provider",
-                true,
-                30,
-                new EngineModuleLaunchInfo("llm_provider_qwen.dll"),
-                [],
-                new GenericLlmProviderModuleOptions(4096),
-                new QwenModuleOptions(19112, "qwen2.5:7b")),
-            new EngineModuleInfo(
-                "embeddings_ollama",
-                "Embeddings",
-                true,
-                40,
-                new EngineModuleLaunchInfo("embeddings_ollama.dll"),
-                [],
-                null,
-                null,
-                null,
-                new EmbeddingsModuleOptions(19112, "nomic-embed-text", "30m", 2048))
-        };
-
-        var aliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["generic_llm_provider"] = "llm_provider_qwen",
-            ["generic_director"] = "director",
-            ["generic_embeddings"] = "embeddings_ollama"
-        };
-
-        return new EngineConfiguration(
-            repositoryRoot,
-            new EnginePortMap(ports),
-            modules,
-            aliases,
-            new Dictionary<string, EngineTurnPipelineInfo>(StringComparer.OrdinalIgnoreCase));
+        var schemaDirectory = Path.Combine(
+            gameProject.RepositoryRoot,
+            "dotnet",
+            "src",
+            "MorpheusEngine.LlmProvider_qwen",
+            "schemas");
+        Directory.CreateDirectory(schemaDirectory);
+        File.WriteAllText(
+            Path.Combine(schemaDirectory, "director_action.schema.json"),
+            File.ReadAllText(
+                Path.Combine(
+                    GetRepositoryRoot(),
+                    "dotnet",
+                    "src",
+                    "MorpheusEngine.LlmProvider_qwen",
+                    "schemas",
+                    "director_action.schema.json")));
     }
 
-    private static string BuildEngineConfigJson(int directorPort, int routerPort)
+    private static string GetRepositoryRoot()
     {
-        var config = new
-        {
-            module_aliases = new Dictionary<string, string>
-            {
-                ["generic_llm_provider"] = "llm_provider_qwen",
-                ["generic_director"] = "director",
-                ["generic_embeddings"] = "embeddings_ollama"
-            },
-            turn_pipelines = new Dictionary<string, object>
-            {
-                ["director_test_pipeline"] = new
-                {
-                    steps = new object[]
-                    {
-                        new
-                        {
-                            id = "director_message",
-                            target_module = "director",
-                            path = "/message",
-                            method = "POST",
-                            body_template = "{\"turn\":{{turn}},\"playerInput\":{{playerInputJson}}}"
-                        }
-                    },
-                    response_mapping = new
-                    {
-                        source_step = "director_message",
-                        type = "director_message_response"
-                    }
-                }
-            },
-            modules = new object[]
-            {
-                new
-                {
-                    port_key = "router",
-                    port = routerPort,
-                    load_order = 10,
-                    display_name = "Router",
-                    required_by_engine = true,
-                    launch = "router.dll",
-                    endpoints = new object[]
-                    {
-                        new { path = "/health", description = "Health", method = "GET", template_contracts_id = "module_health" },
-                        new { path = "/proxy", description = "Proxy", method = "POST", template_contracts_id = "proxy" }
-                    }
-                },
-                new
-                {
-                    port_key = "director",
-                    port = directorPort,
-                    load_order = 20,
-                    display_name = "Director",
-                    required_by_engine = true,
-                    launch = "director.dll",
-                    endpoints = new object[]
-                    {
-                        new { path = "/health", description = "Health", method = "GET", template_contracts_id = "module_health" },
-                        new { path = "/initialize", description = "Initialize", method = "POST", template_contracts_id = "initialize" },
-                        new { path = "/message", description = "Message", method = "POST", template_contracts_id = "director_message" }
-                    }
-                },
-                new
-                {
-                    port_key = "llm_provider_qwen",
-                    port = routerPort + 1,
-                    load_order = 30,
-                    display_name = "LLM Provider",
-                    required_by_engine = true,
-                    launch = "llm_provider_qwen.dll",
-                    num_ctx = 4096,
-                    ollama_port = 19112,
-                    default_chat_model = "qwen2.5:7b",
-                    endpoints = new object[]
-                    {
-                        new { path = "/health", description = "Health", method = "GET", template_contracts_id = "module_health" },
-                        new { path = "/chat", description = "Chat", method = "POST", template_contracts_id = "chat" }
-                    }
-                },
-                new
-                {
-                    port_key = "embeddings_ollama",
-                    port = routerPort + 2,
-                    load_order = 40,
-                    display_name = "Embeddings",
-                    required_by_engine = true,
-                    launch = "embeddings_ollama.dll",
-                    ollama_port = 19112,
-                    default_embedding_model = "nomic-embed-text",
-                    keep_model_loaded_for = "30m",
-                    embeddings_num_ctx = 2048,
-                    endpoints = new object[]
-                    {
-                        new { path = "/health", description = "Health", method = "GET", template_contracts_id = "module_health" },
-                        new { path = "/embed", description = "Embed", method = "POST", template_contracts_id = "embeddings" }
-                    }
-                }
-            }
-        };
-
-        return JsonSerializer.Serialize(config, new JsonSerializerOptions { WriteIndented = true });
-    }
-
-    private static int GetFreeTcpPort()
-    {
-        using var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        return ((IPEndPoint)listener.LocalEndpoint).Port;
+        return Path.GetFullPath(
+            Path.Combine(
+                AppContext.BaseDirectory,
+                "..",
+                "..",
+                "..",
+                "..",
+                "..",
+                ".."));
     }
 }
 

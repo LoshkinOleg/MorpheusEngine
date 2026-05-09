@@ -1,3 +1,11 @@
+- SessionStoreModule:
+  - Make UI to inspect last turn's world_state and view_state.
+  
+- Use qwen 3.5
+
+- Check if we're using memGPT's heartbeat approach to tool calling / deciding when to return control to player. If we are, simplify: generate_prose tool call is inherently terminal while all other tool calls are ones where the LLM is expected to continue generating.
+- Check if we're using memGPT's tagging for archival memory and remove it if it's used.
+
 - UI: once engine is initialized, display "ready!"
 
 - Make intent extractor actions data driven instead of hardcoded.

@@ -1,7 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
-using System.Net.Sockets;
 using System.Text;
+using MorpheusEngine;
 using MorpheusEngine.Tests.Integration.Fixtures;
 using MorpheusEngine.Tests.Integration.Helpers;
 
@@ -14,24 +14,25 @@ internal sealed class EmbeddingsOllamaHarness : IAsyncDisposable
     private readonly HttpClient _outboundHttpClient;
     private readonly EmbeddingsOllamaModule _host;
 
-    private EmbeddingsOllamaHarness(TempGameProject gameProject, int embeddingsPort, int ollamaPort)
+    private EmbeddingsOllamaHarness(TempGameProject gameProject, EngineConfiguration configuration)
     {
         _gameProject = gameProject;
         RepositoryRoot = gameProject.RepositoryRoot;
         GameProjectId = gameProject.GameProjectId;
         RunId = "test_run_001";
-        EmbeddingsPort = embeddingsPort;
-        OllamaPort = ollamaPort;
+        EmbeddingsPort = configuration.GetRequiredListenPort("embeddings_ollama");
+        OllamaPort = EngineConfigurationHarnessPorts.GetOutboundOllamaPortForEmbeddings(configuration);
 
         OllamaHandler = new MockOllamaHandler();
         _outboundHttpClient = new HttpClient(OllamaHandler)
         {
             Timeout = TimeSpan.FromSeconds(10)
         };
-        _host = new EmbeddingsOllamaModule(CreateConfiguration(RepositoryRoot, embeddingsPort, ollamaPort), _outboundHttpClient);
+
+        _host = new EmbeddingsOllamaModule(configuration, _outboundHttpClient);
         Client = new HttpClient
         {
-            BaseAddress = new Uri($"http://127.0.0.1:{embeddingsPort}/"),
+            BaseAddress = new Uri($"http://127.0.0.1:{EmbeddingsPort}/"),
             Timeout = TimeSpan.FromSeconds(10)
         };
         _runTask = _host.RunAsync();
@@ -53,14 +54,18 @@ internal sealed class EmbeddingsOllamaHarness : IAsyncDisposable
 
     public static async Task<EmbeddingsOllamaHarness> CreateAsync()
     {
-        var embeddingsPort = GetFreeTcpPort();
-        var ollamaPort = GetFreeTcpPort();
+        var document = IntegrationEngineConfigurationFixture.LoadConfigurationsFixture("integration_director.engine_config.json");
+
         var gameProject = new TempGameProject(
             "test_game",
             TestPayloads.MinimalManifestJson,
             TestPayloads.MinimalLoreCsv,
             TestPayloads.MinimalSystemInstructions);
-        var harness = new EmbeddingsOllamaHarness(gameProject, embeddingsPort, ollamaPort);
+
+        IntegrationEngineConfigurationFixture.WriteEngineConfigJson(gameProject.RepositoryRoot, document);
+        var configurationAfterWrite =
+            IntegrationEngineConfigurationFixture.LoadConfigurationViaEngineConfigLoader(gameProject.RepositoryRoot);
+        var harness = new EmbeddingsOllamaHarness(gameProject, configurationAfterWrite);
         await harness.WaitUntilReadyAsync();
         return harness;
     }
@@ -114,6 +119,7 @@ internal sealed class EmbeddingsOllamaHarness : IAsyncDisposable
             // Best-effort wait; cleanup still needs to proceed.
         }
 
+        EngineConfigLoader.ResetForTesting();
         _gameProject.Dispose();
     }
 
@@ -146,47 +152,5 @@ internal sealed class EmbeddingsOllamaHarness : IAsyncDisposable
         }
 
         throw new TimeoutException($"EmbeddingsOllamaModule did not start listening on port {EmbeddingsPort} within the allotted time.");
-    }
-
-    private static EngineConfiguration CreateConfiguration(string repositoryRoot, int embeddingsPort, int ollamaPort)
-    {
-        var ports = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["embeddings_ollama"] = embeddingsPort
-        };
-
-        var modules = new[]
-        {
-            new EngineModuleInfo(
-                "embeddings_ollama",
-                "Embeddings",
-                true,
-                10,
-                new EngineModuleLaunchInfo("embeddings_ollama.dll"),
-                [],
-                null,
-                null,
-                null,
-                new EmbeddingsModuleOptions(ollamaPort, "nomic-embed-text", "30m", 2048))
-        };
-
-        var aliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["generic_embeddings"] = "embeddings_ollama"
-        };
-
-        return new EngineConfiguration(
-            repositoryRoot,
-            new EnginePortMap(ports),
-            modules,
-            aliases,
-            new Dictionary<string, EngineTurnPipelineInfo>(StringComparer.OrdinalIgnoreCase));
-    }
-
-    private static int GetFreeTcpPort()
-    {
-        using var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        return ((IPEndPoint)listener.LocalEndpoint).Port;
     }
 }
