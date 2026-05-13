@@ -5,6 +5,7 @@ using FluentAssertions;
 
 namespace MorpheusEngine.Tests.Integration.Embeddings;
 
+[Collection("EngineProcessState")]
 [Trait("Category", "Integration")]
 public sealed class EmbeddingsOllamaIntegrationTests
 {

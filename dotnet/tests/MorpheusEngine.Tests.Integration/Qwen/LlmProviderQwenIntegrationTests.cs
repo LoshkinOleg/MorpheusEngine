@@ -6,6 +6,7 @@ using FluentAssertions;
 
 namespace MorpheusEngine.Tests.Integration.Qwen;
 
+[Collection("EngineProcessState")]
 [Trait("Category", "Integration")]
 public sealed class LlmProviderQwenIntegrationTests
 {

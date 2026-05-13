@@ -21,6 +21,10 @@
   }
 }
 
+- Play with ollama thinking parameters
+
+- Look into mem0's entity boost and into lemmatization.
+
 - PlotMaster module:
   - called regularly by the Director to consolidate the new story diff:
     - upsert a global plot document, hidden from the player, to explain most of the inconsistencies that have happened.

@@ -467,6 +467,10 @@ public sealed class MorpheusEngineCoreIntegrationTests : IDisposable
         throw new TimeoutException($"File '{path}' was not created in time.");
     }
 
+    // Temporary helper with an acknowledged TOCTOU race: the port is discovered by binding to
+    // 0 and immediately releasing it, then rebound by spawned TestModuleHost processes. This is
+    // acceptable for now because integration tests run sequentially; Phase 4 should eliminate
+    // bind-then-rebind windows where practical.
     private static int GetFreeTcpPort()
     {
         using var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
@@ -516,17 +520,21 @@ public sealed class MorpheusEngineCoreIntegrationTests : IDisposable
         {
             // TestEnvironment manages out-of-process module subprocesses spawned by the engine
             // under test; their lifetime is the engine's responsibility, not the harness's. The
-            // OS often hasn't finalized handles on the temp tree by the time this Dispose runs,
-            // so we keep the same best-effort semantics here that File.Delete(EventLogPath) and
-            // moduleRoot deletion already use below. The harness teardown audit
-            // (docs/LLM_TestHarnessAudit.md, lines 3-54) targets in-process listener teardown,
-            // not these spawned-process cleanup paths.
+            // OS can legitimately keep handles open after the engine process exits, so this
+            // teardown remains an explicit best-effort exception to the fail-loud default.
+            // We still narrow suppression to transient I/O access failures and log them so
+            // the behavior remains deliberate and reviewable.
             try
             {
                 _gameProject.Dispose();
             }
-            catch
+            catch (IOException ex)
             {
+                Console.WriteLine($"[TestEnvironment] Best-effort cleanup skipped TempGameProject delete due to IO race: {ex.Message}");
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                Console.WriteLine($"[TestEnvironment] Best-effort cleanup skipped TempGameProject delete due to access race: {ex.Message}");
             }
 
             try
@@ -536,8 +544,13 @@ public sealed class MorpheusEngineCoreIntegrationTests : IDisposable
                     File.Delete(EventLogPath);
                 }
             }
-            catch
+            catch (IOException ex)
             {
+                Console.WriteLine($"[TestEnvironment] Best-effort cleanup skipped event-log delete due to IO race: {ex.Message}");
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                Console.WriteLine($"[TestEnvironment] Best-effort cleanup skipped event-log delete due to access race: {ex.Message}");
             }
 
             foreach (var moduleRoot in _moduleRoots.Values)
@@ -549,8 +562,13 @@ public sealed class MorpheusEngineCoreIntegrationTests : IDisposable
                         Directory.Delete(moduleRoot, recursive: true);
                     }
                 }
-                catch
+                catch (IOException ex)
                 {
+                    Console.WriteLine($"[TestEnvironment] Best-effort cleanup skipped module root delete '{moduleRoot}' due to IO race: {ex.Message}");
+                }
+                catch (UnauthorizedAccessException ex)
+                {
+                    Console.WriteLine($"[TestEnvironment] Best-effort cleanup skipped module root delete '{moduleRoot}' due to access race: {ex.Message}");
                 }
             }
         }
@@ -558,6 +576,9 @@ public sealed class MorpheusEngineCoreIntegrationTests : IDisposable
 
     private sealed class TempDirectory : IDisposable
     {
+        private const int MAX_DELETE_ATTEMPTS = 4;
+        private static readonly int[] DELETE_BACKOFF_MS = [25, 75, 150];
+
         public TempDirectory()
         {
             Path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "morpheus_temp_" + Guid.NewGuid().ToString("N"));
@@ -568,16 +589,39 @@ public sealed class MorpheusEngineCoreIntegrationTests : IDisposable
 
         public void Dispose()
         {
-            try
+            if (!Directory.Exists(Path))
             {
-                if (Directory.Exists(Path))
+                return;
+            }
+
+            Exception? lastException = null;
+            for (var attempt = 0; attempt < MAX_DELETE_ATTEMPTS; attempt++)
+            {
+                try
                 {
                     Directory.Delete(Path, recursive: true);
+                    return;
+                }
+                catch (IOException ex)
+                {
+                    // Engine subprocesses can briefly hold handles in this temp tree after teardown.
+                    lastException = ex;
+                }
+                catch (UnauthorizedAccessException ex)
+                {
+                    // Windows file scanners can transiently block recursive deletes.
+                    lastException = ex;
+                }
+
+                if (attempt < MAX_DELETE_ATTEMPTS - 1)
+                {
+                    Thread.Sleep(DELETE_BACKOFF_MS[attempt]);
                 }
             }
-            catch
-            {
-            }
+
+            throw lastException
+                ?? new InvalidOperationException(
+                    $"TempDirectory failed to delete '{Path}' after {MAX_DELETE_ATTEMPTS} attempts.");
         }
     }
 }

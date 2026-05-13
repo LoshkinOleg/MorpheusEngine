@@ -1,3 +1,5 @@
+using MorpheusEngine.Tests.Integration.Helpers;
+
 namespace MorpheusEngine.Tests.Integration.Fixtures;
 
 internal sealed class RunPersistenceFixture : IDisposable
@@ -39,8 +41,10 @@ internal sealed class RunPersistenceFixture : IDisposable
 
     public void Dispose()
     {
-        EngineConfigLoader.ResetForTesting();
-        Environment.CurrentDirectory = _originalCurrentDirectory;
-        _gameProject.Dispose();
+        var teardown = new HarnessTeardownErrorCollector(nameof(RunPersistenceFixture));
+        teardown.Run("reset EngineConfigLoader", EngineConfigLoader.ResetForTesting);
+        teardown.Run("restore current directory", () => Environment.CurrentDirectory = _originalCurrentDirectory);
+        teardown.Run("dispose temp game project", _gameProject.Dispose);
+        teardown.ThrowIfAny();
     }
 }

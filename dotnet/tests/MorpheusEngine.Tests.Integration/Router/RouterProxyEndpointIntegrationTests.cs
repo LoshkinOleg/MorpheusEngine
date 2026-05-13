@@ -1,17 +1,17 @@
 using System.Net;
 using System.Net.Sockets;
-using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using FluentAssertions;
-using MorpheusEngine.Tests.Unit.Fixtures;
-using MorpheusEngine.Tests.Unit.Helpers;
+using MorpheusEngine.Tests.Integration.Fixtures;
+using MorpheusEngine.Tests.Integration.Helpers;
 using RouterType = global::MorpheusEngine.Router;
 
-namespace MorpheusEngine.Tests.Unit.Router;
+namespace MorpheusEngine.Tests.Integration.Router;
 
-[Trait("Category", "Unit")]
-public sealed class RouterProxyEndpointTests
+[Collection("EngineProcessState")]
+[Trait("Category", "Integration")]
+public sealed class RouterProxyEndpointIntegrationTests
 {
     // Verifies that allowlisted proxy requests are forwarded and return the downstream response.
     [Fact]
@@ -270,7 +270,7 @@ public sealed class RouterProxyEndpointTests
 
         public static async Task<RouterProxyHarness> StartAsync(MockHttpHandler downstreamHandler)
         {
-            var port = AllocateFreeTcpPort();
+            var port = GetFreeTcpPort();
             var repository = new TempRouterRepository();
             var configuration = BuildConfiguration(repository.RepositoryRoot, port);
             var router = new RouterType(configuration, new HttpClient(downstreamHandler));
@@ -288,19 +288,20 @@ public sealed class RouterProxyEndpointTests
 
         public async ValueTask DisposeAsync()
         {
+            var teardown = new HarnessTeardownErrorCollector(nameof(RouterProxyHarness));
             if (!_runTask.IsCompleted)
             {
-                try
+                await teardown.RunAsync(
+                    "request /shutdown",
+                    async () =>
                 {
                     using var _ = await _client.PostAsync("/shutdown", JsonContent("""{}"""));
-                }
-                catch
-                {
-                    // Best effort if the listener is already stopping.
-                }
+                });
             }
 
-            try
+            await teardown.RunAsync(
+                "await router run task",
+                async () =>
             {
                 if (!_runTask.IsCompleted)
                 {
@@ -309,12 +310,10 @@ public sealed class RouterProxyEndpointTests
                 }
 
                 await _runTask;
-            }
-            finally
-            {
-                _client.Dispose();
-                _repository.Dispose();
-            }
+            });
+            teardown.Run("dispose http client", _client.Dispose);
+            teardown.Run("dispose temp repository", _repository.Dispose);
+            teardown.ThrowIfAny();
         }
 
         private async Task WaitUntilReadyAsync()
@@ -391,7 +390,11 @@ public sealed class RouterProxyEndpointTests
                 .Build();
         }
 
-        private static int AllocateFreeTcpPort()
+        // Temporary helper with an acknowledged TOCTOU race: the port is reserved by binding to
+        // 0, then released, then rebound by the module listener. This is tolerated in Phase 3
+        // because these tests now run in the sequential integration lane. Phase 4 should replace
+        // this with a deeper design that avoids bind-then-rebind windows.
+        private static int GetFreeTcpPort()
         {
             using var listener = new TcpListener(IPAddress.Loopback, 0);
             listener.Start();
@@ -401,6 +404,9 @@ public sealed class RouterProxyEndpointTests
 
     private sealed class TempRouterRepository : IDisposable
     {
+        private const int MAX_DELETE_ATTEMPTS = 4;
+        private static readonly int[] DELETE_BACKOFF_MS = [25, 75, 150];
+
         public string RepositoryRoot { get; }
 
         public TempRouterRepository()
@@ -415,17 +421,39 @@ public sealed class RouterProxyEndpointTests
 
         public void Dispose()
         {
-            try
+            if (!Directory.Exists(RepositoryRoot))
             {
-                if (Directory.Exists(RepositoryRoot))
+                return;
+            }
+
+            Exception? lastException = null;
+            for (var attempt = 0; attempt < MAX_DELETE_ATTEMPTS; attempt++)
+            {
+                try
                 {
                     Directory.Delete(RepositoryRoot, recursive: true);
+                    return;
+                }
+                catch (IOException ex)
+                {
+                    // Listener shutdown and file-indexing races can hold handles briefly after test completion.
+                    lastException = ex;
+                }
+                catch (UnauthorizedAccessException ex)
+                {
+                    // Windows may transiently deny recursive delete while AV/indexers inspect new files.
+                    lastException = ex;
+                }
+
+                if (attempt < MAX_DELETE_ATTEMPTS - 1)
+                {
+                    Thread.Sleep(DELETE_BACKOFF_MS[attempt]);
                 }
             }
-            catch
-            {
-                // Best-effort cleanup for temp router repositories.
-            }
+
+            throw lastException
+                ?? new InvalidOperationException(
+                    $"TempRouterRepository failed to delete '{RepositoryRoot}' after {MAX_DELETE_ATTEMPTS} attempts.");
         }
     }
 }

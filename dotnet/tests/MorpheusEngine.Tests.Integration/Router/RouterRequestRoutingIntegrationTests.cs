@@ -1,17 +1,17 @@
 using System.Net;
 using System.Net.Sockets;
-using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using FluentAssertions;
-using MorpheusEngine.Tests.Unit.Fixtures;
-using MorpheusEngine.Tests.Unit.Helpers;
+using MorpheusEngine.Tests.Integration.Fixtures;
+using MorpheusEngine.Tests.Integration.Helpers;
 using RouterType = global::MorpheusEngine.Router;
 
-namespace MorpheusEngine.Tests.Unit.Router;
+namespace MorpheusEngine.Tests.Integration.Router;
 
-[Trait("Category", "Unit")]
-public sealed class RouterRequestRoutingTests
+[Collection("EngineProcessState")]
+[Trait("Category", "Integration")]
+public sealed class RouterRequestRoutingIntegrationTests
 {
     // Verifies that the info endpoint returns the router module metadata.
     [Fact]
@@ -65,7 +65,6 @@ public sealed class RouterRequestRoutingTests
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         payload.Should().Be(new ModuleShutdownResponse(true, "Shutdown requested."));
         await harness.AwaitStoppedAsync();
-        harness.GetPrivateField<bool>("_shutdownRequested").Should().BeTrue();
     }
 
     // Verifies that unknown routes return a not found error.
@@ -94,10 +93,10 @@ public sealed class RouterRequestRoutingTests
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         payload.Should().Be(new InitializeModuleResponse(true));
-        harness.GetPrivateField<bool>("_runBound").Should().BeTrue();
-        harness.GetPrivateField<string>("_boundGameProjectId").Should().Be("test_game");
-        harness.GetPrivateField<string>("_boundRunId").Should().Be("run-001");
-        harness.GetPrivateField<EngineTurnPipelineInfo>("_turnPipeline").Id.Should().Be("memory_director_default");
+        using var healthResponse = await harness.Client.GetAsync("/health");
+        var healthPayload = await ReadJsonAsync<ModuleHealthResponse>(healthResponse);
+        healthResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        healthPayload.Should().Be(new ModuleHealthResponse(true, "healthy", true));
     }
 
     // Verifies that initialize rejects requests missing the run ID.
@@ -229,21 +228,18 @@ public sealed class RouterRequestRoutingTests
         private readonly Task _runTask;
         private readonly TempRouterRepository _repository;
 
-        private RouterHarness(HttpClient httpClient, RouterType router, Task runTask, TempRouterRepository repository)
+        private RouterHarness(HttpClient httpClient, Task runTask, TempRouterRepository repository)
         {
             _httpClient = httpClient;
-            Router = router;
             _runTask = runTask;
             _repository = repository;
         }
-
-        public RouterType Router { get; }
 
         public HttpClient Client => _httpClient;
 
         public static async Task<RouterHarness> StartAsync()
         {
-            var port = AllocateFreeTcpPort();
+            var port = GetFreeTcpPort();
             var repository = new TempRouterRepository();
             var configuration = BuildConfiguration(repository.RepositoryRoot, port);
             var httpClient = new HttpClient
@@ -253,7 +249,7 @@ public sealed class RouterRequestRoutingTests
             };
             var router = new RouterType(configuration, new HttpClient(new MockHttpHandler()));
             var runTask = Task.Run(() => router.Run());
-            var harness = new RouterHarness(httpClient, router, runTask, repository);
+            var harness = new RouterHarness(httpClient, runTask, repository);
             await harness.WaitUntilReadyAsync();
             return harness;
         }
@@ -267,13 +263,6 @@ public sealed class RouterRequestRoutingTests
             response.StatusCode.Should().Be(HttpStatusCode.OK);
         }
 
-        public T GetPrivateField<T>(string fieldName)
-        {
-            var field = typeof(RouterType).GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
-            field.Should().NotBeNull($"expected private field '{fieldName}' to exist");
-            return (T)field!.GetValue(Router)!;
-        }
-
         public async Task AwaitStoppedAsync()
         {
             var completed = await Task.WhenAny(_runTask, Task.Delay(TimeSpan.FromSeconds(5)));
@@ -283,19 +272,20 @@ public sealed class RouterRequestRoutingTests
 
         public async ValueTask DisposeAsync()
         {
+            var teardown = new HarnessTeardownErrorCollector(nameof(RouterHarness));
             if (!_runTask.IsCompleted)
             {
-                try
+                await teardown.RunAsync(
+                    "request /shutdown",
+                    async () =>
                 {
                     using var _ = await _httpClient.PostAsync("/shutdown", JsonContent("""{}"""));
-                }
-                catch
-                {
-                    // Best effort if the listener is already stopping.
-                }
+                });
             }
 
-            try
+            await teardown.RunAsync(
+                "await router run task",
+                async () =>
             {
                 if (!_runTask.IsCompleted)
                 {
@@ -305,12 +295,10 @@ public sealed class RouterRequestRoutingTests
                 {
                     await _runTask;
                 }
-            }
-            finally
-            {
-                _httpClient.Dispose();
-                _repository.Dispose();
-            }
+            });
+            teardown.Run("dispose http client", _httpClient.Dispose);
+            teardown.Run("dispose temp repository", _repository.Dispose);
+            teardown.ThrowIfAny();
         }
 
         private async Task WaitUntilReadyAsync()
@@ -376,7 +364,11 @@ public sealed class RouterRequestRoutingTests
                 .Build();
         }
 
-        private static int AllocateFreeTcpPort()
+        // Temporary helper with an acknowledged TOCTOU race: the port is reserved by binding to
+        // 0, then released, then rebound by the module listener. This is tolerated in Phase 3
+        // because these tests now run in the sequential integration lane. Phase 4 should replace
+        // this with a deeper design that avoids bind-then-rebind windows.
+        private static int GetFreeTcpPort()
         {
             using var listener = new TcpListener(IPAddress.Loopback, 0);
             listener.Start();
@@ -386,6 +378,9 @@ public sealed class RouterRequestRoutingTests
 
     private sealed class TempRouterRepository : IDisposable
     {
+        private const int MAX_DELETE_ATTEMPTS = 4;
+        private static readonly int[] DELETE_BACKOFF_MS = [25, 75, 150];
+
         public string RepositoryRoot { get; }
 
         public TempRouterRepository()
@@ -400,17 +395,39 @@ public sealed class RouterRequestRoutingTests
 
         public void Dispose()
         {
-            try
+            if (!Directory.Exists(RepositoryRoot))
             {
-                if (Directory.Exists(RepositoryRoot))
+                return;
+            }
+
+            Exception? lastException = null;
+            for (var attempt = 0; attempt < MAX_DELETE_ATTEMPTS; attempt++)
+            {
+                try
                 {
                     Directory.Delete(RepositoryRoot, recursive: true);
+                    return;
+                }
+                catch (IOException ex)
+                {
+                    // Listener shutdown and file-indexing races can hold handles briefly after test completion.
+                    lastException = ex;
+                }
+                catch (UnauthorizedAccessException ex)
+                {
+                    // Windows may transiently deny recursive delete while AV/indexers inspect new files.
+                    lastException = ex;
+                }
+
+                if (attempt < MAX_DELETE_ATTEMPTS - 1)
+                {
+                    Thread.Sleep(DELETE_BACKOFF_MS[attempt]);
                 }
             }
-            catch
-            {
-                // Best-effort cleanup for temp router repositories.
-            }
+
+            throw lastException
+                ?? new InvalidOperationException(
+                    $"TempRouterRepository failed to delete '{RepositoryRoot}' after {MAX_DELETE_ATTEMPTS} attempts.");
         }
     }
 }

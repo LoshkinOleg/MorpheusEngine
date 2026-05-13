@@ -8,6 +8,7 @@ using MorpheusEngine.Tests.Integration.Helpers;
 
 namespace MorpheusEngine.Tests.Integration.SessionStore;
 
+[Collection("EngineProcessState")]
 [Trait("Category", "Integration")]
 public sealed class SessionStoreHostIntegrationTests
 {

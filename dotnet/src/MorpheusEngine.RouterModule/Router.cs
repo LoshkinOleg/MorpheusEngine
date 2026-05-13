@@ -27,6 +27,25 @@ namespace MorpheusEngine
                     JsonSerializer.Serialize(new ErrorResponse(false, error, details)));
         }
 
+        internal sealed record ProxyRequestValidationResult(
+            bool Ok,
+            string SourceModule,
+            string TargetModule,
+            string TargetPath,
+            string Method,
+            string? RequestBody,
+            ErrorResponse? Error);
+
+        internal sealed record ProxyTargetResolutionResult(
+            bool Ok,
+            string ResolvedModuleKey,
+            string NormalizedPath,
+            string MethodUpper,
+            int TargetPort,
+            EngineModuleInfo? TargetModule,
+            int ErrorStatusCode,
+            ErrorResponse? Error);
+
         #endregion
 
         #region Private data
@@ -300,14 +319,10 @@ namespace MorpheusEngine
                 return;
             }
 
-            if (parsed is null
-                || string.IsNullOrWhiteSpace(parsed.RunId)
-                || string.IsNullOrWhiteSpace(parsed.GameProjectId))
+            var initializeValidationError = ValidateInitializePayload(parsed);
+            if (initializeValidationError is not null)
             {
-                await RespondAsync(
-                    context,
-                    400,
-                    new ErrorResponse(false, "Request must include non-empty runId and gameProjectId."));
+                await RespondAsync(context, 400, initializeValidationError);
                 return;
             }
 
@@ -316,7 +331,7 @@ namespace MorpheusEngine
             {
                 try
                 {
-                    await BindRunAsync(parsed, CancellationToken.None);
+                    await BindRunAsync(parsed!, CancellationToken.None);
                 }
                 catch (Exception e)
                 {
@@ -351,32 +366,21 @@ namespace MorpheusEngine
                 return;
             }
 
-            if (request is null
-                || string.IsNullOrWhiteSpace(request.PlayerInput))
+            var turnValidationError = ValidateTurnRequest(request, _runBound);
+            if (turnValidationError is not null)
             {
                 await RespondAsync(
                     context,
-                    400,
-                    new ErrorResponse(false, "Turn request must include non-empty playerInput."));
+                    GetTurnValidationStatusCode(turnValidationError),
+                    turnValidationError);
                 return;
             }
 
-            if (!_runBound)
-            {
-                await RespondAsync(context, 503, new ErrorResponse(false, "Router run is not bound; the host must bind the run before POST /turn."));
-                return;
-            }
-
-            if (request.Turn < 1)
-            {
-                await RespondAsync(context, 400, new ErrorResponse(false, "Turn must be >= 1."));
-                return;
-            }
-
+            var validatedRequest = request!;
             var turnStopwatch = Stopwatch.StartNew();
-            var playerInputTrimmed = request.PlayerInput.Trim();
+            var playerInputTrimmed = validatedRequest.PlayerInput.Trim();
             var turnStartInner =
-                $"=== TURN {request.Turn} START === runId={_boundRunId} gameProjectId={_boundGameProjectId} input='{TruncateMiddle(playerInputTrimmed)}'";
+                $"=== TURN {validatedRequest.Turn} START === runId={_boundRunId} gameProjectId={_boundGameProjectId} input='{TruncateMiddle(playerInputTrimmed)}'";
             Console.WriteLine(turnStartInner);
 
             var finalStatusCode = 500;
@@ -391,7 +395,7 @@ namespace MorpheusEngine
                 {
                     var payload = RenderTurnPipelineStepBody(
                         step.BodyTemplate,
-                        request.Turn,
+                        validatedRequest.Turn,
                         playerInputTrimmed,
                         previousResult,
                         stepResults);
@@ -489,7 +493,7 @@ namespace MorpheusEngine
             {
                 turnStopwatch.Stop();
                 var turnEndInner =
-                    $"=== TURN {request.Turn} END === status={finalStatusCode} elapsedMs={turnStopwatch.ElapsedMilliseconds}";
+                    $"=== TURN {validatedRequest.Turn} END === status={finalStatusCode} elapsedMs={turnStopwatch.ElapsedMilliseconds}";
                 Console.WriteLine(turnEndInner);
             }
         }
@@ -501,47 +505,19 @@ namespace MorpheusEngine
         private async Task ProcessRequest_proxy(HttpListenerContext context)
         {
             var body = await ReadRequestBodyAsync(context);
-
-            ModuleProxyRequest? request;
-            try
+            var validation = ValidateProxyRequestPayload(body, _jsonOptions);
+            if (!validation.Ok)
             {
-                request = JsonSerializer.Deserialize<ModuleProxyRequest>(body, _jsonOptions);
-            }
-            catch (JsonException e)
-            {
-                await RespondAsync(context, 400, new ErrorResponse(false, "Invalid proxy request payload.", e.Message));
-                return;
-            }
-
-            if (request is null
-                || string.IsNullOrWhiteSpace(request.SourceModule)
-                || string.IsNullOrWhiteSpace(request.TargetModule)
-                || string.IsNullOrWhiteSpace(request.TargetPath))
-            {
-                await RespondAsync(context, 400, new ErrorResponse(false, "Proxy request must include sourceModule, targetModule, and targetPath."));
-                return;
-            }
-
-            // Fail fast: method is required; do not default to POST.
-            if (string.IsNullOrWhiteSpace(request.Method))
-            {
-                await RespondAsync(context, 400, new ErrorResponse(false, "Proxy request must include a non-empty 'method' field (GET or POST)."));
-                return;
-            }
-
-            var method = request.Method.Trim().ToUpperInvariant();
-            if (method != "GET" && method != "POST")
-            {
-                await RespondAsync(context, 400, new ErrorResponse(false, $"Unsupported proxy method '{request.Method}'. Only GET and POST are supported."));
+                await RespondAsync(context, 400, validation.Error!);
                 return;
             }
 
             var result = await ForwardModuleCallAsync(
-                request.SourceModule.Trim(),
-                request.TargetModule.Trim(),
-                request.TargetPath,
-                method,
-                request.Body?.GetRawText());
+                validation.SourceModule,
+                validation.TargetModule,
+                validation.TargetPath,
+                validation.Method,
+                validation.RequestBody);
 
             await WriteForwardedResultAsync(context, result);
         }
@@ -561,40 +537,21 @@ namespace MorpheusEngine
             string method,
             string? requestBody)
         {
-            var normalizedPath = EngineConfiguration.NormalizePath(targetPath);
-            var methodUpper = method.Trim().ToUpperInvariant();
-
-            var resolvedModuleKey = _configuration.ResolveProxyTargetModuleKey(targetModuleKey);
-            var targetModule = _configuration.FindModule(resolvedModuleKey);
-            if (targetModule is null)
+            var resolution = ResolveProxyTarget(_configuration, targetModuleKey, targetPath, method);
+            if (!resolution.Ok)
             {
-                return ForwardedModuleResult.FromError(400, $"Unknown target module '{resolvedModuleKey}'.");
+                return ForwardedModuleResult.FromError(
+                    resolution.ErrorStatusCode,
+                    resolution.Error!.Error,
+                    resolution.Error.Details);
             }
 
-            var targetPort = _configuration.GetRequiredListenPort(targetModule.PortKey);
-
-            // Allowlist: only (path, method) pairs declared on this module in engine_config.json may be reached through the proxy.
-            // This blocks arbitrary SSRF-style forwarding even though the caller is on localhost.
-            var endpoint = targetModule.Endpoints.FirstOrDefault(ep =>
-                string.Equals(EngineConfiguration.NormalizePath(ep.Path), normalizedPath, StringComparison.OrdinalIgnoreCase)
-                && string.Equals(ep.Method, methodUpper, StringComparison.OrdinalIgnoreCase));
-            if (endpoint is null)
-            {
-                return ForwardedModuleResult.FromError(403, $"Proxy target '{targetModuleKey} {methodUpper} {normalizedPath}' is not allowed by configuration.");
-            }
-
-            var uri = $"http://127.0.0.1:{targetPort}{normalizedPath}";
-            Console.WriteLine($"Proxied call: {sourceModule} -> {targetModule.PortKey} {methodUpper} {normalizedPath}");
+            var uri = $"http://127.0.0.1:{resolution.TargetPort}{resolution.NormalizedPath}";
+            Console.WriteLine($"Proxied call: {sourceModule} -> {resolution.TargetModule!.PortKey} {resolution.MethodUpper} {resolution.NormalizedPath}");
 
             try
             {
-                using var outbound = new HttpRequestMessage(new HttpMethod(methodUpper), uri);
-                if (methodUpper == "POST")
-                {
-                    outbound.Content = string.IsNullOrWhiteSpace(requestBody)
-                        ? new ByteArrayContent(Array.Empty<byte>())
-                        : new StringContent(requestBody, Encoding.UTF8, "application/json");
-                }
+                using var outbound = BuildProxyOutboundRequest(resolution.MethodUpper, uri, requestBody);
 
                 using var response = await _httpClient.SendAsync(outbound);
                 var responseBody = await response.Content.ReadAsStringAsync();
@@ -610,7 +567,7 @@ namespace MorpheusEngine
                 }
 
                 Console.WriteLine(
-                    $"Proxied call response: {targetModule.PortKey} -> {sourceModule} {methodUpper} {normalizedPath} => {(int)response.StatusCode}");
+                    $"Proxied call response: {resolution.TargetModule.PortKey} -> {sourceModule} {resolution.MethodUpper} {resolution.NormalizedPath} => {(int)response.StatusCode}");
 
                 // What the router's caller receives: same status code, content type, and body the router got from the target module.
                 return new ForwardedModuleResult(
@@ -621,10 +578,10 @@ namespace MorpheusEngine
             catch (Exception e) when (e is not InvalidOperationException)
             {
                 Console.WriteLine(
-                    $"Proxied call response: {targetModule.PortKey} -> {sourceModule} {methodUpper} {normalizedPath} => network_error: {e.Message}");
+                    $"Proxied call response: {resolution.TargetModule!.PortKey} -> {sourceModule} {resolution.MethodUpper} {resolution.NormalizedPath} => network_error: {e.Message}");
                 return ForwardedModuleResult.FromError(
                     502,
-                    $"Failed to reach target module '{targetModule.PortKey}'.",
+                    $"Failed to reach target module '{resolution.TargetModule.PortKey}'.",
                     e.Message);
             }
         }
@@ -636,6 +593,176 @@ namespace MorpheusEngine
             return string.Equals(step.TargetModule, "session_store", StringComparison.OrdinalIgnoreCase)
                 && string.Equals(EngineConfiguration.NormalizePath(step.Path), "/persist_turn", StringComparison.OrdinalIgnoreCase)
                 && string.Equals(step.Method, "POST", StringComparison.OrdinalIgnoreCase);
+        }
+
+        internal static ErrorResponse? ValidateInitializePayload(InitializeModuleRequest? request)
+        {
+            if (request is null
+                || string.IsNullOrWhiteSpace(request.RunId)
+                || string.IsNullOrWhiteSpace(request.GameProjectId))
+            {
+                return new ErrorResponse(false, "Request must include non-empty runId and gameProjectId.");
+            }
+
+            return null;
+        }
+
+        internal static ErrorResponse? ValidateTurnRequest(TurnRequest? request, bool runBound)
+        {
+            if (request is null
+                || string.IsNullOrWhiteSpace(request.PlayerInput))
+            {
+                return new ErrorResponse(false, "Turn request must include non-empty playerInput.");
+            }
+
+            if (!runBound)
+            {
+                return new ErrorResponse(false, "Router run is not bound; the host must bind the run before POST /turn.");
+            }
+
+            if (request.Turn < 1)
+            {
+                return new ErrorResponse(false, "Turn must be >= 1.");
+            }
+
+            return null;
+        }
+
+        internal static int GetTurnValidationStatusCode(ErrorResponse validationError)
+        {
+            return validationError.Error.Contains("not bound", StringComparison.OrdinalIgnoreCase) ? 503 : 400;
+        }
+
+        internal static ProxyRequestValidationResult ValidateProxyRequestPayload(string body, JsonSerializerOptions jsonOptions)
+        {
+            ModuleProxyRequest? request;
+            try
+            {
+                request = JsonSerializer.Deserialize<ModuleProxyRequest>(body, jsonOptions);
+            }
+            catch (JsonException e)
+            {
+                return new ProxyRequestValidationResult(
+                    false,
+                    string.Empty,
+                    string.Empty,
+                    string.Empty,
+                    string.Empty,
+                    null,
+                    new ErrorResponse(false, "Invalid proxy request payload.", e.Message));
+            }
+
+            if (request is null
+                || string.IsNullOrWhiteSpace(request.SourceModule)
+                || string.IsNullOrWhiteSpace(request.TargetModule)
+                || string.IsNullOrWhiteSpace(request.TargetPath))
+            {
+                return new ProxyRequestValidationResult(
+                    false,
+                    string.Empty,
+                    string.Empty,
+                    string.Empty,
+                    string.Empty,
+                    null,
+                    new ErrorResponse(false, "Proxy request must include sourceModule, targetModule, and targetPath."));
+            }
+
+            if (string.IsNullOrWhiteSpace(request.Method))
+            {
+                return new ProxyRequestValidationResult(
+                    false,
+                    string.Empty,
+                    string.Empty,
+                    string.Empty,
+                    string.Empty,
+                    null,
+                    new ErrorResponse(false, "Proxy request must include a non-empty 'method' field (GET or POST)."));
+            }
+
+            var method = request.Method.Trim().ToUpperInvariant();
+            if (method is not "GET" and not "POST")
+            {
+                return new ProxyRequestValidationResult(
+                    false,
+                    string.Empty,
+                    string.Empty,
+                    string.Empty,
+                    string.Empty,
+                    null,
+                    new ErrorResponse(false, $"Unsupported proxy method '{request.Method}'. Only GET and POST are supported."));
+            }
+
+            return new ProxyRequestValidationResult(
+                true,
+                request.SourceModule.Trim(),
+                request.TargetModule.Trim(),
+                request.TargetPath,
+                method,
+                request.Body?.GetRawText(),
+                null);
+        }
+
+        internal static ProxyTargetResolutionResult ResolveProxyTarget(
+            EngineConfiguration configuration,
+            string targetModuleKey,
+            string targetPath,
+            string method)
+        {
+            var normalizedPath = EngineConfiguration.NormalizePath(targetPath);
+            var methodUpper = method.Trim().ToUpperInvariant();
+            var resolvedModuleKey = configuration.ResolveProxyTargetModuleKey(targetModuleKey);
+            var targetModule = configuration.FindModule(resolvedModuleKey);
+            if (targetModule is null)
+            {
+                return new ProxyTargetResolutionResult(
+                    false,
+                    resolvedModuleKey,
+                    normalizedPath,
+                    methodUpper,
+                    0,
+                    null,
+                    400,
+                    new ErrorResponse(false, $"Unknown target module '{resolvedModuleKey}'."));
+            }
+
+            var endpoint = targetModule.Endpoints.FirstOrDefault(ep =>
+                string.Equals(EngineConfiguration.NormalizePath(ep.Path), normalizedPath, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(ep.Method, methodUpper, StringComparison.OrdinalIgnoreCase));
+            if (endpoint is null)
+            {
+                return new ProxyTargetResolutionResult(
+                    false,
+                    resolvedModuleKey,
+                    normalizedPath,
+                    methodUpper,
+                    0,
+                    targetModule,
+                    403,
+                    new ErrorResponse(false, $"Proxy target '{targetModuleKey} {methodUpper} {normalizedPath}' is not allowed by configuration."));
+            }
+
+            return new ProxyTargetResolutionResult(
+                true,
+                resolvedModuleKey,
+                normalizedPath,
+                methodUpper,
+                configuration.GetRequiredListenPort(targetModule.PortKey),
+                targetModule,
+                0,
+                null);
+        }
+
+        internal static HttpRequestMessage BuildProxyOutboundRequest(string methodUpper, string uri, string? requestBody)
+        {
+            var outbound = new HttpRequestMessage(new HttpMethod(methodUpper), uri);
+            if (string.Equals(methodUpper, "POST", StringComparison.OrdinalIgnoreCase))
+            {
+                outbound.Content = string.IsNullOrWhiteSpace(requestBody)
+                    ? new ByteArrayContent(Array.Empty<byte>())
+                    : new StringContent(requestBody, Encoding.UTF8, "application/json");
+            }
+
+            return outbound;
         }
 
         internal static string RenderTurnPipelineStepBody(

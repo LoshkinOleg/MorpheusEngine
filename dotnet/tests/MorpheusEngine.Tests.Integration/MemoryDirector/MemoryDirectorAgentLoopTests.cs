@@ -4,6 +4,7 @@ using FluentAssertions;
 
 namespace MorpheusEngine.Tests.Integration.MemoryDirector;
 
+[Collection("EngineProcessState")]
 [Trait("Category", "Integration")]
 public sealed class MemoryDirectorAgentLoopTests
 {
