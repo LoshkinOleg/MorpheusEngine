@@ -64,6 +64,12 @@ public sealed class MemoryDirector
     private string _boundRunId = string.Empty;
     private string _agentPrompt = string.Empty;
     private MemoryDirectorModuleOptions _options = new(12, 4000, 12, "30m");
+
+    // Diagnostic snapshot of the most recent compiled chat input handed to the LLM. Written inside _sessionGate
+    // (one writer at a time), read concurrently from the HttpListener thread serving /debug/last_context.
+    // The payload is built from immutable records/arrays before publication, and the reference is marked
+    // volatile so readers always see either the previous snapshot or the new one in full.
+    private volatile MemoryDirectorLastContextResponse? _lastContextSnapshot = null;
     #endregion
 
     #region Public methods
@@ -207,6 +213,12 @@ public sealed class MemoryDirector
                 return;
             }
 
+            if (path.Equals("/debug/last_context", StringComparison.OrdinalIgnoreCase) && method == "GET")
+            {
+                await ProcessRequest_lastContext(context);
+                return;
+            }
+
             await RespondJsonAsync(context, 404, new ErrorResponse(false, "Not found: " + path));
         }
         catch (Exception e)
@@ -327,6 +339,32 @@ public sealed class MemoryDirector
             {
                 var memoryContext = await LoadContextAsync(request.Turn);
                 var compiledContext = await CompileContextAsync(memoryContext);
+                // Publish the exact messages we are about to feed the LLM so /debug/last_context can mirror it.
+                // Project into the public DTO type and also build the raw concatenated context string so callers can
+                // display it verbatim without re-deriving it. The volatile field then atomically swaps to the new
+                // immutable snapshot.
+                var snapshotMessages = new MemoryDirectorContextMessageDto[compiledContext.Messages.Count];
+                var compiledContextBuilder = new StringBuilder();
+                for (var index = 0; index < compiledContext.Messages.Count; index++)
+                {
+                    var message = compiledContext.Messages[index];
+                    snapshotMessages[index] = new MemoryDirectorContextMessageDto(message.Role, message.Content);
+                    if (index > 0)
+                    {
+                        compiledContextBuilder.Append('\n');
+                    }
+
+                    compiledContextBuilder.Append(message.Content);
+                }
+
+                _lastContextSnapshot = new MemoryDirectorLastContextResponse(
+                    true,
+                    true,
+                    request.Turn,
+                    step,
+                    DateTime.UtcNow.ToString("O"),
+                    compiledContextBuilder.ToString(),
+                    snapshotMessages);
                 var llmResponse = await ChatAsync(compiledContext.Messages);
                 if (llmResponse.Payload is null || !llmResponse.Payload.Ok || string.IsNullOrWhiteSpace(llmResponse.Payload.Response))
                 {
@@ -424,6 +462,29 @@ public sealed class MemoryDirector
         {
             _sessionGate.Release();
         }
+    }
+
+    private async Task ProcessRequest_lastContext(HttpListenerContext context)
+    {
+        // Read once: the field is volatile so a concurrent /message handler swap is visible immediately.
+        var snapshot = _lastContextSnapshot;
+        if (snapshot is null)
+        {
+            await RespondJsonAsync(
+                context,
+                200,
+                new MemoryDirectorLastContextResponse(
+                    true,
+                    false,
+                    0,
+                    0,
+                    string.Empty,
+                    string.Empty,
+                    Array.Empty<MemoryDirectorContextMessageDto>()));
+            return;
+        }
+
+        await RespondJsonAsync(context, 200, snapshot);
     }
 
     private async Task<string?> HandleRecoverableFailureAsync(

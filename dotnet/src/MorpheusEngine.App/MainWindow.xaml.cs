@@ -97,6 +97,8 @@ public partial class MainWindow : Window
     private bool _suppressEndpointPresetEvents;
     private bool _applyingEndpointFromPreset;
     private bool _gameRequestInFlight;
+    /// <summary>True while a Context Inspector refresh is fetching memory_director state; used to drop overlapping refreshes (manual or auto).</summary>
+    private bool _contextInspectorRefreshInFlight;
     /// <summary>Logical game project folder under game_projects/ (mirrors TS layout). Must match an on-disk project; no silent fallback.</summary>
     private string _gameProjectId = "sandcrawler";
     /// <summary>Per-run id; set when the engine is started (run binding happens at engine start).</summary>
@@ -299,6 +301,92 @@ public partial class MainWindow : Window
     private void CopyQwenMonitorToClipboardButton_Click(object sender, RoutedEventArgs e)
     {
         CopyTextToClipboardOrWarn(QwenMonitorPane.Text, "Qwen Monitor");
+    }
+
+    private async void ContextInspectorRefreshButton_Click(object sender, RoutedEventArgs e)
+    {
+        await RefreshContextInspectorAsync();
+    }
+
+    /// <summary>
+    /// Pulls the latest compiled context from memory_director and dumps it verbatim into the pane.
+    /// Shared by the manual Refresh button and the post-turn auto-refresh; serialized by <see cref="_contextInspectorRefreshInFlight"/>
+    /// so overlapping invocations are dropped rather than racing.
+    /// </summary>
+    private async Task RefreshContextInspectorAsync()
+    {
+        if (_contextInspectorRefreshInFlight)
+        {
+            return;
+        }
+
+        if (_config is null)
+        {
+            ContextInspectorPane.Text = "Engine configuration is not loaded. Fix engine_config.json and restart.";
+            return;
+        }
+
+        if (!IsEngineRunning())
+        {
+            ContextInspectorPane.Text = "Engine is not running. Start the engine and submit a turn first.";
+            return;
+        }
+
+        _contextInspectorRefreshInFlight = true;
+        ContextInspectorRefreshButton.IsEnabled = false;
+        try
+        {
+            var port = _config.GetRequiredListenPort("memory_director");
+            var result = await SendRequestAsync(port, "/debug/last_context", null, "GET");
+            if (result.StatusCode is < 200 or >= 300)
+            {
+                ContextInspectorPane.Text =
+                    $"memory_director GET /debug/last_context returned {result.StatusCode} {result.ReasonPhrase}.\r\n\r\n{result.Body}";
+                return;
+            }
+
+            MemoryDirectorLastContextResponse? snapshot;
+            try
+            {
+                snapshot = JsonSerializer.Deserialize<MemoryDirectorLastContextResponse>(result.Body, JsonOptions);
+            }
+            catch (JsonException ex)
+            {
+                ContextInspectorPane.Text =
+                    "Could not parse memory_director response:\r\n" + ex.Message + "\r\n\r\n" + result.Body;
+                return;
+            }
+
+            if (snapshot is null || !snapshot.Ok)
+            {
+                ContextInspectorPane.Text = "memory_director returned ok=false or empty response:\r\n" + result.Body;
+                return;
+            }
+
+            if (!snapshot.Available)
+            {
+                ContextInspectorPane.Text =
+                    "No context has been captured yet. memory_director has not run an LLM turn on this process.";
+                return;
+            }
+
+            // Raw concatenated context string built by the agent loop, displayed verbatim with no extra formatting.
+            ContextInspectorPane.Text = snapshot.CompiledContext;
+        }
+        catch (Exception ex)
+        {
+            ContextInspectorPane.Text = "Request failed:\r\n" + ex.Message;
+        }
+        finally
+        {
+            ContextInspectorRefreshButton.IsEnabled = true;
+            _contextInspectorRefreshInFlight = false;
+        }
+    }
+
+    private void ContextInspectorCopyButton_Click(object sender, RoutedEventArgs e)
+    {
+        CopyTextToClipboardOrWarn(ContextInspectorPane.Text, "Context Inspector");
     }
 
     /// <summary>Writes the full pane text to the clipboard; surfaces failures so the user is not left guessing.</summary>
@@ -1208,6 +1296,10 @@ public partial class MainWindow : Window
             _gameRequestInFlight = false;
             UpdateButtonState();
             GameInputTextBox.Focus();
+            // Auto-refresh the Context Inspector at the end of every turn so it reflects the most recent compiled
+            // context that memory_director just sent to the LLM. Fire-and-forget on the dispatcher; this method
+            // already swallows its own exceptions so it can never break the game flow.
+            _ = RefreshContextInspectorAsync();
         }
     }
 

@@ -122,6 +122,12 @@
           "template_contracts_id": "director_message"
         },
         {
+          "path": "/debug/last_context",
+          "description": "Returns the most recent compiled chat input sent to the LLM (read-only diagnostic snapshot from the agent loop)",
+          "method": "GET",
+          "template_contracts_id": "memory_director_last_context"
+        },
+        {
           "path": "/shutdown",
           "description": "Request module shutdown",
           "method": "POST",

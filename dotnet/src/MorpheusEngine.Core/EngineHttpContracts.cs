@@ -348,6 +348,27 @@ public sealed record ChatGenerateResponse(
     [property: JsonPropertyName("rawResponse")] string? RawResponse);
 #endregion
 
+#region Memory-director debug (GET /debug/last_context)
+/// <summary>One chat message captured exactly as it was sent to the LLM.</summary>
+public sealed record MemoryDirectorContextMessageDto(
+    [property: JsonPropertyName("role")] string Role,
+    [property: JsonPropertyName("content")] string Content);
+
+/// <summary>
+/// JSON envelope for memory_director GET /debug/last_context.
+/// Returns the most recent compiled chat input the agent fed to the LLM, or <see cref="Available"/>=false if no LLM call has occurred yet on this process.
+/// <see cref="CompiledContext"/> is the raw concatenation of every <see cref="MemoryDirectorContextMessageDto.Content"/> in <see cref="Messages"/>, in send order, joined with a single '\n'.
+/// </summary>
+public sealed record MemoryDirectorLastContextResponse(
+    [property: JsonPropertyName("ok")] bool Ok,
+    [property: JsonPropertyName("available")] bool Available,
+    [property: JsonPropertyName("turn")] int Turn,
+    [property: JsonPropertyName("stepNumber")] int StepNumber,
+    [property: JsonPropertyName("capturedAtUtc")] string CapturedAtUtc,
+    [property: JsonPropertyName("compiledContext")] string CompiledContext,
+    [property: JsonPropertyName("messages")] IReadOnlyList<MemoryDirectorContextMessageDto> Messages);
+#endregion
+
 #region Contract examples (engine_config template_contracts_id tooling)
 public static class EngineContractExamples
 {
@@ -473,6 +494,19 @@ public static class EngineContractExamples
         "module_shutdown" => new EndpointTemplatePair(
             null,
             Serialize(new ModuleShutdownResponse(true, "Shutdown requested."))),
+        "memory_director_last_context" => new EndpointTemplatePair(
+            null,
+            Serialize(new MemoryDirectorLastContextResponse(
+                true,
+                true,
+                1,
+                1,
+                "2026-05-13T08:00:00Z",
+                "You are the GM.\n[core] persona: ...\nLook around.",
+                [
+                    new MemoryDirectorContextMessageDto("system", "You are the GM.\n[core] persona: ..."),
+                    new MemoryDirectorContextMessageDto("user", "Look around.")
+                ]))),
         _ => null
     };
 

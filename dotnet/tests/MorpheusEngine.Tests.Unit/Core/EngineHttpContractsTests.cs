@@ -96,7 +96,8 @@ public sealed class EngineHttpContractsTests
         "module_proxy",
         "module_info",
         "module_health",
-        "module_shutdown"
+        "module_shutdown",
+        "memory_director_last_context"
     ];
 
     private static readonly Type[] ContractTypes =
@@ -164,7 +165,9 @@ public sealed class EngineHttpContractsTests
         typeof(LlmProviderGenerateResponse),
         typeof(ChatGenerateRequest),
         typeof(ChatGenerateRequest.ChatMessageDto),
-        typeof(ChatGenerateResponse)
+        typeof(ChatGenerateResponse),
+        typeof(MemoryDirectorContextMessageDto),
+        typeof(MemoryDirectorLastContextResponse)
     ];
 
     private static IReadOnlyList<(Type Type, object Payload)> CreateRoundTripSamples()
@@ -275,7 +278,19 @@ public sealed class EngineHttpContractsTests
                 KeepAlive = "30m"
             }),
             (typeof(ChatGenerateRequest.ChatMessageDto), chatMessage),
-            (typeof(ChatGenerateResponse), new ChatGenerateResponse(true, "You stand still and listen.", "{\"raw\":\"...\"}"))
+            (typeof(ChatGenerateResponse), new ChatGenerateResponse(true, "You stand still and listen.", "{\"raw\":\"...\"}")),
+            (typeof(MemoryDirectorContextMessageDto), new MemoryDirectorContextMessageDto("system", "You are the GM.")),
+            (typeof(MemoryDirectorLastContextResponse), new MemoryDirectorLastContextResponse(
+                true,
+                true,
+                1,
+                1,
+                "2026-05-13T08:00:00Z",
+                "You are the GM.\nLook around.",
+                [
+                    new MemoryDirectorContextMessageDto("system", "You are the GM."),
+                    new MemoryDirectorContextMessageDto("user", "Look around.")
+                ]))
         ];
     }
 }
