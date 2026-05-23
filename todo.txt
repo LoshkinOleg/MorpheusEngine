@@ -1,7 +1,47 @@
+- Make context inspector:
+  - Main context inspector OK
+  - Main context inspector: toggle human friendly formatting, keep same source string
+  - External context inspector: archival store
+  - External context inspector: recall store
+  - "Sure. At a high level:
+
+**On model load:** call `/api/show` for the active model and cache the `template` string. Parse it into some internal representation you can evaluate — the Go template syntax is small enough that you probably only need to handle `{{ if }}`, `{{ range }}`, `{{ end }}`, and variable substitution (`.System`, `.Prompt`, `.Response`, `.Messages`, `.Role`, `.Content`). Everything else in the template (the special tokens, newlines, whitespace) is literal passthrough.
+
+**Each turn:** take your assembled messages array (system prompt with core memory, conversation summary, retained history, current user input) and run it through your template renderer. This produces the final prompt string. Display it in your debug UI however you like — a scrollable text panel, a log dump, whatever.
+
+**On send:** post that same rendered string to `/api/generate` with `raw: true` instead of using `/api/chat`. Since you already applied the template, you don't want Ollama to double-apply it. Parse the response the same way you currently do.
+
+**One thing to watch for:** if you ever swap models mid-session, re-fetch the template via `/api/show` since different models use completely different templates and special tokens. You'll probably want the template fetch to be part of your existing Ollama lifecycle management (the same place you handle model loading and process startup).
+
+That's basically it — four moving parts: fetch, parse, render, send raw."
+
+- EngineHttpContracts.cs: I don't like how everything is a string, makes reading the type difficult.
+
+- Right now there seems to be two token budget estimation system coexisting. This is confusing, simplify and keep only one.
+
+- "On a later step of the same turn, recall_search / archival_memory_search results are persisted (persist_step) and
+then show up in recentMessages on the next load_context. They are not injected into the same compile pass before
+that persist.": we should eliminate these persist - recall calls at each step, we should be able to deduce the current
+state from (state at turn start) + (accumulated diffs from each step this turn). Then only at the end of the turn should
+we persist to session store. Avoids needless hops to the session store.
+
+- I think right now memories can be mutated by the LLM. Looking at some other orchestrations, people seem to prefer append only changed due to lack
+of reliability of memory editing by the LLM.
+
 - SessionStoreModule:
   - Make UI to inspect last turn's world_state and view_state.
   
-- Use qwen 3.5
+- Use qwen3:4b-instruct-2507-q4_K_M
+
+- Tokenizer: "The gist is three steps:
+
+**Grab the tokenizer file** from the HuggingFace repo `Qwen/Qwen3-4B-Instruct-2507`. You only need `tokenizer.json` — it's the self-contained BPE definition (vocab + merge rules + special tokens all in one). Commit it into your MorpheusEngine repo as a bundled asset, something like `Resources/Tokenizers/qwen3-4b-instruct-2507.json`.
+
+**Add Microsoft.ML.Tokenizers** via NuGet. The package can load HuggingFace-format `tokenizer.json` files directly. You'd initialize it once at engine startup, roughly: `Tokenizer.CreateTiktokenForEncoding(...)` — actually for HuggingFace BPE it's more like `Tokenizer.CreateBpe(...)` or loading from the JSON. You'll want to verify the exact API surface since this library has been evolving; check the latest docs. The key method you care about is `CountTokens(string text)` or `EncodeToIds(string text).Count`.
+
+**Wire it into your turn pipeline.** Create a thin `ITokenCounter` interface with a `int CountTokens(string text)` method, backed by the ML.Tokenizers implementation. Use it in your context assembly phase — as you pack system prompt, memory blocks, conversation history, and tool schemas into the working context, you call `CountTokens` on each segment and track the running total against your budget (model's context length minus reserved output tokens). This also lets you swap tokenizers later if you switch models, without touching the pipeline logic.
+
+One thing to validate early: after you've got it loaded, send a few test strings through both your local tokenizer and an actual Ollama inference call (the response includes `prompt_eval_count` which tells you how many tokens Ollama saw in the prompt). Make sure the counts match — if they're off by a few, it's likely the chat template adding special tokens that you're not accounting for in your raw string count."
 
 - Check if we're using memGPT's heartbeat approach to tool calling / deciding when to return control to player. If we are, simplify: generate_prose tool call is inherently terminal while all other tool calls are ones where the LLM is expected to continue generating.
 - Check if we're using memGPT's tagging for archival memory and remove it if it's used.

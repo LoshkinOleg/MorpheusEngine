@@ -37,9 +37,9 @@ public sealed class MemoryDirector
 
         public int Consume(int requestedChars)
         {
-            var allowed = Math.Min(Math.Max(0, requestedChars), RemainingChars);
+            var allowed = Math.Min(Math.Max(0, requestedChars), RemainingChars); // Clamp
             RemainingChars -= allowed;
-            return allowed;
+            return allowed; // Return the char budget allocated.
         }
     }
     #endregion
@@ -968,12 +968,16 @@ public sealed class MemoryDirector
     #endregion
 
     #region Helpers
+    // Pure helpers for context compilation, LLM action parsing, tool-argument JSON, and HTTP I/O. No session_store or router calls here.
+    // Resolves a core memory block by label for tool handlers. Label match is case-insensitive; missing labels fail loud.
     private static MemoryBlockDto FindBlock(MemoryLoadContextResponse memoryContext, string label)
     {
         var block = memoryContext.Blocks.FirstOrDefault(block => string.Equals(block.Label, label, StringComparison.OrdinalIgnoreCase));
         return block ?? throw new InvalidOperationException($"Unknown memory block '{label}'.");
     }
 
+    // Default core-memory layout for a fresh run when session_store has no blocks yet. campaign_rules is filled from
+    // game_projects/{id}/system/instructions.md when present; other blocks start with short GM-oriented placeholders.
     private IReadOnlyList<MemoryBlockDto> BuildSeedBlocks(string gameProjectId)
     {
         var instructionsPath = Path.Combine(_configuration.RepositoryRoot, "game_projects", gameProjectId, "system", "instructions.md");
@@ -993,6 +997,7 @@ public sealed class MemoryDirector
         ];
     }
 
+    // Top-of-system GM instructions for this game project. Required on disk at bind time; not loaded from session_store.
     private string LoadAgentPrompt(string gameProjectId)
     {
         var path = Path.Combine(_configuration.RepositoryRoot, "game_projects", gameProjectId, "system", "agent_prompt.md");
@@ -1004,6 +1009,7 @@ public sealed class MemoryDirector
         return File.ReadAllText(path);
     }
 
+    // JSON Schema passed to the LLM provider as Ollama "format" so /chat responses are constrained to one action object.
     private JsonElement LoadActionSchema()
     {
         var path = Path.Combine(
@@ -1017,6 +1023,8 @@ public sealed class MemoryDirector
         return doc.RootElement.Clone();
     }
 
+    // Parses the LLM's single JSON action (thought + tool + arguments). Returns false with a human-readable error
+    // instead of throwing so the agent loop can persist a recoverable tool_error and retry once.
     private static bool TryParseAction(string rawResponse, out AgentAction action, out string error)
     {
         action = new AgentAction(string.Empty, string.Empty, default);
@@ -1043,6 +1051,7 @@ public sealed class MemoryDirector
         }
     }
 
+    // Strict string extractor for tool argument JSON; used by TryParseAction and ExecuteToolAsync helpers.
     private static string RequireString(JsonElement element, string propertyName)
     {
         if (!element.TryGetProperty(propertyName, out var property) || property.ValueKind != JsonValueKind.String)
@@ -1059,6 +1068,7 @@ public sealed class MemoryDirector
         return value;
     }
 
+    // Optional int tool argument: missing property => null; present but wrong shape => throw.
     private static int? TryGetInt(JsonElement element, string propertyName)
     {
         if (!element.TryGetProperty(propertyName, out var property))
@@ -1071,6 +1081,7 @@ public sealed class MemoryDirector
             : throw new InvalidOperationException($"Expected integer property '{propertyName}'.");
     }
 
+    // Optional string tool argument: missing property => null; present but wrong shape => throw.
     private static string? TryGetString(JsonElement element, string propertyName)
     {
         if (!element.TryGetProperty(propertyName, out var property))
@@ -1083,6 +1094,7 @@ public sealed class MemoryDirector
             : throw new InvalidOperationException($"Expected string property '{propertyName}'.");
     }
 
+    // Optional string[] tool argument: missing => null; each element must be a non-empty string after trim.
     private static IReadOnlyList<string>? TryGetStringArray(JsonElement element, string propertyName)
     {
         if (!element.TryGetProperty(propertyName, out var property))
@@ -1109,9 +1121,11 @@ public sealed class MemoryDirector
         return values;
     }
 
+    // Stable serialization for duplicate-tool detection keys in the agent loop failure counter.
     private static string CanonicalizeJson(JsonElement element) =>
         JsonSerializer.Serialize(element);
 
+    // Caps tool_result rows persisted to session_store and echoed back into context on the next step.
     private string TruncateToolResult(string value)
     {
         if (value.Length <= _options.MaxToolResultChars)
@@ -1122,6 +1136,7 @@ public sealed class MemoryDirector
         return value[.._options.MaxToolResultChars] + "\n[tool result truncated]";
     }
 
+    // Records how much of a tool result fit in context for pipeline_events / persist_step accounting (not sent to LLM as its own message).
     private MemoryContextAccountingDto AddToolResultTelemetry(MemoryContextAccountingDto accounting, string toolName, string toolResult)
     {
         var existingItems = accounting.Items?.ToList() ?? [];
@@ -1149,42 +1164,48 @@ public sealed class MemoryDirector
         };
     }
 
+    // Character budget for CompileContextAsync: derived from session_store targetContextTokens (~4 chars per token).
     private static ContextBudget CreateContextBudget(MemoryLoadContextResponse memoryContext)
     {
         var estimatedTargetChars = Math.Max(1000, memoryContext.Budget.TargetContextTokens * 4);
         return new ContextBudget(estimatedTargetChars);
     }
 
+    // Appends one logical chunk to the growing system prompt while debiting the char budget. Records per-item
+    // inclusion/truncation/omission for MemoryContextAccountingDto and adds truncated/omitted labels to omissions.
     private static void AppendWithinBudget(
-        StringBuilder builder,
+        StringBuilder builder, // Reference, contains previously appended string.
         string value,
-        ContextBudget budget,
-        List<string> omissions,
+        ContextBudget budget, // Utility class that's used to keep track of contents of builder. Passed by reference.
+        List<string> omissions, // Labels only of things that were truncated or omitted, not the values. Used to inform LLM what was truncated / omitted.
         List<MemoryContextItemDto> items,
-        string label,
-        string type)
+        string label, // These next arguments are placed inside a new MemoryContextItemDto on successful budget consumption.
+        string type) // TODO: should be an enum that's then stringified. system, core, summary, recent_message, snapshot
     {
         var allowed = budget.Consume(value.Length);
-        if (allowed == value.Length)
+        if (allowed == value.Length) // Default case: requested string is within budget.
         {
             builder.Append(value);
             items.Add(new MemoryContextItemDto(label, type, "included", value.Length, allowed, null, EstimateTokensFromChars(value.Length), false));
             return;
         }
 
-        if (allowed > 0)
+        // Case: requested string is not within budget.
+        if (allowed > 0) // But there's still some budget left, just not enough. Record the truncation. // TODO: do we really want to allow truncation though?
         {
             builder.Append(TruncateWithSentinel(value, allowed));
+            // TODO: reformulate the reasons to be more descriptive: "context_budget" should be "exceeded_context_budget". Should be enums that are then stringified too.
             items.Add(new MemoryContextItemDto(label, type, "truncated", value.Length, allowed, "context_budget", EstimateTokensFromChars(allowed), false));
         }
-        else
+        else // No budget left at all. Record the omission.
         {
             items.Add(new MemoryContextItemDto(label, type, "omitted", value.Length, 0, "context_budget", 0, false));
         }
 
-        omissions.Add(label);
+        omissions.Add(label); // Used to inform LLM what was omitted by label.
     }
 
+    // Hard cap for a single chunk when only part of the budget remains; sentinel tells the model content was cut.
     private static string TruncateWithSentinel(string value, int maxChars)
     {
         const string sentinel = "\n[omitted due to context budget]";
@@ -1201,6 +1222,7 @@ public sealed class MemoryDirector
         return value[..(maxChars - sentinel.Length)] + sentinel;
     }
 
+    // Final chat payload for /chat: one system message (prompt + optional omissions footer) then recent user/assistant turns.
     private static IReadOnlyList<ChatGenerateRequest.ChatMessageDto> BuildCompiledMessages(
         string system,
         IReadOnlyList<string> omissions,
@@ -1220,6 +1242,7 @@ public sealed class MemoryDirector
         return messages;
     }
 
+    // Approximate serial form used for /token_count and char-ratio trimming (role: content per line, not Ollama wire format).
     private static string FlattenMessagesForTokenCount(IReadOnlyList<ChatGenerateRequest.ChatMessageDto> messages)
     {
         var builder = new StringBuilder();
@@ -1233,9 +1256,11 @@ public sealed class MemoryDirector
         return builder.ToString();
     }
 
+    // Fallback when the provider does not return an exact token count (chars / 4, minimum 1).
     private static int EstimateTokensFromChars(int chars) =>
         Math.Max(1, (int)Math.Ceiling(chars / 4.0));
 
+    // JSON tool_result body for recall_search / archival_memory_search, respecting MaxToolResultChars with an explicit omitted count.
     private string FormatSearchResults(IReadOnlyList<MemorySearchResultDto> results)
     {
         if (results.Count == 0)
@@ -1282,6 +1307,7 @@ public sealed class MemoryDirector
         return builder.ToString();
     }
 
+    // Post-turn recall compaction text: no LLM call; stitches up to eight message snippets with turn/role tags for session_store summaries.
     private static string BuildDeterministicSummary(IReadOnlyList<AgentMessageDto> messages)
     {
         var builder = new StringBuilder();
@@ -1305,6 +1331,8 @@ public sealed class MemoryDirector
         return builder.ToString().Trim();
     }
 
+    // Maps session_store AgentMessageDto.role to Ollama /api/chat roles. "tool" and unknown roles become "user";
+    // tool content is distinguished via FormatMemoryMessage, not a separate chat role.
     private static string MapRoleForChat(string role) => role switch
     {
         "player" => "user",
@@ -1312,6 +1340,7 @@ public sealed class MemoryDirector
         _ => "user"
     };
 
+    // Turns a persisted agent row into chat message content. Tool rows are prefixed so the model can tell them from player text.
     private static string FormatMemoryMessage(AgentMessageDto message) =>
         message.Role == "tool"
             ? $"Tool result ({message.ToolName ?? message.MessageType}): {message.Content}"

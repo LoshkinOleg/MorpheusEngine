@@ -72,11 +72,11 @@ public sealed record TurnPersistResponse(
 
 #region Memory-director storage and provider contracts
 public sealed record MemoryBlockDto(
-    [property: JsonPropertyName("label")] string Label,
-    [property: JsonPropertyName("description")] string Description,
+    [property: JsonPropertyName("label")] string Label, // Key
+    [property: JsonPropertyName("description")] string Description, // TODO: drop this.
     [property: JsonPropertyName("value")] string Value,
-    [property: JsonPropertyName("charLimit")] int CharLimit,
-    [property: JsonPropertyName("readOnly")] bool ReadOnly);
+    [property: JsonPropertyName("charLimit")] int CharLimit, // TODO: seems flaky. // TODO: should be token limit.
+    [property: JsonPropertyName("readOnly")] bool ReadOnly); // Useful for things like core lore entries that aren't expected to be mutated. // TODO: remove.
 
 public sealed record AgentMessageDto(
     [property: JsonPropertyName("turn")] int Turn,
@@ -97,14 +97,14 @@ public sealed record MemoryMutationDto(
 
 public sealed record LatestSnapshotDto(
     [property: JsonPropertyName("turn")] int Turn,
-    [property: JsonPropertyName("worldStateJson")] string WorldStateJson,
-    [property: JsonPropertyName("viewStateJson")] string ViewStateJson);
+    [property: JsonPropertyName("worldStateJson")] string WorldStateJson, // TODO: look into what it is and how it is used.
+    [property: JsonPropertyName("viewStateJson")] string ViewStateJson); // TODO: idem.
 
-public sealed record MemoryBudgetDto(
-    [property: JsonPropertyName("numCtx")] int NumCtx,
-    [property: JsonPropertyName("targetContextTokens")] int TargetContextTokens,
-    [property: JsonPropertyName("maxFullMessages")] int MaxFullMessages,
-    [property: JsonPropertyName("maxToolResultChars")] int MaxToolResultChars);
+public sealed record MemoryBudgetDto( // Mirrors fields found in engine_config.json. Should be one unchanged set of values per session since it's mirroring the config file. // TODO: why do we need this when we already have a config file to read from though?
+    [property: JsonPropertyName("numCtx")] int NumCtx, // Total context window size of the model.
+    [property: JsonPropertyName("targetContextTokens")] int TargetContextTokens, // Ideal token count to target for, must be <NumCtx . // TODO: add to engine_config.json instead of hardcoding the 70%
+    [property: JsonPropertyName("maxFullMessages")] int MaxFullMessages, // Max of all messages in working context at a time (all types combined).
+    [property: JsonPropertyName("maxToolResultChars")] int MaxToolResultChars); // Used to limit tool output length.
 
 public sealed record MemorySummaryDto(
     [property: JsonPropertyName("startTurn")] int StartTurn,
@@ -113,20 +113,20 @@ public sealed record MemorySummaryDto(
     [property: JsonPropertyName("sourceMessageCount")] int SourceMessageCount,
     [property: JsonPropertyName("metadataJson")] string? MetadataJson = null);
 
-public sealed record MemoryContextItemDto(
+public sealed record MemoryContextItemDto( // Used for auditing only.
     [property: JsonPropertyName("label")] string Label,
-    [property: JsonPropertyName("type")] string Type,
-    [property: JsonPropertyName("status")] string Status,
+    [property: JsonPropertyName("type")] string Type, // TODO: use enum that's then stringified
+    [property: JsonPropertyName("status")] string Status, // TODO: idem
     [property: JsonPropertyName("estimatedChars")] int EstimatedChars,
     [property: JsonPropertyName("includedChars")] int IncludedChars,
-    [property: JsonPropertyName("reason")] string? Reason = null,
+    [property: JsonPropertyName("reason")] string? Reason = null, // TODO: idem
     [property: JsonPropertyName("estimatedTokens")] int? EstimatedTokens = null,
-    [property: JsonPropertyName("exact")] bool Exact = false);
+    [property: JsonPropertyName("exact")] bool Exact = false); // TODO: same thing, estimatedChars vs. includedChars vs. estimatedTokens and exact should not be a thing. Something is either included or it isn't.
 
 public sealed record MemoryContextAccountingDto(
-    [property: JsonPropertyName("estimatedChars")] int EstimatedChars,
+    [property: JsonPropertyName("estimatedChars")] int EstimatedChars, // TODO: estimatedChars vs. targetChars vs. targetTokens vs. estimatedTokens vs. numCtx should not be a thing. We should only end up with a tokenCount instead. Exact should therefore always be true and removed.
     [property: JsonPropertyName("targetChars")] int TargetChars,
-    [property: JsonPropertyName("omissions")] IReadOnlyList<string> Omissions,
+    [property: JsonPropertyName("omissions")] IReadOnlyList<string> Omissions, // TODO: stop forwarding this to LLM, wastes tokens.
     [property: JsonPropertyName("numCtx")] int NumCtx = 0,
     [property: JsonPropertyName("targetTokens")] int TargetTokens = 0,
     [property: JsonPropertyName("estimatedTokens")] int EstimatedTokens = 0,
@@ -143,7 +143,7 @@ public sealed record MemoryLoadContextResponse(
     [property: JsonPropertyName("recentMessages")] IReadOnlyList<AgentMessageDto> RecentMessages,
     [property: JsonPropertyName("latestSnapshot")] LatestSnapshotDto LatestSnapshot,
     [property: JsonPropertyName("budget")] MemoryBudgetDto Budget,
-    [property: JsonPropertyName("summaries")] IReadOnlyList<MemorySummaryDto>? Summaries = null,
+    [property: JsonPropertyName("summaries")] IReadOnlyList<MemorySummaryDto>? Summaries = null, // TODO: only one summary should be in the working context at a time.
     [property: JsonPropertyName("accounting")] MemoryContextAccountingDto? Accounting = null);
 
 public sealed record MemoryPersistStepRequest(
