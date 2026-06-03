@@ -3,17 +3,7 @@
   - Main context inspector: toggle human friendly formatting, keep same source string
   - External context inspector: archival store
   - External context inspector: recall store
-  - "Sure. At a high level:
-
-**On model load:** call `/api/show` for the active model and cache the `template` string. Parse it into some internal representation you can evaluate — the Go template syntax is small enough that you probably only need to handle `{{ if }}`, `{{ range }}`, `{{ end }}`, and variable substitution (`.System`, `.Prompt`, `.Response`, `.Messages`, `.Role`, `.Content`). Everything else in the template (the special tokens, newlines, whitespace) is literal passthrough.
-
-**Each turn:** take your assembled messages array (system prompt with core memory, conversation summary, retained history, current user input) and run it through your template renderer. This produces the final prompt string. Display it in your debug UI however you like — a scrollable text panel, a log dump, whatever.
-
-**On send:** post that same rendered string to `/api/generate` with `raw: true` instead of using `/api/chat`. Since you already applied the template, you don't want Ollama to double-apply it. Parse the response the same way you currently do.
-
-**One thing to watch for:** if you ever swap models mid-session, re-fetch the template via `/api/show` since different models use completely different templates and special tokens. You'll probably want the template fetch to be part of your existing Ollama lifecycle management (the same place you handle model loading and process startup).
-
-That's basically it — four moving parts: fetch, parse, render, send raw."
+  - render the exact string sent to the LLM by inspecting ollama logs
 
 - EngineHttpContracts.cs: I don't like how everything is a string, makes reading the type difficult.
 

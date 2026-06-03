@@ -90,7 +90,13 @@ public sealed record GenericLlmProviderModuleOptions(
 /// <summary>Options specific to the llm_provider_qwen module implementation.</summary>
 public sealed record QwenModuleOptions(
     int OllamaPort,
-    string OllamaModel);
+    string OllamaModel,
+    bool FilterOffNoisyLogs = false,
+    /// <summary>
+    /// When true, forwarded to Ollama as top-level think on /api/chat and /api/generate, and memory_director requires a
+    /// non-empty JSON thought on each action. When false, Ollama think is disabled and the director action schema omits thought.
+    /// </summary>
+    bool Thinking = false);
 
 /// <summary>Options specific to the memory_director module implementation.</summary>
 public sealed record MemoryDirectorModuleOptions(
@@ -380,6 +386,12 @@ public static class EngineConfigLoader
 
         [JsonPropertyName("keep_model_loaded_for")]
         public string? KeepAlive { get; set; }
+
+        [JsonPropertyName("filter_off_noisy_logs")]
+        public bool? FilterOffNoisyLogs { get; set; }
+
+        [JsonPropertyName("thinking")]
+        public bool? Thinking { get; set; }
     }
 
     private sealed class EndpointDto
@@ -715,6 +727,8 @@ public static class EngineConfigLoader
                 int? maxToolResultChars,
                 int? maxFullMessages,
                 string? keepAlive,
+                bool? filterOffNoisyLogs,
+                bool? thinking,
                 string path)
             {
                 if (isActiveGenericProvider)
@@ -752,7 +766,19 @@ public static class EngineConfigLoader
                             $"Module '{portKey}' in '{path}' (llm_provider_qwen) must set default_chat_model to a non-empty string.");
                     }
                 }
-                else
+                else if (filterOffNoisyLogs is not null)
+                {
+                    throw new EngineConfigurationException(
+                        $"Module '{portKey}' in '{path}' must not set filter_off_noisy_logs (only llm_provider_qwen may).");
+                }
+
+                if (!isQwen && thinking is not null)
+                {
+                    throw new EngineConfigurationException(
+                        $"Module '{portKey}' in '{path}' must not set thinking (only llm_provider_qwen may).");
+                }
+
+                if (!isQwen)
                 {
                     if (!isActiveGenericEmbeddings && ollamaPort is not null)
                     {
@@ -947,6 +973,8 @@ public static class EngineConfigLoader
                         module.MaxToolResultChars,
                         module.MaxFullMessages,
                         module.KeepAlive,
+                        module.FilterOffNoisyLogs,
+                        module.Thinking,
                         path);
 
                     // Compose provider-agnostic options only for the active generic provider module.
@@ -956,7 +984,11 @@ public static class EngineConfigLoader
 
                     // Compose qwen options only for qwen modules.
                     var qwenOptions = isQwen
-                        ? new QwenModuleOptions(module.OllamaPort!.Value, module.OllamaModel!.Trim())
+                        ? new QwenModuleOptions(
+                            module.OllamaPort!.Value,
+                            module.OllamaModel!.Trim(),
+                            module.FilterOffNoisyLogs ?? false,
+                            module.Thinking ?? false)
                         : null;
 
                     var memoryDirectorOptions = isMemoryDirector

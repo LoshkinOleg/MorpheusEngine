@@ -324,7 +324,7 @@
                                         <TextBlock Grid.Column="0"
                                                    VerticalAlignment="Center"
                                                    Foreground="#AEB5C4"
-                                                   Text="Most recent compiled chat input sent to the LLM by memory_director." />
+                                                   Text="Most recent chat context compiled by memory_director for the LLM." />
                                         <Button Grid.Column="1"
                                                 x:Name="ContextInspectorRefreshButton"
                                                 Width="80"
@@ -350,7 +350,7 @@
                                              Background="#151515"
                                              Foreground="#DCDCDC"
                                              Padding="8"
-                                             Text="No context captured yet. Send a turn while the engine is running, then click Refresh." />
+                                             Text="No LLM payload captured yet. Send a turn while the engine is running, then click Refresh." />
                                 </Grid>
                             </Border>
                         </TabItem>
@@ -398,6 +398,23 @@
                                                  BorderThickness="1"
                                                  ToolTip="Comma-separated module port keys (e.g. llm_provider_qwen, router). Prefix - to exclude a module (e.g. -router). Log id ranges: (startSeq;endSeq) keeps that inclusive range; -(startSeq;endSeq) drops it. Leave either side empty for an open bound (e.g. (;100), (50;), (;)). Combine ranges, e.g. (0;300), -(25;30). Empty = show all."
                                                  TextChanged="ConsoleFilterTextBox_TextChanged" />
+                                        <TextBlock Text="Filter (text):"
+                                                   Margin="12,0,8,0"
+                                                   VerticalAlignment="Center"
+                                                   Foreground="#AEB5C4" />
+                                        <TextBox x:Name="ConsoleTextFilterTextBox"
+                                                 MinWidth="180"
+                                                 Height="26"
+                                                 VerticalContentAlignment="Center"
+                                                 Padding="8,0"
+                                                 FontFamily="Consolas"
+                                                 FontSize="12"
+                                                 Background="#171C26"
+                                                 Foreground="#DDDDDD"
+                                                 BorderBrush="#324055"
+                                                 BorderThickness="1"
+                                                 ToolTip="Case-insensitive substring match applied after module/range filtering. Empty = no text filter."
+                                                 TextChanged="ConsoleTextFilterTextBox_TextChanged" />
                                     </StackPanel>
                                     <Button Grid.Column="2"
                                             Width="72"

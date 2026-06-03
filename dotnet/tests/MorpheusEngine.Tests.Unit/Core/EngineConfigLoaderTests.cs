@@ -300,6 +300,68 @@ public sealed class EngineConfigLoaderTests : IDisposable
     }
 
     [Fact]
+    // Verifies that filter_off_noisy_logs is only valid on llm_provider_qwen.
+    public void EngineConfigLoader_FilterOffNoisyLogsOnRouter_ThrowsEngineConfigurationException()
+    {
+        var config = CreateMinimalConfigNode();
+        var modules = config["modules"]!.AsArray();
+        var routerModule = modules.Single(module => string.Equals(module!["port_key"]!.GetValue<string>(), "router", StringComparison.OrdinalIgnoreCase))!;
+        routerModule["filter_off_noisy_logs"] = true;
+
+        var act = () => LoadConfiguration(ToJson(config));
+
+        act.Should().Throw<EngineConfigurationException>()
+            .WithMessage("*must not set filter_off_noisy_logs*");
+    }
+
+    [Fact]
+    // Verifies that filter_off_noisy_logs loads into QwenModuleOptions on llm_provider_qwen.
+    public void EngineConfigLoader_FilterOffNoisyLogsOnQwen_LoadsIntoQwenOptions()
+    {
+        var config = CreateMinimalConfigNode();
+        var modules = config["modules"]!.AsArray();
+        var qwenModule = modules.Single(module => string.Equals(module!["port_key"]!.GetValue<string>(), "llm_provider_qwen", StringComparison.OrdinalIgnoreCase))!;
+        qwenModule["filter_off_noisy_logs"] = true;
+
+        var configuration = LoadConfiguration(ToJson(config));
+        var qwen = configuration.FindModule("llm_provider_qwen");
+
+        qwen.Should().NotBeNull();
+        qwen!.QwenOptions!.FilterOffNoisyLogs.Should().BeTrue();
+    }
+
+    [Fact]
+    // Verifies that thinking is only valid on llm_provider_qwen.
+    public void EngineConfigLoader_ThinkingOnRouter_ThrowsEngineConfigurationException()
+    {
+        var config = CreateMinimalConfigNode();
+        var modules = config["modules"]!.AsArray();
+        var routerModule = modules.Single(module => string.Equals(module!["port_key"]!.GetValue<string>(), "router", StringComparison.OrdinalIgnoreCase))!;
+        routerModule["thinking"] = true;
+
+        var act = () => LoadConfiguration(ToJson(config));
+
+        act.Should().Throw<EngineConfigurationException>()
+            .WithMessage("*must not set thinking*");
+    }
+
+    [Fact]
+    // Verifies that thinking loads into QwenModuleOptions on llm_provider_qwen.
+    public void EngineConfigLoader_ThinkingOnQwen_LoadsIntoQwenOptions()
+    {
+        var config = CreateMinimalConfigNode();
+        var modules = config["modules"]!.AsArray();
+        var qwenModule = modules.Single(module => string.Equals(module!["port_key"]!.GetValue<string>(), "llm_provider_qwen", StringComparison.OrdinalIgnoreCase))!;
+        qwenModule["thinking"] = false;
+
+        var configuration = LoadConfiguration(ToJson(config));
+        var qwen = configuration.FindModule("llm_provider_qwen");
+
+        qwen.Should().NotBeNull();
+        qwen!.QwenOptions!.Thinking.Should().BeFalse();
+    }
+
+    [Fact]
     // Verifies that the active generic LLM provider must define Qwen-specific options.
     public void EngineConfigLoader_ActiveGenericLlmProviderWithoutQwenOptions_ThrowsEngineConfigurationException()
     {

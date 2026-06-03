@@ -97,7 +97,7 @@ public sealed class EngineHttpContractsTests
         "module_info",
         "module_health",
         "module_shutdown",
-        "memory_director_last_context"
+        "llm_provider_last_llm_payload"
     ];
 
     private static readonly Type[] ContractTypes =
@@ -166,8 +166,7 @@ public sealed class EngineHttpContractsTests
         typeof(ChatGenerateRequest),
         typeof(ChatGenerateRequest.ChatMessageDto),
         typeof(ChatGenerateResponse),
-        typeof(MemoryDirectorContextMessageDto),
-        typeof(MemoryDirectorLastContextResponse)
+        typeof(LlmProviderLastPayloadResponse)
     ];
 
     private static IReadOnlyList<(Type Type, object Payload)> CreateRoundTripSamples()
@@ -279,18 +278,12 @@ public sealed class EngineHttpContractsTests
             }),
             (typeof(ChatGenerateRequest.ChatMessageDto), chatMessage),
             (typeof(ChatGenerateResponse), new ChatGenerateResponse(true, "You stand still and listen.", "{\"raw\":\"...\"}")),
-            (typeof(MemoryDirectorContextMessageDto), new MemoryDirectorContextMessageDto("system", "You are the GM.")),
-            (typeof(MemoryDirectorLastContextResponse), new MemoryDirectorLastContextResponse(
+            (typeof(LlmProviderLastPayloadResponse), new LlmProviderLastPayloadResponse(
                 true,
                 true,
-                1,
-                1,
+                "chat",
                 "2026-05-13T08:00:00Z",
-                "You are the GM.\nLook around.",
-                [
-                    new MemoryDirectorContextMessageDto("system", "You are the GM."),
-                    new MemoryDirectorContextMessageDto("user", "Look around.")
-                ]))
+                """{"model":"qwen2.5:7b-instruct","messages":[{"role":"user","content":"Look around."}]}"""))
         ];
     }
 }

@@ -122,12 +122,6 @@
           "template_contracts_id": "director_message"
         },
         {
-          "path": "/debug/last_context",
-          "description": "Returns the most recent compiled chat input sent to the LLM (read-only diagnostic snapshot from the agent loop)",
-          "method": "GET",
-          "template_contracts_id": "memory_director_last_context"
-        },
-        {
           "path": "/shutdown",
           "description": "Request module shutdown",
           "method": "POST",
@@ -262,6 +256,8 @@
       "ollama_port": 8795,
       "default_chat_model": "qwen2.5:7b-instruct",
       "num_ctx": 8192,
+      "filter_off_noisy_logs": true,
+      "thinking": false,
       "launch": "dotnet/src/MorpheusEngine.LlmProvider_qwen/bin/Debug/net9.0/MorpheusEngine.LlmProvider_qwen.exe",
       "endpoints": [
         {
@@ -299,6 +295,12 @@
           "description": "Estimate or count prompt tokens for the configured LLM provider model",
           "method": "POST",
           "template_contracts_id": "token_count"
+        },
+        {
+          "path": "/debug/last_llm_payload",
+          "description": "Returns the most recent Ollama wire JSON from POST /chat or POST /generate (read-only diagnostic)",
+          "method": "GET",
+          "template_contracts_id": "llm_provider_last_llm_payload"
         }
       ]
     },
@@ -423,6 +425,12 @@
           "description": "Submit player turn",
           "method": "POST",
           "template_contracts_id": "turn"
+        },
+        {
+          "path": "/proxy",
+          "description": "Allowlisted forward to another module endpoint",
+          "method": "POST",
+          "template_contracts_id": "module_proxy"
         }
       ]
     }

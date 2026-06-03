@@ -146,6 +146,35 @@ public sealed class MemoryDirectorAgentLoopTests
         harness.ProxyHandler.ChatRequests.Should().HaveCount(2);
     }
 
+    // Verifies that tool-only JSON (no thought) succeeds when engine thinking is disabled (default).
+    [Fact]
+    public async Task MemoryDirector_PostMessage_ActionWithoutThought_WhenThinkingDisabled_Succeeds()
+    {
+        await using var harness = await MemoryDirectorHarness.CreateAsync();
+        using var initializeResponse = await harness.InitializeAsync();
+        initializeResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        harness.ProxyHandler.EnqueueChatResponse(
+            new ChatGenerateResponse(
+                true,
+                """{"tool":"generate_prose","arguments":{"message":"Dust swirls in the empty chamber."}}""",
+                """{"done":true}"""));
+
+        using var response = await harness.PostMessageAsync(1, "look around");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var payload = await response.Content.ReadFromJsonAsync<DirectorMessageResponse>();
+        payload.Should().NotBeNull();
+        payload!.Text.Should().Be("Dust swirls in the empty chamber.");
+        harness.ProxyHandler.ChatRequests.Should().ContainSingle();
+        harness.ProxyHandler.ChatRequests[0].Format.Should().NotBeNull();
+        harness.ProxyHandler.ChatRequests[0].Format!.Value.GetProperty("required")
+            .EnumerateArray()
+            .Select(property => property.GetString())
+            .Should()
+            .NotContain("thought");
+    }
+
     // Verifies that unparseable JSON is persisted as a schema violation and the loop recovers.
     [Fact]
     public async Task MemoryDirector_PostMessage_UnparseableJson_PersistsSchemaViolationAndRecovers()

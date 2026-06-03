@@ -125,6 +125,9 @@ public partial class MainWindow : Window
     /// <summary>Exclude ranges on EngineLog seq id (union).</summary>
     private (long? Start, long? End)[] _consoleFilterExcludeRanges = [];
 
+    /// <summary>Case-insensitive substring filter applied after module/range filtering; empty means pass-through.</summary>
+    private string _consoleFilterTextNeedle = string.Empty;
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
@@ -309,7 +312,7 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Pulls the latest compiled context from memory_director and dumps it verbatim into the pane.
+    /// Pulls the latest Ollama wire JSON from generic_llm_provider via router /proxy and shows it in the pane.
     /// Shared by the manual Refresh button and the post-turn auto-refresh; serialized by <see cref="_contextInspectorRefreshInFlight"/>
     /// so overlapping invocations are dropped rather than racing.
     /// </summary>
@@ -336,42 +339,54 @@ public partial class MainWindow : Window
         ContextInspectorRefreshButton.IsEnabled = false;
         try
         {
-            var port = _config.GetRequiredListenPort("memory_director");
-            var result = await SendRequestAsync(port, "/debug/last_context", null, "GET");
+            var proxyBody = JsonSerializer.Serialize(
+                new ModuleProxyRequest(
+                    "morpheus_app",
+                    "generic_llm_provider",
+                    "/debug/last_llm_payload",
+                    "GET",
+                    null),
+                JsonOptions);
+            var result = await SendRequestAsync(
+                _config.GetRequiredListenPort("router"),
+                "/proxy",
+                proxyBody,
+                forcedMethod: "POST");
             if (result.StatusCode is < 200 or >= 300)
             {
                 ContextInspectorPane.Text =
-                    $"memory_director GET /debug/last_context returned {result.StatusCode} {result.ReasonPhrase}.\r\n\r\n{result.Body}";
+                    "router POST /proxy -> generic_llm_provider GET /debug/last_llm_payload returned "
+                    + $"{result.StatusCode} {result.ReasonPhrase}.\r\n\r\n{result.Body}";
                 return;
             }
 
-            MemoryDirectorLastContextResponse? snapshot;
+            LlmProviderLastPayloadResponse? snapshot;
             try
             {
-                snapshot = JsonSerializer.Deserialize<MemoryDirectorLastContextResponse>(result.Body, JsonOptions);
+                snapshot = JsonSerializer.Deserialize<LlmProviderLastPayloadResponse>(result.Body, JsonOptions);
             }
             catch (JsonException ex)
             {
                 ContextInspectorPane.Text =
-                    "Could not parse memory_director response:\r\n" + ex.Message + "\r\n\r\n" + result.Body;
+                    "Could not parse generic_llm_provider response:\r\n" + ex.Message + "\r\n\r\n" + result.Body;
                 return;
             }
 
             if (snapshot is null || !snapshot.Ok)
             {
-                ContextInspectorPane.Text = "memory_director returned ok=false or empty response:\r\n" + result.Body;
+                ContextInspectorPane.Text =
+                    "generic_llm_provider returned ok=false or empty response:\r\n" + result.Body;
                 return;
             }
 
             if (!snapshot.Available)
             {
                 ContextInspectorPane.Text =
-                    "No context has been captured yet. memory_director has not run an LLM turn on this process.";
+                    "No LLM payload has been captured yet. Send a turn while the engine is running.";
                 return;
             }
 
-            // Raw concatenated context string built by the agent loop, displayed verbatim with no extra formatting.
-            ContextInspectorPane.Text = snapshot.CompiledContext;
+            ContextInspectorPane.Text = FormatContextInspectorDisplay(snapshot);
         }
         catch (Exception ex)
         {
@@ -381,6 +396,20 @@ public partial class MainWindow : Window
         {
             ContextInspectorRefreshButton.IsEnabled = true;
             _contextInspectorRefreshInFlight = false;
+        }
+    }
+
+    private static string FormatContextInspectorDisplay(LlmProviderLastPayloadResponse snapshot)
+    {
+        var header = $"// last /{snapshot.Endpoint}  captured {snapshot.CapturedAtUtc}\r\n\r\n";
+        try
+        {
+            using var document = JsonDocument.Parse(snapshot.PayloadJson);
+            return header + ContextInspectorOllamaPayloadView.Serialize(document.RootElement, snapshot.Endpoint);
+        }
+        catch (JsonException)
+        {
+            return header + snapshot.PayloadJson;
         }
     }
 
@@ -713,7 +742,7 @@ public partial class MainWindow : Window
                 _consoleCurrentLine.Remove(0, nlIndex + 1);
 
                 _consoleLogBuffer.Add(completedLine);
-                if (LinePassesConsoleFilter(completedLine))
+                if (LinePassesAllConsoleFilters(completedLine))
                 {
                     ConsolePane.AppendText(completedLine);
                     ConsolePane.CaretIndex = ConsolePane.Text.Length;
@@ -798,17 +827,19 @@ public partial class MainWindow : Window
         _consoleFilterIncludeRanges = includeRanges.ToArray();
         _consoleFilterExcludeRanges = excludeRanges.ToArray();
 
-        ConsolePane.Clear();
-        foreach (var line in _consoleLogBuffer)
+        RebuildConsolePaneFromBuffer();
+    }
+
+    private void ConsoleTextFilterTextBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (ConsoleTextFilterTextBox is null || ConsolePane is null)
         {
-            if (LinePassesConsoleFilter(line))
-            {
-                ConsolePane.AppendText(line);
-            }
+            return;
         }
 
-        ConsolePane.CaretIndex = ConsolePane.Text.Length;
-        ConsolePane.ScrollToEnd();
+        var raw = ConsoleTextFilterTextBox.Text ?? string.Empty;
+        _consoleFilterTextNeedle = string.IsNullOrWhiteSpace(raw) ? string.Empty : raw.Trim();
+        RebuildConsolePaneFromBuffer();
     }
 
     /// <summary>Parses EngineLog line shape: <c>[seq ; time] [source] body</c>. Returns false if the second bracket pair is missing.</summary>
@@ -1036,6 +1067,39 @@ public partial class MainWindow : Window
         }
 
         return false;
+    }
+
+    private bool LinePassesConsoleTextFilter(string line)
+    {
+        if (string.IsNullOrEmpty(_consoleFilterTextNeedle))
+        {
+            return true;
+        }
+
+        return line.Contains(_consoleFilterTextNeedle, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool LinePassesAllConsoleFilters(string line) =>
+        LinePassesConsoleFilter(line) && LinePassesConsoleTextFilter(line);
+
+    private void RebuildConsolePaneFromBuffer()
+    {
+        if (ConsolePane is null)
+        {
+            return;
+        }
+
+        ConsolePane.Clear();
+        foreach (var line in _consoleLogBuffer)
+        {
+            if (LinePassesAllConsoleFilters(line))
+            {
+                ConsolePane.AppendText(line);
+            }
+        }
+
+        ConsolePane.CaretIndex = ConsolePane.Text.Length;
+        ConsolePane.ScrollToEnd();
     }
 
     private void PopulatePortComboBox()
@@ -1296,8 +1360,8 @@ public partial class MainWindow : Window
             _gameRequestInFlight = false;
             UpdateButtonState();
             GameInputTextBox.Focus();
-            // Auto-refresh the Context Inspector at the end of every turn so it reflects the most recent compiled
-            // context that memory_director just sent to the LLM. Fire-and-forget on the dispatcher; this method
+            // Auto-refresh the Context Inspector at the end of every turn so it reflects the most recent Ollama
+            // payload generic_llm_provider sent. Fire-and-forget on the dispatcher; this method
             // already swallows its own exceptions so it can never break the game flow.
             _ = RefreshContextInspectorAsync();
         }

@@ -54,6 +54,8 @@ namespace MorpheusEngine
         private int _ollamaRestartAttempts = 0;
         private Process? _ollamaProcess;
         private bool _disableBundledOllamaBootstrapForTesting = false;
+        private bool _filterOffNoisyLogs = false;
+        private OllamaLogNoiseFilter? _ollamaLogNoiseFilter = null;
 
         /// <summary>Repository root resolved once at startup for locating bundled Ollama assets.</summary>
         private string _repositoryRoot = "";
@@ -66,6 +68,12 @@ namespace MorpheusEngine
 
         /// <summary>Forwarded on every Ollama /api/chat and /api/generate request as options.num_ctx.</summary>
         private int _ollamaNumCtx = 0;
+
+        /// <summary>Forwarded as top-level think on Ollama /api/chat and /api/generate (from engine_config thinking).</summary>
+        private bool _ollamaThink = false;
+
+        // Last Ollama wire JSON from POST /chat or POST /generate; read from GET /debug/last_llm_payload.
+        private volatile LlmProviderLastPayloadResponse? _lastLlmPayloadSnapshot = null;
         #endregion
 
         #region Public methods
@@ -143,6 +151,7 @@ namespace MorpheusEngine
                 _ollamaBootstrapFailed = bootstrapFailed;
             }
         }
+
         #endregion
 
         #region Private methods
@@ -160,6 +169,12 @@ namespace MorpheusEngine
             _chatModel = qwenOpts.OllamaModel.Trim();
             _ollamaPort = qwenOpts.OllamaPort;
             _ollamaNumCtx = genericOpts.NumCtx;
+            _filterOffNoisyLogs = qwenOpts.FilterOffNoisyLogs;
+            _ollamaThink = qwenOpts.Thinking;
+            if (_filterOffNoisyLogs)
+            {
+                _ollamaLogNoiseFilter = new OllamaLogNoiseFilter();
+            }
             if (string.IsNullOrWhiteSpace(_chatModel))
             {
                 throw new InvalidOperationException(
@@ -313,6 +328,12 @@ namespace MorpheusEngine
                     return;
                 }
 
+                if (path.Equals("/debug/last_llm_payload", StringComparison.OrdinalIgnoreCase))
+                {
+                    await ProcessRequest_lastLlmPayload(context);
+                    return;
+                }
+
                 // Invalid endpoint specified.
                 Console.WriteLine("LlmProvider_qwen called with an unknown path: " + path);
                 await Respond(context, 404, new ErrorResponse(false, "Not found: " + path));
@@ -439,6 +460,7 @@ namespace MorpheusEngine
                     try
                     {
                         await PrimeBundledOllamaModelAsync("post_initialize_bind");
+                        FlushPendingPrimeSummary();
                     }
                     catch (Exception e)
                     {
@@ -564,6 +586,7 @@ namespace MorpheusEngine
                 system = request.System,
                 stream = false, // Generate whole response in one go and return it.
                 truncate = false,
+                think = _ollamaThink,
                 options = BuildOllamaOptionsPayload()
             };
             var promptTrimmed = request.Prompt.Trim();
@@ -574,6 +597,7 @@ namespace MorpheusEngine
 
             // Convert to json for transmission.
             var requestJson = JsonSerializer.Serialize(ollamaPayload);
+            PublishLastLlmPayload("generate", requestJson);
             WriteTrafficLine("OLLAMA_IO TRAFFIC GENERATE_REQUEST_JSON " + requestJson);
             var content = new StringContent(requestJson, Encoding.UTF8, "application/json");
 
@@ -668,6 +692,7 @@ namespace MorpheusEngine
                 ["messages"] = request.Messages,
                 ["stream"] = false,
                 ["truncate"] = false,
+                ["think"] = _ollamaThink,
                 ["options"] = BuildOllamaOptionsPayload()
             };
 
@@ -684,6 +709,7 @@ namespace MorpheusEngine
                 $"OLLAMA_IO CHAT_REQUEST model={_chatModel} messages={request.Messages.Count} {DescribeChatMessagesForLog(request.Messages)}");
 
             var requestJson = JsonSerializer.Serialize(ollamaPayload);
+            PublishLastLlmPayload("chat", requestJson);
             WriteTrafficLine("OLLAMA_IO TRAFFIC CHAT_REQUEST_JSON " + requestJson);
             var content = new StringContent(requestJson, Encoding.UTF8, "application/json");
 
@@ -738,6 +764,31 @@ namespace MorpheusEngine
             await Respond(context, 200, new ChatGenerateResponse(true, assistantText, ollamaBody));
         }
 
+        private async Task ProcessRequest_lastLlmPayload(HttpListenerContext context)
+        {
+            var snapshot = _lastLlmPayloadSnapshot;
+            if (snapshot is null)
+            {
+                await Respond(
+                    context,
+                    200,
+                    new LlmProviderLastPayloadResponse(true, false, string.Empty, string.Empty, string.Empty));
+                return;
+            }
+
+            await Respond(context, 200, snapshot);
+        }
+
+        private void PublishLastLlmPayload(string endpoint, string ollamaRequestJson)
+        {
+            _lastLlmPayloadSnapshot = new LlmProviderLastPayloadResponse(
+                true,
+                true,
+                endpoint,
+                DateTime.UtcNow.ToString("O"),
+                ollamaRequestJson);
+        }
+
         private async Task ProcessRequest_tokenCount(HttpListenerContext context)
         {
             string body;
@@ -782,6 +833,7 @@ namespace MorpheusEngine
                 stream = false,
                 raw = true,
                 truncate = false,
+                think = _ollamaThink,
                 options = new { options.num_ctx, options.num_keep, num_predict = 0 }
             };
             var requestJson = JsonSerializer.Serialize(ollamaPayload);
@@ -847,8 +899,15 @@ namespace MorpheusEngine
             processStartInfo.Environment["OLLAMA_HOST"] = $"127.0.0.1:{_ollamaPort}";
             processStartInfo.Environment["OLLAMA_FLASH_ATTENTION"] = "1";
             processStartInfo.Environment["OLLAMA_MODELS"] = ollamaModelsDirectory;
+            // processStartInfo.Environment["OLLAMA_DEBUG"] = "1";
+            processStartInfo.Environment["OLLAMA_LOG_FORMAT"] = "json";
 
             Console.WriteLine($"OLLAMA_IO Starting bundled Ollama child ({reason}) on 127.0.0.1:{_ollamaPort}.");
+            if (_filterOffNoisyLogs)
+            {
+                _ollamaLogNoiseFilter = new OllamaLogNoiseFilter();
+            }
+
             var process = Process.Start(processStartInfo)
                 ?? throw new InvalidOperationException("Failed to start bundled Ollama child process.");
             process.EnableRaisingEvents = true;
@@ -897,6 +956,7 @@ namespace MorpheusEngine
                 if (shouldPrimeAfterHttp)
                 {
                     await PrimeBundledOllamaModelAsync(reason);
+                    FlushPendingPrimeSummary();
                 }
 
                 lock (_ollamaStateSync)
@@ -957,12 +1017,18 @@ namespace MorpheusEngine
                 prompt = ".",
                 stream = false,
                 truncate = false,
+                think = _ollamaThink,
                 options = new { options.num_ctx, options.num_keep, num_predict = 1 }
             };
 
             var requestJson = JsonSerializer.Serialize(ollamaPayload);
-            WriteTrafficLine("OLLAMA_IO TRAFFIC PRIME_REQUEST_JSON " + requestJson);
+            if (!_filterOffNoisyLogs)
+            {
+                WriteTrafficLine("OLLAMA_IO TRAFFIC PRIME_REQUEST_JSON " + requestJson);
+            }
+
             using var content = new StringContent(requestJson, Encoding.UTF8, "application/json");
+            var primeStartedUtc = DateTime.UtcNow;
 
             HttpResponseMessage response;
             try
@@ -975,14 +1041,47 @@ namespace MorpheusEngine
             }
 
             var responseBody = await response.Content.ReadAsStringAsync();
-            WriteTrafficLine("OLLAMA_IO TRAFFIC PRIME_RESPONSE_BODY " + JsonSerializer.Serialize(responseBody));
+            if (!_filterOffNoisyLogs)
+            {
+                WriteTrafficLine("OLLAMA_IO TRAFFIC PRIME_RESPONSE_BODY " + JsonSerializer.Serialize(responseBody));
+            }
+
             if (!response.IsSuccessStatusCode)
             {
                 throw new InvalidOperationException(
                     $"Ollama priming returned {(int)response.StatusCode} ({logTag}). Body: {TruncateMiddle(responseBody, headChars: 200, tailChars: 120)}");
             }
 
-            Console.WriteLine($"OLLAMA_IO Model priming succeeded ({logTag}) model={_chatModel} logSnippet={TruncateMiddle(responseBody, headChars: 120, tailChars: 80)}");
+            EmitPrimeSummaryIfFiltered(logTag, requestJson, responseBody, DateTime.UtcNow - primeStartedUtc);
+        }
+
+        private void EmitPrimeSummaryIfFiltered(string logTag, string requestJson, string responseBody, TimeSpan elapsed)
+        {
+            if (_filterOffNoisyLogs && _ollamaLogNoiseFilter is not null)
+            {
+                foreach (var line in _ollamaLogNoiseFilter.RecordPrimeAttempt(logTag, requestJson, elapsed, _chatModel))
+                {
+                    Console.WriteLine("OLLAMA_IO (ollama:summary) " + line);
+                }
+
+                return;
+            }
+
+            Console.WriteLine(
+                $"OLLAMA_IO Model priming succeeded ({logTag}) model={_chatModel} logSnippet={TruncateMiddle(responseBody, headChars: 120, tailChars: 80)}");
+        }
+
+        private void FlushPendingPrimeSummary()
+        {
+            if (!_filterOffNoisyLogs || _ollamaLogNoiseFilter is null)
+            {
+                return;
+            }
+
+            foreach (var line in _ollamaLogNoiseFilter.FlushPrimeSummary(_chatModel))
+            {
+                Console.WriteLine("OLLAMA_IO (ollama:summary) " + line);
+            }
         }
 
         // Intentional extraction: shared by startup and crash-recovery restart paths.
@@ -1150,12 +1249,19 @@ namespace MorpheusEngine
 
         private void RememberOllamaErrorLine(string line)
         {
+            var linesToRemember = _filterOffNoisyLogs && _ollamaLogNoiseFilter is not null
+                ? _ollamaLogNoiseFilter.ProcessLine(line)
+                : [line];
+
             lock (_ollamaStateSync)
             {
-                _recentOllamaErrorLines.Enqueue(line);
-                while (_recentOllamaErrorLines.Count > MaxCapturedOllamaErrorLines)
+                foreach (var remembered in linesToRemember)
                 {
-                    _recentOllamaErrorLines.Dequeue();
+                    _recentOllamaErrorLines.Enqueue(remembered);
+                    while (_recentOllamaErrorLines.Count > MaxCapturedOllamaErrorLines)
+                    {
+                        _recentOllamaErrorLines.Dequeue();
+                    }
                 }
             }
         }
@@ -1175,23 +1281,63 @@ namespace MorpheusEngine
 
         private void OnOllamaOutputDataReceived(object sender, DataReceivedEventArgs e)
         {
-            if (!string.IsNullOrWhiteSpace(e.Data))
+            if (string.IsNullOrWhiteSpace(e.Data))
             {
-                // Keep the OLLAMA_IO prefix so the WPF monitor continues to pick up these lines.
-                Console.WriteLine("OLLAMA_IO (ollama) " + e.Data);
-                WriteTrafficLine("OLLAMA_IO TRAFFIC OLLAMA_STDOUT " + e.Data);
+                return;
             }
+
+            EmitFilteredOllamaLines(e.Data, isStderr: false);
         }
 
         private void OnOllamaErrorDataReceived(object sender, DataReceivedEventArgs e)
         {
-            if (!string.IsNullOrWhiteSpace(e.Data))
+            if (string.IsNullOrWhiteSpace(e.Data))
             {
-                RememberOllamaErrorLine(e.Data);
-                Console.WriteLine("OLLAMA_IO (ollama:ERR) " + e.Data);
-                WriteTrafficLine("OLLAMA_IO TRAFFIC OLLAMA_STDERR " + e.Data);
+                return;
             }
+
+            RememberOllamaErrorLine(e.Data);
+            EmitFilteredOllamaLines(e.Data, isStderr: true);
         }
+
+        private void EmitFilteredOllamaLines(string rawLine, bool isStderr)
+        {
+            if (_filterOffNoisyLogs && _ollamaLogNoiseFilter is not null)
+            {
+                foreach (var line in _ollamaLogNoiseFilter.ProcessLine(rawLine))
+                {
+                    // Keep the OLLAMA_IO prefix so the WPF monitor continues to pick up these lines.
+                    Console.WriteLine(FormatFilteredOllamaConsoleLine(line, isStderr));
+                }
+
+                return;
+            }
+
+            var channelPrefix = isStderr ? "OLLAMA_IO (ollama:ERR) " : "OLLAMA_IO (ollama) ";
+            var trafficKind = isStderr ? "OLLAMA_STDERR " : "OLLAMA_STDOUT ";
+            Console.WriteLine(channelPrefix + rawLine);
+            WriteTrafficLine("OLLAMA_IO TRAFFIC " + trafficKind + rawLine);
+        }
+
+        private static string FormatFilteredOllamaConsoleLine(string line, bool isStderr)
+        {
+            if (IsFilterSummaryLine(line))
+            {
+                return "OLLAMA_IO (ollama:summary) " + line;
+            }
+
+            return isStderr ? "OLLAMA_IO (ollama:ERR) " + line : "OLLAMA_IO (ollama) " + line;
+        }
+
+        private static bool IsFilterSummaryLine(string line) =>
+            line.StartsWith("loaded ", StringComparison.Ordinal)
+            || line.StartsWith("embedded ", StringComparison.Ordinal)
+            || line.StartsWith("primed ", StringComparison.Ordinal)
+            || line.StartsWith("ctx=", StringComparison.Ordinal)
+            || line.StartsWith("CUDA backend loaded", StringComparison.Ordinal)
+            || line.StartsWith("nomic-embed:", StringComparison.Ordinal)
+            || line.Contains("n_ctx_train=", StringComparison.Ordinal)
+            || (line.Contains(" weights + ", StringComparison.Ordinal) && line.Contains(" graph = ", StringComparison.Ordinal));
 
         private void OnOllamaExited(object? sender, EventArgs e)
         {
@@ -1220,6 +1366,14 @@ namespace MorpheusEngine
 
                 _ollamaReady = false;
                 shouldRestart = !_shutdownRequested && !_ollamaStopping;
+            }
+
+            if (_filterOffNoisyLogs && _ollamaLogNoiseFilter is not null)
+            {
+                foreach (var line in _ollamaLogNoiseFilter.FlushPending())
+                {
+                    Console.WriteLine(FormatFilteredOllamaConsoleLine(line, isStderr: true));
+                }
             }
 
             Console.WriteLine($"OLLAMA_IO (ollama:ERR) Child process exited with code {exitCode}.");

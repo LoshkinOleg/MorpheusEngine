@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace MorpheusEngine;
 
@@ -10,7 +11,7 @@ namespace MorpheusEngine;
 public sealed class MemoryDirector
 {
     #region Nested types
-    private sealed record AgentAction(string Thought, string Tool, JsonElement Arguments);
+    internal sealed record AgentAction(string Thought, string Tool, JsonElement Arguments);
 
     internal sealed record ToolExecutionResult(
         bool Ok,
@@ -56,6 +57,7 @@ public sealed class MemoryDirector
     private readonly HttpListener _listener = new();
     private readonly SemaphoreSlim _sessionGate = new(1, 1);
     private readonly JsonElement _actionSchema;
+    private readonly bool _requireActionThought;
 
     private bool _shutdownRequested = false;
     private volatile bool _initialized = false;
@@ -65,11 +67,6 @@ public sealed class MemoryDirector
     private string _agentPrompt = string.Empty;
     private MemoryDirectorModuleOptions _options = new(12, 4000, 12, "30m");
 
-    // Diagnostic snapshot of the most recent compiled chat input handed to the LLM. Written inside _sessionGate
-    // (one writer at a time), read concurrently from the HttpListener thread serving /debug/last_context.
-    // The payload is built from immutable records/arrays before publication, and the reference is marked
-    // volatile so readers always see either the previous snapshot or the new one in full.
-    private volatile MemoryDirectorLastContextResponse? _lastContextSnapshot = null;
     #endregion
 
     #region Public methods
@@ -88,7 +85,8 @@ public sealed class MemoryDirector
         _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _routerProxy = new RouterProxyClient(_httpClient, _configuration, "memory_director", JsonOptions);
-        _actionSchema = LoadActionSchema();
+        _requireActionThought = ResolveRequireActionThought(configuration);
+        _actionSchema = LoadActionSchema(_requireActionThought);
     }
 
     public async Task RunAsync()
@@ -117,7 +115,8 @@ public sealed class MemoryDirector
 
     internal void SetAgentPromptForTesting(string agentPrompt)
     {
-        _agentPrompt = agentPrompt ?? throw new ArgumentNullException(nameof(agentPrompt));
+        _agentPrompt = AdjustAgentPromptForActionThought(
+            agentPrompt ?? throw new ArgumentNullException(nameof(agentPrompt)));
     }
     #endregion
 
@@ -213,12 +212,6 @@ public sealed class MemoryDirector
                 return;
             }
 
-            if (path.Equals("/debug/last_context", StringComparison.OrdinalIgnoreCase) && method == "GET")
-            {
-                await ProcessRequest_lastContext(context);
-                return;
-            }
-
             await RespondJsonAsync(context, 404, new ErrorResponse(false, "Not found: " + path));
         }
         catch (Exception e)
@@ -268,7 +261,7 @@ public sealed class MemoryDirector
 
                 _boundGameProjectId = request.GameProjectId.Trim();
                 _boundRunId = request.RunId.Trim();
-                _agentPrompt = LoadAgentPrompt(_boundGameProjectId);
+                _agentPrompt = AdjustAgentPromptForActionThought(LoadAgentPrompt(_boundGameProjectId));
                 await SeedCoreMemoryIfEmptyAsync(_boundGameProjectId);
                 _initialized = true;
                 await RespondJsonAsync(context, 200, new InitializeModuleResponse(true));
@@ -339,32 +332,6 @@ public sealed class MemoryDirector
             {
                 var memoryContext = await LoadContextAsync(request.Turn);
                 var compiledContext = await CompileContextAsync(memoryContext);
-                // Publish the exact messages we are about to feed the LLM so /debug/last_context can mirror it.
-                // Project into the public DTO type and also build the raw concatenated context string so callers can
-                // display it verbatim without re-deriving it. The volatile field then atomically swaps to the new
-                // immutable snapshot.
-                var snapshotMessages = new MemoryDirectorContextMessageDto[compiledContext.Messages.Count];
-                var compiledContextBuilder = new StringBuilder();
-                for (var index = 0; index < compiledContext.Messages.Count; index++)
-                {
-                    var message = compiledContext.Messages[index];
-                    snapshotMessages[index] = new MemoryDirectorContextMessageDto(message.Role, message.Content);
-                    if (index > 0)
-                    {
-                        compiledContextBuilder.Append('\n');
-                    }
-
-                    compiledContextBuilder.Append(message.Content);
-                }
-
-                _lastContextSnapshot = new MemoryDirectorLastContextResponse(
-                    true,
-                    true,
-                    request.Turn,
-                    step,
-                    DateTime.UtcNow.ToString("O"),
-                    compiledContextBuilder.ToString(),
-                    snapshotMessages);
                 var llmResponse = await ChatAsync(compiledContext.Messages);
                 if (llmResponse.Payload is null || !llmResponse.Payload.Ok || string.IsNullOrWhiteSpace(llmResponse.Payload.Response))
                 {
@@ -462,29 +429,6 @@ public sealed class MemoryDirector
         {
             _sessionGate.Release();
         }
-    }
-
-    private async Task ProcessRequest_lastContext(HttpListenerContext context)
-    {
-        // Read once: the field is volatile so a concurrent /message handler swap is visible immediately.
-        var snapshot = _lastContextSnapshot;
-        if (snapshot is null)
-        {
-            await RespondJsonAsync(
-                context,
-                200,
-                new MemoryDirectorLastContextResponse(
-                    true,
-                    false,
-                    0,
-                    0,
-                    string.Empty,
-                    string.Empty,
-                    Array.Empty<MemoryDirectorContextMessageDto>()));
-            return;
-        }
-
-        await RespondJsonAsync(context, 200, snapshot);
     }
 
     private async Task<string?> HandleRecoverableFailureAsync(
@@ -720,6 +664,17 @@ public sealed class MemoryDirector
         AppendWithinBudget(system, _agentPrompt, budget, omissions, items, "agent_prompt", "system");
         AppendWithinBudget(system, Environment.NewLine, budget, omissions, items, "separator", "system");
         AppendWithinBudget(system, "You must answer with exactly one JSON action matching the provided schema. Do not include markdown.\n", budget, omissions, items, "tool_rule_intro", "system");
+        if (!_requireActionThought)
+        {
+            AppendWithinBudget(
+                system,
+                "Your JSON action must include only tool and arguments (no thought field).\n",
+                budget,
+                omissions,
+                items,
+                "tool_rule_no_thought",
+                "system");
+        }
         AppendWithinBudget(system, "Tool rules: generate_prose is terminal. Memory-edit, snapshot, recall_search, and archival memory tools are non-terminal.\n", budget, omissions, items, "tool_rules", "system");
         AppendWithinBudget(system, "Use recall_search when the player references prior turns or when recent context is insufficient.\n", budget, omissions, items, "recall_rule", "system");
         AppendWithinBudget(system, "Use archival_memory_search for durable lore/facts. Use archival_memory_insert only for stable facts worth future semantic retrieval.\n", budget, omissions, items, "archival_rule", "system");
@@ -1010,22 +965,19 @@ public sealed class MemoryDirector
     }
 
     // JSON Schema passed to the LLM provider as Ollama "format" so /chat responses are constrained to one action object.
-    private JsonElement LoadActionSchema()
-    {
-        var path = Path.Combine(
-            _configuration.RepositoryRoot,
-            "dotnet",
-            "src",
-            "MorpheusEngine.LlmProvider_qwen",
-            "schemas",
-            "memory_director_action.schema.json");
-        using var doc = JsonDocument.Parse(File.ReadAllText(path));
-        return doc.RootElement.Clone();
-    }
+    private JsonElement LoadActionSchema(bool requireActionThought) =>
+        LoadActionSchemaFromRepository(_configuration.RepositoryRoot, requireActionThought);
 
-    // Parses the LLM's single JSON action (thought + tool + arguments). Returns false with a human-readable error
-    // instead of throwing so the agent loop can persist a recoverable tool_error and retry once.
-    private static bool TryParseAction(string rawResponse, out AgentAction action, out string error)
+    // Parses the LLM's single JSON action (tool + arguments; thought when thinking is enabled). Returns false with a
+    // human-readable error instead of throwing so the agent loop can persist a recoverable tool_error and retry once.
+    private bool TryParseAction(string rawResponse, out AgentAction action, out string error) =>
+        TryParseAction(rawResponse, _requireActionThought, out action, out error);
+
+    internal static bool TryParseAction(
+        string rawResponse,
+        bool requireActionThought,
+        out AgentAction action,
+        out string error)
     {
         action = new AgentAction(string.Empty, string.Empty, default);
         error = string.Empty;
@@ -1033,7 +985,9 @@ public sealed class MemoryDirector
         {
             using var doc = JsonDocument.Parse(rawResponse);
             var root = doc.RootElement;
-            var thought = RequireString(root, "thought");
+            var thought = requireActionThought
+                ? RequireString(root, "thought")
+                : ReadOptionalThought(root);
             var tool = RequireString(root, "tool");
             if (!root.TryGetProperty("arguments", out var arguments) || arguments.ValueKind != JsonValueKind.Object)
             {
@@ -1049,6 +1003,63 @@ public sealed class MemoryDirector
             error = e.Message;
             return false;
         }
+    }
+
+    // Mirrors engine_config thinking on the generic LLM provider row (llm_provider_qwen).
+    private static bool ResolveRequireActionThought(EngineConfiguration configuration)
+    {
+        var provider = configuration.GetRequiredGenericLlmProviderModule();
+        return provider.QwenOptions?.Thinking ?? false;
+    }
+
+    internal static JsonElement LoadActionSchemaFromRepository(string repositoryRoot, bool requireActionThought)
+    {
+        var path = Path.Combine(
+            repositoryRoot,
+            "dotnet",
+            "src",
+            "MorpheusEngine.LlmProvider_qwen",
+            "schemas",
+            "memory_director_action.schema.json");
+        var schemaObject = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
+        if (!requireActionThought)
+        {
+            var required = schemaObject["required"]!.AsArray();
+            for (var index = required.Count - 1; index >= 0; index--)
+            {
+                if (string.Equals(required[index]!.GetValue<string>(), "thought", StringComparison.Ordinal))
+                {
+                    required.RemoveAt(index);
+                }
+            }
+
+            schemaObject["properties"]!.AsObject().Remove("thought");
+        }
+
+        return JsonSerializer.SerializeToElement(schemaObject);
+    }
+
+    // Strips project prompt lines that instruct use of a thought field when thinking is disabled.
+    private string AdjustAgentPromptForActionThought(string prompt)
+    {
+        if (_requireActionThought)
+        {
+            return prompt;
+        }
+
+        const string thoughtSentence = "Keep private reasoning brief in `thought`. ";
+        return prompt.Replace(thoughtSentence, string.Empty, StringComparison.Ordinal);
+    }
+
+    // Optional thought when thinking is off: absent or empty is allowed; non-empty strings are kept for lastThought fallback.
+    private static string ReadOptionalThought(JsonElement root)
+    {
+        if (!root.TryGetProperty("thought", out var property) || property.ValueKind != JsonValueKind.String)
+        {
+            return string.Empty;
+        }
+
+        return property.GetString()?.Trim() ?? string.Empty;
     }
 
     // Strict string extractor for tool argument JSON; used by TryParseAction and ExecuteToolAsync helpers.
