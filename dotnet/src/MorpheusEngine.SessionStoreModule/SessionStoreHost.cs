@@ -543,8 +543,10 @@ public sealed class SessionStoreHost
         }
 
         var numCtx = llmProvider.GenericLlmProviderOptions.NumCtx;
+        var ratio = llmProvider.GenericLlmProviderOptions.TargetContextRatio;
+        var targetContextTokens = (int)(numCtx * ratio);
         var maxToolResultChars = _configuration.GetRequiredGenericDirectorModule().MemoryDirectorOptions?.MaxToolResultChars ?? 4000;
-        return new MemoryBudgetDto(numCtx, numCtx * 70 / 100, maxFullMessages, maxToolResultChars);
+        return new MemoryBudgetDto(numCtx, targetContextTokens, maxFullMessages, maxToolResultChars);
     }
 
     #endregion

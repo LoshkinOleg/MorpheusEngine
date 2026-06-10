@@ -15,4 +15,10 @@
     <InternalsVisibleTo Include="MorpheusEngine.Tests.Unit" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Include="prompts\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
 </Project>

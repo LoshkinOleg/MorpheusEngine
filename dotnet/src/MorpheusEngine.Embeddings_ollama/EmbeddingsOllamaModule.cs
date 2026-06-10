@@ -211,6 +211,7 @@ public sealed class EmbeddingsOllamaModule
                 return;
             }
 
+            // Used to compute the embedding to be used in archival semantic-keyed memory.
             if ((path.Equals("/embed", StringComparison.OrdinalIgnoreCase) || path.Equals("/embed_batch", StringComparison.OrdinalIgnoreCase))
                 && method == "POST")
             {
@@ -407,6 +408,12 @@ public sealed class EmbeddingsOllamaModule
         if (request is null || string.IsNullOrWhiteSpace(request.Text))
         {
             await RespondJsonAsync(context, 400, new ErrorResponse(false, "Request must include non-empty text."));
+            return;
+        }
+
+        if (request.Messages is { Count: > 0 })
+        {
+            await RespondJsonAsync(context, 400, new ErrorResponse(false, "embeddings_ollama token_count accepts text only, not messages."));
             return;
         }
 

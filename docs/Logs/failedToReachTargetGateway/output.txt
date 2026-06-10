@@ -1,0 +1,2 @@
+Router /turn returned 502 Bad Gateway.
+{"ok":false,"error":"Failed to reach target module \u0027memory_director\u0027.","details":"The request was canceled due to the configured HttpClient.Timeout of 60 seconds elapsing."}

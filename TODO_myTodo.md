@@ -1,9 +1,17 @@
+Last session summary:
+  Removed tests. Started work on compaction / working context management, plan implemented but not run yet, it'd be a miracle if everything is working as intended.
+  Next up would be debugging, trimming down the contents of the SQL db then implementing non ollama token counting to bring latency down.
+
+- sql db currently hoards too much useless data. simplify.
+
+- Embeddings_ollama module should be folded into the llm provider.
+
+- make the /turn timeout configurable by the player directly, default it to 60 seconds.
+
 - Make context inspector:
-  - Main context inspector OK
   - Main context inspector: toggle human friendly formatting, keep same source string
   - External context inspector: archival store
   - External context inspector: recall store
-  - render the exact string sent to the LLM by inspecting ollama logs
 
 - EngineHttpContracts.cs: I don't like how everything is a string, makes reading the type difficult.
 

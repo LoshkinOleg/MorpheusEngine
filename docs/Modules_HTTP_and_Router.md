@@ -84,7 +84,8 @@ State is **in-process memory** for **one run per Director process** (lost if Dir
 |--------|------|----------|
 | POST | `/generate` | Ollama **`/api/generate`** (`LlmGenerateRequest`: prompt + optional system; Ollama model from **`llm_provider_qwen.default_chat_model`**). |
 | POST | `/chat` | Ollama **`/api/chat`** (`ChatGenerateRequest`: `messages[]` only; Ollama model from **`llm_provider_qwen.default_chat_model`** in `engine_config.json`). |
-| POST | `/token_count` | Token-count probe for the configured model. Uses Ollama prompt stats when available and returns `exact: true`; otherwise returns a deterministic estimate with `exact: false`. |
+| POST | `/summarize` | Ollama **`/api/generate`** (`SummarizeRequest`: transcript `content` + optional turn range; `system` from bundled **`prompts/summarize_system.md`**; same model as `/chat`). Used by MemoryDirector recall compaction. |
+| POST | `/token_count` | Token-count probe for the configured model. **`messages[]`**: Ollama `/api/chat` with `num_predict: 0` (chat-template-aligned; MemoryDirector). **`text`**: Ollama `/api/generate` raw probe (embeddings). Returns `exact: true` when `prompt_eval_count` is present. |
 
 `ollama_port` on the `llm_provider_qwen` module row in `engine_config.json` configures the Ollama base URL port.
 
@@ -92,7 +93,9 @@ State is **in-process memory** for **one run per Director process** (lost if Dir
 
 MemoryDirector records per-step context compiler diagnostics in `session_store.pipeline_events` with payload discriminator `eventType: "memory_context_budget"`.
 
-The telemetry describes the compiled context, not the raw `/memory/load_context` response. It includes `numCtx`, the 70% target token budget, estimated characters, provider/heuristic token counts, and itemized `included`, `truncated`, or `omitted` sections with reasons. Token counts with `exact: false` are estimates and should be used for debugging, not as tokenizer ground truth.
+The telemetry describes the compiled context, not the raw `/memory/load_context` response. It includes `numCtx`, the configured target token budget (`num_ctx * target_context_ratio`), character-length diagnostics (legacy), exact Ollama token counts, and itemized `included` sections. Compiled system content is **agent prompt + tool rules + core memory blocks** only (no auto-injected snapshot JSON). Recall summaries appear in the **message queue** as `Recall summary (turns X-Y): …` entries.
+
+**Pre-flight compaction (Phase 3):** before each `/chat`, MemoryDirector runs a token-driven loop that may call **`POST /summarize`** and **`/memory/recall/compact`** multiple times (folding oldest complete prior turns). Compaction passes emit **`memory_context_budget`** rows via **`persist_step.diagnosticsJson`**. If budget cannot be recovered (e.g. core memory alone exceeds target), compile **throws** and `/message` returns HTTP **500** without calling `/chat`.
 
 ## Where to add a new module
 

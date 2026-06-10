@@ -102,7 +102,7 @@ public sealed record LatestSnapshotDto(
 
 public sealed record MemoryBudgetDto( // Mirrors fields found in engine_config.json. Should be one unchanged set of values per session since it's mirroring the config file. // TODO: why do we need this when we already have a config file to read from though?
     [property: JsonPropertyName("numCtx")] int NumCtx, // Total context window size of the model.
-    [property: JsonPropertyName("targetContextTokens")] int TargetContextTokens, // Ideal token count to target for, must be <NumCtx . // TODO: add to engine_config.json instead of hardcoding the 70%
+    [property: JsonPropertyName("targetContextTokens")] int TargetContextTokens, // Ideal token count to target for; derived from numCtx * target_context_ratio in engine_config.json.
     [property: JsonPropertyName("maxFullMessages")] int MaxFullMessages, // Max of all messages in working context at a time (all types combined).
     [property: JsonPropertyName("maxToolResultChars")] int MaxToolResultChars); // Used to limit tool output length.
 
@@ -152,7 +152,8 @@ public sealed record MemoryPersistStepRequest(
     [property: JsonPropertyName("messages")] IReadOnlyList<AgentMessageDto> Messages,
     [property: JsonPropertyName("mutations")] IReadOnlyList<MemoryMutationDto> Mutations,
     [property: JsonPropertyName("blockUpdates")] IReadOnlyList<MemoryBlockDto> BlockUpdates,
-    [property: JsonPropertyName("contextAccounting")] MemoryContextAccountingDto? ContextAccounting = null);
+    [property: JsonPropertyName("contextAccounting")] MemoryContextAccountingDto? ContextAccounting = null,
+    [property: JsonPropertyName("diagnosticsJson")] string? DiagnosticsJson = null);
 
 public sealed record MemoryPersistStepResponse([property: JsonPropertyName("ok")] bool Ok);
 
@@ -279,7 +280,10 @@ public sealed record EmbeddingResponse(
 
 public sealed record TokenCountRequest(
     [property: JsonPropertyName("model")] string Model,
-    [property: JsonPropertyName("text")] string Text);
+    [property: JsonPropertyName("text")] string? Text = null,
+    [property: JsonPropertyName("messages")] IReadOnlyList<ChatGenerateRequest.ChatMessageDto>? Messages = null,
+    [property: JsonPropertyName("format")] JsonElement? Format = null,
+    [property: JsonPropertyName("keepAlive")] string? KeepAlive = null);
 
 public sealed record TokenCountResponse(
     [property: JsonPropertyName("ok")] bool Ok,
@@ -347,6 +351,19 @@ public sealed record ChatGenerateResponse(
     [property: JsonPropertyName("response")] string? Response,
     [property: JsonPropertyName("rawResponse")] string? RawResponse);
 
+/// <summary>POST /summarize: episodic recall compression; provider uses Ollama /api/generate with a bundled system prompt.</summary>
+public sealed record SummarizeRequest(
+    [property: JsonPropertyName("content")] string Content,
+    [property: JsonPropertyName("startTurn")] int? StartTurn = null,
+    [property: JsonPropertyName("endTurn")] int? EndTurn = null,
+    [property: JsonPropertyName("keepAlive")] string? KeepAlive = null);
+
+/// <summary>JSON envelope returned by llm_provider_qwen on successful /summarize.</summary>
+public sealed record SummarizeResponse(
+    [property: JsonPropertyName("ok")] bool Ok,
+    [property: JsonPropertyName("summary")] string? Summary,
+    [property: JsonPropertyName("rawResponse")] string? RawResponse);
+
 #endregion
 
 #region LLM provider debug (GET /debug/last_llm_payload)
@@ -391,6 +408,15 @@ public static class EngineContractExamples
         "generate" => new EndpointTemplatePair(
             Serialize(new LlmGenerateRequest("Write a short response.")),
             Serialize(new LlmProviderGenerateResponse(true, "Short response.", "{\"raw\":\"...\"}"))),
+        "summarize" => new EndpointTemplatePair(
+            Serialize(new SummarizeRequest(
+                "[assistant t1s1] The party entered the ruin.\n[player t2s0] Search the altar.",
+                1,
+                2)),
+            Serialize(new SummarizeResponse(
+                true,
+                "The party entered the ruin and searched the altar.",
+                "{\"response\":\"...\"}"))),
         "intent" => new EndpointTemplatePair(
             Serialize(new IntentRequest("look around")),
             Serialize(new IntentResponse(true, "look_around", new Dictionary<string, string> { ["direction"] = "around" }))),
@@ -468,8 +494,14 @@ public static class EngineContractExamples
             Serialize(new EmbeddingRequest("nomic-embed-text", ["The party enters the ruin."])),
             Serialize(new EmbeddingResponse(true, "nomic-embed-text", 3, [new EmbeddingVectorDto(0, [0.12f, -0.04f, 0.88f])]))),
         "token_count" => new EndpointTemplatePair(
-            Serialize(new TokenCountRequest("qwen2.5:7b-instruct", "The party enters the ruin.")),
-            Serialize(new TokenCountResponse(true, "qwen2.5:7b-instruct", 7, false))),
+            Serialize(new TokenCountRequest(
+                "qwen2.5:7b-instruct",
+                Messages:
+                [
+                    new ChatGenerateRequest.ChatMessageDto("system", "You are the GM."),
+                    new ChatGenerateRequest.ChatMessageDto("user", "Look around.")
+                ])),
+            Serialize(new TokenCountResponse(true, "qwen2.5:7b-instruct", 7, true))),
         "module_proxy" => new EndpointTemplatePair(
             Serialize(new ModuleProxyRequest(
                 "intent_extractor",

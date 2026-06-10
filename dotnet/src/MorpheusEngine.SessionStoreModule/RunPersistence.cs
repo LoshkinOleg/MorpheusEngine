@@ -232,7 +232,17 @@ internal sealed class RunPersistence
                 UpsertMemoryBlock(connection, transaction, block);
             }
 
-            if (request.ContextAccounting is not null)
+            if (!string.IsNullOrWhiteSpace(request.DiagnosticsJson))
+            {
+                InsertPipelineEvent(
+                    connection,
+                    transaction,
+                    runId,
+                    request.Turn,
+                    request.StepNumber,
+                    request.DiagnosticsJson.Trim());
+            }
+            else if (request.ContextAccounting is not null)
             {
                 InsertPipelineEvent(
                     connection,
@@ -545,6 +555,7 @@ internal sealed class RunPersistence
         using var transaction = connection.BeginTransaction(IsolationLevel.Serializable);
         try
         {
+            DeleteContainedConversationSummaries(connection, transaction, request.StartTurn, request.EndTurn);
             var summary = InsertConversationSummary(connection, transaction, request);
             DeleteCompactedAgentMessages(connection, transaction, runId, request.StartTurn, request.EndTurn);
             transaction.Commit();
@@ -893,6 +904,26 @@ internal sealed class RunPersistence
             request.Summary.Trim(),
             request.SourceMessageCount,
             request.MetadataJson);
+    }
+
+    // Removes summary rows wholly contained in the folded turn range so compile does not inject duplicates.
+    private static void DeleteContainedConversationSummaries(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        int startTurn,
+        int endTurn)
+    {
+        using var cmd = connection.CreateCommand();
+        cmd.Transaction = transaction;
+        cmd.CommandText =
+            """
+            DELETE FROM conversation_summaries
+            WHERE start_turn >= @startTurn
+              AND end_turn <= @endTurn;
+            """;
+        cmd.Parameters.AddWithValue("@startTurn", startTurn);
+        cmd.Parameters.AddWithValue("@endTurn", endTurn);
+        cmd.ExecuteNonQuery();
     }
 
     private static void DeleteCompactedAgentMessages(

@@ -24,25 +24,11 @@ public sealed class MemoryDirector
         IReadOnlyList<ChatGenerateRequest.ChatMessageDto> Messages,
         MemoryContextAccountingDto Accounting);
 
-    internal sealed class ContextBudget
-    {
-        public int TargetChars { get; }
-
-        public int RemainingChars { get; private set; }
-
-        public ContextBudget(int targetChars)
-        {
-            TargetChars = Math.Max(0, targetChars);
-            RemainingChars = TargetChars;
-        }
-
-        public int Consume(int requestedChars)
-        {
-            var allowed = Math.Min(Math.Max(0, requestedChars), RemainingChars); // Clamp
-            RemainingChars -= allowed;
-            return allowed; // Return the char budget allocated.
-        }
-    }
+    internal sealed record CompactionPassResult(
+        int StartTurn,
+        int EndTurn,
+        int FoldedMessageCount,
+        string Summary);
     #endregion
 
     #region Private data
@@ -50,6 +36,12 @@ public sealed class MemoryDirector
     {
         PropertyNameCaseInsensitive = true
     };
+
+    // Caps synchronous summarize passes per pre-flight or post-turn compaction loop.
+    private const int MAX_BUDGET_COMPACTION_PASSES = 12;
+
+    // Caps summary text returned in request_summarization tool_result payloads.
+    private const int SUMMARY_PREVIEW_MAX_CHARS = 200;
 
     private readonly EngineConfiguration _configuration;
     private readonly HttpClient _httpClient;
@@ -330,8 +322,9 @@ public sealed class MemoryDirector
 
             for (var step = 1; step <= _options.MaxStepsPerTurn; step++)
             {
+                await RunBudgetCompactionLoopAsync(request.Turn, step, "pre_flight_chat");
                 var memoryContext = await LoadContextAsync(request.Turn);
-                var compiledContext = await CompileContextAsync(memoryContext);
+                var compiledContext = await CompileContextAsync(memoryContext, enforceTokenBudget: true);
                 var llmResponse = await ChatAsync(compiledContext.Messages);
                 if (llmResponse.Payload is null || !llmResponse.Payload.Ok || string.IsNullOrWhiteSpace(llmResponse.Payload.Response))
                 {
@@ -352,7 +345,7 @@ public sealed class MemoryDirector
                         compiledContext.Accounting);
                     if (finalFromParse is not null)
                     {
-                        await CompactRecallIfNeededAsync(request.Turn);
+                        await RunBudgetCompactionLoopAsync(request.Turn, step, "post_turn");
                         await RespondJsonAsync(context, 200, new DirectorMessageResponse(true, finalFromParse));
                         return;
                     }
@@ -396,7 +389,7 @@ public sealed class MemoryDirector
 
                 if (toolResult.FinalMessage is not null)
                 {
-                    await CompactRecallIfNeededAsync(request.Turn);
+                    await RunBudgetCompactionLoopAsync(request.Turn, step, "post_turn");
                     await RespondJsonAsync(context, 200, new DirectorMessageResponse(true, toolResult.FinalMessage));
                     return;
                 }
@@ -414,7 +407,7 @@ public sealed class MemoryDirector
                         alreadyPersisted: true);
                     if (finalFromTool is not null)
                     {
-                        await CompactRecallIfNeededAsync(request.Turn);
+                        await RunBudgetCompactionLoopAsync(request.Turn, step, "post_turn");
                         await RespondJsonAsync(context, 200, new DirectorMessageResponse(true, finalFromTool));
                         return;
                     }
@@ -422,7 +415,7 @@ public sealed class MemoryDirector
             }
 
             var final = await SynthesizeAndPersistFinalAsync(request.Turn, _options.MaxStepsPerTurn + 1, lastThought);
-            await CompactRecallIfNeededAsync(request.Turn);
+            await RunBudgetCompactionLoopAsync(request.Turn, step: 0, "post_turn");
             await RespondJsonAsync(context, 200, new DirectorMessageResponse(true, final));
         }
         finally
@@ -491,6 +484,7 @@ public sealed class MemoryDirector
                 "core_memory_set" => ExecuteCoreMemorySet(turn, step, memoryContext, action.Arguments),
                 "get_current_snapshot" => ExecuteGetCurrentSnapshot(memoryContext),
                 "recall_search" => await ExecuteRecallSearchAsync(action.Arguments),
+                "request_summarization" => await ExecuteRequestSummarizationAsync(turn, step),
                 "archival_memory_insert" => await ExecuteArchivalMemoryInsertAsync(turn, step, action.Arguments),
                 "archival_memory_search" => await ExecuteArchivalMemorySearchAsync(action.Arguments),
                 _ => new ToolExecutionResult(false, "Unknown tool: " + action.Tool, [], [], null)
@@ -566,6 +560,61 @@ public sealed class MemoryDirector
         }
 
         return new ToolExecutionResult(true, FormatSearchResults(response.Payload.Results), [], [], null);
+    }
+
+    // Proactive single-pass fold of the oldest complete prior turn; non-terminal (no player prose).
+    private async Task<ToolExecutionResult> ExecuteRequestSummarizationAsync(int turn, int step)
+    {
+        var memoryContext = await LoadContextAsync(turn);
+        var compiledBefore = await CompileContextAsync(memoryContext, enforceTokenBudget: false);
+        var targetTokens = memoryContext.Budget.TargetContextTokens;
+        var tokensBefore = compiledBefore.Accounting.EstimatedTokens;
+
+        var passResult = await TryFoldOldestPriorTurnAsync(
+            turn,
+            step,
+            "agent_request_summarization",
+            passIndex: 0,
+            compiledBefore.Accounting);
+        if (passResult is null)
+        {
+            return new ToolExecutionResult(
+                true,
+                JsonSerializer.Serialize(new
+                {
+                    folded = false,
+                    reason = "no_prior_turns",
+                    estimatedTokens = tokensBefore,
+                    targetContextTokens = targetTokens
+                }),
+                [],
+                [],
+                null);
+        }
+
+        var memoryContextAfter = await LoadContextAsync(turn);
+        var compiledAfter = await CompileContextAsync(memoryContextAfter, enforceTokenBudget: false);
+        var tokensAfter = compiledAfter.Accounting.EstimatedTokens;
+        var summaryPreview = passResult.Summary.Length <= SUMMARY_PREVIEW_MAX_CHARS
+            ? passResult.Summary
+            : passResult.Summary[..SUMMARY_PREVIEW_MAX_CHARS] + "...";
+
+        return new ToolExecutionResult(
+            true,
+            JsonSerializer.Serialize(new
+            {
+                folded = true,
+                startTurn = passResult.StartTurn,
+                endTurn = passResult.EndTurn,
+                foldedMessageCount = passResult.FoldedMessageCount,
+                estimatedTokensBefore = tokensBefore,
+                estimatedTokensAfter = tokensAfter,
+                targetContextTokens = targetTokens,
+                summaryPreview
+            }),
+            [],
+            [],
+            null);
     }
 
     private async Task<ToolExecutionResult> ExecuteArchivalMemorySearchAsync(JsonElement arguments)
@@ -655,118 +704,75 @@ public sealed class MemoryDirector
         return new ToolExecutionResult(true, JsonSerializer.Serialize(new { updated = after.Label }), [after], [mutation], null);
     }
 
-    internal async Task<CompiledContext> CompileContextAsync(MemoryLoadContextResponse memoryContext)
+    internal async Task<CompiledContext> CompileContextAsync(MemoryLoadContextResponse memoryContext, bool enforceTokenBudget = true)
     {
         var system = new StringBuilder();
-        var budget = CreateContextBudget(memoryContext);
         var omissions = new List<string>();
         var items = new List<MemoryContextItemDto>();
-        AppendWithinBudget(system, _agentPrompt, budget, omissions, items, "agent_prompt", "system");
-        AppendWithinBudget(system, Environment.NewLine, budget, omissions, items, "separator", "system");
-        AppendWithinBudget(system, "You must answer with exactly one JSON action matching the provided schema. Do not include markdown.\n", budget, omissions, items, "tool_rule_intro", "system");
+        AppendSystemSection(system, _agentPrompt, items, "agent_prompt", "system");
+        AppendSystemSection(system, Environment.NewLine, items, "separator", "system");
+        AppendSystemSection(system, "You must answer with exactly one JSON action matching the provided schema. Do not include markdown.\n", items, "tool_rule_intro", "system");
         if (!_requireActionThought)
         {
-            AppendWithinBudget(
+            AppendSystemSection(
                 system,
                 "Your JSON action must include only tool and arguments (no thought field).\n",
-                budget,
-                omissions,
                 items,
                 "tool_rule_no_thought",
                 "system");
         }
-        AppendWithinBudget(system, "Tool rules: generate_prose is terminal. Memory-edit, snapshot, recall_search, and archival memory tools are non-terminal.\n", budget, omissions, items, "tool_rules", "system");
-        AppendWithinBudget(system, "Use recall_search when the player references prior turns or when recent context is insufficient.\n", budget, omissions, items, "recall_rule", "system");
-        AppendWithinBudget(system, "Use archival_memory_search for durable lore/facts. Use archival_memory_insert only for stable facts worth future semantic retrieval.\n", budget, omissions, items, "archival_rule", "system");
-        AppendWithinBudget(system, "Core memory blocks:\n", budget, omissions, items, "core_header", "core_header");
+
+        AppendSystemSection(system, "Tool rules: generate_prose is terminal. Memory-edit, snapshot, request_summarization, recall_search, and archival memory tools are non-terminal.\n", items, "tool_rules", "system");
+        AppendSystemSection(system, "Use request_summarization when context is crowded and you need headroom for more tools or dialogue; it folds the oldest prior turn into a recall summary and does not speak to the player.\n", items, "summarize_rule", "system");
+        AppendSystemSection(system, "Use recall_search when the player references prior turns or events that may have fallen out of recent context.\n", items, "recall_rule", "system");
+        AppendSystemSection(system, "Use archival_memory_search for durable lore/facts. Use archival_memory_insert only for stable facts worth future semantic retrieval.\n", items, "archival_rule", "system");
+        AppendSystemSection(system, "Core memory blocks:\n", items, "core_header", "core_header");
         foreach (var block in memoryContext.Blocks.OrderBy(static block => block.Label, StringComparer.OrdinalIgnoreCase))
         {
-            AppendWithinBudget(system, $"[{block.Label}] {block.Description}\n{block.Value}\n", budget, omissions, items, "core:" + block.Label, "core");
+            AppendSystemSection(system, $"[{block.Label}] {block.Description}\n{block.Value}\n", items, "core:" + block.Label, "core");
         }
 
+        var recentMessages = new List<ChatGenerateRequest.ChatMessageDto>();
         if (memoryContext.Summaries is { Count: > 0 })
         {
-            AppendWithinBudget(system, "Compacted recall summaries:\n", budget, omissions, items, "summaries_header", "summary_header");
-            foreach (var summary in memoryContext.Summaries)
+            foreach (var summary in memoryContext.Summaries.OrderBy(static summary => summary.StartTurn))
             {
-                AppendWithinBudget(system, $"Turns {summary.StartTurn}-{summary.EndTurn}: {summary.Summary}\n", budget, omissions, items, "summary:" + summary.StartTurn + "-" + summary.EndTurn, "summary");
+                var formatted = FormatRecallSummary(summary);
+                var label = $"summary:{summary.StartTurn}-{summary.EndTurn}";
+                items.Add(new MemoryContextItemDto(label, "recall_summary", "included", formatted.Length, formatted.Length));
+                recentMessages.Add(new ChatGenerateRequest.ChatMessageDto("assistant", formatted));
             }
         }
 
-        AppendWithinBudget(system, "Latest snapshot:\n", budget, omissions, items, "snapshot_header", "snapshot_header");
-        AppendWithinBudget(system, memoryContext.LatestSnapshot.WorldStateJson + "\n", budget, omissions, items, "world_snapshot", "snapshot");
-        AppendWithinBudget(system, memoryContext.LatestSnapshot.ViewStateJson + "\n", budget, omissions, items, "view_snapshot", "snapshot");
-
-        var recentMessages = new List<ChatGenerateRequest.ChatMessageDto>();
-        var recentItemIndexes = new List<int>();
         foreach (var message in memoryContext.RecentMessages)
         {
             var formatted = FormatMemoryMessage(message);
             var label = $"message:{message.Turn}:{message.StepNumber}:{message.Role}";
-            if (budget.RemainingChars <= 0)
-            {
-                omissions.Add(label);
-                items.Add(new MemoryContextItemDto(label, "recent_message", "omitted", formatted.Length, 0, "context_budget"));
-                continue;
-            }
-
-            var allowed = budget.Consume(formatted.Length);
-            var status = allowed == formatted.Length ? "included" : "truncated";
-            var reason = allowed == formatted.Length ? null : "context_budget";
-            var itemIndex = items.Count;
-            items.Add(new MemoryContextItemDto(label, "recent_message", status, formatted.Length, allowed, reason));
-            recentItemIndexes.Add(itemIndex);
-            recentMessages.Add(new ChatGenerateRequest.ChatMessageDto(MapRoleForChat(message.Role), TruncateWithSentinel(formatted, allowed)));
-            if (reason is not null)
-            {
-                omissions.Add(label);
-            }
+            items.Add(new MemoryContextItemDto(label, "recent_message", "included", formatted.Length, formatted.Length));
+            recentMessages.Add(new ChatGenerateRequest.ChatMessageDto(MapRoleForChat(message.Role), formatted));
         }
 
-        var messages = BuildCompiledMessages(system.ToString(), omissions, recentMessages);
-        var tokenCount = await CountTokensAsync(FlattenMessagesForTokenCount(messages));
-        if (tokenCount.Exact && tokenCount.EstimatedTokens > memoryContext.Budget.TargetContextTokens && recentMessages.Count > 0)
+        var systemText = system.ToString();
+        var messages = BuildCompiledMessages(systemText, omissions, recentMessages);
+        var tokenCount = await RequireExactTokenCountAsync(messages);
+        var targetTokens = memoryContext.Budget.TargetContextTokens;
+        if (enforceTokenBudget && tokenCount.EstimatedTokens > targetTokens)
         {
-            var ratio = Math.Max(1.0, tokenCount.EstimatedTokens / (double)Math.Max(1, FlattenMessagesForTokenCount(messages).Length));
-            while (recentMessages.Count > 0
-                   && (int)Math.Ceiling(FlattenMessagesForTokenCount(BuildCompiledMessages(system.ToString(), omissions, recentMessages)).Length * ratio) > memoryContext.Budget.TargetContextTokens)
-            {
-                var removeIndex = recentMessages.Count - 1;
-                recentMessages.RemoveAt(removeIndex);
-                var itemIndex = recentItemIndexes[removeIndex];
-                recentItemIndexes.RemoveAt(removeIndex);
-                var item = items[itemIndex];
-                items[itemIndex] = item with { Status = "omitted", IncludedChars = 0, Reason = "exact_token_budget" };
-                omissions.Add(item.Label);
-            }
-
-            messages = BuildCompiledMessages(system.ToString(), omissions, recentMessages);
-            tokenCount = await CountTokensAsync(FlattenMessagesForTokenCount(messages));
-        }
-
-        if (tokenCount.Exact && tokenCount.EstimatedTokens > memoryContext.Budget.TargetContextTokens)
-        {
-            items.Add(new MemoryContextItemDto(
-                "compiled_prompt",
-                "budget",
-                "over_target",
-                FlattenMessagesForTokenCount(messages).Length,
-                FlattenMessagesForTokenCount(messages).Length,
-                "core_system_exceeds_target",
-                tokenCount.EstimatedTokens,
-                tokenCount.Exact));
-            omissions.Add("compiled_prompt:over_target");
+            var reason = await ResolveContextBudgetExceededReasonAsync(systemText, recentMessages, targetTokens);
+            throw new InvalidOperationException(
+                $"Context exceeds token budget: estimated={tokenCount.EstimatedTokens} target={targetTokens} reason={reason}.");
         }
 
         var finalChars = FlattenMessagesForTokenCount(messages).Length;
+        var legacyTargetChars = Math.Max(1000, targetTokens * 4);
         var accounting = new MemoryContextAccountingDto(
             finalChars,
-            budget.TargetChars,
+            legacyTargetChars,
             omissions.Distinct(StringComparer.Ordinal).ToArray(),
             memoryContext.Budget.NumCtx,
-            memoryContext.Budget.TargetContextTokens,
+            targetTokens,
             tokenCount.EstimatedTokens,
-            tokenCount.Exact,
+            true,
             items);
         return new CompiledContext(messages, accounting);
     }
@@ -784,20 +790,66 @@ public sealed class MemoryDirector
             });
     }
 
-    private async Task<TokenCountResponse> CountTokensAsync(string text)
+    // Calls generic_llm_provider POST /summarize for post-turn recall compaction (Ollama /api/generate on the provider).
+    private async Task<string> SummarizeAsync(string content, int startTurn, int endTurn)
+    {
+        var response = await _routerProxy.PostAsync<SummarizeRequest, SummarizeResponse>(
+            "generic_llm_provider",
+            "/summarize",
+            new SummarizeRequest(content, startTurn, endTurn, _options.KeepAlive));
+        if (response.Payload is null || !response.Payload.Ok || string.IsNullOrWhiteSpace(response.Payload.Summary))
+        {
+            throw new InvalidOperationException(
+                "Summarize request failed or returned empty summary for memory_director compaction: " + response.RawBody);
+        }
+
+        return response.Payload.Summary.Trim();
+    }
+
+    // Compile-time budget enforcement requires an exact Ollama prompt_eval_count via chat-aligned /token_count probe.
+    private async Task<TokenCountResponse> RequireExactTokenCountAsync(IReadOnlyList<ChatGenerateRequest.ChatMessageDto> messages)
     {
         var provider = _configuration.GetRequiredGenericLlmProviderModule();
         var model = provider.QwenOptions?.OllamaModel ?? string.Empty;
         var response = await _routerProxy.PostAsync<TokenCountRequest, TokenCountResponse>(
             "generic_llm_provider",
             "/token_count",
-            new TokenCountRequest(model, text));
-        if (response.Payload is not null && response.Payload.Ok)
+            new TokenCountRequest(
+                model,
+                Messages: messages,
+                Format: _actionSchema,
+                KeepAlive: _options.KeepAlive));
+        if (response.Payload is null || !response.Payload.Ok)
         {
-            return response.Payload;
+            throw new InvalidOperationException(
+                "Token count request failed for memory_director compile: " + response.RawBody);
         }
 
-        return new TokenCountResponse(true, model, EstimateTokensFromChars(text.Length), false);
+        if (!response.Payload.Exact)
+        {
+            throw new InvalidOperationException(
+                "Token count was not exact for memory_director compile; provider must return prompt_eval_count.");
+        }
+
+        return response.Payload;
+    }
+
+    // Distinguishes core-only overshoot from episodic queue growth for fail-fast error messages.
+    private async Task<string> ResolveContextBudgetExceededReasonAsync(
+        string systemText,
+        IReadOnlyList<ChatGenerateRequest.ChatMessageDto> recentMessages,
+        int targetTokens)
+    {
+        if (recentMessages.Count == 0)
+        {
+            return "core_system_exceeds_target";
+        }
+
+        var systemOnlyMessages = BuildCompiledMessages(systemText, [], []);
+        var systemTokenCount = await RequireExactTokenCountAsync(systemOnlyMessages);
+        return systemTokenCount.EstimatedTokens > targetTokens
+            ? "core_system_exceeds_target"
+            : "context_exceeds_budget";
     }
 
     private async Task<(string Model, IReadOnlyList<float> Vector)> EmbedTextAsync(string text)
@@ -847,7 +899,86 @@ public sealed class MemoryDirector
         }
     }
 
-    private async Task CompactRecallIfNeededAsync(int turn)
+    // Sync token-driven compaction: summarize and fold oldest prior turns until compile fits budget or no safe folds remain.
+    private async Task RunBudgetCompactionLoopAsync(int turn, int step, string trigger)
+    {
+        for (var passIndex = 0; passIndex < MAX_BUDGET_COMPACTION_PASSES; passIndex++)
+        {
+            var memoryContext = await LoadContextAsync(turn);
+            var compiled = await CompileContextAsync(memoryContext, enforceTokenBudget: false);
+            var targetTokens = memoryContext.Budget.TargetContextTokens;
+            if (compiled.Accounting.EstimatedTokens <= targetTokens)
+            {
+                return;
+            }
+
+            var passResult = await TryFoldOldestPriorTurnAsync(
+                turn,
+                step,
+                trigger,
+                passIndex,
+                compiled.Accounting);
+            if (passResult is null)
+            {
+                var systemText = compiled.Messages[0].Content;
+                var recentChatMessages = compiled.Messages.Skip(1).ToArray();
+                var reason = await ResolveContextBudgetExceededReasonAsync(systemText, recentChatMessages, targetTokens);
+                throw new InvalidOperationException(
+                    $"Context exceeds token budget: estimated={compiled.Accounting.EstimatedTokens} target={targetTokens} reason={reason}.");
+            }
+        }
+
+        throw new InvalidOperationException(
+            $"Context budget compaction exceeded max passes ({MAX_BUDGET_COMPACTION_PASSES}) for turn {turn}.");
+    }
+
+    // Returns null when no oldest prior turn exists; otherwise summarize, compact, and emit telemetry.
+    private async Task<CompactionPassResult?> TryFoldOldestPriorTurnAsync(
+        int turn,
+        int step,
+        string trigger,
+        int passIndex,
+        MemoryContextAccountingDto accountingBefore)
+    {
+        var batch = await SelectOldestPriorTurnBatchAsync(turn);
+        if (batch is null)
+        {
+            return null;
+        }
+
+        var startTurn = batch.Min(static message => message.Turn);
+        var endTurn = batch.Max(static message => message.Turn);
+        var transcript = BuildCompactionTranscript(batch);
+        var summary = await SummarizeAsync(transcript, startTurn, endTurn);
+        var compact = await _routerProxy.PostAsync<MemoryCompactRecallRequest, MemoryCompactRecallResponse>(
+            "session_store",
+            "/memory/recall/compact",
+            new MemoryCompactRecallRequest(
+                startTurn,
+                endTurn,
+                summary,
+                batch.Length,
+                JsonSerializer.Serialize(new { reason = trigger, turn, step, passIndex })));
+        if (compact.Payload is null || !compact.Payload.Ok)
+        {
+            throw new InvalidOperationException("Failed to persist recall compaction: " + compact.RawBody);
+        }
+
+        await EmitCompactionTelemetryAsync(
+            turn,
+            step,
+            trigger,
+            passIndex,
+            accountingBefore,
+            startTurn,
+            endTurn,
+            batch.Length);
+
+        return new CompactionPassResult(startTurn, endTurn, batch.Length, summary);
+    }
+
+    // Returns all messages from the oldest prior turn (turn < currentTurn), or null when none remain.
+    private async Task<AgentMessageDto[]?> SelectOldestPriorTurnBatchAsync(int currentTurn)
     {
         var recent = await _routerProxy.PostAsync<MemoryMessagesRecentRequest, MemoryMessagesRecentResponse>(
             "session_store",
@@ -858,38 +989,60 @@ public sealed class MemoryDirector
             throw new InvalidOperationException("Failed to inspect messages for compaction: " + recent.RawBody);
         }
 
-        var compactable = recent.Payload.Messages
-            .Where(message => message.Turn < turn)
-            .OrderBy(message => message.Turn)
-            .ThenBy(message => message.StepNumber)
+        var oldestPriorTurn = recent.Payload.Messages
+            .Where(message => message.Turn < currentTurn)
+            .Select(static message => message.Turn)
+            .DefaultIfEmpty(-1)
+            .Min();
+        if (oldestPriorTurn < 1)
+        {
+            return null;
+        }
+
+        return recent.Payload.Messages
+            .Where(message => message.Turn == oldestPriorTurn)
+            .OrderBy(static message => message.StepNumber)
             .ToArray();
-        if (compactable.Length <= _options.MaxFullMessages)
-        {
-            return;
-        }
+    }
 
-        var messagesToSummarize = compactable.Take(compactable.Length - _options.MaxFullMessages).ToArray();
-        if (messagesToSummarize.Length == 0)
-        {
-            return;
-        }
+    private static string ResolveCompactionPhase(string trigger) => trigger switch
+    {
+        "post_turn" => "post_turn",
+        "agent_request_summarization" => "agent_tool",
+        _ => "preflight"
+    };
 
-        var startTurn = messagesToSummarize.Min(static message => message.Turn);
-        var endTurn = messagesToSummarize.Max(static message => message.Turn);
-        var summary = BuildDeterministicSummary(messagesToSummarize);
-        var compact = await _routerProxy.PostAsync<MemoryCompactRecallRequest, MemoryCompactRecallResponse>(
-            "session_store",
-            "/memory/recall/compact",
-            new MemoryCompactRecallRequest(
-                startTurn,
-                endTurn,
-                summary,
-                messagesToSummarize.Length,
-                JsonSerializer.Serialize(new { reason = "post_turn_budget", turn })));
-        if (compact.Payload is null || !compact.Payload.Ok)
+    private async Task EmitCompactionTelemetryAsync(
+        int turn,
+        int step,
+        string trigger,
+        int passIndex,
+        MemoryContextAccountingDto accounting,
+        int foldStartTurn,
+        int foldEndTurn,
+        int foldedMessageCount)
+    {
+        var compactionPhase = ResolveCompactionPhase(trigger);
+        var diagnosticsJson = JsonSerializer.Serialize(new
         {
-            throw new InvalidOperationException("Failed to persist recall compaction: " + compact.RawBody);
-        }
+            eventType = "memory_context_budget",
+            compactionPhase,
+            trigger,
+            passIndex,
+            foldStartTurn,
+            foldEndTurn,
+            foldedMessageCount,
+            accounting
+        });
+        await PersistStepAsync(
+            new MemoryPersistStepRequest(
+                turn,
+                step,
+                [],
+                [],
+                [],
+                null,
+                diagnosticsJson));
     }
 
     private async Task SeedCoreMemoryIfEmptyAsync(string gameProjectId)
@@ -1175,62 +1328,16 @@ public sealed class MemoryDirector
         };
     }
 
-    // Character budget for CompileContextAsync: derived from session_store targetContextTokens (~4 chars per token).
-    private static ContextBudget CreateContextBudget(MemoryLoadContextResponse memoryContext)
-    {
-        var estimatedTargetChars = Math.Max(1000, memoryContext.Budget.TargetContextTokens * 4);
-        return new ContextBudget(estimatedTargetChars);
-    }
-
-    // Appends one logical chunk to the growing system prompt while debiting the char budget. Records per-item
-    // inclusion/truncation/omission for MemoryContextAccountingDto and adds truncated/omitted labels to omissions.
-    private static void AppendWithinBudget(
-        StringBuilder builder, // Reference, contains previously appended string.
+    // Appends one system section whole; compile fails fast when the full payload exceeds the token budget.
+    private static void AppendSystemSection(
+        StringBuilder builder,
         string value,
-        ContextBudget budget, // Utility class that's used to keep track of contents of builder. Passed by reference.
-        List<string> omissions, // Labels only of things that were truncated or omitted, not the values. Used to inform LLM what was truncated / omitted.
         List<MemoryContextItemDto> items,
-        string label, // These next arguments are placed inside a new MemoryContextItemDto on successful budget consumption.
-        string type) // TODO: should be an enum that's then stringified. system, core, summary, recent_message, snapshot
+        string label,
+        string type)
     {
-        var allowed = budget.Consume(value.Length);
-        if (allowed == value.Length) // Default case: requested string is within budget.
-        {
-            builder.Append(value);
-            items.Add(new MemoryContextItemDto(label, type, "included", value.Length, allowed, null, EstimateTokensFromChars(value.Length), false));
-            return;
-        }
-
-        // Case: requested string is not within budget.
-        if (allowed > 0) // But there's still some budget left, just not enough. Record the truncation. // TODO: do we really want to allow truncation though?
-        {
-            builder.Append(TruncateWithSentinel(value, allowed));
-            // TODO: reformulate the reasons to be more descriptive: "context_budget" should be "exceeded_context_budget". Should be enums that are then stringified too.
-            items.Add(new MemoryContextItemDto(label, type, "truncated", value.Length, allowed, "context_budget", EstimateTokensFromChars(allowed), false));
-        }
-        else // No budget left at all. Record the omission.
-        {
-            items.Add(new MemoryContextItemDto(label, type, "omitted", value.Length, 0, "context_budget", 0, false));
-        }
-
-        omissions.Add(label); // Used to inform LLM what was omitted by label.
-    }
-
-    // Hard cap for a single chunk when only part of the budget remains; sentinel tells the model content was cut.
-    private static string TruncateWithSentinel(string value, int maxChars)
-    {
-        const string sentinel = "\n[omitted due to context budget]";
-        if (value.Length <= maxChars)
-        {
-            return value;
-        }
-
-        if (maxChars <= sentinel.Length)
-        {
-            return sentinel;
-        }
-
-        return value[..(maxChars - sentinel.Length)] + sentinel;
+        builder.Append(value);
+        items.Add(new MemoryContextItemDto(label, type, "included", value.Length, value.Length));
     }
 
     // Final chat payload for /chat: one system message (prompt + optional omissions footer) then recent user/assistant turns.
@@ -1253,7 +1360,7 @@ public sealed class MemoryDirector
         return messages;
     }
 
-    // Approximate serial form used for /token_count and char-ratio trimming (role: content per line, not Ollama wire format).
+    // Legacy char estimate for MemoryContextAccountingDto only; not used for token budget enforcement.
     private static string FlattenMessagesForTokenCount(IReadOnlyList<ChatGenerateRequest.ChatMessageDto> messages)
     {
         var builder = new StringBuilder();
@@ -1318,29 +1425,27 @@ public sealed class MemoryDirector
         return builder.ToString();
     }
 
-    // Post-turn recall compaction text: no LLM call; stitches up to eight message snippets with turn/role tags for session_store summaries.
-    private static string BuildDeterministicSummary(IReadOnlyList<AgentMessageDto> messages)
+    // Formats agent rows for POST /summarize (full content; tool rows use the same prefix as compile-time message queue).
+    private static string BuildCompactionTranscript(IReadOnlyList<AgentMessageDto> messages)
     {
         var builder = new StringBuilder();
-        builder.Append($"Summary of turns {messages.Min(static message => message.Turn)}-{messages.Max(static message => message.Turn)}: ");
-        foreach (var message in messages.Take(8))
+        foreach (var message in messages.OrderBy(static message => message.Turn).ThenBy(static message => message.StepNumber))
         {
             builder.Append('[');
             builder.Append(message.Role);
             builder.Append(" t");
             builder.Append(message.Turn);
+            builder.Append("s");
+            builder.Append(message.StepNumber);
             builder.Append("] ");
-            builder.Append(message.Content.Length <= 160 ? message.Content : message.Content[..160] + " [truncated]");
-            builder.Append(' ');
+            builder.AppendLine(FormatMemoryMessage(message));
         }
 
-        if (messages.Count > 8)
-        {
-            builder.Append($"[{messages.Count - 8} additional messages omitted from deterministic summary]");
-        }
-
-        return builder.ToString().Trim();
+        return builder.ToString().TrimEnd();
     }
+
+    private static string FormatRecallSummary(MemorySummaryDto summary) =>
+        $"Recall summary (turns {summary.StartTurn}-{summary.EndTurn}): {summary.Summary}";
 
     // Maps session_store AgentMessageDto.role to Ollama /api/chat roles. "tool" and unknown roles become "user";
     // tool content is distinguished via FormatMemoryMessage, not a separate chat role.

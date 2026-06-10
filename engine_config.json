@@ -255,7 +255,8 @@
       "required_by_engine": true,
       "ollama_port": 8795,
       "default_chat_model": "qwen2.5:7b-instruct",
-      "num_ctx": 8192,
+      "num_ctx": 4096,
+      "target_context_ratio": 0.7,
       "filter_off_noisy_logs": true,
       "thinking": false,
       "launch": "dotnet/src/MorpheusEngine.LlmProvider_qwen/bin/Debug/net9.0/MorpheusEngine.LlmProvider_qwen.exe",
@@ -289,6 +290,12 @@
           "description": "LLM chat (Ollama /api/chat)",
           "method": "POST",
           "template_contracts_id": "chat"
+        },
+        {
+          "path": "/summarize",
+          "description": "LLM episodic recall summarization (Ollama /api/generate)",
+          "method": "POST",
+          "template_contracts_id": "summarize"
         },
         {
           "path": "/token_count",

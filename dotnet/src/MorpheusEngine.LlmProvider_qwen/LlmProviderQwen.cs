@@ -72,6 +72,9 @@ namespace MorpheusEngine
         /// <summary>Forwarded as top-level think on Ollama /api/chat and /api/generate (from engine_config thinking).</summary>
         private bool _ollamaThink = false;
 
+        /// <summary>System prompt for POST /summarize (loaded from prompts/summarize_system.md beside the module executable).</summary>
+        private string _summarizeSystemPrompt = "";
+
         // Last Ollama wire JSON from POST /chat or POST /generate; read from GET /debug/last_llm_payload.
         private volatile LlmProviderLastPayloadResponse? _lastLlmPayloadSnapshot = null;
         #endregion
@@ -171,6 +174,7 @@ namespace MorpheusEngine
             _ollamaNumCtx = genericOpts.NumCtx;
             _filterOffNoisyLogs = qwenOpts.FilterOffNoisyLogs;
             _ollamaThink = qwenOpts.Thinking;
+            _summarizeSystemPrompt = LoadBundledSummarizeSystemPrompt();
             if (_filterOffNoisyLogs)
             {
                 _ollamaLogNoiseFilter = new OllamaLogNoiseFilter();
@@ -318,6 +322,13 @@ namespace MorpheusEngine
                 {
                     Console.WriteLine("LlmProvider_qwen/chat called.");
                     await ProcessRequest_chat(context);
+                    return;
+                }
+
+                if (path.Equals("/summarize", StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.WriteLine("LlmProvider_qwen/summarize called.");
+                    await ProcessRequest_summarize(context);
                     return;
                 }
 
@@ -686,25 +697,10 @@ namespace MorpheusEngine
 
             // Ollama /api/chat expects { model, messages, stream, truncate, options } plus optional format/keep_alive.
             // The model is fixed at provider InitializeAsync() from engine_config.json.
-            var ollamaPayload = new Dictionary<string, object?>
-            {
-                ["model"] = _chatModel,
-                ["messages"] = request.Messages,
-                ["stream"] = false,
-                ["truncate"] = false,
-                ["think"] = _ollamaThink,
-                ["options"] = BuildOllamaOptionsPayload()
-            };
-
-            if (request.Format.HasValue)
-            {
-                ollamaPayload["format"] = request.Format.Value;
-            }
-
-            if (!string.IsNullOrWhiteSpace(request.KeepAlive))
-            {
-                ollamaPayload["keep_alive"] = request.KeepAlive.Trim();
-            }
+            var ollamaPayload = BuildOllamaChatPayload(
+                request.Messages,
+                request.Format,
+                request.KeepAlive);
             Console.WriteLine(
                 $"OLLAMA_IO CHAT_REQUEST model={_chatModel} messages={request.Messages.Count} {DescribeChatMessagesForLog(request.Messages)}");
 
@@ -764,6 +760,122 @@ namespace MorpheusEngine
             await Respond(context, 200, new ChatGenerateResponse(true, assistantText, ollamaBody));
         }
 
+        // Intentional single use method: episodic recall summarization via Ollama /api/generate (not /api/chat).
+        private async Task ProcessRequest_summarize(HttpListenerContext context)
+        {
+            string body;
+            using (var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding))
+            {
+                body = await reader.ReadToEndAsync();
+            }
+
+            SummarizeRequest? request;
+            try
+            {
+                request = JsonSerializer.Deserialize<SummarizeRequest>(body, _jsonOptions);
+            }
+            catch (JsonException e)
+            {
+                await Respond(context, 400, new ErrorResponse(false, "Invalid JSON payload.", e.Message));
+                return;
+            }
+
+            if (request is null || string.IsNullOrWhiteSpace(request.Content))
+            {
+                await Respond(context, 400, new ErrorResponse(false, "Request must include non-empty 'content'."));
+                return;
+            }
+
+            if (!await RespondIfOllamaUnavailableAsync(context))
+            {
+                return;
+            }
+
+            var model = _chatModel;
+            var userPrompt = BuildSummarizeUserPrompt(request);
+            var ollamaPayload = new Dictionary<string, object?>
+            {
+                ["model"] = model,
+                ["prompt"] = userPrompt,
+                ["system"] = _summarizeSystemPrompt,
+                ["stream"] = false,
+                ["truncate"] = false,
+                ["think"] = _ollamaThink,
+                ["options"] = BuildOllamaOptionsPayload()
+            };
+
+            if (!string.IsNullOrWhiteSpace(request.KeepAlive))
+            {
+                ollamaPayload["keep_alive"] = request.KeepAlive.Trim();
+            }
+
+            Console.WriteLine(
+                $"OLLAMA_IO SUMMARIZE_REQUEST model={model} promptChars={userPrompt.Length} systemChars={_summarizeSystemPrompt.Length} "
+                + $"promptPreview='{TruncateMiddle(userPrompt, headChars: 80, tailChars: 60)}'");
+
+            var requestJson = JsonSerializer.Serialize(ollamaPayload);
+            PublishLastLlmPayload("generate", requestJson);
+            WriteTrafficLine("OLLAMA_IO TRAFFIC SUMMARIZE_REQUEST_JSON " + requestJson);
+            var content = new StringContent(requestJson, Encoding.UTF8, "application/json");
+
+            HttpResponseMessage ollamaResponse;
+            try
+            {
+                ollamaResponse = await _httpClient.PostAsync(BuildOllamaUri("/api/generate"), content);
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine("OLLAMA_IO ERROR Failed to reach Ollama (summarize): " + e.Message);
+                await Respond(
+                    context,
+                    IsOllamaReady() ? 502 : 503,
+                    new ErrorResponse(false, "Bundled Ollama is unavailable.", BuildOllamaUnavailableDetails(e.Message)));
+                return;
+            }
+
+            var ollamaBody = await ollamaResponse.Content.ReadAsStringAsync();
+            WriteTrafficLine("OLLAMA_IO TRAFFIC SUMMARIZE_RESPONSE_BODY " + JsonSerializer.Serialize(ollamaBody));
+            Console.WriteLine(
+                $"OLLAMA_IO SUMMARIZE_RESPONSE status={(int)ollamaResponse.StatusCode} bodySnippet={TruncateMiddle(ollamaBody, headChars: 240, tailChars: 120)}");
+            if (!ollamaResponse.IsSuccessStatusCode)
+            {
+                await Respond(context, (int)ollamaResponse.StatusCode, new
+                {
+                    ok = false,
+                    error = "Ollama returned an error.",
+                    model,
+                    ollama_status = (int)ollamaResponse.StatusCode,
+                    ollama_response = ollamaBody
+                });
+                return;
+            }
+
+            string? summaryText = null;
+            try
+            {
+                using var doc = JsonDocument.Parse(ollamaBody);
+                if (doc.RootElement.TryGetProperty("response", out var responseElement))
+                {
+                    summaryText = responseElement.GetString();
+                }
+            }
+            catch (JsonException)
+            {
+                // keep summaryText null; fail below
+            }
+
+            if (string.IsNullOrWhiteSpace(summaryText))
+            {
+                await Respond(
+                    context,
+                    502,
+                    new ErrorResponse(false, "Ollama summarize did not return non-empty response text.", ollamaBody));
+                return;
+            }
+
+            await Respond(context, 200, new SummarizeResponse(true, summaryText.Trim(), ollamaBody));
+        }
+
         private async Task ProcessRequest_lastLlmPayload(HttpListenerContext context)
         {
             var snapshot = _lastLlmPayloadSnapshot;
@@ -808,9 +920,17 @@ namespace MorpheusEngine
                 return;
             }
 
-            if (request is null || string.IsNullOrWhiteSpace(request.Text))
+            if (request is null)
             {
-                await Respond(context, 400, new ErrorResponse(false, "Request must include non-empty text."));
+                await Respond(context, 400, new ErrorResponse(false, "Request body is required."));
+                return;
+            }
+
+            var hasText = !string.IsNullOrWhiteSpace(request.Text);
+            var hasMessages = request.Messages is { Count: > 0 };
+            if (hasText == hasMessages)
+            {
+                await Respond(context, 400, new ErrorResponse(false, "Request must include exactly one of non-empty 'text' or non-empty 'messages'."));
                 return;
             }
 
@@ -825,11 +945,70 @@ namespace MorpheusEngine
                 return;
             }
 
+            if (hasMessages)
+            {
+                await ProcessTokenCountChatProbeAsync(context, request.Messages!, request.Format, request.KeepAlive);
+                return;
+            }
+
+            await ProcessTokenCountGenerateProbeAsync(context, request.Text!.Trim());
+        }
+
+        // Chat-aligned token probe: same /api/chat wire as POST /chat but num_predict=0; does not update last_llm_payload.
+        private async Task ProcessTokenCountChatProbeAsync(
+            HttpListenerContext context,
+            IReadOnlyList<ChatGenerateRequest.ChatMessageDto> messages,
+            JsonElement? format,
+            string? keepAlive)
+        {
+            var ollamaPayload = BuildOllamaChatPayload(messages, format, keepAlive, numPredict: 0);
+            var requestJson = JsonSerializer.Serialize(ollamaPayload);
+            using var content = new StringContent(requestJson, Encoding.UTF8, "application/json");
+
+            HttpResponseMessage ollamaResponse;
+            try
+            {
+                ollamaResponse = await _httpClient.PostAsync(BuildOllamaUri("/api/chat"), content);
+            }
+            catch (Exception e)
+            {
+                await Respond(
+                    context,
+                    IsOllamaReady() ? 502 : 503,
+                    new ErrorResponse(false, "Bundled Ollama is unavailable.", BuildOllamaUnavailableDetails(e.Message)));
+                return;
+            }
+
+            var ollamaBody = await ollamaResponse.Content.ReadAsStringAsync();
+            if (!ollamaResponse.IsSuccessStatusCode)
+            {
+                await Respond(context, (int)ollamaResponse.StatusCode, new ErrorResponse(false, "Ollama returned an error during token_count.", ollamaBody));
+                return;
+            }
+
+            if (TryReadPromptEvalCount(ollamaBody, out var exactTokens))
+            {
+                Console.WriteLine($"OLLAMA_IO TOKEN_COUNT chat_probe exact=true model={_chatModel} messages={messages.Count} tokens={exactTokens}");
+                await Respond(context, 200, new TokenCountResponse(true, _chatModel, exactTokens, true));
+                return;
+            }
+
+            Console.WriteLine(
+                $"OLLAMA_IO TOKEN_COUNT chat_probe exact=false model={_chatModel} messages={messages.Count} ollamaBodySnippet={TruncateMiddle(ollamaBody, headChars: 240, tailChars: 120)}");
+            await Respond(
+                context,
+                502,
+                new ErrorResponse(false, "Ollama token_count did not return prompt_eval_count.", ollamaBody));
+        }
+
+        // Raw generate probe for non-chat callers (e.g. embeddings); does not update last_llm_payload.
+        private async Task ProcessTokenCountGenerateProbeAsync(HttpListenerContext context, string text)
+        {
             var options = BuildOllamaOptionsPayload();
             var ollamaPayload = new
             {
                 model = _chatModel,
-                prompt = request.Text,
+                prompt = text,
                 stream = false,
                 raw = true,
                 truncate = false,
@@ -862,14 +1041,17 @@ namespace MorpheusEngine
 
             if (TryReadPromptEvalCount(ollamaBody, out var exactTokens))
             {
-                Console.WriteLine($"OLLAMA_IO TOKEN_COUNT exact=true model={_chatModel} chars={request.Text.Length} tokens={exactTokens}");
+                Console.WriteLine($"OLLAMA_IO TOKEN_COUNT generate_probe exact=true model={_chatModel} chars={text.Length} tokens={exactTokens}");
                 await Respond(context, 200, new TokenCountResponse(true, _chatModel, exactTokens, true));
                 return;
             }
 
-            var estimated = EstimateTokensFromText(request.Text);
-            Console.WriteLine($"OLLAMA_IO TOKEN_COUNT exact=false model={_chatModel} chars={request.Text.Length} estimatedTokens={estimated}");
-            await Respond(context, 200, new TokenCountResponse(true, _chatModel, estimated, false));
+            Console.WriteLine(
+                $"OLLAMA_IO TOKEN_COUNT generate_probe exact=false model={_chatModel} chars={text.Length} ollamaBodySnippet={TruncateMiddle(ollamaBody, headChars: 240, tailChars: 120)}");
+            await Respond(
+                context,
+                502,
+                new ErrorResponse(false, "Ollama token_count did not return prompt_eval_count.", ollamaBody));
         }
 
         // Intentional extraction: this sequence is used by initial startup and restart recovery.
@@ -1395,6 +1577,71 @@ namespace MorpheusEngine
         private OllamaOptionsPayload BuildOllamaOptionsPayload() =>
             new(_ollamaNumCtx, OllamaRequestNumKeep);
 
+        private Dictionary<string, object?> BuildOllamaChatPayload(
+            IReadOnlyList<ChatGenerateRequest.ChatMessageDto> messages,
+            JsonElement? format,
+            string? keepAlive,
+            int? numPredict = null)
+        {
+            var baseOptions = BuildOllamaOptionsPayload();
+            object options = numPredict is int predict
+                ? new { baseOptions.num_ctx, baseOptions.num_keep, num_predict = predict }
+                : baseOptions;
+
+            var payload = new Dictionary<string, object?>
+            {
+                ["model"] = _chatModel,
+                ["messages"] = messages,
+                ["stream"] = false,
+                ["truncate"] = false,
+                ["think"] = _ollamaThink,
+                ["options"] = options
+            };
+
+            if (format.HasValue)
+            {
+                payload["format"] = format.Value;
+            }
+
+            if (!string.IsNullOrWhiteSpace(keepAlive))
+            {
+                payload["keep_alive"] = keepAlive.Trim();
+            }
+
+            return payload;
+        }
+
+        private string LoadBundledSummarizeSystemPrompt()
+        {
+            var path = Path.Combine(AppContext.BaseDirectory, "prompts", "summarize_system.md");
+            if (!File.Exists(path))
+            {
+                throw new InvalidOperationException($"llm_provider_qwen: missing bundled summarize system prompt at '{path}'.");
+            }
+
+            var text = File.ReadAllText(path).Trim();
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                throw new InvalidOperationException($"llm_provider_qwen: bundled summarize system prompt at '{path}' is empty.");
+            }
+
+            return text;
+        }
+
+        private static string BuildSummarizeUserPrompt(SummarizeRequest request)
+        {
+            var builder = new StringBuilder();
+            builder.AppendLine("Summarize the following transcript for durable episodic recall.");
+            if (request.StartTurn is int startTurn && request.EndTurn is int endTurn)
+            {
+                builder.AppendLine($"Turn range: {startTurn}-{endTurn}");
+            }
+
+            builder.AppendLine();
+            builder.Append(request.Content.Trim());
+            return builder.ToString();
+        }
+
         private static bool TryReadPromptEvalCount(string ollamaBody, out int promptEvalCount)
         {
             promptEvalCount = 0;
@@ -1416,12 +1663,6 @@ namespace MorpheusEngine
             {
                 return false;
             }
-        }
-
-        private static int EstimateTokensFromText(string text)
-        {
-            var utf8Bytes = Encoding.UTF8.GetByteCount(text);
-            return Math.Max(1, (int)Math.Ceiling(utf8Bytes / 4.0));
         }
 
         private string BuildOllamaUnavailableDetails(string? extraDetail = null)

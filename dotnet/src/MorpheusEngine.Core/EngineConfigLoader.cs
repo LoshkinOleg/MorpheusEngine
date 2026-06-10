@@ -85,7 +85,8 @@ public sealed record EngineTurnPipelineInfo(
 
 /// <summary>Options required by whichever concrete module is mapped from generic_llm_provider.</summary>
 public sealed record GenericLlmProviderModuleOptions(
-    int NumCtx);
+    int NumCtx,
+    double TargetContextRatio);
 
 /// <summary>Options specific to the llm_provider_qwen module implementation.</summary>
 public sealed record QwenModuleOptions(
@@ -371,6 +372,9 @@ public static class EngineConfigLoader
 
         [JsonPropertyName("num_ctx")]
         public int? NumCtx { get; set; }
+
+        [JsonPropertyName("target_context_ratio")]
+        public double? TargetContextRatio { get; set; }
 
         [JsonPropertyName("embeddings_num_ctx")]
         public int? EmbeddingsNumCtx { get; set; }
@@ -722,6 +726,7 @@ public static class EngineConfigLoader
                 string? ollamaModel,
                 string? defaultEmbeddingModel,
                 int? numCtx,
+                double? targetContextRatio,
                 int? embeddingsNumCtx,
                 int? maxStepsPerTurn,
                 int? maxToolResultChars,
@@ -738,12 +743,32 @@ public static class EngineConfigLoader
                         throw new EngineConfigurationException(
                             $"Module '{portKey}' in '{path}' (resolved from generic_llm_provider) must set num_ctx to an integer between 512 and 131072.");
                     }
+
+                    var ratio = targetContextRatio ?? 0.7;
+                    if (ratio <= 0 || ratio > 1)
+                    {
+                        throw new EngineConfigurationException(
+                            $"Module '{portKey}' in '{path}' (resolved from generic_llm_provider) target_context_ratio must be in (0, 1] (got {ratio}).");
+                    }
+
+                    var targetContextTokens = (int)(numCtx.Value * ratio);
+                    if (targetContextTokens < 1 || targetContextTokens >= numCtx.Value)
+                    {
+                        throw new EngineConfigurationException(
+                            $"Module '{portKey}' in '{path}' (resolved from generic_llm_provider) target_context_ratio {ratio} with num_ctx {numCtx.Value} yields invalid targetContextTokens {targetContextTokens}; require 1 <= targetContextTokens < num_ctx.");
+                    }
                 }
 
                 if (!isActiveGenericProvider && numCtx is not null)
                 {
                     throw new EngineConfigurationException(
                         $"Module '{portKey}' in '{path}' must not set num_ctx (only the module resolved from generic_llm_provider may).");
+                }
+
+                if (!isActiveGenericProvider && targetContextRatio is not null)
+                {
+                    throw new EngineConfigurationException(
+                        $"Module '{portKey}' in '{path}' must not set target_context_ratio (only the module resolved from generic_llm_provider may).");
                 }
 
                 if (!isActiveGenericEmbeddings && embeddingsNumCtx is not null)
@@ -968,6 +993,7 @@ public static class EngineConfigLoader
                         module.OllamaModel,
                         module.DefaultEmbeddingModel,
                         module.NumCtx,
+                        module.TargetContextRatio,
                         module.EmbeddingsNumCtx,
                         module.MaxStepsPerTurn,
                         module.MaxToolResultChars,
@@ -979,7 +1005,9 @@ public static class EngineConfigLoader
 
                     // Compose provider-agnostic options only for the active generic provider module.
                     var genericProviderOptions = isActiveGenericProvider
-                        ? new GenericLlmProviderModuleOptions(module.NumCtx!.Value)
+                        ? new GenericLlmProviderModuleOptions(
+                            module.NumCtx!.Value,
+                            module.TargetContextRatio ?? 0.7)
                         : null;
 
                     // Compose qwen options only for qwen modules.

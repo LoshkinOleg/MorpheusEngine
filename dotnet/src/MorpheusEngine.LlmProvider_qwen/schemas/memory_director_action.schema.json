@@ -19,6 +19,7 @@
         "core_memory_set",
         "get_current_snapshot",
         "recall_search",
+        "request_summarization",
         "archival_memory_insert",
         "archival_memory_search"
       ]
@@ -162,6 +163,18 @@
               "type": "integer"
             }
           }
+        }
+      }
+    },
+    {
+      "properties": {
+        "tool": {
+          "const": "request_summarization"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {}
         }
       }
     },
