@@ -15,6 +15,7 @@ apps/backend/data/
 apps/backend/*.sqlite
 apps/backend/*.sqlite3
 game_projects/*/saved/
+.cursor/
 
 # .NET (dotnet/)
 **/bin/
