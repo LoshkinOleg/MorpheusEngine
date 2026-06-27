@@ -1,6 +1,6 @@
 node_modules/
 dist/
-build/
+[Bb]uild/
 tsImplementation/
 third_party/
 docs/letta/

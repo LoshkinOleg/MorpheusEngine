@@ -46,6 +46,15 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(sdl3)
 
+# imgui
+FetchContent_Declare(
+    imgui
+    GIT_REPOSITORY https://github.com/LoshkinOleg/cmake-ready-imgui-sdl3.git
+    GIT_TAG        5acd6de3ed4efb06d665628b01fba0fe3e63f7bc
+    GIT_SHALLOW    FALSE # Has to be FALSE to be able to use a commit SHA 
+)
+FetchContent_MakeAvailable(imgui)
+
 # ---- Main target --------------------------------------------------------
 add_executable(morpheus
     src/main.cpp
@@ -72,4 +81,5 @@ target_link_libraries(morpheus PRIVATE
     llama
     SDL3::SDL3
     nlohmann_json::nlohmann_json
+	imgui::imgui
 )
