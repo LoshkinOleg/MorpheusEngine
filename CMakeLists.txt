@@ -22,7 +22,7 @@ include(FetchContent)
 # llama
 FetchContent_Declare(
     llama                                                         # prefix for CMake variables
-    GIT_REPOSITORY https://github.com/ggerganov/llama.cpp.git     # repo
+    GIT_REPOSITORY https://github.com/ggerganov/llama.cpp.git     # repo TODO: redirect to the new repo: ggml-org/llama.cpp , probably update the targeted commit?
     GIT_TAG        960d628f46d17ea9c10aa944b061b2341afeb3b5       # commit SHA to get, version b9804
     GIT_SHALLOW    FALSE                                          # Has to be FALSE to be able to use a commit SHA 
 )
@@ -82,4 +82,9 @@ target_link_libraries(morpheus PRIVATE
     SDL3::SDL3
     nlohmann_json::nlohmann_json
 	imgui::imgui
+)
+
+# ---- Defines ----
+target_compile_definitions(morpheus PRIVATE
+    MORPHEUS_MODELS_DIR="${CMAKE_SOURCE_DIR}/third_party/models"
 )
