@@ -221,7 +221,23 @@ protected:
 
 		// TODO: Right now, the last message is guaranteed to be from the user. This will change so add a mechanism to actually find the last user message.
 		// TODO: prompt is what will need to be compiled for a memGPT style system. Q: are system instructions supposed to be part of this or is there some other infra for this?
-		std::string& prompt = _messages[_messages.size() - 1]; // Last message ref.
+		std::string prompt = _messages.back(); // Last message ref.
+		prompt = prompt.substr(std::string("You: ").size()); // Trim the "You: "
+		llama_chat_message promptMsg = {"user", prompt.c_str()};
+		std::vector<char> templatedPrompt(8192); // TODO: make configurable or use the recommended size
+		auto templatedNrOfBytes = llama_chat_apply_template(
+			nullptr /*means use model's built in template*/,
+			&promptMsg,
+			1 /*one message*/,
+			true /*make prompt end with <|im_start|>assistant */,
+			templatedPrompt.data(),
+			templatedPrompt.size()
+		);
+		if (templatedNrOfBytes < 0 || templatedNrOfBytes > templatedPrompt.size()) throw std::runtime_error("GenerateReply(): templatization failed.");
+		prompt = std::string(templatedPrompt.data(), templatedPrompt.size()); // TODO: clean up all of these string allocations.
+
+		// TODO: make a logger for this kind of thing.
+		std::cout << "Templated prompt:\n" << prompt << std::endl;
 
 		// TODO: implement prefix caching instead of nuking potentially useful cache on every call. Note: "If a turn ever diverges partway (e.g. edit/retry), you use llama_memory_seq_rm to drop tokens from position N onward and resubmit from there."
 		// We're clearing the KV cache between GenerateReply() calls because we can't assume the new prompt matches the old prompt. Note that we don't clear the KV cache between each generation step, only between GenerateReply() calls.
@@ -231,9 +247,9 @@ protected:
 		// Tokenize
 		// Figure out how much tokens we need for the prompt. llama_tokenize() will return a negative count since there's not enough space in the output (which is set to nullptr and max size to 0).
 		// We make two tokenize calls since that seems to be the only way to guarantee required vector size.
-		int nrTokensRequiredForPrompt = -llama_tokenize(pVocab, prompt.c_str(), prompt.size()/*Narrowing conversion, who cares*/, nullptr, 0, true, true); // TODO: see if 4b-instruct-2507-q4_K_M needs BOS and EOS tokens. Idem for the special tokens in the output, right now setting to true.
+		int nrTokensRequiredForPrompt = -llama_tokenize(pVocab, prompt.c_str(), prompt.size()/*Narrowing conversion, who cares*/, nullptr, 0, false, true); // add_special is false since the template already took care of those.
 		std::vector<llama_token> tokens(nrTokensRequiredForPrompt); // Easier to just allocate on each call rather than having it be part of App.
-		if (llama_tokenize(pVocab, prompt.c_str(), prompt.size(), tokens.data(), nrTokensRequiredForPrompt, true, true) < 0) {
+		if (llama_tokenize(pVocab, prompt.c_str(), prompt.size(), tokens.data(), nrTokensRequiredForPrompt, false, true) < 0) {
 			throw std::runtime_error("GenerateReply(): tokenization failed.");
 		}
 
