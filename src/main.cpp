@@ -2,6 +2,9 @@
 #include <stdexcept>
 #include <vector>
 #include <string>
+#include <mutex>
+#include <streambuf>
+#include <sstream>
 
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
@@ -19,6 +22,45 @@
 
 	Worth pairing with: on Qwen3-Instruct you should apply the chat template (llama_chat_apply_template) rather than prepending "You: " / "Dungeon Master: " yourself — the model was trained on <|im_start|>user … <|im_end|> style delimiters and behaves noticeably better with them. Your TODO about stripping "You: " before tokenizing is pointing at the same problem.
 */
+
+class LogStreamBuff : public std::streambuf {
+protected:
+	std::streambuf* _primary = nullptr;
+	std::vector<std::string>* _lines = nullptr; // TODO: In ram logs, may need to cap it at some point if the logs grow very large.
+	std::mutex* _mu = nullptr;
+	std::string _pending; // Q: how is resizing handled on push_back()?
+public:
+	LogStreamBuff(std::streambuf* primary, std::vector<std::string>* lines, std::mutex* mu):_primary(primary), _lines(lines), _mu(mu){}
+protected:
+	// Q: ???
+	int overflow(int c) override {
+		if (c == traits_type::eof()) return traits_type::not_eof(c); // Q: override to prevent stopping of stream?
+
+		// Q: why aren't we guaranteed that c is a char, hence the static_cast?
+		if (_primary->sputc(static_cast<char>(c)) /*Q: what's sputc()?*/ == traits_type::eof()) return traits_type::eof(); // Q: ???
+
+		if (c == '\n') {
+			// Flush.
+			std::lock_guard lock(*_mu); // Q: do we really need concurrency protection?
+			_lines->push_back(std::move(_pending)); // Q: why move? Why not copy?
+			_pending.clear();
+		}
+		else {
+			_pending.push_back(static_cast<char>(c));
+		}
+		return c;
+	}
+	// Q: ???
+	int sync() override {
+		if (!_pending.empty()) {
+			// Flush.
+			std::lock_guard lock(*_mu); // Q: do we really need concurrency protection?
+			_lines->push_back(std::move(_pending)); // Q: why move? Why not copy?
+			_pending.clear();
+		}
+		return _primary->pubsync(); // Q: what is this?
+	}
+};
 
 class App {
 protected:
@@ -170,8 +212,8 @@ protected:
 		// Convention: public facing names are PascalCase, internal id's are ##PascalCase
 		ImGui::Begin("Chat");
 
-			// _scrollArea
-			ImGui::BeginChild("_scrollArea", ImVec2(-1, -ImGui::GetFrameHeightWithSpacing()), 0, 0); // Note: size is in logical imgui pixels (=/= actual pixels depending on scaling!).
+			// ##ScrollArea
+			ImGui::BeginChild("##ScrollArea", ImVec2(-1, -ImGui::GetFrameHeightWithSpacing()), 0, 0); // Note: size is in logical imgui pixels (=/= actual pixels depending on scaling!).
 			for (std::string& msg : _messages)
 			{
 				// Note: TextWrapped ensures that any overly long text gets sent to a new line.
@@ -195,6 +237,12 @@ protected:
 					_messages.push_back("Dungeon Master: " + reply);
 				}
 			}
+
+		ImGui::End();
+
+		ImGui::Begin("Log");
+
+			// TODO
 
 		ImGui::End();
 	}
@@ -223,18 +271,19 @@ protected:
 		// TODO: prompt is what will need to be compiled for a memGPT style system. Q: are system instructions supposed to be part of this or is there some other infra for this?
 		std::string prompt = _messages.back(); // Last message ref.
 		prompt = prompt.substr(std::string("You: ").size()); // Trim the "You: "
-		llama_chat_message promptMsg = {"user", prompt.c_str()};
-		std::vector<char> templatedPrompt(8192); // TODO: make configurable or use the recommended size
+		llama_chat_message promptMsg = {"user", prompt.c_str()}; // Can't inline this since its addr is needed in llama_chat_apply_template().
+		char templatedPrompt[8192] = {'\0'};
 		auto templatedNrOfBytes = llama_chat_apply_template(
 			nullptr /*means use model's built in template*/,
 			&promptMsg,
 			1 /*one message*/,
 			true /*make prompt end with <|im_start|>assistant */,
-			templatedPrompt.data(),
-			templatedPrompt.size()
+			templatedPrompt,
+			8192
 		);
-		if (templatedNrOfBytes < 0 || templatedNrOfBytes > templatedPrompt.size()) throw std::runtime_error("GenerateReply(): templatization failed.");
-		prompt = std::string(templatedPrompt.data(), templatedPrompt.size()); // TODO: clean up all of these string allocations.
+		if (templatedNrOfBytes <= 0 || templatedNrOfBytes > 8192) throw std::runtime_error("GenerateReply(): templatization failed.");
+		prompt = std::string(templatedPrompt, templatedNrOfBytes); // TODO: clean up all of these string allocations.
+
 
 		// TODO: make a logger for this kind of thing.
 		std::cout << "Templated prompt:\n" << prompt << std::endl;
