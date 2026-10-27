@@ -253,26 +253,48 @@ TEST_CASE("ExtendForNarrate only appends", "[context]")
     CHECK(narrate.messages[5].content == "RESOLUTION + NARRATE INSTRUCTION");
 }
 
-TEST_CASE("The narrate call fits the context when its extra message stays within narrate_allowance", "[context]")
+TEST_CASE("The narrate call fits the context whenever the resolve prompt fits", "[context]")
 {
     const core::World world = MiniWorld();
-    const core::BudgetSettings budget = RoomyBudget();
     const context::ContextInputs inputs = Inputs(world);
 
-    // A transcript that exactly fills its budget leaves only the reserved generations and the narrate allowance.
+    // Worst case: the tail uses its whole allowance, the resolve output all of resolve_max_tokens and the
+    // resolution record all of narrate_allowance (one fake token per 4 bytes).
+    core::BudgetSettings budget = RoomyBudget();
+    budget.tailAllowance = Measure(world, inputs, budget).tail;
     const Measured measured = Measure(world, inputs, budget);
-    test::FakeBackend backend(ContextSizeFor(budget, measured, measured.transcriptCost));
-    const context::Assembly assembly = context::AssembleResolvePrompt(world, inputs, budget, backend);
-    REQUIRE(assembly.transcriptBudget == measured.transcriptCost);
-    REQUIRE(assembly.Fits());
+    const std::string resolveOutput(static_cast<std::size_t>(budget.resolveMaxTokens) * 4, 'r');
+    const std::string resolution(static_cast<std::size_t>(budget.narrateAllowance) * 4, 'n');
 
-    // Worst case: the resolve output uses all of resolve_max_tokens and the resolution record all of the allowance
-    // (one fake token per 4 bytes).
-    inference::Prompt narrate = assembly.prompt;
-    context::ExtendForNarrate(narrate, std::string(static_cast<std::size_t>(budget.resolveMaxTokens) * 4, 'r'),
-                              std::string(static_cast<std::size_t>(budget.narrateAllowance) * 4, 'n'));
-    REQUIRE(backend.CountTokens(narrate.messages.back().content) == budget.narrateAllowance);
-    CHECK(backend.CountPromptTokens(narrate) + budget.narrateMaxTokens <= backend.ContextSize());
+    // The context the narrate call needs, measured on a backend with room to spare.
+    test::FakeBackend roomy(100000);
+    const context::Assembly roomyAssembly = context::AssembleResolvePrompt(world, inputs, budget, roomy);
+    REQUIRE(roomy.CountTokens(resolveOutput) == budget.resolveMaxTokens);
+    REQUIRE(roomy.CountTokens(resolution) == budget.narrateAllowance);
+    inference::Prompt roomyNarrate = roomyAssembly.prompt;
+    context::ExtendForNarrate(roomyNarrate, resolveOutput, resolution);
+    const int needed = roomy.CountPromptTokens(roomyNarrate) + budget.narrateMaxTokens;
+
+    // At exactly that context the resolve prompt fits, and the worst-case narrate call fits with no token to spare.
+    {
+        test::FakeBackend backend(needed);
+        const context::Assembly assembly = context::AssembleResolvePrompt(world, inputs, budget, backend);
+        REQUIRE(assembly.transcriptBudget >= measured.transcriptCost);
+        REQUIRE(assembly.Fits());
+        inference::Prompt narrate = assembly.prompt;
+        context::ExtendForNarrate(narrate, resolveOutput, resolution);
+        CHECK(backend.CountPromptTokens(narrate) + budget.narrateMaxTokens <= backend.ContextSize());
+    }
+
+    // Any smaller context cannot hold the worst case, so the resolve prompt must not report that it fits. The
+    // transcript still has room there: the overflow flag alone catches it.
+    for (int missing = 1; missing <= 4; ++missing) {
+        test::FakeBackend backend(needed - missing);
+        const context::Assembly assembly = context::AssembleResolvePrompt(world, inputs, budget, backend);
+        CHECK_FALSE(assembly.transcriptOverBudget);
+        CHECK(assembly.contextOverflow);
+        CHECK_FALSE(assembly.Fits());
+    }
 }
 
 TEST_CASE("narrate_allowance and the narrate message overhead count toward the context overflow", "[context]")
@@ -282,10 +304,11 @@ TEST_CASE("narrate_allowance and the narrate message overhead count toward the c
     const context::ContextInputs inputs = Inputs(world);
     const Measured measured = Measure(world, inputs, budget);
 
-    // The tail leaves no slack: total + both generations + allowance + 4 template tokens of the narrate message is
-    // exactly the context at tailAllowance = tail + 4 + 4, and one token over below that.
+    // The tail leaves no slack: total (which holds the tail message's 4 template tokens) + both generations +
+    // allowance + 4 template tokens each for the assistant and the user message of the narrate call is exactly the
+    // context at tailAllowance = tail + 4 + 4 + 4, and one token over below that.
     core::BudgetSettings exact = budget;
-    exact.tailAllowance = measured.tail + 4 + 4;
+    exact.tailAllowance = measured.tail + 4 + 4 + 4;
     {
         const Measured exactMeasured = Measure(world, inputs, exact);
         test::FakeBackend backend(ContextSizeFor(exact, exactMeasured, exactMeasured.transcriptCost));

@@ -58,9 +58,10 @@ struct Assembly {
 // context leaves no room for the transcript after the system message, the tail allowance, the narrate allowance
 // and both generations (folding cannot fix that). Other overruns are flags for the turn layer to act on.
 //
-// The narrate call appends one user message (resolution record + instruction) that is not part of this prompt,
-// so budget.narrateAllowance is reserved for it: transcriptBudget excludes it, and contextOverflow counts it
-// together with that message's template overhead (approximated by the cost of an empty one-message prompt).
+// The narrate call appends two messages that are not part of this prompt: the resolve output (assistant, up to
+// resolveMaxTokens) and the resolution record + instruction (user). budget.narrateAllowance is reserved for the
+// user message's text: transcriptBudget excludes it. contextOverflow counts it together with the template
+// overhead of both messages (assistant and user), each approximated by the cost of an empty one-message prompt.
 Assembly AssembleResolvePrompt(const core::World& world, const ContextInputs& inputs,
                                const core::BudgetSettings& budget, inference::LlmBackend& backend);
 

@@ -104,13 +104,17 @@ Assembly AssembleResolvePrompt(const core::World& world, const ContextInputs& in
     assembly.transcriptOverBudget = assembly.transcriptCost > assembly.transcriptBudget;
 
     // Final safety check on the whole templated prompt, as seen by the narrate call: the prompt, the narrate
-    // message (its template overhead plus the allowance for its text) and both generations. The overhead is
+    // message (its template overhead plus the allowance for its text), the resolve output's assistant message
+    // (template overhead only: its text is the resolve generation) and both generations. Each overhead is
     // approximated by the cost of an empty one-message prompt.
-    inference::Prompt emptyMessage;
-    emptyMessage.messages.push_back({inference::Role::User, ""});
-    const int narrateMessageOverhead = backend.CountPromptTokens(emptyMessage);
+    inference::Prompt emptyUser;
+    emptyUser.messages.push_back({inference::Role::User, ""});
+    const int narrateMessageOverhead = backend.CountPromptTokens(emptyUser);
+    inference::Prompt emptyAssistant;
+    emptyAssistant.messages.push_back({inference::Role::Assistant, ""});
+    const int resolveOutputOverhead = backend.CountPromptTokens(emptyAssistant);
     assembly.contextOverflow = tokens.total + budget.narrateAllowance + narrateMessageOverhead +
-                                   budget.resolveMaxTokens + budget.narrateMaxTokens >
+                                   resolveOutputOverhead + budget.resolveMaxTokens + budget.narrateMaxTokens >
                                backend.ContextSize();
     return assembly;
 }
