@@ -1,5 +1,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers.hpp>
+#include <catch2/matchers/catch_matchers_exception.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <cstddef>
@@ -19,6 +21,8 @@
 
 using namespace morpheus::inference;
 using morpheus::test::SharedBackend;
+using Catch::Matchers::ContainsSubstring;
+using Catch::Matchers::MessageMatches;
 
 namespace {
 
@@ -162,7 +166,8 @@ TEST_CASE("A state blob that llama.cpp rejects is an InferenceError and leaves a
     REQUIRE(count > 1);
     --count;
     std::memcpy(corrupt.data(), &count, sizeof(count));
-    CHECK_THROWS_WITH(backend.RestoreState(corrupt), Catch::Matchers::ContainsSubstring("restoring the KV cache state failed"));
+    CHECK_THROWS_MATCHES(backend.RestoreState(corrupt), InferenceError,
+                         MessageMatches(ContainsSubstring("restoring the KV cache state failed")));
     CheckCacheWasCleared(backend);
 }
 
@@ -183,7 +188,7 @@ TEST_CASE("A state blob whose token count disagrees with the restored KV data is
     std::memcpy(corrupt.data(), &count, sizeof(count));
     const auto firstToken = corrupt.begin() + static_cast<std::ptrdiff_t>(sizeof(count));
     corrupt.erase(firstToken, firstToken + static_cast<std::ptrdiff_t>(sizeof(std::int32_t)));
-    CHECK_THROWS_WITH(backend.RestoreState(corrupt), Catch::Matchers::ContainsSubstring("token list"));
+    CHECK_THROWS_MATCHES(backend.RestoreState(corrupt), InferenceError, MessageMatches(ContainsSubstring("token list")));
     CheckCacheWasCleared(backend);
 }
 

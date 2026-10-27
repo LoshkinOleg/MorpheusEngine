@@ -80,7 +80,7 @@ public:
     virtual int ContextSize() const = 0;
 
     // Generates the assistant's reply to `prompt`. Throws InferenceError if prompt + spec.maxTokens exceeds the
-    // context. Cancellation through `stop` returns early with completion.cancelled set; it is not an error.
+    // context. Throws ContractError for maxTokens <= 0 or a grammar that does not parse. Cancellation through `stop` returns early with completion.cancelled set; it is not an error.
     virtual Completion Complete(const Prompt& prompt, const GenerationSpec& spec, const TokenCallback& onToken,
                                 std::stop_token stop) = 0;
 

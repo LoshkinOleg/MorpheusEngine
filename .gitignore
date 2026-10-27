@@ -23,5 +23,5 @@ saves/
 **/obj/
 *.user
 .vs/
-models/
-settings.json
+/models/
+/settings.json

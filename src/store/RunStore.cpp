@@ -190,7 +190,7 @@ nlohmann::json RunStore::StateAt(int turn)
     }
 }
 
-void RunStore::CommitTurn(const TurnRecord& record, const nlohmann::json& stateAfter)
+void RunStore::CommitTurn(const core::TurnRecord& record, const nlohmann::json& stateAfter)
 {
     const int expected = LatestTurn() + 1;
     MORPHEUS_REQUIRE(record.number == expected,
@@ -235,24 +235,24 @@ void RunStore::CommitTurn(const TurnRecord& record, const nlohmann::json& stateA
     });
 }
 
-std::optional<TurnRecord> RunStore::Turn(int number)
+std::optional<core::TurnRecord> RunStore::Turn(int number)
 {
-    std::vector<TurnRecord> found = Turns(number, number);
+    std::vector<core::TurnRecord> found = Turns(number, number);
     if (found.empty()) {
         return std::nullopt;
     }
     return std::move(found.front());
 }
 
-std::vector<TurnRecord> RunStore::Turns(int fromTurn, int toTurn)
+std::vector<core::TurnRecord> RunStore::Turns(int fromTurn, int toTurn)
 {
     Statement query = _db.Prepare("SELECT number, input, resolve, checks, applied, rejected, narration, timings "
                                   "FROM turns WHERE number BETWEEN ?1 AND ?2 ORDER BY number");
     query.Bind(1, fromTurn).Bind(2, toTurn);
 
-    std::vector<TurnRecord> records;
+    std::vector<core::TurnRecord> records;
     while (query.Step()) {
-        TurnRecord record;
+        core::TurnRecord record;
         record.number = static_cast<int>(query.ColumnInt(0));
 
         // Corrupt saved data is a StoreError naming the file, turn and column, not a raw parse exception.
@@ -292,8 +292,8 @@ std::vector<TurnRecord> RunStore::Turns(int fromTurn, int toTurn)
     }
 
     // Attach each turn's notes, in the order they were written. Turns are ascending, so index them by number.
-    std::map<int, TurnRecord*> byNumber;
-    for (TurnRecord& record : records) {
+    std::map<int, core::TurnRecord*> byNumber;
+    for (core::TurnRecord& record : records) {
         byNumber.emplace(record.number, &record);
     }
     Statement noteQuery = _db.Prepare("SELECT turn, text FROM notes WHERE turn BETWEEN ?1 AND ?2 ORDER BY id");
@@ -325,7 +325,7 @@ void RunStore::TruncateAfter(int turn)
     });
 }
 
-void RunStore::AddSummary(const Summary& summary)
+void RunStore::AddSummary(const core::Summary& summary)
 {
     MORPHEUS_REQUIRE(summary.fromTurn >= 1 && summary.fromTurn <= summary.toTurn,
                      std::format("AddSummary: bad turn range {}..{}", summary.fromTurn, summary.toTurn));
@@ -336,10 +336,10 @@ void RunStore::AddSummary(const Summary& summary)
         .Run();
 }
 
-std::vector<Summary> RunStore::Summaries()
+std::vector<core::Summary> RunStore::Summaries()
 {
     Statement query = _db.Prepare("SELECT from_turn, to_turn, text FROM summaries ORDER BY from_turn, id");
-    std::vector<Summary> summaries;
+    std::vector<core::Summary> summaries;
     while (query.Step()) {
         summaries.push_back({static_cast<int>(query.ColumnInt(0)), static_cast<int>(query.ColumnInt(1)),
                              query.ColumnText(2)});
@@ -347,10 +347,10 @@ std::vector<Summary> RunStore::Summaries()
     return summaries;
 }
 
-std::vector<Note> RunStore::Notes()
+std::vector<core::Note> RunStore::Notes()
 {
     Statement query = _db.Prepare("SELECT turn, text FROM notes ORDER BY turn, id");
-    std::vector<Note> notes;
+    std::vector<core::Note> notes;
     while (query.Step()) {
         notes.push_back({static_cast<int>(query.ColumnInt(0)), query.ColumnText(1)});
     }

@@ -16,6 +16,7 @@
 #include "store/Sqlite.h"
 
 using namespace morpheus::store;
+namespace core = morpheus::core;
 using morpheus::core::ContractError;
 using Catch::Matchers::ContainsSubstring;
 using Catch::Matchers::Matches;
@@ -203,9 +204,9 @@ TEST_CASE("A failed RunStore::Create leaves no file behind", "[store]")
 
 namespace {
 
-TurnRecord TestTurn(int number, std::vector<std::string> notes = {})
+core::TurnRecord TestTurn(int number, std::vector<std::string> notes = {})
 {
-    TurnRecord record;
+    core::TurnRecord record;
     record.number = number;
     record.input = std::format("input {}", number);
     record.notes = std::move(notes);
@@ -243,7 +244,7 @@ TEST_CASE("RunStore commits turns with their resulting state", "[store]")
     CHECK(store.StateAt(1) == StateWithHealth(9));
     CHECK(store.StateAt(2) == StateWithHealth(8));
 
-    const std::optional<TurnRecord> first = store.Turn(1);
+    const std::optional<core::TurnRecord> first = store.Turn(1);
     REQUIRE(first.has_value());
     CHECK(first->input == "input 1");
     CHECK(first->resolve == nlohmann::json({{"intent", "climb"}}));
@@ -257,7 +258,7 @@ TEST_CASE("RunStore commits turns with their resulting state", "[store]")
     CHECK(first->timings.at("resolve_ms") == 120);
     CHECK(first->notes == std::vector<std::string>{"first note", "second note"});
 
-    const std::vector<TurnRecord> both = store.Turns(1, 2);
+    const std::vector<core::TurnRecord> both = store.Turns(1, 2);
     REQUIRE(both.size() == 2);
     CHECK(both[0].number == 1);
     CHECK(both[0].notes == std::vector<std::string>{"first note", "second note"});
@@ -365,13 +366,13 @@ TEST_CASE("RunStore keeps summaries and notes in order", "[store]")
     store.CommitTurn(TestTurn(1, {"storm season"}), StateWithHealth(9));
     store.CommitTurn(TestTurn(2, {"the captain distrusts Marta", "Marta limps"}), StateWithHealth(8));
 
-    const std::vector<Summary> summaries = store.Summaries();
+    const std::vector<core::Summary> summaries = store.Summaries();
     REQUIRE(summaries.size() == 2);
     CHECK(summaries[0].text == "first fold");
     CHECK(summaries[1].fromTurn == 5);
     CHECK(summaries[1].toTurn == 8);
 
-    const std::vector<Note> notes = store.Notes();
+    const std::vector<core::Note> notes = store.Notes();
     REQUIRE(notes.size() == 3);
     CHECK(notes[0].turn == 1);
     CHECK(notes[0].text == "storm season");

@@ -13,11 +13,6 @@
 
 namespace morpheus::store {
 
-// Turn data types live in core; store re-exports them so callers can keep writing store::TurnRecord.
-using core::Note;
-using core::Summary;
-using core::TurnRecord;
-
 struct RunMeta {
     std::string worldId = {};
     std::string worldHash = {}; // World content hash at run creation.
@@ -71,28 +66,29 @@ public:
     // Appends turn LatestTurn()+1, the state it produced and the notes it wrote (record.notes, stored with
     // turn = record.number), in one transaction: either all of it commits or none of it does.
     // Throws ContractError if record.number is not LatestTurn()+1.
-    void CommitTurn(const TurnRecord& record, const nlohmann::json& stateAfter);
+    void CommitTurn(const core::TurnRecord& record, const nlohmann::json& stateAfter);
 
     // nullopt when the turn does not exist. record.notes holds that turn's notes in the order they were written.
-    // Throws StoreError if a stored column is not valid JSON and StoreError if a note has no matching turn row.
-    std::optional<TurnRecord> Turn(int number);
+    // Throws StoreError if a stored column is not valid JSON or has the wrong shape, or a note has no matching
+    // turn row.
+    std::optional<core::TurnRecord> Turn(int number);
 
     // Turns in [fromTurn, toTurn], ascending, each with its notes. Throws StoreError if a stored column is not
-    // valid JSON and StoreError if a note has no matching turn row.
-    std::vector<TurnRecord> Turns(int fromTurn, int toTurn);
+    // valid JSON or has the wrong shape, or a note has no matching turn row.
+    std::vector<core::TurnRecord> Turns(int fromTurn, int toTurn);
 
     // Undo: removes every turn, snapshot and note after `turn`, every turn embedding whose turn is after it,
     // and every summary that ends after it. Throws ContractError if turn < 0.
     void TruncateAfter(int turn);
 
     // Throws ContractError unless 1 <= fromTurn <= toTurn.
-    void AddSummary(const Summary& summary);
+    void AddSummary(const core::Summary& summary);
 
     // Ordered by fromTurn.
-    std::vector<Summary> Summaries();
+    std::vector<core::Summary> Summaries();
 
     // Every committed note, ordered by turn, then the order written. For context assembly in assisted mode.
-    std::vector<Note> Notes();
+    std::vector<core::Note> Notes();
 
     // Inserts or replaces the vector and content hash for (kind, refId, model).
     // Throws ContractError on an empty vector or an empty contentHash.

@@ -64,16 +64,20 @@ World LoadWorld(const std::filesystem::path& directory)
         const std::string raw = ReadTextFile(dir / name);
         std::string text;
         text.reserve(raw.size());
+        std::size_t line = 1; // 1-based line number in the original file, for the error message.
         for (std::size_t i = 0; i < raw.size(); ++i) {
-            // A '\r' directly before '\n' is dropped; a lone '\r' is rejected right after this loop.
-            if (raw[i] == '\r' && i + 1 < raw.size() && raw[i + 1] == '\n') {
+            if (raw[i] == '\r') {
+                // A '\r' directly before '\n' is dropped (CRLF becomes LF); a carriage return on its own means a
+                // malformed file.
+                if (i + 1 >= raw.size() || raw[i + 1] != '\n') {
+                    throw DataError(std::format("'{}': stray carriage return on line {}", (dir / name).generic_string(), line));
+                }
                 continue;
             }
+            if (raw[i] == '\n') {
+                ++line;
+            }
             text.push_back(raw[i]);
-        }
-        // CRLF pairs are normalized above; a carriage return on its own means a malformed file.
-        if (const std::size_t stray = text.find('\r'); stray != std::string::npos) {
-            throw DataError(std::format("'{}': stray carriage return at byte {}", (dir / name).generic_string(), stray));
         }
         hash.Add(name);
         hash.Add("\n");

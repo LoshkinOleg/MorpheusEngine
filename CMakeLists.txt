@@ -14,7 +14,7 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin) # For shared libs: .
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib) # For static libs: .a on linux, .lib on win
 
 # ---- Options ------------------------------------------------------------
-option(MORPHEUS_BUILD_APP "Build the morpheus app (fetches llama.cpp, SDL3 and ImGui)" ON)
+option(MORPHEUS_BUILD_APP "Build the morpheus app (needs MORPHEUS_BUILD_LLAMA; fetches SDL3 and ImGui)" ON)
 option(MORPHEUS_BUILD_TESTS "Build morpheus_tests (fetches Catch2)" ON)
 option(MORPHEUS_ASAN "Instrument every target with AddressSanitizer (MSVC only)" OFF)
 option(MORPHEUS_BUILD_LLAMA "Build the llama.cpp backend (fetches and builds llama.cpp)" ON)

@@ -81,8 +81,8 @@ VOLATILE TAIL (rebuilt per call)
 ```
 
 - **Token counts are exact,** from the loaded model's tokenizer.
-- **Budget:** L0-L2 have fixed caps. L3 gets `n_ctx - resolve cap - narrate cap - tail allowance - templated system message`, and its cost is measured with template tokens included. Overruns are flags for the turn layer (fold, condense, shrink the tail); a context too small for the fixed layers is a settings error.
-- **Compact transcript entries.** Each L3 entry is the input, the narration, and one mechanics line (`[agility vs hard: 14 -> success; location -> bridge_hatch]`). Full resolve JSON stays in the database.
+- **Budget:** L0-L2 have fixed caps. L3 gets `n_ctx - resolve cap - narrate cap - narrate allowance - tail allowance - templated system message`, where the narrate allowance reserves room for the resolution record and instruction the narrate call appends, and its cost is measured with template tokens included. Overruns are flags for the turn layer (fold, condense, shrink the tail); a context too small for the fixed layers is a settings error.
+- **Compact transcript entries.** Each L3 entry is the input, the narration, and one mechanics line (`[agility vs hard: 14/16 failure; player.location = "deck"]`). Full resolve JSON stays in the database.
 - **Messages.** One system message (L0 + L1 + L2), the transcript as user/assistant pairs (L3), then one user message with the tail (T1-T4). The whole prompt goes through the model's chat template; prefix reuse works at the token level, so no per-layer rendering is needed.
 - **Cloud mapping.** The cloud backend maps the same layering onto prompt caching, with a breakpoint at the end of L3.
 
@@ -91,9 +91,12 @@ VOLATILE TAIL (rebuilt per call)
 ```
 LlmBackend
   count_tokens(text) -> int
+  count_prompt_tokens(prompt) -> int   (the full templated prompt, exactly as complete evaluates it)
+  context_size() -> int
   complete(Prompt{messages, stableCount}, GenerationSpec{grammar?, max_tokens, sampling}, on_token, cancel)
       -> Completion{text, tokens_reused, tokens_evaluated, timings}
-  embed(texts) -> vectors
+  embed(texts, purpose: query|document) -> vectors
+  embedding_model_id() -> string
   save_state() -> blob / restore_state(blob)   (KV sequence state in RAM, used when the GPU is handed to another model)
 ```
 

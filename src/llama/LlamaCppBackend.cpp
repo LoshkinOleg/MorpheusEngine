@@ -19,6 +19,9 @@ using inference::InferenceError;
 
 namespace {
 
+// Buffer for one token piece (llama_token_to_piece); a longer piece is an error.
+constexpr std::size_t TOKEN_PIECE_BUFFER_BYTES = 256;
+
 // llama.cpp and ggml log through one process-wide callback. Only warnings and errors reach stderr.
 void LogFilter(ggml_log_level level, const char* pText, void* /*pUserData*/)
 {
@@ -29,7 +32,7 @@ void LogFilter(ggml_log_level level, const char* pText, void* /*pUserData*/)
 
 // Owns a llama_batch from llama_batch_init.
 struct BatchGuard {
-    llama_batch batch;
+    llama_batch batch; // Set by the constructor (llama_batch_init), so no default initializer.
 
     explicit BatchGuard(std::size_t capacity)
         : batch(llama_batch_init(static_cast<int32_t>(capacity), 0, 1))
@@ -206,10 +209,10 @@ inference::Completion LlamaCppBackend::Complete(const inference::Prompt& prompt,
     if (common == tokens.size()) {
         --common;
     }
-    llama_memory_t memory = llama_get_memory(_pChatContext.get());
-    if (!llama_memory_seq_rm(memory, 0, static_cast<llama_pos>(common), -1)) {
+    llama_memory_t pMemory = llama_get_memory(_pChatContext.get());
+    if (!llama_memory_seq_rm(pMemory, 0, static_cast<llama_pos>(common), -1)) {
         // Some model types cannot drop part of a sequence; start from an empty cache instead.
-        llama_memory_clear(memory, true);
+        llama_memory_clear(pMemory, true);
         common = 0;
     }
     _cachedTokens.resize(common);
@@ -257,9 +260,9 @@ inference::Completion LlamaCppBackend::Complete(const inference::Prompt& prompt,
             break;
         }
 
-        char piece[256];
+        char piece[TOKEN_PIECE_BUFFER_BYTES];
         const int32_t length = llama_token_to_piece(pVocab, token, piece, static_cast<int32_t>(sizeof(piece)), 0, false);
-        MORPHEUS_REQUIRE(length >= 0, "Complete: a token piece is longer than 256 bytes");
+        MORPHEUS_REQUIRE(length >= 0, std::format("Complete: a token piece is longer than {} bytes", TOKEN_PIECE_BUFFER_BYTES));
         completion.text.append(piece, static_cast<std::size_t>(length));
         pending.append(piece, static_cast<std::size_t>(length));
         const std::size_t ready = completeUtf8Prefix(pending);
@@ -300,8 +303,8 @@ std::vector<std::vector<float>> LlamaCppBackend::Embed(const std::vector<std::st
         }
 
         // Each text is embedded alone, from an empty cache (encoder-only models have no cache at all).
-        if (llama_memory_t memory = llama_get_memory(_pEmbedContext.get()); memory != nullptr) {
-            llama_memory_clear(memory, true);
+        if (llama_memory_t pMemory = llama_get_memory(_pEmbedContext.get()); pMemory != nullptr) {
+            llama_memory_clear(pMemory, true);
         }
         BatchGuard guard(tokens.size());
         FillBatch(guard.batch, tokens, 0, Outputs::All);
@@ -371,8 +374,8 @@ void LlamaCppBackend::RestoreState(std::span<const std::uint8_t> state)
         std::memcpy(tokens.data(), state.data() + sizeof(count), tokenBytes);
     }
 
-    llama_memory_t memory = llama_get_memory(_pChatContext.get());
-    llama_memory_clear(memory, true);
+    llama_memory_t pMemory = llama_get_memory(_pChatContext.get());
+    llama_memory_clear(pMemory, true);
     _cachedTokens.clear();
     const std::size_t kvSize = state.size() - sizeof(count) - tokenBytes;
     // State blobs are in-memory only (a GPU hand-off), never persisted. A malformed header above is an engine bug
@@ -380,11 +383,11 @@ void LlamaCppBackend::RestoreState(std::span<const std::uint8_t> state)
     // (InferenceError). Either failure below can leave a partly restored cache, so empty it: the cache and
     // _cachedTokens (empty) must always agree.
     if (llama_state_seq_set_data(_pChatContext.get(), state.data() + sizeof(count) + tokenBytes, kvSize, 0) == 0) {
-        llama_memory_clear(memory, true);
+        llama_memory_clear(pMemory, true);
         throw InferenceError("restoring the KV cache state failed");
     }
-    if (llama_memory_seq_pos_max(memory, 0) + 1 != static_cast<llama_pos>(count)) {
-        llama_memory_clear(memory, true);
+    if (llama_memory_seq_pos_max(pMemory, 0) + 1 != static_cast<llama_pos>(count)) {
+        llama_memory_clear(pMemory, true);
         throw InferenceError("restored KV state does not match its token list");
     }
     _cachedTokens = std::move(tokens);

@@ -75,6 +75,24 @@ TEST_CASE("LoadSettings names what is wrong", "[settings]")
         json["chat_model"] = "models/missing.gguf";
         CHECK_THROWS_WITH(LoadSettings(WriteSettings("settings_missing_model", json)), ContainsSubstring("chat_model"));
     }
+    SECTION("missing required key")
+    {
+        nlohmann::json json = ValidSettingsJson();
+        json.erase("context_size");
+        CHECK_THROWS_WITH(LoadSettings(WriteSettings("settings_missing_key", json)), ContainsSubstring("context_size"));
+    }
+    SECTION("wrong type")
+    {
+        nlohmann::json json = ValidSettingsJson();
+        json["gpu_layers"] = "all";
+        CHECK_THROWS_WITH(LoadSettings(WriteSettings("settings_wrong_type", json)), ContainsSubstring("gpu_layers"));
+    }
+    SECTION("malformed JSON")
+    {
+        const fs::path file = WriteSettings("settings_malformed", ValidSettingsJson());
+        morpheus::test::WriteFile(file, "{");
+        CHECK_THROWS_WITH(LoadSettings(file), ContainsSubstring("settings.json"));
+    }
     SECTION("unknown key")
     {
         nlohmann::json json = ValidSettingsJson();

@@ -161,8 +161,11 @@ TEST_CASE("LoadWorld reports the file at fault", "[world]")
     SECTION("lone carriage return")
     {
         const fs::path dir = CopyMiniWorld("world_lone_cr");
-        morpheus::test::WriteFile(dir / "rules.md", "line one\rline two\n");
+        // The CRLF on line 1 is fine; the lone CR sits on line 2 of the original file.
+        morpheus::test::WriteFile(dir / "rules.md", "line one\r\nline two\rline three\n");
         CHECK_THROWS_WITH(LoadWorld(dir), ContainsSubstring("carriage return"));
+        CHECK_THROWS_WITH(LoadWorld(dir), ContainsSubstring("rules.md"));
+        CHECK_THROWS_WITH(LoadWorld(dir), ContainsSubstring("line 2"));
     }
     SECTION("missing file")
     {

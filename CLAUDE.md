@@ -16,7 +16,7 @@ Local-first, LLM-driven text RPG engine in C++20. The repository owner acts as p
 - One tag or test case: `./build/tests/bin/Debug/morpheus_tests.exe "[csv]"`
 
 ## Layout
-- src/core: world loading, settings, schema-typed state, state changes, dice, turn record types. No LLM, no UI; its only I/O is reading world folders.
+- src/core: world loading, settings, schema-typed state, state changes, dice, turn record types. No LLM, no UI; its only I/O is reading world folders and settings.json.
 - src/store: one SQLite database per run.
 - src/inference: the LlmBackend interface and its types. No llama.cpp.
 - src/context: layered prompt assembly with exact token budgets.

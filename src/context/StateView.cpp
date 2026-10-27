@@ -1,5 +1,6 @@
 #include "context/StateView.h"
 
+#include <cstddef>
 #include <format>
 
 #include "core/Errors.h"

@@ -1,6 +1,9 @@
 #include "context/Transcript.h"
 
+#include <cstddef>
 #include <format>
+#include <utility>
+#include <vector>
 
 namespace morpheus::context {
 
