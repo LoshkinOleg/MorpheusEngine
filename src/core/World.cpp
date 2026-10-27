@@ -1,5 +1,6 @@
 #include "core/World.h"
 
+#include <algorithm>
 #include <array>
 #include <format>
 #include <fstream>
@@ -104,6 +105,21 @@ World LoadWorld(const std::filesystem::path& directory)
 
         world.checkEntity = requireString("check_entity");
 
+        // stats: the check entity's int fields a check may add. Shape is checked here; that each one is an int
+        // field of the check entity's type needs the schema, so that is checked after the schema loads.
+        if (!json.contains("stats") || !json.at("stats").is_array() || json.at("stats").empty()) {
+            throw DataError(worldWhere + ": needs a non-empty 'stats' array");
+        }
+        for (const nlohmann::json& stat : json.at("stats")) {
+            if (!stat.is_string() || stat.get<std::string>().empty()) {
+                throw DataError(worldWhere + ": 'stats' entries must be non-empty strings");
+            }
+            if (std::find(world.stats.begin(), world.stats.end(), stat.get<std::string>()) != world.stats.end()) {
+                throw DataError(std::format("{}: stat '{}' is listed twice in 'stats'", worldWhere, stat.get<std::string>()));
+            }
+            world.stats.push_back(stat.get<std::string>());
+        }
+
         const std::string memoryMode = requireString("memory_mode");
         if (memoryMode == "engine") {
             world.defaultMemoryMode = MemoryMode::Engine;
@@ -205,6 +221,20 @@ World LoadWorld(const std::filesystem::path& directory)
     // Checks add stats from this entity, so it has to exist from the start.
     if (!world.initialState.contains(world.checkEntity)) {
         throw DataError(std::format("{}: check_entity '{}' is not an entity in initial_state.json", worldWhere, world.checkEntity));
+    }
+
+    // Every stat must be an int field of the check entity's type, or a check could not read its value.
+    const EntityTypeDef* pCheckType =
+        world.schema.FindEntityType(world.initialState.at(world.checkEntity).at("type").get<std::string>());
+    for (const std::string& stat : world.stats) {
+        const auto fieldIt = pCheckType->fields.find(stat);
+        if (fieldIt == pCheckType->fields.end()) {
+            throw DataError(std::format("{}: stat '{}' is not a field of check_entity '{}'", worldWhere, stat, world.checkEntity));
+        }
+        if (fieldIt->second.type != FieldType::Int) {
+            throw DataError(std::format("{}: stat '{}' must be an int field, but it is {}", worldWhere, stat,
+                                        FieldTypeName(fieldIt->second.type)));
+        }
     }
     return world;
 }

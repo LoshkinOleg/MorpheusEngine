@@ -3,6 +3,7 @@
   "title": "Mini World",
   "dice": "1d20+stat",
   "check_entity": "player",
+  "stats": ["agility"],
   "difficulties": { "easy": 8, "hard": 16 },
   "memory_mode": "engine"
 }

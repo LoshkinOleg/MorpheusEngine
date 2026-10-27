@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <map>
 #include <string>
+#include <vector>
 
 #include "TestPaths.h"
 #include "core/Errors.h"
@@ -34,7 +35,7 @@ std::string MiniWorldJsonWith(const std::string& key, const std::string& valueJs
 {
     nlohmann::json json = nlohmann::json::parse(R"({
         "id": "mini", "title": "Mini World", "dice": "1d20+stat", "check_entity": "player",
-        "difficulties": {"easy": 8, "hard": 16}, "memory_mode": "engine"
+        "stats": ["agility"], "difficulties": {"easy": 8, "hard": 16}, "memory_mode": "engine"
     })");
     json[key] = nlohmann::json::parse(valueJson);
     return json.dump();
@@ -51,6 +52,7 @@ TEST_CASE("LoadWorld loads every file of a valid world", "[world]")
     CHECK(world.dice.sides == 20);
     CHECK(world.dice.addStat);
     CHECK(world.checkEntity == "player");
+    CHECK(world.stats == std::vector<std::string>{"agility"});
     CHECK(world.difficulties == std::map<std::string, int>{{"easy", 8}, {"hard", 16}});
     CHECK(world.defaultMemoryMode == MemoryMode::Engine);
     CHECK_THAT(world.rules, ContainsSubstring("tiny test world"));
@@ -107,6 +109,44 @@ TEST_CASE("LoadWorld reports the file at fault", "[world]")
         const fs::path dir = CopyMiniWorld("world_check_entity");
         morpheus::test::WriteFile(dir / "world.json", MiniWorldJsonWith("check_entity", "\"hero\""));
         CHECK_THROWS_WITH(LoadWorld(dir), ContainsSubstring("check_entity"));
+    }
+    SECTION("stat that is not a field of the check entity")
+    {
+        const fs::path dir = CopyMiniWorld("world_stat_unknown");
+        morpheus::test::WriteFile(dir / "world.json", MiniWorldJsonWith("stats", R"(["luck"])"));
+        CHECK_THROWS_WITH(LoadWorld(dir), ContainsSubstring("luck"));
+    }
+    SECTION("stat that is not an int field")
+    {
+        const fs::path dir = CopyMiniWorld("world_stat_not_int");
+        morpheus::test::WriteFile(dir / "world.json", MiniWorldJsonWith("stats", R"(["location"])"));
+        CHECK_THROWS_WITH(LoadWorld(dir), ContainsSubstring("location"));
+    }
+    SECTION("empty stats array")
+    {
+        const fs::path dir = CopyMiniWorld("world_stats_empty");
+        morpheus::test::WriteFile(dir / "world.json", MiniWorldJsonWith("stats", "[]"));
+        CHECK_THROWS_WITH(LoadWorld(dir), ContainsSubstring("stats"));
+    }
+    SECTION("duplicate stat")
+    {
+        const fs::path dir = CopyMiniWorld("world_stats_duplicate");
+        morpheus::test::WriteFile(dir / "world.json", MiniWorldJsonWith("stats", R"(["agility", "agility"])"));
+        CHECK_THROWS_WITH(LoadWorld(dir), ContainsSubstring("agility"));
+    }
+    SECTION("stat entry that is not a non-empty string")
+    {
+        const fs::path dir = CopyMiniWorld("world_stats_not_string");
+        morpheus::test::WriteFile(dir / "world.json", MiniWorldJsonWith("stats", R"(["agility", ""])"));
+        CHECK_THROWS_WITH(LoadWorld(dir), ContainsSubstring("stats"));
+    }
+    SECTION("missing stats")
+    {
+        const fs::path dir = CopyMiniWorld("world_stats_missing");
+        nlohmann::json json = nlohmann::json::parse(MiniWorldJsonWith("title", "\"Mini World\""));
+        json.erase("stats");
+        morpheus::test::WriteFile(dir / "world.json", json.dump());
+        CHECK_THROWS_WITH(LoadWorld(dir), ContainsSubstring("stats"));
     }
     SECTION("unknown world.json key")
     {

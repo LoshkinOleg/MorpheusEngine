@@ -3,6 +3,7 @@
   "title": "Sandcrawler Captain",
   "dice": "1d20+stat",
   "check_entity": "player",
+  "stats": ["grit", "wits", "presence", "agility"],
   "difficulties": { "easy": 8, "medium": 12, "hard": 16, "extreme": 20 },
   "memory_mode": "engine"
 }

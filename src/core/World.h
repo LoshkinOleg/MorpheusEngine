@@ -27,7 +27,8 @@ struct World {
     std::string title = {};
     DiceRule dice = {};
     std::map<std::string, int> difficulties = {}; // Difficulty name -> target number.
-    std::string checkEntity = {};                 // Entity whose int fields are the stats that checks add.
+    std::string checkEntity = {};                 // Entity whose stats a check adds (see `stats`).
+    std::vector<std::string> stats = {};          // Int fields of the check entity usable in checks, in world.json order.
     MemoryMode defaultMemoryMode = MemoryMode::Engine;
     std::string rules = {};
     std::vector<LoreEntry> lore = {}; // In file order.
