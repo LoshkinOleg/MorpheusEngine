@@ -3,6 +3,7 @@
 #include <array>
 #include <format>
 #include <fstream>
+#include <limits>
 #include <set>
 #include <sstream>
 
@@ -107,6 +108,18 @@ World LoadWorld(const std::filesystem::path& directory)
         for (const auto& [name, target] : json.at("difficulties").items()) {
             if (!target.is_number_integer()) {
                 throw DataError(std::format("{}: difficulty '{}' must be an integer", worldWhere, name));
+            }
+            // Range-check before narrowing to int, so a 64-bit value cannot wrap into range.
+            bool fitsInt = false;
+            if (target.is_number_unsigned()) {
+                // Compare unsigned values as unsigned: reading a huge one as long long would wrap it.
+                fitsInt = target.get<unsigned long long>() <= static_cast<unsigned long long>(std::numeric_limits<int>::max());
+            } else {
+                const long long value = target.get<long long>();
+                fitsInt = value >= std::numeric_limits<int>::min() && value <= std::numeric_limits<int>::max();
+            }
+            if (!fitsInt) {
+                throw DataError(std::format("{}: difficulty '{}' must be an integer in int range", worldWhere, name));
             }
             world.difficulties.emplace(name, target.get<int>());
         }
