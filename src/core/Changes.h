@@ -50,10 +50,11 @@ nlohmann::json ChangeToJson(const Change& change);
 // Applies proposed changes, in order, to a copy of `state`. Each change is checked against the schema and the
 // state as left by the changes before it; invalid ones are rejected with a reason and skipped. Rules:
 // - set:    any field to a valid value. Counter item paths are not allowed (use add/remove).
-// - add:    int -> adds the integer value, clamped to [min, max] (note "clamped to N");
+// - add:    int -> adds an integer value in int range, clamped to [min, max] (note "clamped to N");
 //           list -> appends the string if absent (note "already present" otherwise);
-//           counter item -> adds a non-zero integer; at 0 or below the item is removed
-//           (note "removed (count reached 0)"); decreasing an absent item is rejected.
+//           counter item -> adds a non-zero integer in int range; the count may not exceed INT_MAX (rejected);
+//           at 0 or below the item is removed (note "removed (count reached 0)");
+//           decreasing an absent item is rejected.
 // - remove: list -> removes the string (must be present); counter item -> removes the item (must be present).
 // - create: new entity id of a creatable type; missing fields take their defaults.
 // `proposedChanges` must be a JSON array (ContractError otherwise); individual malformed entries are rejected.

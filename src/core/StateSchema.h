@@ -30,7 +30,7 @@ struct EntityTypeDef {
 // The world's state definition (state_schema.json). State itself is plain JSON shaped as
 // {"<entity id>": {"type": "<entity type>", "fields": {"<field>": <value>, ...}}, ...}.
 // Field values: int -> integer in [min, max]; enum -> one of values; string -> string;
-// list -> array of unique non-empty strings; counter -> object of item -> positive integer, where
+// list -> array of unique non-empty strings; counter -> object of item -> positive integer up to INT_MAX, where
 // item names are non-empty and contain no '.' (items are addressed as "entity.field.item").
 class StateSchema {
 private:

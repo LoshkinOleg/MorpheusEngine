@@ -200,8 +200,17 @@ std::string StateSchema::CheckFieldValue(const FieldDef& def, const nlohmann::js
             if (it.key().empty() || it.key().find('.') != std::string::npos) {
                 return std::format("counter item names must be non-empty and contain no '.', got '{}'", it.key());
             }
-            if (!it.value().is_number_integer() || it.value().get<long long>() <= 0) {
-                return std::format("count of '{}' must be a positive integer, got {}", it.key(), it.value().dump());
+            const nlohmann::json& count = it.value();
+            // Unsigned is checked first so a uint64 above LLONG_MAX never wraps negative through get<long long>().
+            const bool inRange =
+                count.is_number_unsigned()
+                    ? count.get<std::uint64_t>() >= 1 &&
+                          count.get<std::uint64_t>() <= static_cast<std::uint64_t>(std::numeric_limits<int>::max())
+                    : count.is_number_integer() && count.get<long long>() >= 1 &&
+                          count.get<long long>() <= std::numeric_limits<int>::max();
+            if (!inRange) {
+                return std::format("count of '{}' must be an integer in 1..{}, got {}", it.key(),
+                                   std::numeric_limits<int>::max(), count.dump());
             }
         }
         return {};

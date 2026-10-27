@@ -1,3 +1,8 @@
+#include <cstdint>
+#include <limits>
+#include <string>
+#include <vector>
+
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
@@ -121,6 +126,63 @@ TEST_CASE("add and remove on counter items", "[changes]")
           nlohmann::json::object());
     CHECK(ApplySingle(R"({"op": "remove", "path": "player.inventory.gold"})").rejected.size() == 1);
     CHECK(ApplySingle(R"({"op": "add", "path": "player.inventory", "value": 1})").rejected.size() == 1);
+}
+
+TEST_CASE("add rejects integers outside the int range instead of wrapping or overflowing", "[changes]")
+{
+    const auto addTo = [](const std::string& path, const nlohmann::json& value) {
+        const nlohmann::json change = {{"op", "add"}, {"path", path}, {"value", value}};
+        return ApplyChanges(TestSchema(), TestState(), nlohmann::json::array({change}));
+    };
+
+    const std::vector<nlohmann::json> badValues = {
+        nlohmann::json(std::numeric_limits<long long>::max()),
+        nlohmann::json(std::numeric_limits<long long>::min()),
+        nlohmann::json(std::numeric_limits<std::uint64_t>::max()),
+        nlohmann::json(2.5),
+    };
+    for (const nlohmann::json& value : badValues) {
+        CAPTURE(value.dump());
+        const ApplyResult result = addTo("player.health", value);
+        REQUIRE(result.rejected.size() == 1);
+        CHECK(result.applied.empty());
+        CHECK_THAT(result.rejected.at(0).reason, ContainsSubstring("int range"));
+        CHECK(result.state == TestState());
+    }
+
+    // Parsed from text, as it arrives from a model.
+    const ApplyResult parsedMax = ApplySingle(R"({"op": "add", "path": "player.health", "value": 18446744073709551615})");
+    REQUIRE(parsedMax.rejected.size() == 1);
+    CHECK(parsedMax.state == TestState());
+
+    const ApplyResult clamped = ApplySingle(R"({"op": "add", "path": "player.health", "value": 2147483647})");
+    REQUIRE(clamped.rejected.empty());
+    CHECK(PlayerField(clamped, "health") == 10);
+    CHECK(clamped.applied.at(0).note == "clamped to 10");
+}
+
+TEST_CASE("add on a counter item rejects out-of-range values and counts above INT_MAX", "[changes]")
+{
+    const ApplyResult overflow = ApplySingle(R"({"op": "add", "path": "player.inventory.rope", "value": 2147483647})");
+    REQUIRE(overflow.rejected.size() == 1);
+    CHECK_THAT(overflow.rejected.at(0).reason, ContainsSubstring("would exceed 2147483647"));
+    CHECK(overflow.state == TestState());
+
+    const ApplyResult wrapped =
+        ApplySingle(R"({"op": "add", "path": "player.inventory.rope", "value": 18446744073709551615})");
+    REQUIRE(wrapped.rejected.size() == 1);
+    CHECK(wrapped.state == TestState());
+
+    const ApplyResult atLimit = ApplySingle(R"({"op": "add", "path": "player.inventory.rope", "value": 2147483646})");
+    REQUIRE(atLimit.rejected.empty());
+    CHECK(PlayerField(atLimit, "inventory") == nlohmann::json({{"rope", 2147483647}}));
+}
+
+TEST_CASE("remove with a non-string value on a list is rejected, not thrown", "[changes]")
+{
+    const ApplyResult result = ApplySingle(R"({"op": "remove", "path": "player.conditions", "value": {"x": 1}})");
+    REQUIRE(result.rejected.size() == 1);
+    CHECK(result.state == TestState());
 }
 
 TEST_CASE("create adds entities of creatable types, filling defaults", "[changes]")

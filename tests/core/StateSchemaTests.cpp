@@ -184,3 +184,13 @@ TEST_CASE("CheckFieldValue rejects bad counter shapes", "[schema]")
     CHECK_FALSE(StateSchema::CheckFieldValue(inventory, nlohmann::json({{"", 1}})).empty());
     CHECK_FALSE(StateSchema::CheckFieldValue(inventory, 5).empty());
 }
+
+TEST_CASE("CheckFieldValue caps counter counts at INT_MAX", "[schema]")
+{
+    FieldDef inventory;
+    inventory.type = FieldType::Counter;
+    CHECK_FALSE(StateSchema::CheckFieldValue(inventory, nlohmann::json({{"rope", 2147483648LL}})).empty());
+    CHECK_FALSE(
+        StateSchema::CheckFieldValue(inventory, nlohmann::json({{"rope", std::uint64_t{18446744073709551615ULL}}})).empty());
+    CHECK(StateSchema::CheckFieldValue(inventory, nlohmann::json({{"rope", 2147483647}})).empty());
+}

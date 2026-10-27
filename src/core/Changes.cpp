@@ -1,7 +1,9 @@
 #include "core/Changes.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <format>
+#include <limits>
 
 #include "core/Errors.h"
 
@@ -72,6 +74,24 @@ nlohmann::json ChangeToJson(const Change& change)
     }
     return result;
 }
+
+namespace {
+
+// True for a JSON integer within [INT_MIN, INT_MAX]. Checks unsigned first so a uint64 above LLONG_MAX never
+// reaches get<long long>() (it would wrap negative).
+bool IsIntRangeInteger(const nlohmann::json& value)
+{
+    if (value.is_number_unsigned()) {
+        return value.get<std::uint64_t>() <= static_cast<std::uint64_t>(std::numeric_limits<int>::max());
+    }
+    if (!value.is_number_integer()) {
+        return false;
+    }
+    const long long number = value.get<long long>();
+    return number >= std::numeric_limits<int>::min() && number <= std::numeric_limits<int>::max();
+}
+
+} // namespace
 
 ApplyResult ApplyChanges(const StateSchema& schema, const nlohmann::json& state, const nlohmann::json& proposedChanges)
 {
@@ -173,9 +193,10 @@ ApplyResult ApplyChanges(const StateSchema& schema, const nlohmann::json& state,
         }
         case ChangeOp::Add:
             if (def.type == FieldType::Int) {
-                if (!change.value.is_number_integer()) {
-                    return "add on an int field needs an integer value";
+                if (!IsIntRangeInteger(change.value)) {
+                    return std::format("add on an int field needs an integer in int range, got {}", change.value.dump());
                 }
+                // Both operands are int-ranged, so the sum fits in long long.
                 const long long wanted = field.get<long long>() + change.value.get<long long>();
                 const long long clamped = std::clamp<long long>(wanted, def.min, def.max);
                 if (clamped != wanted) {
@@ -199,15 +220,21 @@ ApplyResult ApplyChanges(const StateSchema& schema, const nlohmann::json& state,
                 if (!itemPath) {
                     return "add on a counter field needs an item path (entity.field.item)";
                 }
-                if (!change.value.is_number_integer() || change.value.get<long long>() == 0) {
-                    return "add on a counter item needs a non-zero integer value";
+                if (!IsIntRangeInteger(change.value) || change.value.get<long long>() == 0) {
+                    return std::format("add on a counter item needs a non-zero integer in int range, got {}",
+                                       change.value.dump());
                 }
+                const long long delta = change.value.get<long long>();
                 const std::string& item = parts[2];
                 const long long current = field.contains(item) ? field.at(item).get<long long>() : 0;
-                if (current == 0 && change.value.get<long long>() < 0) {
+                if (current == 0 && delta < 0) {
                     return std::format("no item '{}' to decrease", item);
                 }
-                const long long next = current + change.value.get<long long>();
+                // Both operands are int-ranged, so the sum fits in long long.
+                const long long next = current + delta;
+                if (next > std::numeric_limits<int>::max()) {
+                    return std::format("count of '{}' would exceed {}", item, std::numeric_limits<int>::max());
+                }
                 if (next <= 0) {
                     field.erase(item);
                     note = "removed (count reached 0)";
