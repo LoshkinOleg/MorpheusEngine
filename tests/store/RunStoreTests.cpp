@@ -94,3 +94,104 @@ TEST_CASE("Database transactions roll back when the body throws", "[store]")
     REQUIRE(count.Step());
     CHECK(count.ColumnInt(0) == 0);
 }
+
+TEST_CASE("A failed COMMIT does not leave the transaction open", "[store]")
+{
+    const std::filesystem::path file = FreshDbPath("store_failed_commit");
+    Database a = Database::Open(file, true);
+    a.Exec("CREATE TABLE t (x INTEGER)");
+    Database b = Database::Open(file, false);
+
+    // B holds a SHARED lock: a deferred transaction that has read keeps it until COMMIT (rollback journal mode).
+    b.Exec("BEGIN; SELECT COUNT(*) FROM t;");
+
+    // A can write into its cache (RESERVED lock) but COMMIT needs an EXCLUSIVE lock, which B blocks.
+    // The busy timeout is 0, so COMMIT fails immediately with SQLITE_BUSY.
+    CHECK_THROWS_AS(a.Transaction([&] { a.Exec("INSERT INTO t VALUES (1)"); }), StoreError);
+
+    b.Exec("COMMIT");
+
+    // A must be back in autocommit mode: a new transaction starts and commits, and the failed insert is gone.
+    a.Transaction([&] { a.Exec("INSERT INTO t VALUES (2)"); });
+
+    Statement rows = a.Prepare("SELECT x FROM t ORDER BY x");
+    REQUIRE(rows.Step());
+    CHECK(rows.ColumnInt(0) == 2);
+    CHECK_FALSE(rows.Step());
+}
+
+TEST_CASE("RunStore::Open rejects a corrupt rng_seed", "[store]")
+{
+    for (const char* badSeed : {"12abc", "-1", "", "99999999999999999999"}) {
+        const std::filesystem::path file = FreshDbPath("store_bad_seed");
+        std::filesystem::remove(file);
+        {
+            RunStore store = RunStore::Create(file, TestMeta(), TestInitialState());
+        }
+        {
+            Database db = Database::Open(file, false);
+            db.Prepare("UPDATE run_meta SET value = ?1 WHERE key = 'rng_seed'").Bind(1, badSeed).Run();
+        }
+        INFO("seed value: '" << badSeed << "'");
+        CHECK_THROWS_AS(RunStore::Open(file), StoreError);
+        CHECK_THROWS_WITH(RunStore::Open(file), ContainsSubstring("rng_seed"));
+        CHECK_THROWS_WITH(RunStore::Open(file), ContainsSubstring("run.db"));
+    }
+}
+
+TEST_CASE("RunStore::Open rejects unparseable settings", "[store]")
+{
+    const std::filesystem::path file = FreshDbPath("store_bad_settings");
+    {
+        RunStore store = RunStore::Create(file, TestMeta(), TestInitialState());
+    }
+    {
+        Database db = Database::Open(file, false);
+        db.Exec("UPDATE run_meta SET value = '{bad' WHERE key = 'settings'");
+    }
+    CHECK_THROWS_AS(RunStore::Open(file), StoreError);
+    CHECK_THROWS_WITH(RunStore::Open(file), ContainsSubstring("settings"));
+    CHECK_THROWS_WITH(RunStore::Open(file), ContainsSubstring("run.db"));
+}
+
+TEST_CASE("RunStore::StateAt rejects an unparseable snapshot", "[store]")
+{
+    const std::filesystem::path file = FreshDbPath("store_bad_snapshot");
+    {
+        RunStore store = RunStore::Create(file, TestMeta(), TestInitialState());
+    }
+    {
+        Database db = Database::Open(file, false);
+        db.Exec("UPDATE state_snapshots SET state = '{bad' WHERE turn = 0");
+    }
+    RunStore store = RunStore::Open(file);
+    CHECK_THROWS_AS(store.StateAt(0), StoreError);
+    CHECK_THROWS_WITH(store.StateAt(0), ContainsSubstring("turn 0"));
+    CHECK_THROWS_WITH(store.StateAt(0), ContainsSubstring("run.db"));
+}
+
+TEST_CASE("Statement::ColumnFloats treats a ragged blob as bad stored data", "[store]")
+{
+    Database db = Database::Open(FreshDbPath("store_ragged_blob"), true);
+    db.Exec("CREATE TABLE v (b BLOB)");
+    db.Exec("INSERT INTO v VALUES (x'010203')"); // 3 bytes: not a whole number of floats.
+
+    Statement query = db.Prepare("SELECT b FROM v");
+    REQUIRE(query.Step());
+    CHECK_THROWS_AS(query.ColumnFloats(0), StoreError);
+}
+
+TEST_CASE("A failed RunStore::Create leaves no file behind", "[store]")
+{
+    const std::filesystem::path file = FreshDbPath("store_create_cleanup");
+    // A directory where SQLite wants its rollback journal makes the schema transaction fail after the file exists.
+    std::filesystem::create_directories(file.parent_path() / "run.db-journal");
+
+    CHECK_THROWS_AS(RunStore::Create(file, TestMeta(), TestInitialState()), StoreError);
+    CHECK_FALSE(std::filesystem::exists(file));
+
+    // With the obstacle gone, a retry succeeds instead of reporting "already exists".
+    std::filesystem::remove(file.parent_path() / "run.db-journal");
+    RunStore store = RunStore::Create(file, TestMeta(), TestInitialState());
+    CHECK(store.LatestTurn() == 0);
+}

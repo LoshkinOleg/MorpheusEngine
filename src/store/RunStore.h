@@ -28,12 +28,15 @@ public:
 private:
     Database _db;
     RunMeta _meta = {};
+    std::filesystem::path _file = {}; // Only used to name the file in error messages.
 
 public:
     // Creates a new run database holding the meta and the turn-0 snapshot. Throws StoreError if the file exists.
+    // If creation fails part way, the partial file is removed.
     static RunStore Create(const std::filesystem::path& file, RunMeta meta, const nlohmann::json& initialState);
 
-    // Opens an existing run. Throws StoreError if it is missing or was written with another schema version.
+    // Opens an existing run. Throws StoreError if it is missing or was written with another
+    // schema version, or its meta (rng_seed, settings) is damaged.
     static RunStore Open(const std::filesystem::path& file);
 
     const RunMeta& Meta() const;
@@ -41,11 +44,12 @@ public:
     // Highest committed turn number, 0 before the first turn.
     int LatestTurn();
 
-    // State after `turn` (0 = initial state). Throws ContractError if there is no snapshot for it.
+    // State after `turn` (0 = initial state). Throws ContractError if there is no snapshot for it
+    // and StoreError if the stored snapshot is not valid JSON.
     nlohmann::json StateAt(int turn);
 
 private:
-    RunStore(Database db, RunMeta meta);
+    RunStore(Database db, RunMeta meta, std::filesystem::path file);
 };
 
 } // namespace morpheus::store

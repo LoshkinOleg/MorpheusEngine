@@ -92,7 +92,10 @@ std::vector<float> Statement::ColumnFloats(int index) const
     // SQLite requires reading the blob pointer before its size.
     const void* pBlob = sqlite3_column_blob(_pStmt, index);
     const int size = sqlite3_column_bytes(_pStmt, index);
-    MORPHEUS_REQUIRE(size % static_cast<int>(sizeof(float)) == 0, "ColumnFloats: blob is not a whole number of floats");
+    // A ragged size means the stored data is damaged, not that the engine misused the API.
+    if (size % static_cast<int>(sizeof(float)) != 0) {
+        throw StoreError(std::format("stored vector blob is {} bytes, not a whole number of floats", size));
+    }
 
     std::vector<float> values(static_cast<std::size_t>(size) / sizeof(float));
     if (size > 0) {

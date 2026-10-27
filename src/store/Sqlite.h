@@ -72,18 +72,20 @@ public:
 
     Statement Prepare(std::string_view sql);
 
-    // Runs body() between BEGIN IMMEDIATE and COMMIT. If body throws, rolls back and rethrows.
+    // Runs body() between BEGIN IMMEDIATE and COMMIT. If body or COMMIT throws (COMMIT can fail, for example with
+    // SQLITE_BUSY while another connection reads), rolls back so the connection is never left inside the
+    // transaction, then rethrows.
     template <class F>
     void Transaction(F&& body)
     {
         Exec("BEGIN IMMEDIATE");
         try {
             body();
+            Exec("COMMIT");
         } catch (...) {
             RollbackNoThrow();
             throw;
         }
-        Exec("COMMIT");
     }
 
 private:
