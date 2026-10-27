@@ -24,7 +24,7 @@ Each module is a static library. Dependencies flow downward only.
 
 | Module | Responsibility | Depends on |
 |---|---|---|
-| `core` | World definition, schema-typed state, change validation, dice, turn record types. Pure logic, no I/O. | - |
+| `core` | World definition, schema-typed state, change validation, dice, turn record types. Pure logic; its only I/O is reading world folders. | - |
 | `store` | Per-run SQLite: turns, state snapshots, summaries, notes, embeddings | core |
 | `inference` | `LlmBackend` interface; `LlamaCppBackend` (tokenize, KV sequence reuse, grammar sampling, embeddings) | - |
 | `context` | Layered prompt assembly, exact token budgets, cache-prefix tracking | core, inference |
