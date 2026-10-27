@@ -59,6 +59,13 @@ void FillBatch(llama_batch& batch, std::span<const std::int32_t> tokens, std::si
     batch.n_tokens = static_cast<int32_t>(tokens.size());
 }
 
+// The UTF-8 bytes of a char8_t string, as a std::string. Paths go to llama.cpp and into messages as UTF-8, never
+// through the ANSI code page that path::string() would use on Windows.
+std::string Utf8(const std::u8string& text)
+{
+    return std::string(reinterpret_cast<const char*>(text.data()), text.size());
+}
+
 struct SamplerDeleter {
     void operator()(llama_sampler* pSampler) const
     {
@@ -94,9 +101,11 @@ LlamaCppBackend::LlamaCppBackend(LlamaConfig config)
     auto loadModel = [this](const std::filesystem::path& path) {
         llama_model_params params = llama_model_default_params();
         params.n_gpu_layers = _config.gpuLayers;
-        llama_model* pModel = llama_model_load_from_file(path.string().c_str(), params);
+        // ggml opens model files as UTF-8 on Windows, so pass UTF-8 bytes, not the ANSI path.string().
+        const std::u8string pathUtf8 = path.u8string();
+        llama_model* pModel = llama_model_load_from_file(reinterpret_cast<const char*>(pathUtf8.c_str()), params);
         if (pModel == nullptr) {
-            throw InferenceError(std::format("cannot load model '{}'", path.generic_string()));
+            throw InferenceError(std::format("cannot load model '{}'", Utf8(path.generic_u8string())));
         }
         return std::unique_ptr<llama_model, ModelDeleter>(pModel);
     };
@@ -129,11 +138,11 @@ LlamaCppBackend::LlamaCppBackend(LlamaConfig config)
         }
         if (llama_pooling_type(_pEmbedContext.get()) == LLAMA_POOLING_TYPE_NONE) {
             throw InferenceError(std::format("'{}' has no pooling; use a sentence-embedding model",
-                                             _config.embeddingModel.generic_string()));
+                                             Utf8(_config.embeddingModel.generic_u8string())));
         }
         if (llama_pooling_type(_pEmbedContext.get()) == LLAMA_POOLING_TYPE_RANK) {
             throw InferenceError(std::format("'{}' is a reranker, not a sentence-embedding model",
-                                             _config.embeddingModel.generic_string()));
+                                             Utf8(_config.embeddingModel.generic_u8string())));
         }
     }
 }
@@ -327,7 +336,8 @@ std::vector<std::vector<float>> LlamaCppBackend::Embed(const std::vector<std::st
 
 std::string LlamaCppBackend::EmbeddingModelId() const
 {
-    return _config.embeddingModel.stem().string();
+    // UTF-8, so the id is the same on every machine and code page.
+    return Utf8(_config.embeddingModel.stem().u8string());
 }
 
 std::vector<std::uint8_t> LlamaCppBackend::SaveState()

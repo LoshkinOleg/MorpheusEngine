@@ -5,12 +5,15 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <limits>
+#include <memory>
 #include <numeric>
 #include <span>
 #include <string>
 #include <vector>
 
+#include "TestPaths.h"
 #include "core/Errors.h"
 #include "llama/LlamaTestModels.h"
 
@@ -182,4 +185,42 @@ TEST_CASE("A state blob whose token count disagrees with the restored KV data is
     corrupt.erase(firstToken, firstToken + static_cast<std::ptrdiff_t>(sizeof(std::int32_t)));
     CHECK_THROWS_WITH(backend.RestoreState(corrupt), Catch::Matchers::ContainsSubstring("token list"));
     CheckCacheWasCleared(backend);
+}
+
+TEST_CASE("Model files in non-ASCII paths load, and the embedding model id is UTF-8", "[llama]")
+{
+    const std::string chatModel = morpheus::test::EnvironmentVariable("MORPHEUS_TEST_CHAT_MODEL");
+    const std::string embedModel = morpheus::test::EnvironmentVariable("MORPHEUS_TEST_EMBED_MODEL");
+    if (chatModel.empty() || embedModel.empty()) {
+        SKIP("set MORPHEUS_TEST_CHAT_MODEL and MORPHEUS_TEST_EMBED_MODEL to run model-backed tests");
+    }
+
+    // Hard links give the real models Japanese folder and file names (not representable in a Western ANSI code
+    // page) without copying gigabytes.
+    namespace fs = std::filesystem;
+    const fs::path dir = morpheus::test::FreshTempDir("llama_utf8_paths") / u8"\u30e2\u30c7\u30eb";
+    fs::create_directories(dir);
+    const fs::path chatLink = dir / u8"\u30c1\u30e3\u30c3\u30c8.gguf";
+    const fs::path embedLink = dir / u8"\u57cb\u3081\u8fbc\u307f.gguf";
+    std::error_code error;
+    fs::create_hard_link(fs::path(chatModel), chatLink, error);
+    if (!error) {
+        fs::create_hard_link(fs::path(embedModel), embedLink, error);
+    }
+    if (error) {
+        SKIP("cannot hard-link the models into the temp folder: " + error.message());
+    }
+
+    morpheus::llama::LlamaConfig config;
+    config.chatModel = chatLink;
+    config.embeddingModel = embedLink;
+    config.embeddingQueryPrefix = "search_query: ";
+    config.embeddingDocumentPrefix = "search_document: ";
+    config.contextSize = 512;
+    config.gpuLayers = 0; // The shared backend may already hold the models on the GPU.
+    std::unique_ptr<morpheus::llama::LlamaCppBackend> pBackend;
+    REQUIRE_NOTHROW(pBackend = std::make_unique<morpheus::llama::LlamaCppBackend>(config));
+
+    const std::u8string expected = u8"\u57cb\u3081\u8fbc\u307f";
+    CHECK(pBackend->EmbeddingModelId() == std::string(reinterpret_cast<const char*>(expected.data()), expected.size()));
 }
