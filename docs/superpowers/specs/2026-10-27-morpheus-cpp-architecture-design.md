@@ -96,8 +96,10 @@ LlmBackend
   save_state() -> blob / restore_state(blob)   (KV sequence state in RAM, used when the GPU is handed to another model)
 ```
 
-- `LlamaCppBackend` loads two GGUF models in-process: a chat model and an embedding model.
-- JSON schemas are converted to GBNF grammars with llama.cpp's json-schema-to-grammar.
+- `LlamaCppBackend` loads two GGUF models in-process: a chat model and an embedding model. It is built with Vulkan.
+- `save_state`/`restore_state` carry the cached token list together with the KV sequence state, so prefix reuse still works after a restore.
+- The backend takes grammar text from the caller (`GenerationSpec.grammar`, GBNF). Generating it from the state schema is milestone 3.
+- JSON schemas are converted to GBNF grammars with llama.cpp's json-schema-to-grammar (milestone 3).
 - `settings.json` holds the model paths, `n_ctx`, the number of GPU layers, sampling per call type (resolve runs cooler, narrate warmer), and `memory_mode`.
 
 ## World data and persistence
@@ -116,7 +118,7 @@ saves/<id>/<run>.db
 | Table | Contents |
 |---|---|
 | `run_meta` | world id, world content hash, model id, RNG seed, settings |
-| `turns` | n, input, resolve JSON, rolls, applied / rejected changes, narration, timings |
+| `turns` | n, input, resolve JSON, checks (typed check outcomes), applied / rejected changes, narration, timings |
 | `state_snapshots` | full state JSON after each turn |
 | `summaries` | folded turn range and its summary text |
 | `notes` | append-only model notes (`assisted` mode), committed in the same transaction as their turn |

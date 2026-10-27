@@ -11,12 +11,18 @@ Local-first, LLM-driven text RPG engine in C++20. The repository owner acts as p
 ## Build and test (Windows, Visual Studio 2022, CMake >= 3.25, Git Bash)
 - Fast loop (engine libraries + tests, no llama.cpp/SDL/ImGui): `cmake --preset tests`, `cmake --build --preset tests`, `ctest --preset tests`
 - AddressSanitizer: the same three commands with preset `asan`
-- Everything including the app: preset `dev`
+- `tests` and `asan` build without llama.cpp. `dev` builds everything, including llama.cpp with Vulkan (needs the Vulkan SDK), the app and `morpheus_probe`.
+- Model-backed tests are tagged `[llama]` and skip unless `MORPHEUS_TEST_CHAT_MODEL` and `MORPHEUS_TEST_EMBED_MODEL` point at the two GGUF files in `models/`.
 - One tag or test case: `./build/tests/bin/Debug/morpheus_tests.exe "[csv]"`
 
 ## Layout
-- src/core: world loading, schema-typed state, state changes, dice. No LLM, no UI; its only I/O is reading world folders.
+- src/core: world loading, settings, schema-typed state, state changes, dice, turn record types. No LLM, no UI; its only I/O is reading world folders.
 - src/store: one SQLite database per run.
+- src/inference: the LlmBackend interface and its types. No llama.cpp.
+- src/context: layered prompt assembly with exact token budgets.
+- src/llama: the llama.cpp backend (`dev` preset only). Only this module and tools/probe include <llama.h>.
+- tools/probe: `morpheus_probe`, a manual check of the models, the Vulkan backend and KV-cache reuse (`dev` preset only).
+- models/ and settings.json: both gitignored, per machine. settings.example.json is the template.
 - src/main.cpp: prototype app, replaced in milestone 4.
 - tests/: Catch2 tests (every tests/**/*.cpp is compiled in), tests/data: test worlds.
 - game_projects/<id>/: worlds as data (world.json, rules.md, lore.csv, state_schema.json, initial_state.json).

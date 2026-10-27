@@ -128,6 +128,7 @@ add_subdirectory(src/inference)
 add_subdirectory(src/context)
 if(MORPHEUS_BUILD_LLAMA)
     add_subdirectory(src/llama)
+    add_subdirectory(tools/probe)
 endif()
 
 # ---- App (prototype, replaced in milestone 4) --------------------------

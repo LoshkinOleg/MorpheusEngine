@@ -13,13 +13,13 @@ The earlier C# implementation lives on the `master` branch. This branch (`cpp`) 
 
 ## Build (Windows)
 
-Prerequisites: Visual Studio 2022 with the C++ workload, CMake 3.25+, Git. CMake fetches every dependency at a pinned commit.
+Prerequisites: Visual Studio 2022 with the C++ workload, CMake 3.25+, Git, and the Vulkan SDK (only for the `dev` preset, which builds llama.cpp with Vulkan). CMake fetches every dependency at a pinned commit.
 
 | Preset | Builds |
 |---|---|
 | `tests` | Engine libraries and tests only (no llama.cpp, SDL3 or ImGui) |
 | `asan` | Same as `tests`, instrumented with AddressSanitizer |
-| `dev` | Everything, including the `morpheus` app |
+| `dev` | Everything: llama.cpp with Vulkan, the `morpheus` app and the `morpheus_probe` tool |
 
 ```
 cmake --preset tests
@@ -27,10 +27,31 @@ cmake --build --preset tests
 ctest --preset tests
 ```
 
+## Models and settings
+
+The `dev` preset runs models in-process through llama.cpp. Download two GGUF files into `models/` (gitignored):
+
+- `Qwen3-4B-Instruct-2507-Q4_K_M.gguf` (chat, about 2.5 GB) from Hugging Face `unsloth/Qwen3-4B-Instruct-2507-GGUF`
+- `nomic-embed-text-v1.5.Q8_0.gguf` (embeddings, about 140 MB) from Hugging Face `nomic-ai/nomic-embed-text-v1.5-GGUF`
+
+Then copy `settings.example.json` (the template) to `settings.json` at the repository root and adjust it for your machine. `settings.json` is gitignored. Relative model paths resolve against the settings file's folder.
+
+To check that the models, the Vulkan backend and KV-cache prefix reuse work, run the probe. It prints the prompt size and streams two completions; the second should report almost the whole prompt as reused:
+
+```
+./build/dev/bin/Debug/morpheus_probe.exe settings.json game_projects/sandcrawler "I climb onto the crawler's roof."
+```
+
+Model-backed tests are tagged `[llama]` and skip unless `MORPHEUS_TEST_CHAT_MODEL` and `MORPHEUS_TEST_EMBED_MODEL` point at the two files.
+
 ## Layout
 
-- `src/core`: world loading, schema-typed state, state changes, dice
+- `src/core`: world loading, settings, schema-typed state, state changes, dice, turn record types
 - `src/store`: one SQLite database per run
+- `src/inference`: the `LlmBackend` interface (no llama.cpp)
+- `src/context`: layered prompt assembly with exact token budgets
+- `src/llama`: the llama.cpp backend (`dev` preset only)
+- `tools/probe`: `morpheus_probe`, a manual model check (`dev` preset only)
 - `src/main.cpp`: prototype app (replaced in milestone 4)
 - `tests/`: Catch2 tests and test data
 - `game_projects/<id>/`: worlds as data
