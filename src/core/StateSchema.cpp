@@ -1,8 +1,11 @@
 #include "core/StateSchema.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <format>
+#include <limits>
 #include <set>
+#include <utility>
 
 #include "core/Errors.h"
 
@@ -78,8 +81,23 @@ StateSchema StateSchema::FromJson(const nlohmann::json& json)
                     !fieldJson.contains("max") || !fieldJson.at("max").is_number_integer()) {
                     throw DataError(fieldWhere + ": int fields need integer 'min' and 'max'");
                 }
-                def.min = fieldJson.at("min").get<int>();
-                def.max = fieldJson.at("max").get<int>();
+                // Reject bounds outside int before converting, so they cannot wrap silently.
+                int* const bounds[] = {&def.min, &def.max};
+                const char* const boundNames[] = {"min", "max"};
+                for (int i = 0; i < 2; ++i) {
+                    const nlohmann::json& bound = fieldJson.at(boundNames[i]);
+                    const bool tooHigh = bound.is_number_unsigned()
+                                             ? bound.get<std::uint64_t>() >
+                                                   static_cast<std::uint64_t>(std::numeric_limits<int>::max())
+                                             : bound.get<long long>() > std::numeric_limits<int>::max();
+                    const bool tooLow = !bound.is_number_unsigned() && bound.get<long long>() < std::numeric_limits<int>::min();
+                    if (tooHigh || tooLow) {
+                        throw DataError(std::format("{}: '{}' {} is outside the int range {}..{}", fieldWhere,
+                                                    boundNames[i], bound.dump(), std::numeric_limits<int>::min(),
+                                                    std::numeric_limits<int>::max()));
+                    }
+                    *bounds[i] = bound.get<int>();
+                }
                 if (def.min > def.max) {
                     throw DataError(fieldWhere + ": 'min' is greater than 'max'");
                 }
@@ -133,14 +151,21 @@ bool StateSchema::IsValidEntityId(const std::string& id)
 std::string StateSchema::CheckFieldValue(const FieldDef& def, const nlohmann::json& value)
 {
     switch (def.type) {
-    case FieldType::Int:
+    case FieldType::Int: {
         if (!value.is_number_integer()) {
             return std::format("expected an integer, got {}", value.dump());
         }
-        if (value.get<long long>() < def.min || value.get<long long>() > def.max) {
-            return std::format("{} is outside {}..{}", value.get<long long>(), def.min, def.max);
+        // An unsigned value above LLONG_MAX would wrap negative through get<long long>().
+        if (value.is_number_unsigned() &&
+            value.get<std::uint64_t>() > static_cast<std::uint64_t>(std::numeric_limits<long long>::max())) {
+            return std::format("{} is outside {}..{}", value.dump(), def.min, def.max);
+        }
+        const long long number = value.get<long long>();
+        if (number < def.min || number > def.max) {
+            return std::format("{} is outside {}..{}", number, def.min, def.max);
         }
         return {};
+    }
     case FieldType::Enum:
         if (!value.is_string() ||
             std::find(def.values.begin(), def.values.end(), value.get<std::string>()) == def.values.end()) {
@@ -172,6 +197,9 @@ std::string StateSchema::CheckFieldValue(const FieldDef& def, const nlohmann::js
             return std::format("expected an object of item counts, got {}", value.dump());
         }
         for (auto it = value.begin(); it != value.end(); ++it) {
+            if (it.key().empty() || it.key().find('.') != std::string::npos) {
+                return std::format("counter item names must be non-empty and contain no '.', got '{}'", it.key());
+            }
             if (!it.value().is_number_integer() || it.value().get<long long>() <= 0) {
                 return std::format("count of '{}' must be a positive integer, got {}", it.key(), it.value().dump());
             }

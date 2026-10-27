@@ -1,3 +1,5 @@
+#include <cstdint>
+
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
@@ -138,4 +140,47 @@ TEST_CASE("Entity ids never contain the path separator", "[schema]")
     CHECK_FALSE(StateSchema::IsValidEntityId(""));
     CHECK_FALSE(StateSchema::IsValidEntityId("a.b"));
     CHECK_FALSE(StateSchema::IsValidEntityId("Player"));
+}
+
+TEST_CASE("StateSchema rejects integer bounds outside the int range", "[schema]")
+{
+    CHECK_THROWS_WITH(StateSchema::FromJson(SchemaWithBadField({{"type", "int"}, {"min", 0}, {"max", 3000000000LL}})),
+                      ContainsSubstring("'bad'"));
+    CHECK_THROWS_WITH(StateSchema::FromJson(SchemaWithBadField({{"type", "int"}, {"min", -3000000000LL}, {"max", 0}})),
+                      ContainsSubstring("'bad'"));
+    CHECK_THROWS_WITH(StateSchema::FromJson(SchemaWithBadField(
+                          {{"type", "int"}, {"min", 0}, {"max", std::uint64_t{18446744073709551615ULL}}})),
+                      ContainsSubstring("'bad'"));
+    // Values that would wrap to a small valid int if converted without a range check.
+    CHECK_THROWS_WITH(StateSchema::FromJson(SchemaWithBadField({{"type", "int"}, {"min", 0}, {"max", 4294967301LL}})),
+                      ContainsSubstring("'bad'"));
+    CHECK_THROWS_WITH(StateSchema::FromJson(SchemaWithBadField(
+                          {{"type", "int"}, {"min", 0}, {"max", std::uint64_t{9223372036854775813ULL}}})),
+                      ContainsSubstring("'bad'"));
+}
+
+TEST_CASE("CheckFieldValue rejects out-of-range and non-integer ints", "[schema]")
+{
+    FieldDef health;
+    health.type = FieldType::Int;
+    health.min = 0;
+    health.max = 10;
+    CHECK_FALSE(StateSchema::CheckFieldValue(health, nlohmann::json(std::uint64_t{18446744073709551615ULL})).empty());
+    CHECK_FALSE(StateSchema::CheckFieldValue(health, 4.0).empty());
+
+    // A uint64 above LLONG_MAX must not wrap to a negative value that happens to be in range.
+    FieldDef signedField;
+    signedField.type = FieldType::Int;
+    signedField.min = -10;
+    signedField.max = 10;
+    CHECK_FALSE(StateSchema::CheckFieldValue(signedField, nlohmann::json(std::uint64_t{18446744073709551615ULL})).empty());
+}
+
+TEST_CASE("CheckFieldValue rejects bad counter shapes", "[schema]")
+{
+    FieldDef inventory;
+    inventory.type = FieldType::Counter;
+    CHECK_FALSE(StateSchema::CheckFieldValue(inventory, nlohmann::json({{"a.b", 1}})).empty());
+    CHECK_FALSE(StateSchema::CheckFieldValue(inventory, nlohmann::json({{"", 1}})).empty());
+    CHECK_FALSE(StateSchema::CheckFieldValue(inventory, 5).empty());
 }
