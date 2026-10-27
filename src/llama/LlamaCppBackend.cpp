@@ -131,6 +131,10 @@ LlamaCppBackend::LlamaCppBackend(LlamaConfig config)
             throw InferenceError(std::format("'{}' has no pooling; use a sentence-embedding model",
                                              _config.embeddingModel.generic_string()));
         }
+        if (llama_pooling_type(_pEmbedContext.get()) == LLAMA_POOLING_TYPE_RANK) {
+            throw InferenceError(std::format("'{}' is a reranker, not a sentence-embedding model",
+                                             _config.embeddingModel.generic_string()));
+        }
     }
 }
 
@@ -162,9 +166,26 @@ inference::Completion LlamaCppBackend::Complete(const inference::Prompt& prompt,
     inference::Completion completion;
     const std::vector<std::int32_t> tokens = TokenizePrompt(prompt);
     completion.promptTokens = static_cast<int>(tokens.size());
-    if (completion.promptTokens + spec.maxTokens > ContextSize()) {
+    if (spec.maxTokens > ContextSize() - completion.promptTokens) {
         throw InferenceError(std::format("prompt ({} tokens) plus max_tokens ({}) exceeds the context size ({})",
                                          completion.promptTokens, spec.maxTokens, ContextSize()));
+    }
+
+    // Sampler chain: the grammar first (it masks impossible tokens), then the sampling settings. Built before the
+    // prompt is decoded, so an invalid grammar fails without touching the KV cache.
+    std::unique_ptr<llama_sampler, SamplerDeleter> pSampler(llama_sampler_chain_init(llama_sampler_chain_default_params()));
+    if (!spec.grammar.empty()) {
+        llama_sampler* pGrammar = llama_sampler_init_grammar(pVocab, spec.grammar.c_str(), "root");
+        MORPHEUS_REQUIRE(pGrammar != nullptr, "Complete: the GBNF grammar does not parse");
+        llama_sampler_chain_add(pSampler.get(), pGrammar);
+    }
+    if (spec.sampling.temperature <= 0.0f) {
+        llama_sampler_chain_add(pSampler.get(), llama_sampler_init_greedy());
+    } else {
+        llama_sampler_chain_add(pSampler.get(), llama_sampler_init_top_k(spec.sampling.topK));
+        llama_sampler_chain_add(pSampler.get(), llama_sampler_init_top_p(spec.sampling.topP, 1));
+        llama_sampler_chain_add(pSampler.get(), llama_sampler_init_temp(spec.sampling.temperature));
+        llama_sampler_chain_add(pSampler.get(), llama_sampler_init_dist(spec.sampling.seed));
     }
 
     // Reuse the longest common prefix of the KV cache. The last prompt token is always evaluated, because
@@ -191,6 +212,7 @@ inference::Completion LlamaCppBackend::Complete(const inference::Prompt& prompt,
         if (stop.stop_requested()) {
             completion.cancelled = true;
             completion.tokensEvaluated = static_cast<int>(_cachedTokens.size() - common);
+            completion.promptMs = std::chrono::duration<double, std::milli>(Clock::now() - promptStart).count();
             return completion;
         }
         const std::size_t count = std::min(batchSize, tokens.size() - position);
@@ -199,22 +221,6 @@ inference::Completion LlamaCppBackend::Complete(const inference::Prompt& prompt,
     completion.tokensEvaluated = static_cast<int>(_cachedTokens.size() - common);
     const Clock::time_point generateStart = Clock::now();
     completion.promptMs = std::chrono::duration<double, std::milli>(generateStart - promptStart).count();
-
-    // Sampler chain: the grammar first (it masks impossible tokens), then the sampling settings.
-    std::unique_ptr<llama_sampler, SamplerDeleter> pSampler(llama_sampler_chain_init(llama_sampler_chain_default_params()));
-    if (!spec.grammar.empty()) {
-        llama_sampler* pGrammar = llama_sampler_init_grammar(pVocab, spec.grammar.c_str(), "root");
-        MORPHEUS_REQUIRE(pGrammar != nullptr, "Complete: the GBNF grammar does not parse");
-        llama_sampler_chain_add(pSampler.get(), pGrammar);
-    }
-    if (spec.sampling.temperature <= 0.0f) {
-        llama_sampler_chain_add(pSampler.get(), llama_sampler_init_greedy());
-    } else {
-        llama_sampler_chain_add(pSampler.get(), llama_sampler_init_top_k(spec.sampling.topK));
-        llama_sampler_chain_add(pSampler.get(), llama_sampler_init_top_p(spec.sampling.topP, 1));
-        llama_sampler_chain_add(pSampler.get(), llama_sampler_init_temp(spec.sampling.temperature));
-        llama_sampler_chain_add(pSampler.get(), llama_sampler_init_dist(spec.sampling.seed));
-    }
 
     // Length of the longest prefix of `text` that does not end inside a UTF-8 sequence, so streamed pieces never
     // split a character.
@@ -272,7 +278,7 @@ std::vector<std::vector<float>> LlamaCppBackend::Embed(const std::vector<std::st
     const llama_vocab* pVocab = llama_model_get_vocab(_pEmbedModel.get());
     const std::string& prefix = purpose == inference::EmbedPurpose::Query ? _config.embeddingQueryPrefix
                                                                           : _config.embeddingDocumentPrefix;
-    const auto dimensions = static_cast<std::size_t>(llama_model_n_embd(_pEmbedModel.get()));
+    const auto dimensions = static_cast<std::size_t>(llama_model_n_embd_out(_pEmbedModel.get()));
     const bool encoderOnly = llama_model_has_encoder(_pEmbedModel.get()) && !llama_model_has_decoder(_pEmbedModel.get());
 
     std::vector<std::vector<float>> vectors;
@@ -348,8 +354,8 @@ void LlamaCppBackend::RestoreState(std::span<const std::uint8_t> state)
     std::uint64_t count = 0;
     MORPHEUS_REQUIRE(state.size() >= sizeof(count), "RestoreState: state blob too small");
     std::memcpy(&count, state.data(), sizeof(count));
+    MORPHEUS_REQUIRE(count <= (state.size() - sizeof(count)) / sizeof(std::int32_t), "RestoreState: state blob truncated");
     const std::size_t tokenBytes = static_cast<std::size_t>(count) * sizeof(std::int32_t);
-    MORPHEUS_REQUIRE(state.size() >= sizeof(count) + tokenBytes, "RestoreState: state blob truncated");
     std::vector<std::int32_t> tokens(static_cast<std::size_t>(count));
     if (tokenBytes > 0) {
         std::memcpy(tokens.data(), state.data() + sizeof(count), tokenBytes);
@@ -361,6 +367,8 @@ void LlamaCppBackend::RestoreState(std::span<const std::uint8_t> state)
     if (llama_state_seq_set_data(_pChatContext.get(), state.data() + sizeof(count) + tokenBytes, kvSize, 0) == 0) {
         throw InferenceError("restoring the KV cache state failed");
     }
+    MORPHEUS_REQUIRE(llama_memory_seq_pos_max(llama_get_memory(_pChatContext.get()), 0) + 1 == static_cast<llama_pos>(count),
+                     "RestoreState: the restored KV state does not match the saved token count");
     _cachedTokens = std::move(tokens);
 }
 
