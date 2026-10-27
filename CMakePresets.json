@@ -9,7 +9,9 @@
       "binaryDir": "${sourceDir}/build/dev",
       "cacheVariables": {
         "MORPHEUS_BUILD_APP": "ON",
-        "MORPHEUS_BUILD_TESTS": "ON"
+        "MORPHEUS_BUILD_TESTS": "ON",
+        "MORPHEUS_BUILD_LLAMA": "ON",
+        "MORPHEUS_VULKAN": "ON"
       }
     },
     {
@@ -18,7 +20,8 @@
       "inherits": "dev",
       "binaryDir": "${sourceDir}/build/tests",
       "cacheVariables": {
-        "MORPHEUS_BUILD_APP": "OFF"
+        "MORPHEUS_BUILD_APP": "OFF",
+        "MORPHEUS_BUILD_LLAMA": "OFF"
       }
     },
     {

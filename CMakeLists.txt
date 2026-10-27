@@ -17,6 +17,12 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib) # For static libs: .
 option(MORPHEUS_BUILD_APP "Build the morpheus app (fetches llama.cpp, SDL3 and ImGui)" ON)
 option(MORPHEUS_BUILD_TESTS "Build morpheus_tests (fetches Catch2)" ON)
 option(MORPHEUS_ASAN "Instrument every target with AddressSanitizer (MSVC only)" OFF)
+option(MORPHEUS_BUILD_LLAMA "Build the llama.cpp backend (fetches and builds llama.cpp)" ON)
+option(MORPHEUS_VULKAN "Build llama.cpp with the Vulkan GPU backend (needs the Vulkan SDK)" ON)
+
+if(MORPHEUS_BUILD_APP AND NOT MORPHEUS_BUILD_LLAMA)
+    message(FATAL_ERROR "MORPHEUS_BUILD_APP needs MORPHEUS_BUILD_LLAMA.")
+endif()
 
 # AddressSanitizer is applied to every target, dependencies included: MSVC refuses to link instrumented and
 # non-instrumented objects that share STL containers (LNK2038 'annotate_vector' mismatch).
@@ -68,16 +74,22 @@ add_library(sqlite3 STATIC ${sqlite_SOURCE_DIR}/sqlite3.c)
 target_include_directories(sqlite3 SYSTEM PUBLIC ${sqlite_SOURCE_DIR})
 target_compile_definitions(sqlite3 PRIVATE SQLITE_OMIT_LOAD_EXTENSION SQLITE_DQS=0)
 
-if(MORPHEUS_BUILD_APP)
+if(MORPHEUS_BUILD_LLAMA)
+    # GPU backend for llama.cpp. FORCE so that toggling MORPHEUS_VULKAN reconfigures the fetched llama.cpp.
+    set(GGML_VULKAN ${MORPHEUS_VULKAN} CACHE BOOL "" FORCE)
+
     # llama
     FetchContent_Declare(
         llama                                                         # prefix for CMake variables
         GIT_REPOSITORY https://github.com/ggerganov/llama.cpp.git     # repo TODO: redirect to the new repo: ggml-org/llama.cpp , probably update the targeted commit?
         GIT_TAG        960d628f46d17ea9c10aa944b061b2341afeb3b5       # commit SHA to get, version b9804
         GIT_SHALLOW    FALSE                                          # Has to be FALSE to be able to use a commit SHA
+        SYSTEM                                                        # Its headers are external: no /W4 /WX
     )
     FetchContent_MakeAvailable(llama)
+endif()
 
+if(MORPHEUS_BUILD_APP)
     # SDL3
     FetchContent_Declare(
         sdl3                                                          # prefix for CMake variables
@@ -112,6 +124,7 @@ endif()
 # ---- Engine libraries ---------------------------------------------------
 add_subdirectory(src/core)
 add_subdirectory(src/store)
+add_subdirectory(src/inference)
 
 # ---- App (prototype, replaced in milestone 4) --------------------------
 if(MORPHEUS_BUILD_APP)

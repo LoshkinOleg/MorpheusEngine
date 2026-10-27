@@ -1,8 +1,13 @@
 # Every *.cpp under tests/ is a test source. CONFIGURE_DEPENDS re-globs on each build, so new files are picked up.
 file(GLOB_RECURSE MORPHEUS_TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
 
+# Model-backed tests need llama.cpp; presets without it skip their sources entirely.
+if(NOT MORPHEUS_BUILD_LLAMA)
+    list(FILTER MORPHEUS_TEST_SOURCES EXCLUDE REGEX "/tests/llama/")
+endif()
+
 add_executable(morpheus_tests ${MORPHEUS_TEST_SOURCES})
-target_link_libraries(morpheus_tests PRIVATE morpheus_core morpheus_store Catch2::Catch2WithMain)
+target_link_libraries(morpheus_tests PRIVATE morpheus_core morpheus_store morpheus_inference Catch2::Catch2WithMain)
 target_include_directories(morpheus_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(morpheus_tests PRIVATE
     MORPHEUS_REPO_DIR="${PROJECT_SOURCE_DIR}"
