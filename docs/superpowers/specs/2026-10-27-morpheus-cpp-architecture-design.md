@@ -166,6 +166,7 @@ These carry over as ideas and content, not code:
 - A cloud backend implementation (the interface only)
 - Persisting the KV cache to disk across sessions (saving it in RAM is in v1)
 - Narrative visualization (separate spec: `2026-10-27-narrative-visualization-design.md`)
+- Narration text-to-speech (separate spec: `2026-10-27-narration-tts-design.md`)
 - The plot-consolidation agent ("PlotMaster")
 - GOAP-driven NPCs
 - Authoring tools
