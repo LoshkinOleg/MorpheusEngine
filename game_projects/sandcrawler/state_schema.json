@@ -1,0 +1,46 @@
+{
+  "entity_types": {
+    "captain": {
+      "fields": {
+        "health": { "type": "int", "min": 0, "max": 10, "default": 10 },
+        "conditions": { "type": "list" },
+        "location": { "type": "string" },
+        "inventory": { "type": "counter" },
+        "grit": { "type": "int", "min": 0, "max": 5 },
+        "wits": { "type": "int", "min": 0, "max": 5 },
+        "presence": { "type": "int", "min": 0, "max": 5 },
+        "agility": { "type": "int", "min": 0, "max": 5 }
+      }
+    },
+    "crawler": {
+      "fields": {
+        "fuel": { "type": "int", "min": 0, "max": 100 },
+        "water": { "type": "int", "min": 0, "max": 100 },
+        "food": { "type": "int", "min": 0, "max": 100 },
+        "ammunition": { "type": "int", "min": 0, "max": 100 },
+        "hull": { "type": "int", "min": 0, "max": 100, "default": 100 },
+        "crew": { "type": "int", "min": 0, "max": 40 },
+        "morale": { "type": "enum", "values": ["steady", "mutinous", "low", "high"] },
+        "location": { "type": "string" },
+        "cargo": { "type": "counter" },
+        "vehicles": { "type": "counter" }
+      }
+    },
+    "world": {
+      "fields": {
+        "day": { "type": "int", "min": 1, "max": 100000 },
+        "time_of_day": { "type": "enum", "values": ["dawn", "morning", "noon", "afternoon", "dusk", "night"] }
+      }
+    },
+    "npc": {
+      "creatable": true,
+      "fields": {
+        "role": { "type": "string" },
+        "disposition": { "type": "enum", "values": ["neutral", "hostile", "wary", "friendly", "loyal"] },
+        "location": { "type": "string" },
+        "conditions": { "type": "list" },
+        "health": { "type": "int", "min": 0, "max": 10, "default": 10 }
+      }
+    }
+  }
+}

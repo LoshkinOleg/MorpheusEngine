@@ -1,7 +1,0 @@
-{
-  "id": "sandcrawler",
-  "title": "Sandcrawler Captain",
-  "turn_pipeline": "memory_director_default",
-  "required_modules": [
-  ]
-}

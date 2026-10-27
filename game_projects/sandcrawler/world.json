@@ -1,0 +1,8 @@
+{
+  "id": "sandcrawler",
+  "title": "Sandcrawler Captain",
+  "dice": "1d20+stat",
+  "check_entity": "player",
+  "difficulties": { "easy": 8, "medium": 12, "hard": 16, "extreme": 20 },
+  "memory_mode": "engine"
+}
