@@ -1,6 +1,8 @@
 #include "core/Csv.h"
 
+#include <cstddef>
 #include <format>
+#include <utility>
 
 #include "core/Errors.h"
 

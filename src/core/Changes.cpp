@@ -152,13 +152,21 @@ ApplyResult ApplyChanges(const StateSchema& schema, const nlohmann::json& state,
             return std::format("unknown entity '{}'", entityId);
         }
         nlohmann::json& entity = target.at(entityId);
+        // The precondition is that state already satisfies schema.ValidateState; a mismatch is an engine bug.
+        MORPHEUS_REQUIRE(entity.is_object() && entity.contains("type") && entity.at("type").is_string(),
+                         std::format("ApplyChanges: entity '{}' has no string 'type' (state was not validated)", entityId));
         const EntityTypeDef* pType = schema.FindEntityType(entity.at("type").get<std::string>());
-        MORPHEUS_REQUIRE(pType != nullptr, "ApplyChanges: state holds an entity of an unknown type");
+        MORPHEUS_REQUIRE(pType != nullptr,
+                         std::format("ApplyChanges: entity '{}' has an unknown type (state was not validated)", entityId));
+        MORPHEUS_REQUIRE(entity.contains("fields") && entity.at("fields").is_object(),
+                         std::format("ApplyChanges: entity '{}' has no 'fields' object (state was not validated)", entityId));
         const auto fieldIt = pType->fields.find(fieldName);
         if (fieldIt == pType->fields.end()) {
             return std::format("entity '{}' has no field '{}'", entityId, fieldName);
         }
         const FieldDef& def = fieldIt->second;
+        MORPHEUS_REQUIRE(entity.at("fields").contains(fieldName),
+                         std::format("ApplyChanges: entity '{}' lacks field '{}' (state was not validated)", entityId, fieldName));
         nlohmann::json& field = entity.at("fields").at(fieldName);
 
         const bool itemPath = parts.size() == 3;

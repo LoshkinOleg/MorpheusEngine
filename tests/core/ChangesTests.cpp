@@ -256,3 +256,27 @@ TEST_CASE("add accepts INT_MIN as a negative delta", "[changes]")
     REQUIRE(rope.rejected.empty());
     CHECK(PlayerField(rope, "inventory") == nlohmann::json::object());
 }
+
+TEST_CASE("ApplyChanges throws ContractError when the state breaks the schema contract", "[changes]")
+{
+    // A player without the declared 'location' field: callers must validate loaded state first.
+    nlohmann::json missingField = TestState();
+    missingField["player"]["fields"].erase("location");
+    const nlohmann::json setLocation =
+        nlohmann::json::array({{{"op", "set"}, {"path", "player.location"}, {"value", "dock"}}});
+    CHECK_THROWS_AS(ApplyChanges(TestSchema(), missingField, setLocation), ContractError);
+    CHECK_THROWS_WITH(ApplyChanges(TestSchema(), missingField, setLocation), ContainsSubstring("location"));
+
+    // An entity of an unknown type.
+    nlohmann::json unknownType = TestState();
+    unknownType["player"]["type"] = "dragon";
+    CHECK_THROWS_AS(ApplyChanges(TestSchema(), unknownType, setLocation), ContractError);
+
+    // An entity with no 'type', or with no 'fields' object.
+    nlohmann::json noType = TestState();
+    noType["player"].erase("type");
+    CHECK_THROWS_AS(ApplyChanges(TestSchema(), noType, setLocation), ContractError);
+    nlohmann::json noFields = TestState();
+    noFields["player"].erase("fields");
+    CHECK_THROWS_AS(ApplyChanges(TestSchema(), noFields, setLocation), ContractError);
+}

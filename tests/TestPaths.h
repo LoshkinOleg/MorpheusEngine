@@ -2,6 +2,8 @@
 
 #include <filesystem>
 #include <fstream>
+#include <stdexcept>
+#include <string>
 #include <string_view>
 
 namespace morpheus::test {
@@ -32,6 +34,11 @@ inline void WriteFile(const std::filesystem::path& file, std::string_view text)
 {
     std::ofstream stream(file, std::ios::binary | std::ios::trunc);
     stream << text;
+    stream.close();
+    // A silently failed write would make a test pass or fail for the wrong reason, so fail loudly.
+    if (stream.fail()) {
+        throw std::runtime_error("WriteFile: cannot write '" + file.generic_string() + "'");
+    }
 }
 
 } // namespace morpheus::test

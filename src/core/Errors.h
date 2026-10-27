@@ -19,10 +19,11 @@ public:
 
 } // namespace morpheus::core
 
-// Fails fast and loud on a broken engine contract: throws ContractError carrying `message`.
-#define MORPHEUS_REQUIRE(condition, message)                                   \
-    do {                                                                       \
-        if (!(condition)) {                                                    \
-            throw ::morpheus::core::ContractError(std::string(message));       \
-        }                                                                      \
+// Fails fast and loud on a broken engine contract: throws ContractError carrying `message` and the source location.
+#define MORPHEUS_REQUIRE(condition, message) \
+    do { \
+        if (!(condition)) { \
+            throw ::morpheus::core::ContractError( \
+                std::string(message) + " [" __FILE__ ":" + std::to_string(__LINE__) + "]"); \
+        } \
     } while (false)

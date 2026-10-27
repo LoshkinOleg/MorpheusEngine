@@ -122,7 +122,7 @@ Database Database::Open(const std::filesystem::path& file, bool create)
     const int rc = sqlite3_open_v2(reinterpret_cast<const char*>(utf8Path.c_str()), &pDb, flags, nullptr);
     if (rc != SQLITE_OK) {
         const std::string message = pDb != nullptr ? sqlite3_errmsg(pDb) : sqlite3_errstr(rc);
-        sqlite3_close(pDb);
+        sqlite3_close_v2(pDb);
         throw StoreError(std::format("cannot open '{}': {}", file.generic_string(), message));
     }
     return Database(pDb);
@@ -141,7 +141,7 @@ Database::Database(Database&& other) noexcept
 Database& Database::operator=(Database&& other) noexcept
 {
     if (this != &other) {
-        sqlite3_close(_pDb);
+        sqlite3_close_v2(_pDb);
         _pDb = std::exchange(other._pDb, nullptr);
     }
     return *this;
@@ -149,7 +149,7 @@ Database& Database::operator=(Database&& other) noexcept
 
 Database::~Database()
 {
-    sqlite3_close(_pDb); // Harmless no-op on nullptr.
+    sqlite3_close_v2(_pDb); // Harmless no-op on nullptr.
 }
 
 void Database::Exec(std::string_view sql)
