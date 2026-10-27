@@ -56,6 +56,18 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(nlohmann)
 
+# SQLite amalgamation (store). The archive has no CMakeLists.txt, so the library target is defined here.
+FetchContent_Declare(
+    sqlite
+    URL      https://www.sqlite.org/2025/sqlite-amalgamation-3500400.zip   # SQLite 3.50.4
+    URL_HASH SHA256=1d3049dd0f830a025a53105fc79fd2ab9431aea99e137809d064d8ee8356b032
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+)
+FetchContent_MakeAvailable(sqlite)
+add_library(sqlite3 STATIC ${sqlite_SOURCE_DIR}/sqlite3.c)
+target_include_directories(sqlite3 SYSTEM PUBLIC ${sqlite_SOURCE_DIR})
+target_compile_definitions(sqlite3 PRIVATE SQLITE_OMIT_LOAD_EXTENSION SQLITE_DQS=0)
+
 if(MORPHEUS_BUILD_APP)
     # llama
     FetchContent_Declare(
@@ -99,6 +111,7 @@ endif()
 
 # ---- Engine libraries ---------------------------------------------------
 add_subdirectory(src/core)
+add_subdirectory(src/store)
 
 # ---- App (prototype, replaced in milestone 4) --------------------------
 if(MORPHEUS_BUILD_APP)

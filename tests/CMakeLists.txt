@@ -2,7 +2,7 @@
 file(GLOB_RECURSE MORPHEUS_TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
 
 add_executable(morpheus_tests ${MORPHEUS_TEST_SOURCES})
-target_link_libraries(morpheus_tests PRIVATE morpheus_core Catch2::Catch2WithMain)
+target_link_libraries(morpheus_tests PRIVATE morpheus_core morpheus_store Catch2::Catch2WithMain)
 target_include_directories(morpheus_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(morpheus_tests PRIVATE
     MORPHEUS_REPO_DIR="${PROJECT_SOURCE_DIR}"
