@@ -15,6 +15,7 @@ struct SamplingSettings {
 struct BudgetSettings {
     int resolveMaxTokens = 0; // Generation reserved for the resolve call.
     int narrateMaxTokens = 0; // Generation reserved for the narrate call.
+    int narrateAllowance = 0; // Resolution record + narrate instruction appended for the narrate call.
     int tailAllowance = 0;    // State view + retrieved snippets + player input + instruction (T1-T4).
     int engineRulesCap = 0;   // L0
     int worldCap = 0;         // L1: world rules + always-on lore.

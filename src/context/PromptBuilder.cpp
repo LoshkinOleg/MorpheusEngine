@@ -1,7 +1,7 @@
 #include "context/PromptBuilder.h"
 
-#include <utility>
 #include <format>
+#include <utility>
 
 #include "context/StateView.h"
 #include "context/Transcript.h"
@@ -90,20 +90,28 @@ Assembly AssembleResolvePrompt(const core::World& world, const ContextInputs& in
     assembly.summaryOverBudget = tokens.summary > budget.summaryCap;
     assembly.tailOverBudget = tokens.tail > budget.tailAllowance;
 
-    // L3 gets what the templated system message, the tail allowance and both generations leave.
+    // L3 gets what the templated system message, the tail allowance, the narrate allowance and both generations
+    // leave.
     assembly.transcriptBudget = backend.ContextSize() - budget.resolveMaxTokens - budget.narrateMaxTokens -
-                                budget.tailAllowance - systemCost;
+                                budget.narrateAllowance - budget.tailAllowance - systemCost;
     if (assembly.transcriptBudget <= 0) {
         // Folding turns cannot fix this: the settings or the world leave L3 nothing, so it is not a flag.
         throw core::DataError(std::format("context_size {} leaves no room for the transcript after the system "
-                                          "layers ({} tokens), the tail allowance and both generations",
+                                          "layers ({} tokens), the tail allowance, the narrate allowance and both "
+                                          "generations",
                                           backend.ContextSize(), systemCost));
     }
     assembly.transcriptOverBudget = assembly.transcriptCost > assembly.transcriptBudget;
 
-    // Final safety check on the whole templated prompt.
-    assembly.contextOverflow =
-        tokens.total + budget.resolveMaxTokens + budget.narrateMaxTokens > backend.ContextSize();
+    // Final safety check on the whole templated prompt, as seen by the narrate call: the prompt, the narrate
+    // message (its template overhead plus the allowance for its text) and both generations. The overhead is
+    // approximated by the cost of an empty one-message prompt.
+    inference::Prompt emptyMessage;
+    emptyMessage.messages.push_back({inference::Role::User, ""});
+    const int narrateMessageOverhead = backend.CountPromptTokens(emptyMessage);
+    assembly.contextOverflow = tokens.total + budget.narrateAllowance + narrateMessageOverhead +
+                                   budget.resolveMaxTokens + budget.narrateMaxTokens >
+                               backend.ContextSize();
     return assembly;
 }
 

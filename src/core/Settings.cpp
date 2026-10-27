@@ -98,17 +98,19 @@ Settings LoadSettings(const std::filesystem::path& file)
 
     // Budget: every part positive and below the context size.
     const nlohmann::json& budget = requireMember(json, "budget", "settings");
-    checkKeys(budget, "budget", {"resolve_max_tokens", "narrate_max_tokens", "tail_allowance", "engine_rules_cap",
+    checkKeys(budget, "budget", {"resolve_max_tokens", "narrate_max_tokens", "narrate_allowance", "tail_allowance",
+                                 "engine_rules_cap",
                                  "world_cap", "summary_cap"});
     const long long contextSize = settings.contextSize;
     settings.budget.resolveMaxTokens = requireInt(budget, "resolve_max_tokens", "budget", 1, contextSize);
     settings.budget.narrateMaxTokens = requireInt(budget, "narrate_max_tokens", "budget", 1, contextSize);
+    settings.budget.narrateAllowance = requireInt(budget, "narrate_allowance", "budget", 1, contextSize);
     settings.budget.tailAllowance = requireInt(budget, "tail_allowance", "budget", 1, contextSize);
     settings.budget.engineRulesCap = requireInt(budget, "engine_rules_cap", "budget", 1, contextSize);
     settings.budget.worldCap = requireInt(budget, "world_cap", "budget", 1, contextSize);
     settings.budget.summaryCap = requireInt(budget, "summary_cap", "budget", 1, contextSize);
     const long long fixed = static_cast<long long>(settings.budget.resolveMaxTokens) + settings.budget.narrateMaxTokens +
-                            settings.budget.tailAllowance + settings.budget.engineRulesCap + settings.budget.worldCap +
+                            settings.budget.narrateAllowance + settings.budget.tailAllowance + settings.budget.engineRulesCap + settings.budget.worldCap +
                             settings.budget.summaryCap;
     if (fixed >= contextSize) {
         throw DataError(std::format("{}: budget uses {} of {} context tokens and leaves no room for the transcript",

@@ -8,6 +8,7 @@
   "budget": {
     "resolve_max_tokens": 512,
     "narrate_max_tokens": 768,
+    "narrate_allowance": 512,
     "tail_allowance": 2048,
     "engine_rules_cap": 1024,
     "world_cap": 4096,

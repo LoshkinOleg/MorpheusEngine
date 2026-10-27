@@ -27,7 +27,7 @@ nlohmann::json ValidSettingsJson()
         "context_size": 16384,
         "gpu_layers": -1,
         "budget": {
-            "resolve_max_tokens": 512, "narrate_max_tokens": 768, "tail_allowance": 2048,
+            "resolve_max_tokens": 512, "narrate_max_tokens": 768, "narrate_allowance": 512, "tail_allowance": 2048,
             "engine_rules_cap": 1024, "world_cap": 4096, "summary_cap": 2048
         },
         "sampling": {
@@ -61,6 +61,7 @@ TEST_CASE("LoadSettings reads every value and resolves model paths", "[settings]
     CHECK(settings.contextSize == 16384);
     CHECK(settings.gpuLayers == -1);
     CHECK(settings.budget.narrateMaxTokens == 768);
+    CHECK(settings.budget.narrateAllowance == 512);
     CHECK(settings.budget.summaryCap == 2048);
     CHECK(settings.resolveSampling.temperature == 0.3);
     CHECK(settings.narrateSampling.topP == 0.95);
@@ -92,6 +93,27 @@ TEST_CASE("LoadSettings names what is wrong", "[settings]")
         json["context_size"] = 8192;
         json["budget"]["world_cap"] = 6000;
         CHECK_THROWS_WITH(LoadSettings(WriteSettings("settings_budget", json)), ContainsSubstring("transcript"));
+    }
+    SECTION("narrate_allowance is required")
+    {
+        nlohmann::json json = ValidSettingsJson();
+        json["budget"].erase("narrate_allowance");
+        CHECK_THROWS_WITH(LoadSettings(WriteSettings("settings_no_narrate_allowance", json)),
+                          ContainsSubstring("narrate_allowance"));
+    }
+    SECTION("narrate_allowance above the context size")
+    {
+        nlohmann::json json = ValidSettingsJson();
+        json["budget"]["narrate_allowance"] = 20000;
+        CHECK_THROWS_WITH(LoadSettings(WriteSettings("settings_big_narrate_allowance", json)),
+                          ContainsSubstring("narrate_allowance"));
+    }
+    SECTION("narrate_allowance counts toward the transcript room")
+    {
+        // 512 + 768 + 2048 + 1024 + 4096 + 2048 = 10496 fits 16384; adding 6000 does not.
+        nlohmann::json json = ValidSettingsJson();
+        json["budget"]["narrate_allowance"] = 6000;
+        CHECK_THROWS_WITH(LoadSettings(WriteSettings("settings_allowance_budget", json)), ContainsSubstring("transcript"));
     }
     SECTION("top_p of zero")
     {
