@@ -8,6 +8,9 @@ endif()
 
 add_executable(morpheus_tests ${MORPHEUS_TEST_SOURCES})
 target_link_libraries(morpheus_tests PRIVATE morpheus_core morpheus_store morpheus_inference Catch2::Catch2WithMain)
+if(MORPHEUS_BUILD_LLAMA)
+    target_link_libraries(morpheus_tests PRIVATE morpheus_llama)
+endif()
 target_include_directories(morpheus_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(morpheus_tests PRIVATE
     MORPHEUS_REPO_DIR="${PROJECT_SOURCE_DIR}"

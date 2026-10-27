@@ -125,6 +125,9 @@ endif()
 add_subdirectory(src/core)
 add_subdirectory(src/store)
 add_subdirectory(src/inference)
+if(MORPHEUS_BUILD_LLAMA)
+    add_subdirectory(src/llama)
+endif()
 
 # ---- App (prototype, replaced in milestone 4) --------------------------
 if(MORPHEUS_BUILD_APP)
