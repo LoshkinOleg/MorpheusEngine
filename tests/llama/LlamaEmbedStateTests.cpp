@@ -1,10 +1,12 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <limits>
 #include <numeric>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -39,6 +41,16 @@ void CheckCompletionStillWorks(LlmBackend& backend)
     CHECK(completion.tokensEvaluated >= 1);
 }
 
+// After a restore that failed past the cache clear, the cache is empty: even the identical prompt re-evaluates fully.
+void CheckCacheWasCleared(LlmBackend& backend)
+{
+    GenerationSpec spec;
+    spec.maxTokens = 4;
+    const Completion completion = backend.Complete(SimplePrompt("Name a desert animal."), spec, {}, {});
+    CHECK(completion.tokensReused == 0);
+    CHECK(completion.tokensEvaluated == completion.promptTokens);
+}
+
 } // namespace
 
 TEST_CASE("Embeddings are normalized and rank related texts higher", "[llama]")
@@ -60,9 +72,10 @@ TEST_CASE("Embeddings are normalized and rank related texts higher", "[llama]")
 
 TEST_CASE("Embedding vectors have the same non-zero size for every text", "[llama]")
 {
+    // Covers varied text lengths, using EmbedPurpose::Query.
     LlmBackend& backend = SharedBackend();
     const std::vector<std::vector<float>> vectors = backend.Embed(
-        {"hi", "a considerably longer sentence about a tracked crawler crossing a very wide desert at dusk",
+        {"hi","a considerably longer sentence about a tracked crawler crossing a very wide desert at dusk",
          "water", "one two three four five six seven eight nine ten"},
         EmbedPurpose::Query);
 
@@ -131,7 +144,7 @@ TEST_CASE("A state blob with an absurd token count is rejected and the backend k
     CheckCompletionStillWorks(backend);
 }
 
-TEST_CASE("A state blob whose token list does not match its KV data is an InferenceError and leaves a clean cache", "[llama]")
+TEST_CASE("A state blob that llama.cpp rejects is an InferenceError and leaves a cleared cache", "[llama]")
 {
     LlmBackend& backend = SharedBackend();
     GenerationSpec spec;
@@ -139,12 +152,33 @@ TEST_CASE("A state blob whose token list does not match its KV data is an Infere
     backend.Complete(SimplePrompt("Name a desert animal."), spec, {}, {});
     std::vector<std::uint8_t> corrupt = backend.SaveState();
 
-    // Claim one token fewer than saved: the token list and the llama.cpp state are now misaligned.
+    // Claim one token fewer than saved: the llama.cpp payload now starts 4 bytes early, so set_data rejects it.
     std::uint64_t count = 0;
     std::memcpy(&count, corrupt.data(), sizeof(count));
     REQUIRE(count > 1);
     --count;
     std::memcpy(corrupt.data(), &count, sizeof(count));
     CHECK_THROWS_AS(backend.RestoreState(corrupt), InferenceError);
-    CheckCompletionStillWorks(backend);
+    CheckCacheWasCleared(backend);
+}
+
+TEST_CASE("A state blob whose token count disagrees with the restored KV data is an InferenceError and leaves a cleared cache", "[llama]")
+{
+    LlmBackend& backend = SharedBackend();
+    GenerationSpec spec;
+    spec.maxTokens = 4;
+    backend.Complete(SimplePrompt("Name a desert animal."), spec, {}, {});
+    std::vector<std::uint8_t> corrupt = backend.SaveState();
+
+    // Drop one token from the list and decrement the count: the llama.cpp payload stays intact, so set_data succeeds
+    // but the restored position no longer matches the token list.
+    std::uint64_t count = 0;
+    std::memcpy(&count, corrupt.data(), sizeof(count));
+    REQUIRE(count > 1);
+    --count;
+    std::memcpy(corrupt.data(), &count, sizeof(count));
+    const auto firstToken = corrupt.begin() + static_cast<std::ptrdiff_t>(sizeof(count));
+    corrupt.erase(firstToken, firstToken + static_cast<std::ptrdiff_t>(sizeof(std::int32_t)));
+    CHECK_THROWS_AS(backend.RestoreState(corrupt), InferenceError);
+    CheckCacheWasCleared(backend);
 }

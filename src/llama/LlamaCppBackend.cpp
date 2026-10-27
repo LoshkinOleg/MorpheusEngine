@@ -365,8 +365,10 @@ void LlamaCppBackend::RestoreState(std::span<const std::uint8_t> state)
     llama_memory_clear(memory, true);
     _cachedTokens.clear();
     const std::size_t kvSize = state.size() - sizeof(count) - tokenBytes;
-    // Past this point a bad blob is bad saved data, not an engine bug. Either failure below can leave a partly
-    // restored cache, so empty it: the cache and _cachedTokens (empty) must always agree.
+    // State blobs are in-memory only (a GPU hand-off), never persisted. A malformed header above is an engine bug
+    // (ContractError); a state llama.cpp rejects, or one that disagrees with its token list, is a runtime failure
+    // (InferenceError). Either failure below can leave a partly restored cache, so empty it: the cache and
+    // _cachedTokens (empty) must always agree.
     if (llama_state_seq_set_data(_pChatContext.get(), state.data() + sizeof(count) + tokenBytes, kvSize, 0) == 0) {
         llama_memory_clear(memory, true);
         throw InferenceError("restoring the KV cache state failed");
