@@ -104,7 +104,8 @@ LlmBackend
 
 ```
 game_projects/<id>/
-  world.json          id, title, roll expression (e.g. 1d20+stat), difficulty table, default memory_mode
+  world.json          id, title, roll expression (e.g. 1d20+stat), check entity, stats (the check entity's
+                      int fields usable in checks), difficulty table, default memory_mode; unknown keys are errors
   rules.md            GM instructions -> L1
   lore.csv            subject,data[,always_on]  (RFC 4180)
   state_schema.json   entity types; fields: int{min,max} | enum | string | list<string> | map<item,count>; creatable flag
@@ -118,10 +119,12 @@ saves/<id>/<run>.db
 | `turns` | n, input, resolve JSON, rolls, applied / rejected changes, narration, timings |
 | `state_snapshots` | full state JSON after each turn |
 | `summaries` | folded turn range and its summary text |
-| `notes` | append-only model notes (`assisted` mode) |
-| `embeddings` | kind, ref id, embedding model, vector |
+| `notes` | append-only model notes (`assisted` mode), committed in the same transaction as their turn |
+| `embeddings` | kind, ref id, embedding model, content hash of the embedded text, vector |
 
-Rows are append-only, except that undo removes the rows after the target turn. Similarity search is brute-force cosine in memory. Lore embeddings are cached per run, keyed by a content hash.
+Rows are append-only, except that undo removes the rows after the target turn. Similarity search is brute-force cosine in memory. Each embedding stores the hash of the text it was computed from, and a changed hash means the vector is re-computed.
+
+World files are read with CRLF normalized to LF. The world content hash covers each file's name, length and text, so a saved run can detect world edits reliably across checkouts.
 
 ## UI (ImGui docking windows)
 
