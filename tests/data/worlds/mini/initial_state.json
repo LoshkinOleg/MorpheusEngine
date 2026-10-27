@@ -1,0 +1,6 @@
+{
+  "player": {
+    "type": "character",
+    "fields": { "health": 10, "agility": 3, "location": "shore", "inventory": { "lantern": 1 } }
+  }
+}

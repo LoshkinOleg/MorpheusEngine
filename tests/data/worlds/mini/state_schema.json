@@ -1,0 +1,18 @@
+{
+  "entity_types": {
+    "character": {
+      "fields": {
+        "health": { "type": "int", "min": 0, "max": 10 },
+        "agility": { "type": "int", "min": 0, "max": 5 },
+        "location": { "type": "string" },
+        "inventory": { "type": "counter" }
+      }
+    },
+    "npc": {
+      "creatable": true,
+      "fields": {
+        "disposition": { "type": "enum", "values": ["wary", "friendly"] }
+      }
+    }
+  }
+}
