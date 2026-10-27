@@ -1,0 +1,62 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "dev",
+      "displayName": "App + tests",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/dev",
+      "cacheVariables": {
+        "MORPHEUS_BUILD_APP": "ON",
+        "MORPHEUS_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "tests",
+      "displayName": "Engine libraries + tests only (no llama.cpp, SDL3 or ImGui)",
+      "inherits": "dev",
+      "binaryDir": "${sourceDir}/build/tests",
+      "cacheVariables": {
+        "MORPHEUS_BUILD_APP": "OFF"
+      }
+    },
+    {
+      "name": "asan",
+      "displayName": "Tests under AddressSanitizer",
+      "inherits": "tests",
+      "binaryDir": "${sourceDir}/build/asan",
+      "cacheVariables": {
+        "MORPHEUS_ASAN": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "dev", "configurePreset": "dev", "configuration": "Debug" },
+    { "name": "tests", "configurePreset": "tests", "configuration": "Debug" },
+    { "name": "asan", "configurePreset": "asan", "configuration": "Debug" }
+  ],
+  "testPresets": [
+    {
+      "name": "dev",
+      "configurePreset": "dev",
+      "configuration": "Debug",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error" }
+    },
+    {
+      "name": "tests",
+      "configurePreset": "tests",
+      "configuration": "Debug",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error" }
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan",
+      "configuration": "Debug",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error" }
+    }
+  ]
+}

@@ -1,90 +1,143 @@
-cmake_minimum_required(VERSION 3.24)  # 3.24+ for FetchContent OVERRIDE_FIND_PACKAGE
+cmake_minimum_required(VERSION 3.25)  # 3.25+ for FetchContent SYSTEM (keeps dependency headers out of /W4 /WX)
 
 project(MorpheusEngine
     VERSION 1 # Major only notation: 1, 2, 3, 56, 103, etc.
-    LANGUAGES CXX
+    LANGUAGES C CXX # C is needed for the SQLite amalgamation.
 )
 
 # ---- Global settings ----------------------------------------------------
-set(CMAKE_CXX_EXTENSIONS OFF) # Enforce strict standard syntax, no compilier specific lingo.
+set(CMAKE_CXX_EXTENSIONS OFF) # Enforce strict standard syntax, no compiler specific lingo.
 
-# Put all binaries in one place — handy on Windows for DLL discovery
+# Put all binaries in one place - handy on Windows for DLL discovery
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin) # For executables: .exe, .dll
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin) # For shared libs: .so on linux
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib) # For static libs: .a on linux, .lib on win
 
 # ---- Options ------------------------------------------------------------
-# Example: option(MORPHEUS_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
+option(MORPHEUS_BUILD_APP "Build the morpheus app (fetches llama.cpp, SDL3 and ImGui)" ON)
+option(MORPHEUS_BUILD_TESTS "Build morpheus_tests (fetches Catch2)" ON)
+option(MORPHEUS_ASAN "Instrument every target with AddressSanitizer (MSVC only)" OFF)
+
+# AddressSanitizer is applied to every target, dependencies included: MSVC refuses to link instrumented and
+# non-instrumented objects that share STL containers (LNK2038 'annotate_vector' mismatch).
+if(MORPHEUS_ASAN)
+    if(NOT MSVC)
+        message(FATAL_ERROR "MORPHEUS_ASAN is only wired up for MSVC.")
+    endif()
+    add_compile_options(/fsanitize=address)
+    # MSVC's default Debug runtime checks (/RTC1) cannot be combined with /fsanitize=address.
+    set(CMAKE_MSVC_RUNTIME_CHECKS "")
+    string(REPLACE "/RTC1" "" CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG}")
+    string(REPLACE "/RTC1" "" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
+endif()
+
+# Strict settings for MorpheusEngine's own targets. Never applied to fetched dependencies.
+function(morpheus_target_defaults target)
+    target_compile_features(${target} PUBLIC cxx_std_20)
+    if(MSVC)
+        # /W4 warning level, /WX warnings are errors, /permissive- standard compliance,
+        # /Zc:preprocessor standard preprocessor, /utf-8 source and execution character sets.
+        target_compile_options(${target} PRIVATE /W4 /WX /permissive- /Zc:preprocessor /utf-8)
+    else()
+        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror)
+    endif()
+endfunction()
 
 # ---- Dependencies (FetchContent) ---------------------------------------
 include(FetchContent)
 
-# llama
-FetchContent_Declare(
-    llama                                                         # prefix for CMake variables
-    GIT_REPOSITORY https://github.com/ggerganov/llama.cpp.git     # repo TODO: redirect to the new repo: ggml-org/llama.cpp , probably update the targeted commit?
-    GIT_TAG        960d628f46d17ea9c10aa944b061b2341afeb3b5       # commit SHA to get, version b9804
-    GIT_SHALLOW    FALSE                                          # Has to be FALSE to be able to use a commit SHA 
-)
-FetchContent_MakeAvailable(llama)
-
-# nlohmann
+# nlohmann (engine libraries and app)
 FetchContent_Declare(
     nlohmann                                                      # prefix for CMake variables
     GIT_REPOSITORY https://github.com/nlohmann/json.git           # repo
     GIT_TAG        55f93686c01528224f448c19128836e7df245f72       # commit SHA to get, 3.12.0
-    GIT_SHALLOW    FALSE                                          # Has to be FALSE to be able to use a commit SHA 
+    GIT_SHALLOW    FALSE                                          # Has to be FALSE to be able to use a commit SHA
+    SYSTEM                                                        # Treat its headers as external (no /W4 /WX)
 )
 FetchContent_MakeAvailable(nlohmann)
 
-# SDL3
-FetchContent_Declare(
-    sdl3                                                          # prefix for CMake variables
-    GIT_REPOSITORY https://github.com/libsdl-org/SDL.git          # repo
-    GIT_TAG        8e37db5e797b6167f3a00d697d816a684bd259c7       # commit SHA to get, SDL3 3.4.10
-    GIT_SHALLOW    FALSE                                          # Has to be FALSE to be able to use a commit SHA 
-)
-FetchContent_MakeAvailable(sdl3)
+if(MORPHEUS_BUILD_APP)
+    # llama
+    FetchContent_Declare(
+        llama                                                         # prefix for CMake variables
+        GIT_REPOSITORY https://github.com/ggerganov/llama.cpp.git     # repo TODO: redirect to the new repo: ggml-org/llama.cpp , probably update the targeted commit?
+        GIT_TAG        960d628f46d17ea9c10aa944b061b2341afeb3b5       # commit SHA to get, version b9804
+        GIT_SHALLOW    FALSE                                          # Has to be FALSE to be able to use a commit SHA
+    )
+    FetchContent_MakeAvailable(llama)
 
-# imgui
-FetchContent_Declare(
-    imgui
-    GIT_REPOSITORY https://github.com/LoshkinOleg/cmake-ready-imgui-sdl3.git
-    GIT_TAG        5acd6de3ed4efb06d665628b01fba0fe3e63f7bc
-    GIT_SHALLOW    FALSE # Has to be FALSE to be able to use a commit SHA 
-)
-FetchContent_MakeAvailable(imgui)
+    # SDL3
+    FetchContent_Declare(
+        sdl3                                                          # prefix for CMake variables
+        GIT_REPOSITORY https://github.com/libsdl-org/SDL.git          # repo
+        GIT_TAG        8e37db5e797b6167f3a00d697d816a684bd259c7       # commit SHA to get, SDL3 3.4.10
+        GIT_SHALLOW    FALSE                                          # Has to be FALSE to be able to use a commit SHA
+    )
+    FetchContent_MakeAvailable(sdl3)
 
-# ---- Main target --------------------------------------------------------
-add_executable(morpheus
-    src/main.cpp
-)
-
-# For morpheus cpp and h
-target_include_directories(morpheus
-    PRIVATE # No sharing with other targets
-	${CMAKE_CURRENT_SOURCE_DIR}/src
-)
-
-# Warning flags
-if(MSVC)
-    target_compile_options(morpheus PRIVATE /W4 /permissive- /Zc:preprocessor) # /W4 is Warning level, /permissive- is for standard compliance, /Zc:preprocessor is for MSVC preprocessor compliance
-else()
-    target_compile_options(morpheus PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow) # -Wall is for the common warnings set, -Wextra is more warnings, -Wpedantic is for even more warnings, -Wconversion for warnings on narrowing casts, -Wshadow for shadowing
+    # imgui
+    FetchContent_Declare(
+        imgui
+        GIT_REPOSITORY https://github.com/LoshkinOleg/cmake-ready-imgui-sdl3.git
+        GIT_TAG        5acd6de3ed4efb06d665628b01fba0fe3e63f7bc
+        GIT_SHALLOW    FALSE # Has to be FALSE to be able to use a commit SHA
+    )
+    FetchContent_MakeAvailable(imgui)
 endif()
 
-# C++20 only for morpheus (build fails on llama with C++20)
-target_compile_features(morpheus PRIVATE cxx_std_20)
+if(MORPHEUS_BUILD_TESTS)
+    # Catch2
+    FetchContent_Declare(
+        catch2
+        GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+        GIT_TAG        08092139210881f01a34e60c5f2fd6afa0ea4024       # commit SHA to get, v3.16.1
+        GIT_SHALLOW    FALSE                                          # Has to be FALSE to be able to use a commit SHA
+        SYSTEM
+    )
+    FetchContent_MakeAvailable(catch2)
+endif()
 
-# Link morpheus
-target_link_libraries(morpheus PRIVATE
-    llama
-    SDL3::SDL3
-    nlohmann_json::nlohmann_json
-	imgui::imgui
-)
+# ---- Engine libraries ---------------------------------------------------
+add_subdirectory(src/core)
 
-# ---- Defines ----
-target_compile_definitions(morpheus PRIVATE
-    MORPHEUS_MODELS_DIR="${CMAKE_SOURCE_DIR}/third_party/models"
-)
+# ---- App (prototype, replaced in milestone 4) --------------------------
+if(MORPHEUS_BUILD_APP)
+    add_executable(morpheus
+        src/main.cpp
+    )
+
+    # For morpheus cpp and h
+    target_include_directories(morpheus
+        PRIVATE # No sharing with other targets
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+
+    # Warning flags
+    if(MSVC)
+        target_compile_options(morpheus PRIVATE /W4 /permissive- /Zc:preprocessor) # /W4 is Warning level, /permissive- is for standard compliance, /Zc:preprocessor is for MSVC preprocessor compliance
+    else()
+        target_compile_options(morpheus PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow) # -Wall is for the common warnings set, -Wextra is more warnings, -Wpedantic is for even more warnings, -Wconversion for warnings on narrowing casts, -Wshadow for shadowing
+    endif()
+
+    # C++20 only for morpheus (build fails on llama with C++20)
+    target_compile_features(morpheus PRIVATE cxx_std_20)
+
+    # Link morpheus
+    target_link_libraries(morpheus PRIVATE
+        llama
+        SDL3::SDL3
+        nlohmann_json::nlohmann_json
+        imgui::imgui
+    )
+
+    # ---- Defines ----
+    target_compile_definitions(morpheus PRIVATE
+        MORPHEUS_MODELS_DIR="${CMAKE_SOURCE_DIR}/third_party/models"
+    )
+endif()
+
+# ---- Tests --------------------------------------------------------------
+if(MORPHEUS_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
