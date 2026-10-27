@@ -37,12 +37,12 @@ Each module is a static library. Dependencies flow downward only.
 
 1. **Retrieve (engine).** Embed the player input. Rank lore entries and past turns by cosine similarity, boosting entities named in the input. Trim the result to the retrieval budget.
 2. **Resolve (LLM, JSON grammar).** The model returns `{intent, checks[], changes[]}`.
-   - Each check has `stat`, `difficulty`, `stakes`, `on_success[]` and `on_failure[]`.
+   - Each check has `stat` (one of world.json `stats`), `difficulty`, `stakes`, `on_success[]` and `on_failure[]`.
    - Each change is an op: `set`, `add`, `remove` or `create` applied to a `path`, with an optional `value` and a `reason`.
    - The grammar is generated from the world's state schema, so only valid paths and enum values can be emitted.
 3. **Apply (engine).** Roll each check with the run's seeded RNG and select its outcome branch. Validate each change against the schema (path exists, type, range, `create` only for creatable entity types). Apply the valid changes and record the rejected ones with a reason.
 4. **Narrate (LLM, streamed prose).** The prompt is the resolve prompt with three things appended: the resolve output, the engine's resolution record (rolls, outcomes, applied and rejected changes), and the narrate instruction. The model narrates the outcome. It does not decide it.
-5. **Commit (engine).** Write the turn row and the state snapshot in one transaction.
+5. **Commit (engine).** Write the turn row, the state snapshot and any `assisted`-mode notes in one transaction.
 
 **Between turns, while the worker is idle:**
 - Embed the finished turn.
@@ -108,7 +108,7 @@ game_projects/<id>/
                       int fields usable in checks), difficulty table, default memory_mode; unknown keys are errors
   rules.md            GM instructions -> L1
   lore.csv            subject,data[,always_on]  (RFC 4180)
-  state_schema.json   entity types; fields: int{min,max} | enum | string | list<string> | map<item,count>; creatable flag
+  state_schema.json   entity types; fields: int{min,max} | enum | string | list<string> | map<item,count>; creatable flag; unknown keys are errors
   initial_state.json
 saves/<id>/<run>.db
 ```
