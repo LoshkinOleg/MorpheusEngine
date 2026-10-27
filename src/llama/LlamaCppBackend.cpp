@@ -361,14 +361,20 @@ void LlamaCppBackend::RestoreState(std::span<const std::uint8_t> state)
         std::memcpy(tokens.data(), state.data() + sizeof(count), tokenBytes);
     }
 
-    llama_memory_clear(llama_get_memory(_pChatContext.get()), true);
+    llama_memory_t memory = llama_get_memory(_pChatContext.get());
+    llama_memory_clear(memory, true);
     _cachedTokens.clear();
     const std::size_t kvSize = state.size() - sizeof(count) - tokenBytes;
+    // Past this point a bad blob is bad saved data, not an engine bug. Either failure below can leave a partly
+    // restored cache, so empty it: the cache and _cachedTokens (empty) must always agree.
     if (llama_state_seq_set_data(_pChatContext.get(), state.data() + sizeof(count) + tokenBytes, kvSize, 0) == 0) {
+        llama_memory_clear(memory, true);
         throw InferenceError("restoring the KV cache state failed");
     }
-    MORPHEUS_REQUIRE(llama_memory_seq_pos_max(llama_get_memory(_pChatContext.get()), 0) + 1 == static_cast<llama_pos>(count),
-                     "RestoreState: the restored KV state does not match the saved token count");
+    if (llama_memory_seq_pos_max(memory, 0) + 1 != static_cast<llama_pos>(count)) {
+        llama_memory_clear(memory, true);
+        throw InferenceError("restored KV state does not match its token list");
+    }
     _cachedTokens = std::move(tokens);
 }
 
