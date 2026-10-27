@@ -207,12 +207,20 @@ TurnRecord TestTurn(int number, std::vector<std::string> notes = {})
 {
     TurnRecord record;
     record.number = number;
-    record.notes = std::move(notes);
     record.input = std::format("input {}", number);
+    record.notes = std::move(notes);
     record.resolve = {{"intent", "climb"}};
-    record.rolls = nlohmann::json::array({nlohmann::json{{"total", 14}}});
-    record.applied = nlohmann::json::array({nlohmann::json{{"op", "set"}}});
-    record.rejected = nlohmann::json::array();
+    morpheus::core::CheckOutcome check;
+    check.stat = "agility";
+    check.difficulty = "hard";
+    check.stakes = "fall vs reach the hatch";
+    check.result.rolls = {14};
+    check.result.total = 14;
+    check.result.target = 16;
+    check.result.success = false;
+    record.checks = {check};
+    record.applied = {morpheus::core::AppliedChange{
+        morpheus::core::Change{morpheus::core::ChangeOp::Set, "player.location", "hatch", ""}, ""}};
     record.narration = std::format("narration {}", number);
     record.timings = {{"resolve_ms", 120}};
     return record;
@@ -239,8 +247,11 @@ TEST_CASE("RunStore commits turns with their resulting state", "[store]")
     REQUIRE(first.has_value());
     CHECK(first->input == "input 1");
     CHECK(first->resolve == nlohmann::json({{"intent", "climb"}}));
-    CHECK(first->rolls.at(0).at("total") == 14);
-    CHECK(first->applied.size() == 1);
+    REQUIRE(first->checks.size() == 1);
+    CHECK(first->checks.at(0).stat == "agility");
+    CHECK(first->checks.at(0).result.total == 14);
+    REQUIRE(first->applied.size() == 1);
+    CHECK(first->applied.at(0).change.path == "player.location");
     CHECK(first->rejected.empty());
     CHECK(first->narration == "narration 1");
     CHECK(first->timings.at("resolve_ms") == 120);
@@ -253,6 +264,21 @@ TEST_CASE("RunStore commits turns with their resulting state", "[store]")
     CHECK(both[1].number == 2);
     CHECK(both[1].notes.empty());
     CHECK_FALSE(store.Turn(3).has_value());
+}
+
+TEST_CASE("A turn column with the wrong shape is a StoreError naming the column", "[store]")
+{
+    const std::filesystem::path file = FreshDbPath("store_bad_checks");
+    {
+        RunStore store = RunStore::Create(file, TestMeta(), TestInitialState());
+        store.CommitTurn(TestTurn(1), StateWithHealth(9));
+    }
+    {
+        Database db = Database::Open(file, false);
+        db.Exec("UPDATE turns SET checks = '[{\"stat\":1}]' WHERE number = 1");
+    }
+    RunStore store = RunStore::Open(file);
+    CHECK_THROWS_WITH(store.Turn(1), ContainsSubstring("column 'checks'"));
 }
 
 TEST_CASE("RunStore only accepts the next turn number", "[store]")

@@ -22,7 +22,7 @@ CREATE TABLE turns (
     number    INTEGER PRIMARY KEY,
     input     TEXT NOT NULL,
     resolve   TEXT NOT NULL,
-    rolls     TEXT NOT NULL,
+    checks    TEXT NOT NULL,
     applied   TEXT NOT NULL,
     rejected  TEXT NOT NULL,
     narration TEXT NOT NULL,
@@ -196,16 +196,30 @@ void RunStore::CommitTurn(const TurnRecord& record, const nlohmann::json& stateA
     MORPHEUS_REQUIRE(record.number == expected,
                      std::format("CommitTurn: expected turn {}, got {}", expected, record.number));
 
+    // Typed turn data is stored as JSON arrays in its own columns.
+    nlohmann::json checks = nlohmann::json::array();
+    for (const core::CheckOutcome& check : record.checks) {
+        checks.push_back(core::CheckOutcomeToJson(check));
+    }
+    nlohmann::json applied = nlohmann::json::array();
+    for (const core::AppliedChange& change : record.applied) {
+        applied.push_back(core::AppliedChangeToJson(change));
+    }
+    nlohmann::json rejected = nlohmann::json::array();
+    for (const core::RejectedChange& change : record.rejected) {
+        rejected.push_back(core::RejectedChangeToJson(change));
+    }
+
     // The turn, its resulting state and its notes land together or not at all.
     _db.Transaction([&] {
-        _db.Prepare("INSERT INTO turns (number, input, resolve, rolls, applied, rejected, narration, timings) "
+        _db.Prepare("INSERT INTO turns (number, input, resolve, checks, applied, rejected, narration, timings) "
                     "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)")
             .Bind(1, record.number)
             .Bind(2, record.input)
             .Bind(3, record.resolve.dump())
-            .Bind(4, record.rolls.dump())
-            .Bind(5, record.applied.dump())
-            .Bind(6, record.rejected.dump())
+            .Bind(4, checks.dump())
+            .Bind(5, applied.dump())
+            .Bind(6, rejected.dump())
             .Bind(7, record.narration)
             .Bind(8, record.timings.dump())
             .Run();
@@ -232,7 +246,7 @@ std::optional<TurnRecord> RunStore::Turn(int number)
 
 std::vector<TurnRecord> RunStore::Turns(int fromTurn, int toTurn)
 {
-    Statement query = _db.Prepare("SELECT number, input, resolve, rolls, applied, rejected, narration, timings "
+    Statement query = _db.Prepare("SELECT number, input, resolve, checks, applied, rejected, narration, timings "
                                   "FROM turns WHERE number BETWEEN ?1 AND ?2 ORDER BY number");
     query.Bind(1, fromTurn).Bind(2, toTurn);
 
@@ -251,11 +265,27 @@ std::vector<TurnRecord> RunStore::Turns(int fromTurn, int toTurn)
             }
         };
 
+        // A stored column that parses but has the wrong shape is damaged data too.
+        auto convertColumn = [&](int column, const char* name, auto fromJson, auto& out) {
+            const nlohmann::json array = parseColumn(column, name);
+            try {
+                if (!array.is_array()) {
+                    throw core::DataError("not an array");
+                }
+                for (const nlohmann::json& element : array) {
+                    out.push_back(fromJson(element));
+                }
+            } catch (const core::DataError& error) {
+                throw StoreError(std::format("'{}': turn {} column '{}' is malformed: {}",
+                                             _file.generic_string(), record.number, name, error.what()));
+            }
+        };
+
         record.input = query.ColumnText(1);
         record.resolve = parseColumn(2, "resolve");
-        record.rolls = parseColumn(3, "rolls");
-        record.applied = parseColumn(4, "applied");
-        record.rejected = parseColumn(5, "rejected");
+        convertColumn(3, "checks", core::CheckOutcomeFromJson, record.checks);
+        convertColumn(4, "applied", core::AppliedChangeFromJson, record.applied);
+        convertColumn(5, "rejected", core::RejectedChangeFromJson, record.rejected);
         record.narration = query.ColumnText(6);
         record.timings = parseColumn(7, "timings");
         records.push_back(std::move(record));

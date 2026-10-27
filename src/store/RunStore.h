@@ -8,9 +8,15 @@
 
 #include <nlohmann/json.hpp>
 
+#include "core/TurnRecord.h"
 #include "store/Sqlite.h"
 
 namespace morpheus::store {
+
+// Turn data types live in core; store re-exports them so callers can keep writing store::TurnRecord.
+using core::Note;
+using core::Summary;
+using core::TurnRecord;
 
 struct RunMeta {
     std::string worldId = {};
@@ -19,34 +25,6 @@ struct RunMeta {
     std::uint64_t rngSeed = 0;
     nlohmann::json settings = nlohmann::json::object();
     std::string createdAt = {}; // ISO-8601 UTC, set by RunStore::Create.
-};
-
-// Everything one committed turn produced, as stored in the turns table. JSON members hold the turn module's
-// structured outputs verbatim.
-struct TurnRecord {
-    int number = 0;
-    std::string input = {};
-    nlohmann::json resolve = nlohmann::json::object(); // Resolve call output.
-    nlohmann::json rolls = nlohmann::json::array();    // Check results.
-    nlohmann::json applied = nlohmann::json::array();  // Applied changes.
-    nlohmann::json rejected = nlohmann::json::array(); // Rejected changes with reasons.
-    std::string narration = {};
-    nlohmann::json timings = nlohmann::json::object();
-    std::vector<std::string> notes = {}; // Model-written notes (assisted memory mode), committed with the turn.
-};
-
-// A folded range of turns (story summary, layer L2).
-struct Summary {
-    int fromTurn = 0;
-    int toTurn = 0;
-    std::string text = {};
-};
-
-// A model-written memory from assisted memory mode, as listed by RunStore::Notes. Notes are only ever written
-// through TurnRecord::notes, so a note exists only if the turn that wrote it committed.
-struct Note {
-    int turn = 0;
-    std::string text = {};
 };
 
 enum class EmbeddingKind { Lore, Turn };
