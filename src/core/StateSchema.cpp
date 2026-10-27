@@ -1,13 +1,14 @@
 #include "core/StateSchema.h"
 
 #include <algorithm>
-#include <cstdint>
 #include <format>
 #include <limits>
+#include <optional>
 #include <set>
 #include <utility>
 
 #include "core/Errors.h"
+#include "core/JsonInt.h"
 
 namespace morpheus::core {
 
@@ -86,17 +87,14 @@ StateSchema StateSchema::FromJson(const nlohmann::json& json)
                 const char* const boundNames[] = {"min", "max"};
                 for (int i = 0; i < 2; ++i) {
                     const nlohmann::json& bound = fieldJson.at(boundNames[i]);
-                    const bool tooHigh = bound.is_number_unsigned()
-                                             ? bound.get<std::uint64_t>() >
-                                                   static_cast<std::uint64_t>(std::numeric_limits<int>::max())
-                                             : bound.get<long long>() > std::numeric_limits<int>::max();
-                    const bool tooLow = !bound.is_number_unsigned() && bound.get<long long>() < std::numeric_limits<int>::min();
-                    if (tooHigh || tooLow) {
+                    const std::optional<long long> parsed =
+                        JsonIntInRange(bound, std::numeric_limits<int>::min(), std::numeric_limits<int>::max());
+                    if (!parsed) {
                         throw DataError(std::format("{}: '{}' {} is outside the int range {}..{}", fieldWhere,
                                                     boundNames[i], bound.dump(), std::numeric_limits<int>::min(),
                                                     std::numeric_limits<int>::max()));
                     }
-                    *bounds[i] = bound.get<int>();
+                    *bounds[i] = static_cast<int>(*parsed);
                 }
                 if (def.min > def.max) {
                     throw DataError(fieldWhere + ": 'min' is greater than 'max'");
@@ -155,14 +153,9 @@ std::string StateSchema::CheckFieldValue(const FieldDef& def, const nlohmann::js
         if (!value.is_number_integer()) {
             return std::format("expected an integer, got {}", value.dump());
         }
-        // An unsigned value above LLONG_MAX would wrap negative through get<long long>().
-        if (value.is_number_unsigned() &&
-            value.get<std::uint64_t>() > static_cast<std::uint64_t>(std::numeric_limits<long long>::max())) {
+        // Range-check through the shared helper, which never wraps a huge unsigned value.
+        if (!JsonIntInRange(value, def.min, def.max)) {
             return std::format("{} is outside {}..{}", value.dump(), def.min, def.max);
-        }
-        const long long number = value.get<long long>();
-        if (number < def.min || number > def.max) {
-            return std::format("{} is outside {}..{}", number, def.min, def.max);
         }
         return {};
     }
@@ -201,13 +194,7 @@ std::string StateSchema::CheckFieldValue(const FieldDef& def, const nlohmann::js
                 return std::format("counter item names must be non-empty and contain no '.', got '{}'", it.key());
             }
             const nlohmann::json& count = it.value();
-            // Unsigned is checked first so a uint64 above LLONG_MAX never wraps negative through get<long long>().
-            const bool inRange =
-                count.is_number_unsigned()
-                    ? count.get<std::uint64_t>() >= 1 &&
-                          count.get<std::uint64_t>() <= static_cast<std::uint64_t>(std::numeric_limits<int>::max())
-                    : count.is_number_integer() && count.get<long long>() >= 1 &&
-                          count.get<long long>() <= std::numeric_limits<int>::max();
+            const bool inRange = JsonIntInRange(count, 1, std::numeric_limits<int>::max()).has_value();
             if (!inRange) {
                 return std::format("count of '{}' must be an integer in 1..{}, got {}", it.key(),
                                    std::numeric_limits<int>::max(), count.dump());

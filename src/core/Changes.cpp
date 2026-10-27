@@ -1,11 +1,11 @@
 #include "core/Changes.h"
 
 #include <algorithm>
-#include <cstdint>
 #include <format>
 #include <limits>
 
 #include "core/Errors.h"
+#include "core/JsonInt.h"
 
 namespace morpheus::core {
 
@@ -77,19 +77,9 @@ nlohmann::json ChangeToJson(const Change& change)
 
 namespace {
 
-// True for a JSON integer within [INT_MIN, INT_MAX]. Checks unsigned first so a uint64 above LLONG_MAX never
-// reaches get<long long>() (it would wrap negative).
-bool IsIntRangeInteger(const nlohmann::json& value)
-{
-    if (value.is_number_unsigned()) {
-        return value.get<std::uint64_t>() <= static_cast<std::uint64_t>(std::numeric_limits<int>::max());
-    }
-    if (!value.is_number_integer()) {
-        return false;
-    }
-    const long long number = value.get<long long>();
-    return number >= std::numeric_limits<int>::min() && number <= std::numeric_limits<int>::max();
-}
+// Bounds of the integers a model may add: anything that fits an int.
+constexpr long long INT_MIN_VALUE = std::numeric_limits<int>::min();
+constexpr long long INT_MAX_VALUE = std::numeric_limits<int>::max();
 
 } // namespace
 
@@ -193,11 +183,12 @@ ApplyResult ApplyChanges(const StateSchema& schema, const nlohmann::json& state,
         }
         case ChangeOp::Add:
             if (def.type == FieldType::Int) {
-                if (!IsIntRangeInteger(change.value)) {
+                const std::optional<long long> delta = JsonIntInRange(change.value, INT_MIN_VALUE, INT_MAX_VALUE);
+                if (!delta) {
                     return std::format("add on an int field needs an integer in int range, got {}", change.value.dump());
                 }
                 // Both operands are int-ranged, so the sum fits in long long.
-                const long long wanted = field.get<long long>() + change.value.get<long long>();
+                const long long wanted = field.get<long long>() + *delta;
                 const long long clamped = std::clamp<long long>(wanted, def.min, def.max);
                 if (clamped != wanted) {
                     note = std::format("clamped to {}", clamped);
@@ -220,11 +211,12 @@ ApplyResult ApplyChanges(const StateSchema& schema, const nlohmann::json& state,
                 if (!itemPath) {
                     return "add on a counter field needs an item path (entity.field.item)";
                 }
-                if (!IsIntRangeInteger(change.value) || change.value.get<long long>() == 0) {
+                const std::optional<long long> parsedDelta = JsonIntInRange(change.value, INT_MIN_VALUE, INT_MAX_VALUE);
+                if (!parsedDelta || *parsedDelta == 0) {
                     return std::format("add on a counter item needs a non-zero integer in int range, got {}",
                                        change.value.dump());
                 }
-                const long long delta = change.value.get<long long>();
+                const long long delta = *parsedDelta;
                 const std::string& item = parts[2];
                 const long long current = field.contains(item) ? field.at(item).get<long long>() : 0;
                 if (current == 0 && delta < 0) {

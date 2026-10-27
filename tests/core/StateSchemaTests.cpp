@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <limits>
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -193,4 +194,18 @@ TEST_CASE("CheckFieldValue caps counter counts at INT_MAX", "[schema]")
     CHECK_FALSE(
         StateSchema::CheckFieldValue(inventory, nlohmann::json({{"rope", std::uint64_t{18446744073709551615ULL}}})).empty());
     CHECK(StateSchema::CheckFieldValue(inventory, nlohmann::json({{"rope", 2147483647}})).empty());
+}
+
+TEST_CASE("StateSchema accepts INT_MIN and INT_MAX as bounds", "[schema]")
+{
+    const StateSchema schema = StateSchema::FromJson(SchemaWithBadField(
+        {{"type", "int"}, {"min", std::numeric_limits<int>::min()}, {"max", std::numeric_limits<int>::max()}}));
+
+    const FieldDef& field = schema.FindEntityType("character")->fields.at("bad");
+    CHECK(field.min == std::numeric_limits<int>::min());
+    CHECK(field.max == std::numeric_limits<int>::max());
+    CHECK(StateSchema::CheckFieldValue(field, std::numeric_limits<int>::min()).empty());
+    CHECK(StateSchema::CheckFieldValue(field, std::numeric_limits<int>::max()).empty());
+    CHECK_FALSE(StateSchema::CheckFieldValue(field, 2147483648LL).empty());
+    CHECK_FALSE(StateSchema::CheckFieldValue(field, -2147483649LL).empty());
 }

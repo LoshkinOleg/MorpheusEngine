@@ -243,3 +243,16 @@ TEST_CASE("ChangeToJson round-trips through ParseChange", "[changes]")
     CHECK(parsed->value == -2);
     CHECK(parsed->reason == "fell");
 }
+
+TEST_CASE("add accepts INT_MIN as a negative delta", "[changes]")
+{
+    // A delta of INT_MIN is in int range: health clamps to its minimum and the rope count drops to zero.
+    const ApplyResult health = ApplySingle(R"({"op": "add", "path": "player.health", "value": -2147483648})");
+    REQUIRE(health.rejected.empty());
+    CHECK(PlayerField(health, "health") == 0);
+    CHECK(health.applied.at(0).note == "clamped to 0");
+
+    const ApplyResult rope = ApplySingle(R"({"op": "add", "path": "player.inventory.rope", "value": -2147483648})");
+    REQUIRE(rope.rejected.empty());
+    CHECK(PlayerField(rope, "inventory") == nlohmann::json::object());
+}

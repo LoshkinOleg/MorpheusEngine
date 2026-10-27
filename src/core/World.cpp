@@ -4,12 +4,14 @@
 #include <format>
 #include <fstream>
 #include <limits>
+#include <optional>
 #include <set>
 #include <sstream>
 
 #include "core/ContentHash.h"
 #include "core/Csv.h"
 #include "core/Errors.h"
+#include "core/JsonInt.h"
 
 namespace morpheus::core {
 
@@ -110,18 +112,12 @@ World LoadWorld(const std::filesystem::path& directory)
                 throw DataError(std::format("{}: difficulty '{}' must be an integer", worldWhere, name));
             }
             // Range-check before narrowing to int, so a 64-bit value cannot wrap into range.
-            bool fitsInt = false;
-            if (target.is_number_unsigned()) {
-                // Compare unsigned values as unsigned: reading a huge one as long long would wrap it.
-                fitsInt = target.get<unsigned long long>() <= static_cast<unsigned long long>(std::numeric_limits<int>::max());
-            } else {
-                const long long value = target.get<long long>();
-                fitsInt = value >= std::numeric_limits<int>::min() && value <= std::numeric_limits<int>::max();
-            }
-            if (!fitsInt) {
+            const std::optional<long long> parsed =
+                JsonIntInRange(target, std::numeric_limits<int>::min(), std::numeric_limits<int>::max());
+            if (!parsed) {
                 throw DataError(std::format("{}: difficulty '{}' must be an integer in int range", worldWhere, name));
             }
-            world.difficulties.emplace(name, target.get<int>());
+            world.difficulties.emplace(name, static_cast<int>(*parsed));
         }
     }
 
