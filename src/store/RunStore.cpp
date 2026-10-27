@@ -212,6 +212,11 @@ void RunStore::CommitTurn(const TurnRecord& record, const nlohmann::json& stateA
             .Bind(1, record.number)
             .Bind(2, stateAfter.dump())
             .Run();
+
+        // Notes belong to this turn: they commit with it and roll back with it.
+        for (const std::string& note : record.notes) {
+            _db.Prepare("INSERT INTO notes (turn, text) VALUES (?1, ?2)").Bind(1, record.number).Bind(2, note).Run();
+        }
     });
 }
 
@@ -254,6 +259,23 @@ std::vector<TurnRecord> RunStore::Turns(int fromTurn, int toTurn)
         record.timings = parseColumn(7, "timings");
         records.push_back(std::move(record));
     }
+
+    // Attach each turn's notes, in the order they were written. Turns are ascending, so index them by number.
+    std::map<int, TurnRecord*> byNumber;
+    for (TurnRecord& record : records) {
+        byNumber.emplace(record.number, &record);
+    }
+    Statement noteQuery = _db.Prepare("SELECT turn, text FROM notes WHERE turn BETWEEN ?1 AND ?2 ORDER BY id");
+    noteQuery.Bind(1, fromTurn).Bind(2, toTurn);
+    while (noteQuery.Step()) {
+        // Notes commit with their turn, so an orphan note means the saved data was damaged.
+        const int noteTurn = static_cast<int>(noteQuery.ColumnInt(0));
+        const auto it = byNumber.find(noteTurn);
+        if (it == byNumber.end()) {
+            throw StoreError(std::format("'{}': note for turn {} has no matching turn row", _file.generic_string(), noteTurn));
+        }
+        it->second->notes.push_back(noteQuery.ColumnText(1));
+    }
     return records;
 }
 
@@ -292,11 +314,6 @@ std::vector<Summary> RunStore::Summaries()
                              query.ColumnText(2)});
     }
     return summaries;
-}
-
-void RunStore::AddNote(const Note& note)
-{
-    _db.Prepare("INSERT INTO notes (turn, text) VALUES (?1, ?2)").Bind(1, note.turn).Bind(2, note.text).Run();
 }
 
 std::vector<Note> RunStore::Notes()

@@ -5,7 +5,10 @@
 #include <format>
 #include <set>
 #include <stdexcept>
+#include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include "TestPaths.h"
 #include "core/Errors.h"
@@ -200,10 +203,11 @@ TEST_CASE("A failed RunStore::Create leaves no file behind", "[store]")
 
 namespace {
 
-TurnRecord TestTurn(int number)
+TurnRecord TestTurn(int number, std::vector<std::string> notes = {})
 {
     TurnRecord record;
     record.number = number;
+    record.notes = std::move(notes);
     record.input = std::format("input {}", number);
     record.resolve = {{"intent", "climb"}};
     record.rolls = nlohmann::json::array({nlohmann::json{{"total", 14}}});
@@ -224,7 +228,7 @@ nlohmann::json StateWithHealth(int health)
 TEST_CASE("RunStore commits turns with their resulting state", "[store]")
 {
     RunStore store = RunStore::Create(FreshDbPath("store_turns"), TestMeta(), TestInitialState());
-    store.CommitTurn(TestTurn(1), StateWithHealth(9));
+    store.CommitTurn(TestTurn(1, {"first note", "second note"}), StateWithHealth(9));
     store.CommitTurn(TestTurn(2), StateWithHealth(8));
 
     CHECK(store.LatestTurn() == 2);
@@ -240,11 +244,14 @@ TEST_CASE("RunStore commits turns with their resulting state", "[store]")
     CHECK(first->rejected.empty());
     CHECK(first->narration == "narration 1");
     CHECK(first->timings.at("resolve_ms") == 120);
+    CHECK(first->notes == std::vector<std::string>{"first note", "second note"});
 
     const std::vector<TurnRecord> both = store.Turns(1, 2);
     REQUIRE(both.size() == 2);
     CHECK(both[0].number == 1);
+    CHECK(both[0].notes == std::vector<std::string>{"first note", "second note"});
     CHECK(both[1].number == 2);
+    CHECK(both[1].notes.empty());
     CHECK_FALSE(store.Turn(3).has_value());
 }
 
@@ -257,6 +264,20 @@ TEST_CASE("RunStore only accepts the next turn number", "[store]")
     store.CommitTurn(TestTurn(1), StateWithHealth(9));
     CHECK_THROWS_AS(store.CommitTurn(TestTurn(1), StateWithHealth(9)), ContractError);
     CHECK(store.LatestTurn() == 1);
+}
+
+TEST_CASE("A failed CommitTurn leaves no notes behind", "[store]")
+{
+    RunStore store = RunStore::Create(FreshDbPath("store_failed_commit_notes"), TestMeta(), TestInitialState());
+
+    // Wrong turn number: the commit throws and the note written for that turn must not exist.
+    CHECK_THROWS_AS(store.CommitTurn(TestTurn(2, {"orphan note"}), StateWithHealth(9)), ContractError);
+    CHECK(store.Notes().empty());
+
+    store.CommitTurn(TestTurn(1, {"real note"}), StateWithHealth(9));
+    CHECK_THROWS_AS(store.CommitTurn(TestTurn(1, {"duplicate note"}), StateWithHealth(8)), ContractError);
+    REQUIRE(store.Notes().size() == 1);
+    CHECK(store.Notes()[0].text == "real note");
 }
 
 TEST_CASE("TruncateAfter undoes later turns and snapshots", "[store]")
@@ -300,8 +321,8 @@ TEST_CASE("RunStore keeps summaries and notes in order", "[store]")
     RunStore store = RunStore::Create(FreshDbPath("store_summaries"), TestMeta(), TestInitialState());
     store.AddSummary({5, 8, "second fold"});
     store.AddSummary({1, 4, "first fold"});
-    store.AddNote({3, "the captain distrusts Marta"});
-    store.AddNote({1, "storm season"});
+    store.CommitTurn(TestTurn(1, {"storm season"}), StateWithHealth(9));
+    store.CommitTurn(TestTurn(2, {"the captain distrusts Marta", "Marta limps"}), StateWithHealth(8));
 
     const std::vector<Summary> summaries = store.Summaries();
     REQUIRE(summaries.size() == 2);
@@ -310,9 +331,12 @@ TEST_CASE("RunStore keeps summaries and notes in order", "[store]")
     CHECK(summaries[1].toTurn == 8);
 
     const std::vector<Note> notes = store.Notes();
-    REQUIRE(notes.size() == 2);
+    REQUIRE(notes.size() == 3);
     CHECK(notes[0].turn == 1);
+    CHECK(notes[0].text == "storm season");
+    CHECK(notes[1].turn == 2);
     CHECK(notes[1].text == "the captain distrusts Marta");
+    CHECK(notes[2].text == "Marta limps");
 
     CHECK_THROWS_AS(store.AddSummary({4, 2, "backwards"}), ContractError);
 }
@@ -342,12 +366,16 @@ TEST_CASE("TruncateAfter also undoes later summaries, notes and turn embeddings"
 {
     RunStore store = RunStore::Create(FreshDbPath("store_truncate_memory"), TestMeta(), TestInitialState());
     for (int turn = 1; turn <= 5; ++turn) {
-        store.CommitTurn(TestTurn(turn), StateWithHealth(10 - turn));
+        std::vector<std::string> notes;
+        if (turn == 3) {
+            notes.push_back("kept");
+        } else if (turn == 4) {
+            notes.push_back("dropped");
+        }
+        store.CommitTurn(TestTurn(turn, notes), StateWithHealth(10 - turn));
     }
     store.AddSummary({1, 3, "kept"});
     store.AddSummary({4, 5, "dropped"});
-    store.AddNote({3, "kept"});
-    store.AddNote({4, "dropped"});
     store.PutEmbedding({EmbeddingKind::Turn, "3", "embed-a", {1.0f}});
     store.PutEmbedding({EmbeddingKind::Turn, "4", "embed-a", {1.0f}});
     store.PutEmbedding({EmbeddingKind::Lore, "boarding", "embed-a", {1.0f}});

@@ -32,6 +32,7 @@ struct TurnRecord {
     nlohmann::json rejected = nlohmann::json::array(); // Rejected changes with reasons.
     std::string narration = {};
     nlohmann::json timings = nlohmann::json::object();
+    std::vector<std::string> notes = {}; // Model-written notes (assisted memory mode), committed with the turn.
 };
 
 // A folded range of turns (story summary, layer L2).
@@ -41,7 +42,8 @@ struct Summary {
     std::string text = {};
 };
 
-// An append-only memory written by the model in assisted memory mode.
+// A model-written memory from assisted memory mode, as listed by RunStore::Notes. Notes are only ever written
+// through TurnRecord::notes, so a note exists only if the turn that wrote it committed.
 struct Note {
     int turn = 0;
     std::string text = {};
@@ -86,14 +88,17 @@ public:
     // and StoreError if the stored snapshot is not valid JSON.
     nlohmann::json StateAt(int turn);
 
-    // Appends turn LatestTurn()+1 and the state it produced, in one transaction.
+    // Appends turn LatestTurn()+1, the state it produced and the notes it wrote (record.notes, stored with
+    // turn = record.number), in one transaction: either all of it commits or none of it does.
     // Throws ContractError if record.number is not LatestTurn()+1.
     void CommitTurn(const TurnRecord& record, const nlohmann::json& stateAfter);
 
-    // nullopt when the turn does not exist. Throws StoreError if a stored column is not valid JSON.
+    // nullopt when the turn does not exist. record.notes holds that turn's notes in the order they were written.
+    // Throws StoreError if a stored column is not valid JSON.
     std::optional<TurnRecord> Turn(int number);
 
-    // Turns in [fromTurn, toTurn], ascending. Throws StoreError if a stored column is not valid JSON.
+    // Turns in [fromTurn, toTurn], ascending, each with its notes. Throws StoreError if a stored column is not
+    // valid JSON.
     std::vector<TurnRecord> Turns(int fromTurn, int toTurn);
 
     // Undo: removes every turn, snapshot and note after `turn`, every turn embedding whose turn is after it,
@@ -106,9 +111,7 @@ public:
     // Ordered by fromTurn.
     std::vector<Summary> Summaries();
 
-    void AddNote(const Note& note);
-
-    // Ordered by turn, then insertion.
+    // Every committed note, ordered by turn, then the order written. For context assembly in assisted mode.
     std::vector<Note> Notes();
 
     // Inserts or replaces the vector for (kind, refId, model). Throws ContractError on an empty vector.
