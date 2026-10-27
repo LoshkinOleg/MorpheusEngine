@@ -44,10 +44,11 @@ CREATE TABLE notes (
     text TEXT NOT NULL
 );
 CREATE TABLE embeddings (
-    kind   TEXT NOT NULL,
-    ref_id TEXT NOT NULL,
-    model  TEXT NOT NULL,
-    vector BLOB NOT NULL,
+    kind         TEXT NOT NULL,
+    ref_id       TEXT NOT NULL,
+    model        TEXT NOT NULL,
+    vector       BLOB NOT NULL,
+    content_hash TEXT NOT NULL,
     PRIMARY KEY (kind, ref_id, model)
 );
 )sql";
@@ -329,22 +330,26 @@ std::vector<Note> RunStore::Notes()
 void RunStore::PutEmbedding(const EmbeddingRow& row)
 {
     MORPHEUS_REQUIRE(!row.vector.empty(), "PutEmbedding: vector must not be empty");
-    _db.Prepare("INSERT OR REPLACE INTO embeddings (kind, ref_id, model, vector) VALUES (?1, ?2, ?3, ?4)")
+    MORPHEUS_REQUIRE(!row.contentHash.empty(), "PutEmbedding: contentHash must not be empty");
+    _db.Prepare("INSERT OR REPLACE INTO embeddings (kind, ref_id, model, vector, content_hash) "
+                "VALUES (?1, ?2, ?3, ?4, ?5)")
         .Bind(1, KindName(row.kind))
         .Bind(2, row.refId)
         .Bind(3, row.model)
         .Bind(4, row.vector)
+        .Bind(5, row.contentHash)
         .Run();
 }
 
 std::vector<EmbeddingRow> RunStore::Embeddings(EmbeddingKind kind, const std::string& model)
 {
-    Statement query = _db.Prepare("SELECT ref_id, vector FROM embeddings WHERE kind = ?1 AND model = ?2 ORDER BY ref_id");
+    Statement query = _db.Prepare(
+        "SELECT ref_id, vector, content_hash FROM embeddings WHERE kind = ?1 AND model = ?2 ORDER BY ref_id");
     query.Bind(1, KindName(kind)).Bind(2, model);
 
     std::vector<EmbeddingRow> rows;
     while (query.Step()) {
-        rows.push_back({kind, query.ColumnText(0), model, query.ColumnFloats(1)});
+        rows.push_back({kind, query.ColumnText(0), model, query.ColumnFloats(1), query.ColumnText(2)});
     }
     return rows;
 }

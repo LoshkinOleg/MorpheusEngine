@@ -57,6 +57,8 @@ struct EmbeddingRow {
     std::string refId = {};
     std::string model = {};
     std::vector<float> vector = {};
+    std::string contentHash = {}; // Hash of the exact text that was embedded. Callers re-embed when it differs
+                                  // from the hash of the current text, so edited lore never keeps a stale vector.
 };
 
 // One run's SQLite database (saves/<world>/<run>.db). The only writer of run data.
@@ -114,10 +116,11 @@ public:
     // Every committed note, ordered by turn, then the order written. For context assembly in assisted mode.
     std::vector<Note> Notes();
 
-    // Inserts or replaces the vector for (kind, refId, model). Throws ContractError on an empty vector.
+    // Inserts or replaces the vector and content hash for (kind, refId, model).
+    // Throws ContractError on an empty vector or an empty contentHash.
     void PutEmbedding(const EmbeddingRow& row);
 
-    // Every embedding of one kind produced by one embedding model.
+    // Every embedding of one kind produced by one embedding model, with the content hash it was stored with.
     std::vector<EmbeddingRow> Embeddings(EmbeddingKind kind, const std::string& model);
 
 private:

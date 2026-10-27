@@ -344,22 +344,31 @@ TEST_CASE("RunStore keeps summaries and notes in order", "[store]")
 TEST_CASE("RunStore stores embeddings per kind and model", "[store]")
 {
     RunStore store = RunStore::Create(FreshDbPath("store_embeddings"), TestMeta(), TestInitialState());
-    store.PutEmbedding({EmbeddingKind::Lore, "boarding", "embed-a", {0.25f, -1.5f, 3.0f}});
-    store.PutEmbedding({EmbeddingKind::Lore, "boarding", "embed-a", {1.0f}}); // Replaces the previous vector.
-    store.PutEmbedding({EmbeddingKind::Lore, "boarding", "embed-b", {2.0f}});
-    store.PutEmbedding({EmbeddingKind::Turn, "1", "embed-a", {0.5f, -0.125f}});
+    store.PutEmbedding({EmbeddingKind::Lore, "boarding", "embed-a", {0.25f, -1.5f, 3.0f}, "hash-old"});
+    store.PutEmbedding({EmbeddingKind::Lore, "boarding", "embed-a", {1.0f}, "hash-new"}); // Replaces the previous row.
+    store.PutEmbedding({EmbeddingKind::Lore, "boarding", "embed-b", {2.0f}, "hash-b"});
+    store.PutEmbedding({EmbeddingKind::Turn, "1", "embed-a", {0.5f, -0.125f}, "hash-turn"});
 
     const std::vector<EmbeddingRow> lore = store.Embeddings(EmbeddingKind::Lore, "embed-a");
     REQUIRE(lore.size() == 1);
     CHECK(lore[0].refId == "boarding");
     CHECK(lore[0].vector == std::vector<float>{1.0f});
+    CHECK(lore[0].contentHash == "hash-new"); // The replace changed the stored hash along with the vector.
 
     const std::vector<EmbeddingRow> turns = store.Embeddings(EmbeddingKind::Turn, "embed-a");
     REQUIRE(turns.size() == 1);
     CHECK(turns[0].kind == EmbeddingKind::Turn);
     CHECK(turns[0].vector == std::vector<float>{0.5f, -0.125f});
+    CHECK(turns[0].contentHash == "hash-turn");
 
-    CHECK_THROWS_AS(store.PutEmbedding({EmbeddingKind::Turn, "2", "embed-a", {}}), ContractError);
+    const std::vector<EmbeddingRow> otherModel = store.Embeddings(EmbeddingKind::Lore, "embed-b");
+    REQUIRE(otherModel.size() == 1);
+    CHECK(otherModel[0].contentHash == "hash-b");
+
+    CHECK_THROWS_AS(store.PutEmbedding({EmbeddingKind::Turn, "2", "embed-a", {}, "hash"}), ContractError);
+    // A row without the hash of the embedded text could never be checked for staleness.
+    CHECK_THROWS_AS(store.PutEmbedding({EmbeddingKind::Turn, "2", "embed-a", {1.0f}, ""}), ContractError);
+    CHECK_THROWS_AS(store.PutEmbedding({EmbeddingKind::Turn, "2", "embed-a", {1.0f}}), ContractError);
 }
 
 TEST_CASE("TruncateAfter also undoes later summaries, notes and turn embeddings", "[store]")
@@ -376,9 +385,9 @@ TEST_CASE("TruncateAfter also undoes later summaries, notes and turn embeddings"
     }
     store.AddSummary({1, 3, "kept"});
     store.AddSummary({4, 5, "dropped"});
-    store.PutEmbedding({EmbeddingKind::Turn, "3", "embed-a", {1.0f}});
-    store.PutEmbedding({EmbeddingKind::Turn, "4", "embed-a", {1.0f}});
-    store.PutEmbedding({EmbeddingKind::Lore, "boarding", "embed-a", {1.0f}});
+    store.PutEmbedding({EmbeddingKind::Turn, "3", "embed-a", {1.0f}, "h3"});
+    store.PutEmbedding({EmbeddingKind::Turn, "4", "embed-a", {1.0f}, "h4"});
+    store.PutEmbedding({EmbeddingKind::Lore, "boarding", "embed-a", {1.0f}, "hb"});
 
     store.TruncateAfter(3);
 
