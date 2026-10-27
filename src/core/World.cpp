@@ -52,13 +52,29 @@ World LoadWorld(const std::filesystem::path& directory)
     const std::string folderName = dir.filename().string();
 
     // Read every file up front: the content hash covers all of them, names included, in this fixed order.
+    // Hash format, per file in order: the file name, "\n", the decimal byte length of the normalized text, "\n",
+    // then the normalized text. The length makes file boundaries unambiguous. Text is normalized by turning CRLF
+    // into LF before hashing and parsing, so a world hashes and loads the same whatever its line endings, and
+    // rules and lore never carry a carriage return into prompts.
     const std::array<std::string, 5> FILE_NAMES = {
         "world.json", "rules.md", "lore.csv", "state_schema.json", "initial_state.json"};
     std::map<std::string, std::string> texts;
     ContentHash hash;
     for (const std::string& name : FILE_NAMES) {
-        std::string text = ReadTextFile(dir / name);
+        const std::string raw = ReadTextFile(dir / name);
+        std::string text;
+        text.reserve(raw.size());
+        for (std::size_t i = 0; i < raw.size(); ++i) {
+            // A '\r' directly before '\n' is dropped; a lone '\r' is kept as written.
+            if (raw[i] == '\r' && i + 1 < raw.size() && raw[i + 1] == '\n') {
+                continue;
+            }
+            text.push_back(raw[i]);
+        }
         hash.Add(name);
+        hash.Add("\n");
+        hash.Add(std::to_string(text.size()));
+        hash.Add("\n");
         hash.Add(text);
         texts.emplace(name, std::move(text));
     }

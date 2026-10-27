@@ -2,11 +2,14 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <filesystem>
+#include <fstream>
 #include <map>
+#include <sstream>
 #include <string>
 #include <vector>
 
 #include "TestPaths.h"
+#include "core/ContentHash.h"
 #include "core/Errors.h"
 #include "core/World.h"
 
@@ -78,6 +81,77 @@ TEST_CASE("LoadWorld content hash tracks file contents", "[world]")
 
     morpheus::test::WriteFile(dir / "rules.md", "Different rules.\n");
     CHECK(LoadWorld(dir).contentHash != before);
+}
+
+// Reads a file as raw bytes with every CR dropped, i.e. its LF-normalized text.
+std::string ReadLfText(const fs::path& file)
+{
+    std::ifstream in(file, std::ios::binary);
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    std::string text;
+    for (const char c : buffer.str()) {
+        if (c != '\r') {
+            text.push_back(c);
+        }
+    }
+    return text;
+}
+
+// Rewrites every file of a world folder with CRLF line endings, whatever it had before.
+void ConvertWorldToCrlf(const fs::path& dir)
+{
+    for (const char* name : {"world.json", "rules.md", "lore.csv", "state_schema.json", "initial_state.json"}) {
+        std::string crlf;
+        for (const char c : ReadLfText(dir / name)) {
+            if (c == '\n') {
+                crlf += "\r\n";
+            } else {
+                crlf.push_back(c);
+            }
+        }
+        morpheus::test::WriteFile(dir / name, crlf);
+    }
+}
+
+TEST_CASE("LoadWorld treats CRLF and LF files as the same world", "[world]")
+{
+    const fs::path lfDir = CopyMiniWorld("world_eol_lf");
+    const fs::path crlfDir = CopyMiniWorld("world_eol_crlf");
+    ConvertWorldToCrlf(crlfDir);
+
+    // The CRLF copy really has carriage returns on disk...
+    std::ifstream raw(crlfDir / "rules.md", std::ios::binary);
+    std::ostringstream rawText;
+    rawText << raw.rdbuf();
+    REQUIRE(rawText.str().find('\r') != std::string::npos);
+
+    // ...but loads identically: same hash, no CR in prompt text.
+    const World lf = LoadWorld(lfDir);
+    const World crlf = LoadWorld(crlfDir);
+    CHECK(crlf.contentHash == lf.contentHash);
+    CHECK(crlf.rules == lf.rules);
+    CHECK(crlf.rules.find('\r') == std::string::npos);
+    CHECK(lf.rules.find('\r') == std::string::npos);
+    for (const LoreEntry& entry : crlf.lore) {
+        CHECK(entry.data.find('\r') == std::string::npos);
+    }
+}
+
+TEST_CASE("LoadWorld hashes each file as name, length and text", "[world]")
+{
+    // Independent re-implementation of the documented format: name, LF, decimal length, LF, text, per file in order.
+    const fs::path dir = CopyMiniWorld("world_hash_format");
+    ContentHash expected;
+    for (const char* name : {"world.json", "rules.md", "lore.csv", "state_schema.json", "initial_state.json"}) {
+        const std::string text = ReadLfText(dir / name);
+        expected.Add(name);
+        expected.Add("\n");
+        expected.Add(std::to_string(text.size()));
+        expected.Add("\n");
+        expected.Add(text);
+    }
+    CHECK(LoadWorld(dir).contentHash == expected.Hex());
 }
 
 TEST_CASE("LoadWorld reports the file at fault", "[world]")

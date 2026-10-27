@@ -1,5 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstdint>
+#include <string_view>
+
 #include "core/ContentHash.h"
 
 using morpheus::core::ContentHash;
@@ -28,4 +31,21 @@ TEST_CASE("ContentHash is streaming: chunks hash like their concatenation", "[ha
     whole.Add("foobar");
 
     CHECK(chunked.Value() == whole.Value());
+}
+
+TEST_CASE("ContentHash handles high-bit bytes as unsigned", "[hash]")
+{
+    // FNV-1a 64 of the single byte 0xFF (independently computed: (offset ^ 0xff) * prime mod 2^64).
+    ContentHash hash;
+    hash.Add(std::string_view("\xff", 1));
+    CHECK(hash.Hex() == "af64724c8602eb6e");
+}
+
+TEST_CASE("ContentHash ignores an empty Add", "[hash]")
+{
+    ContentHash hash;
+    hash.Add("foobar");
+    const std::uint64_t before = hash.Value();
+    hash.Add("");
+    CHECK(hash.Value() == before);
 }
