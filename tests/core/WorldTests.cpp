@@ -108,6 +108,12 @@ TEST_CASE("LoadWorld reports the file at fault", "[world]")
         morpheus::test::WriteFile(dir / "world.json", MiniWorldJsonWith("check_entity", "\"hero\""));
         CHECK_THROWS_WITH(LoadWorld(dir), ContainsSubstring("check_entity"));
     }
+    SECTION("unknown world.json key")
+    {
+        const fs::path dir = CopyMiniWorld("world_unknown_key");
+        morpheus::test::WriteFile(dir / "world.json", MiniWorldJsonWith("memory_mod", "\"engine\""));
+        CHECK_THROWS_WITH(LoadWorld(dir), ContainsSubstring("memory_mod"));
+    }
     SECTION("difficulty outside int range")
     {
         const fs::path dir = CopyMiniWorld("world_difficulty_range");

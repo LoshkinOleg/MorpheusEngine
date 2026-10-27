@@ -73,6 +73,15 @@ World LoadWorld(const std::filesystem::path& directory)
         if (!json.is_object()) {
             throw DataError(worldWhere + ": must be a JSON object");
         }
+
+        // Only the documented keys are allowed, so a typo like "memory_mod" fails loudly.
+        const std::set<std::string> allowedKeys = {"id", "title", "dice", "check_entity", "stats", "difficulties", "memory_mode"};
+        for (auto it = json.begin(); it != json.end(); ++it) {
+            if (!allowedKeys.contains(it.key())) {
+                throw DataError(std::format("{}: unknown key '{}'", worldWhere, it.key()));
+            }
+        }
+
         auto requireString = [&](const char* key) {
             if (!json.contains(key) || !json.at(key).is_string() || json.at(key).get<std::string>().empty()) {
                 throw DataError(std::format("{}: needs a non-empty string '{}'", worldWhere, key));

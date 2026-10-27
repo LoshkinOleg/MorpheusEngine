@@ -36,6 +36,17 @@ StateSchema StateSchema::FromJson(const nlohmann::json& json)
         throw DataError("state schema: needs a non-empty 'entity_types' object");
     }
 
+    // Rejects any key of `object` outside `allowed`, so a typo fails loudly instead of being ignored.
+    auto rejectUnknownKeys = [](const nlohmann::json& object, const std::set<std::string>& allowed,
+                                const std::string& where) {
+        for (auto it = object.begin(); it != object.end(); ++it) {
+            if (!allowed.contains(it.key())) {
+                throw DataError(std::format("{}: unknown key '{}'", where, it.key()));
+            }
+        }
+    };
+    rejectUnknownKeys(json, {"entity_types"}, "state schema");
+
     // Entity type and field names are identifiers: lower-case letters, digits and underscores.
     auto isIdentifier = [](const std::string& name) {
         return !name.empty() && std::all_of(name.begin(), name.end(), [](char c) {
@@ -52,6 +63,8 @@ StateSchema StateSchema::FromJson(const nlohmann::json& json)
         if (!typeJson.is_object()) {
             throw DataError(where + ": must be an object");
         }
+
+        rejectUnknownKeys(typeJson, {"creatable", "fields"}, where);
 
         EntityTypeDef typeDef;
         if (typeJson.contains("creatable")) {
@@ -76,6 +89,16 @@ StateSchema StateSchema::FromJson(const nlohmann::json& json)
             // Type-specific attributes: int needs a range, enum needs its values.
             FieldDef def;
             const std::string typeText = fieldJson.at("type").get<std::string>();
+
+            // Only keys that mean something for this field type are allowed ("min" on a string is a mistake).
+            std::set<std::string> allowedKeys = {"type", "default"};
+            if (typeText == "int") {
+                allowedKeys.insert({"min", "max"});
+            } else if (typeText == "enum") {
+                allowedKeys.insert("values");
+            }
+            rejectUnknownKeys(fieldJson, allowedKeys, fieldWhere);
+
             if (typeText == "int") {
                 def.type = FieldType::Int;
                 if (!fieldJson.contains("min") || !fieldJson.at("min").is_number_integer() ||

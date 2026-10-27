@@ -209,3 +209,41 @@ TEST_CASE("StateSchema accepts INT_MIN and INT_MAX as bounds", "[schema]")
     CHECK_FALSE(StateSchema::CheckFieldValue(field, 2147483648LL).empty());
     CHECK_FALSE(StateSchema::CheckFieldValue(field, -2147483649LL).empty());
 }
+
+TEST_CASE("StateSchema rejects unknown keys and names them", "[schema]")
+{
+    SECTION("top level")
+    {
+        nlohmann::json json = SchemaJson();
+        json["entity_typs"] = nlohmann::json::object();
+        CHECK_THROWS_WITH(StateSchema::FromJson(json), ContainsSubstring("entity_typs"));
+    }
+    SECTION("entity type")
+    {
+        nlohmann::json json = SchemaJson();
+        json["entity_types"]["npc"]["creatible"] = true;
+        CHECK_THROWS_WITH(StateSchema::FromJson(json), ContainsSubstring("creatible"));
+    }
+    SECTION("field")
+    {
+        nlohmann::json json = SchemaJson();
+        json["entity_types"]["npc"]["fields"]["health"]["defualt"] = 3;
+        CHECK_THROWS_WITH(StateSchema::FromJson(json), ContainsSubstring("defualt"));
+    }
+    SECTION("min on a string field")
+    {
+        CHECK_THROWS_WITH(StateSchema::FromJson(SchemaWithBadField({{"type", "string"}, {"min", 0}})),
+                          ContainsSubstring("'min'"));
+    }
+    SECTION("values on an int field")
+    {
+        CHECK_THROWS_WITH(
+            StateSchema::FromJson(SchemaWithBadField({{"type", "int"}, {"min", 0}, {"max", 3}, {"values", {"a"}}})),
+            ContainsSubstring("'values'"));
+    }
+    SECTION("max on an enum field")
+    {
+        CHECK_THROWS_WITH(StateSchema::FromJson(SchemaWithBadField({{"type", "enum"}, {"values", {"a"}}, {"max", 3}})),
+                          ContainsSubstring("'max'"));
+    }
+}
