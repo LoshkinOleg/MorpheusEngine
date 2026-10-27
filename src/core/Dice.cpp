@@ -72,8 +72,11 @@ std::uint64_t CheckSeed(std::uint64_t runSeed, int turn, int checkIndex)
 {
     MORPHEUS_REQUIRE(turn >= 1 && checkIndex >= 0, "CheckSeed: turn must be >= 1 and checkIndex >= 0");
 
-    // Turn in the high half, check index in the low half, then one SplitMix64 step to spread the bits.
-    SplitMix64 mixer(runSeed ^ (static_cast<std::uint64_t>(turn) << 32) ^ static_cast<std::uint64_t>(checkIndex));
+    // Mix the run seed first, so run seeds that differ only in high bits cannot cancel against the turn bits.
+    const std::uint64_t base = SplitMix64(runSeed).Next();
+
+    // Then turn in the high half, check index in the low half, and one more SplitMix64 step to spread the bits.
+    SplitMix64 mixer(base ^ ((static_cast<std::uint64_t>(turn) << 32) | static_cast<std::uint64_t>(checkIndex)));
     return mixer.Next();
 }
 

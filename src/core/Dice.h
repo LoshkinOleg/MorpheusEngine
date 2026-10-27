@@ -31,7 +31,7 @@ struct DiceRule {
 struct CheckResult {
     std::vector<int> rolls = {};
     int statValue = 0; // 0 when the rule does not add a stat.
-    int total = 0;
+    long long total = 0; // Stats are int-range and dice add at most 20 * 1000, so this never overflows.
     int target = 0;
     bool success = false; // total >= target
 };

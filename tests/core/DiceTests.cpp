@@ -1,6 +1,9 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstdint>
+#include <limits>
 #include <set>
+#include <vector>
 
 #include "core/Dice.h"
 #include "core/Errors.h"
@@ -68,4 +71,52 @@ TEST_CASE("RollCheck covers every face and nothing else", "[dice]")
         CHECK(result.statValue == 0); // "1d6" does not add the stat.
     }
     CHECK(faces == std::set<int>{1, 2, 3, 4, 5, 6});
+}
+
+TEST_CASE("CheckSeed mixes the run seed so high-bit differences cannot collide across turns", "[dice]")
+{
+    // Without mixing, (A, turn 1) and (A ^ (3 << 32), turn 2) xor to the same value.
+    const std::uint64_t a = 0x123456789abcdef0ULL;
+    CHECK(CheckSeed(a, 1, 0) != CheckSeed(a ^ (3ULL << 32), 2, 0));
+    // The same holds for the check index in the low half.
+    CHECK(CheckSeed(a, 1, 0) != CheckSeed(a ^ 5ULL, 1, 5));
+}
+
+TEST_CASE("RollCheck succeeds exactly when total reaches the target", "[dice]")
+{
+    const DiceRule rule = DiceRule::Parse("2d6+stat");
+    const std::uint64_t seed = CheckSeed(42, 1, 0);
+    const long long total = RollCheck(rule, 3, 0, seed).total;
+
+    // Same seed, so the same dice: only the target moves.
+    const CheckResult atTarget = RollCheck(rule, 3, static_cast<int>(total), seed);
+    CHECK(atTarget.total == total);
+    CHECK(atTarget.success);
+
+    const CheckResult justAbove = RollCheck(rule, 3, static_cast<int>(total) + 1, seed);
+    CHECK(justAbove.total == total);
+    CHECK_FALSE(justAbove.success);
+}
+
+TEST_CASE("RollCheck totals do not overflow int with a huge stat", "[dice]")
+{
+    const DiceRule rule = DiceRule::Parse("1d20+stat");
+    const CheckResult result = RollCheck(rule, std::numeric_limits<int>::max(), 10, CheckSeed(42, 1, 0));
+
+    REQUIRE(result.rolls.size() == 1);
+    CHECK(result.total == static_cast<long long>(std::numeric_limits<int>::max()) + result.rolls[0]);
+    CHECK(result.total > std::numeric_limits<int>::max());
+    CHECK(result.success);
+}
+
+TEST_CASE("Dice outputs are pinned so replays stay stable", "[dice]")
+{
+    // These golden values guard replay stability: changing the seed mixing or the roll derivation changes every
+    // saved run's checks. They were computed once and cross-checked with an independent SplitMix64 implementation.
+    CHECK(CheckSeed(42, 1, 0) == 0x8a5509b0d5741cc5ULL);
+
+    const CheckResult result = RollCheck(DiceRule::Parse("2d6+stat"), 3, 10, CheckSeed(42, 1, 0));
+    CHECK(result.rolls == std::vector<int>{1, 5});
+    CHECK(result.total == 9);
+    CHECK_FALSE(result.success);
 }
