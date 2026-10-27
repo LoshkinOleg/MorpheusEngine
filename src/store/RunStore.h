@@ -96,11 +96,11 @@ public:
     void CommitTurn(const TurnRecord& record, const nlohmann::json& stateAfter);
 
     // nullopt when the turn does not exist. record.notes holds that turn's notes in the order they were written.
-    // Throws StoreError if a stored column is not valid JSON.
+    // Throws StoreError if a stored column is not valid JSON and StoreError if a note has no matching turn row.
     std::optional<TurnRecord> Turn(int number);
 
     // Turns in [fromTurn, toTurn], ascending, each with its notes. Throws StoreError if a stored column is not
-    // valid JSON.
+    // valid JSON and StoreError if a note has no matching turn row.
     std::vector<TurnRecord> Turns(int fromTurn, int toTurn);
 
     // Undo: removes every turn, snapshot and note after `turn`, every turn embedding whose turn is after it,

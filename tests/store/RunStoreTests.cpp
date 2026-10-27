@@ -280,6 +280,21 @@ TEST_CASE("A failed CommitTurn leaves no notes behind", "[store]")
     CHECK(store.Notes()[0].text == "real note");
 }
 
+TEST_CASE("A turn whose COMMIT fails leaves no notes behind", "[store]")
+{
+    const std::filesystem::path file = FreshDbPath("store_notes_rollback");
+    RunStore store = RunStore::Create(file, TestMeta(), TestInitialState());
+
+    // A second connection holding a read transaction makes CommitTurn's COMMIT fail with SQLITE_BUSY.
+    Database reader = Database::Open(file, false);
+    reader.Exec("BEGIN; SELECT COUNT(*) FROM notes;");
+    CHECK_THROWS_AS(store.CommitTurn(TestTurn(1, {"must not survive"}), StateWithHealth(9)), StoreError);
+    reader.Exec("COMMIT");
+
+    CHECK(store.LatestTurn() == 0);
+    CHECK(store.Notes().empty());
+}
+
 TEST_CASE("TruncateAfter undoes later turns and snapshots", "[store]")
 {
     RunStore store = RunStore::Create(FreshDbPath("store_truncate"), TestMeta(), TestInitialState());

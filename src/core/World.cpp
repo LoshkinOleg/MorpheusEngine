@@ -65,11 +65,15 @@ World LoadWorld(const std::filesystem::path& directory)
         std::string text;
         text.reserve(raw.size());
         for (std::size_t i = 0; i < raw.size(); ++i) {
-            // A '\r' directly before '\n' is dropped; a lone '\r' is kept as written.
+            // A '\r' directly before '\n' is dropped; a lone '\r' is rejected right after this loop.
             if (raw[i] == '\r' && i + 1 < raw.size() && raw[i + 1] == '\n') {
                 continue;
             }
             text.push_back(raw[i]);
+        }
+        // CRLF pairs are normalized above; a carriage return on its own means a malformed file.
+        if (const std::size_t stray = text.find('\r'); stray != std::string::npos) {
+            throw DataError(std::format("'{}': stray carriage return at byte {}", (dir / name).generic_string(), stray));
         }
         hash.Add(name);
         hash.Add("\n");
@@ -242,6 +246,7 @@ World LoadWorld(const std::filesystem::path& directory)
     // Every stat must be an int field of the check entity's type, or a check could not read its value.
     const EntityTypeDef* pCheckType =
         world.schema.FindEntityType(world.initialState.at(world.checkEntity).at("type").get<std::string>());
+    MORPHEUS_REQUIRE(pCheckType != nullptr, "LoadWorld: check entity type missing after ValidateState");
     for (const std::string& stat : world.stats) {
         const auto fieldIt = pCheckType->fields.find(stat);
         if (fieldIt == pCheckType->fields.end()) {

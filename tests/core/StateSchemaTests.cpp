@@ -247,3 +247,9 @@ TEST_CASE("StateSchema rejects unknown keys and names them", "[schema]")
                           ContainsSubstring("'max'"));
     }
 }
+
+TEST_CASE("An unknown field type is reported before its keys", "[schema]")
+{
+    CHECK_THROWS_WITH(StateSchema::FromJson(SchemaWithBadField({{"type", "itn"}, {"min", 0}, {"max", 5}})),
+                      ContainsSubstring("unknown type 'itn'"));
+}

@@ -232,8 +232,8 @@ ApplyResult ApplyChanges(const StateSchema& schema, const nlohmann::json& state,
                 }
                 // Both operands are int-ranged, so the sum fits in long long.
                 const long long next = current + delta;
-                if (next > std::numeric_limits<int>::max()) {
-                    return std::format("count of '{}' would exceed {}", item, std::numeric_limits<int>::max());
+                if (next > INT_MAX_VALUE) {
+                    return std::format("count of '{}' would exceed {}", item, INT_MAX_VALUE);
                 }
                 if (next <= 0) {
                     field.erase(item);

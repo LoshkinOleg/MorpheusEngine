@@ -90,6 +90,13 @@ StateSchema StateSchema::FromJson(const nlohmann::json& json)
             FieldDef def;
             const std::string typeText = fieldJson.at("type").get<std::string>();
 
+            // The type comes first: every other complaint about this field depends on knowing it.
+            const std::set<std::string> knownTypes = {"int", "enum", "string", "list", "counter"};
+            if (!knownTypes.contains(typeText)) {
+                throw DataError(std::format("{}: unknown type '{}' (expected int, enum, string, list or counter)",
+                                            fieldWhere, typeText));
+            }
+
             // Only keys that mean something for this field type are allowed ("min" on a string is a mistake).
             std::set<std::string> allowedKeys = {"type", "default"};
             if (typeText == "int") {
@@ -140,11 +147,9 @@ StateSchema StateSchema::FromJson(const nlohmann::json& json)
                 def.type = FieldType::String;
             } else if (typeText == "list") {
                 def.type = FieldType::List;
-            } else if (typeText == "counter") {
-                def.type = FieldType::Counter;
             } else {
-                throw DataError(std::format("{}: unknown type '{}' (expected int, enum, string, list or counter)",
-                                            fieldWhere, typeText));
+                // Only "counter" is left: knownTypes was checked above.
+                def.type = FieldType::Counter;
             }
 
             // An explicit default must itself be a valid value.

@@ -44,6 +44,39 @@ std::string MiniWorldJsonWith(const std::string& key, const std::string& valueJs
     return json.dump();
 }
 
+// Reads a file as raw bytes and converts only CRLF pairs to LF, the same rule LoadWorld applies.
+std::string ReadLfText(const fs::path& file)
+{
+    std::ifstream in(file, std::ios::binary);
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    const std::string raw = buffer.str();
+    std::string text;
+    for (std::size_t i = 0; i < raw.size(); ++i) {
+        if (raw[i] == '\r' && i + 1 < raw.size() && raw[i + 1] == '\n') {
+            continue;
+        }
+        text.push_back(raw[i]);
+    }
+    return text;
+}
+
+// Rewrites every file of a world folder with CRLF line endings, whatever it had before.
+void ConvertWorldToCrlf(const fs::path& dir)
+{
+    for (const char* name : {"world.json", "rules.md", "lore.csv", "state_schema.json", "initial_state.json"}) {
+        std::string crlf;
+        for (const char c : ReadLfText(dir / name)) {
+            if (c == '\n') {
+                crlf += "\r\n";
+            } else {
+                crlf.push_back(c);
+            }
+        }
+        morpheus::test::WriteFile(dir / name, crlf);
+    }
+}
+
 } // namespace
 
 TEST_CASE("LoadWorld loads every file of a valid world", "[world]")
@@ -81,37 +114,6 @@ TEST_CASE("LoadWorld content hash tracks file contents", "[world]")
 
     morpheus::test::WriteFile(dir / "rules.md", "Different rules.\n");
     CHECK(LoadWorld(dir).contentHash != before);
-}
-
-// Reads a file as raw bytes with every CR dropped, i.e. its LF-normalized text.
-std::string ReadLfText(const fs::path& file)
-{
-    std::ifstream in(file, std::ios::binary);
-    std::ostringstream buffer;
-    buffer << in.rdbuf();
-    std::string text;
-    for (const char c : buffer.str()) {
-        if (c != '\r') {
-            text.push_back(c);
-        }
-    }
-    return text;
-}
-
-// Rewrites every file of a world folder with CRLF line endings, whatever it had before.
-void ConvertWorldToCrlf(const fs::path& dir)
-{
-    for (const char* name : {"world.json", "rules.md", "lore.csv", "state_schema.json", "initial_state.json"}) {
-        std::string crlf;
-        for (const char c : ReadLfText(dir / name)) {
-            if (c == '\n') {
-                crlf += "\r\n";
-            } else {
-                crlf.push_back(c);
-            }
-        }
-        morpheus::test::WriteFile(dir / name, crlf);
-    }
 }
 
 TEST_CASE("LoadWorld treats CRLF and LF files as the same world", "[world]")
@@ -156,6 +158,12 @@ TEST_CASE("LoadWorld hashes each file as name, length and text", "[world]")
 
 TEST_CASE("LoadWorld reports the file at fault", "[world]")
 {
+    SECTION("lone carriage return")
+    {
+        const fs::path dir = CopyMiniWorld("world_lone_cr");
+        morpheus::test::WriteFile(dir / "rules.md", "line one\rline two\n");
+        CHECK_THROWS_WITH(LoadWorld(dir), ContainsSubstring("carriage return"));
+    }
     SECTION("missing file")
     {
         const fs::path dir = CopyMiniWorld("world_missing");
@@ -194,7 +202,7 @@ TEST_CASE("LoadWorld reports the file at fault", "[world]")
     {
         const fs::path dir = CopyMiniWorld("world_stat_not_int");
         morpheus::test::WriteFile(dir / "world.json", MiniWorldJsonWith("stats", R"(["location"])"));
-        CHECK_THROWS_WITH(LoadWorld(dir), ContainsSubstring("location"));
+        CHECK_THROWS_WITH(LoadWorld(dir), ContainsSubstring("must be an int field"));
     }
     SECTION("empty stats array")
     {

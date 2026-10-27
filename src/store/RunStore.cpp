@@ -196,7 +196,7 @@ void RunStore::CommitTurn(const TurnRecord& record, const nlohmann::json& stateA
     MORPHEUS_REQUIRE(record.number == expected,
                      std::format("CommitTurn: expected turn {}, got {}", expected, record.number));
 
-    // The turn and its resulting state land together or not at all.
+    // The turn, its resulting state and its notes land together or not at all.
     _db.Transaction([&] {
         _db.Prepare("INSERT INTO turns (number, input, resolve, rolls, applied, rejected, narration, timings) "
                     "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)")
