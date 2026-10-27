@@ -24,7 +24,8 @@ struct ContextInputs {
     std::string instruction = {};                  // T4: the resolve task instruction.
 };
 
-// Exact token counts. Layer counts are raw text (no template tokens); `total` is the whole templated prompt.
+// Exact token counts. Layer counts are raw text (no template tokens), for the inspector; `total` is the only
+// figure that includes chat-template tokens (the whole templated prompt).
 struct LayerTokens {
     int engineRules = 0;
     int world = 0;
@@ -37,11 +38,13 @@ struct LayerTokens {
 struct Assembly {
     inference::Prompt prompt = {};
     LayerTokens tokens = {};
-    int transcriptBudget = 0;          // Tokens L3 may use under this budget.
+    int transcriptBudget = 0;          // Tokens L3 may add to the templated prompt (always positive).
+    int transcriptCost = 0;            // Tokens L3 adds to the templated prompt, template tokens included.
     bool transcriptOverBudget = false; // Fold old turns into the summary and assemble again.
     bool summaryOverBudget = false;    // The summary itself must be condensed.
     bool tailOverBudget = false;       // State, retrieval, input and instruction exceed tail_allowance.
-    bool contextOverflow = false;      // The templated prompt plus both generations exceeds the context.
+    // The full templated prompt plus both generations exceeds the context: shrink the tail or fold.
+    bool contextOverflow = false;
 
     bool Fits() const
     {
@@ -51,8 +54,9 @@ struct Assembly {
 
 // Builds the resolve prompt: one system message (L0 + L1 + L2), the transcript (L3), then one user message with
 // the volatile tail (T1-T4). prompt.stableCount marks the end of L3. Throws ContractError if L0 exceeds
-// engine_rules_cap (engine text too long) and DataError if L1 exceeds world_cap (the world is too big). Other
-// overruns are flags for the turn layer to act on.
+// engine_rules_cap (engine text too long) and DataError if L1 exceeds world_cap (the world is too big) or if the
+// context leaves no room for the transcript after the system message, the tail allowance and both generations
+// (folding cannot fix that). Other overruns are flags for the turn layer to act on.
 Assembly AssembleResolvePrompt(const core::World& world, const ContextInputs& inputs,
                                const core::BudgetSettings& budget, inference::LlmBackend& backend);
 

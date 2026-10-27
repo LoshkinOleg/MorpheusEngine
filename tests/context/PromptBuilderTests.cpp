@@ -39,6 +39,28 @@ context::ContextInputs Inputs(const core::World& world)
     return inputs;
 }
 
+// Template-inclusive quantities of an assembly, measured on a backend with room to spare, so tests can pick
+// exact context sizes from them.
+struct Measured {
+    int systemCost = 0;     // The system message alone, templated.
+    int transcriptCost = 0; // What L3 adds to the templated prompt.
+    int tail = 0;           // Raw tail tokens.
+};
+
+Measured Measure(const core::World& world, const context::ContextInputs& inputs, const core::BudgetSettings& budget)
+{
+    test::FakeBackend roomy(100000);
+    const context::Assembly assembly = context::AssembleResolvePrompt(world, inputs, budget, roomy);
+    return {roomy.CountTokens(assembly.prompt.messages[0].content) + 4, assembly.transcriptCost, assembly.tokens.tail};
+}
+
+// The context size that gives L3 exactly `transcriptBudget` tokens.
+int ContextSizeFor(const core::BudgetSettings& budget, const Measured& measured, int transcriptBudget)
+{
+    return budget.resolveMaxTokens + budget.narrateMaxTokens + budget.tailAllowance + measured.systemCost +
+           transcriptBudget;
+}
+
 } // namespace
 
 TEST_CASE("AssembleResolvePrompt lays out the layers", "[context]")
@@ -99,17 +121,64 @@ TEST_CASE("AssembleResolvePrompt counts tokens per layer", "[context]")
     CHECK(assembly.Fits());
 }
 
+TEST_CASE("AssembleResolvePrompt budgets the transcript with template-inclusive costs", "[context]")
+{
+    const core::World world = MiniWorld();
+    test::FakeBackend backend(8192);
+    const context::Assembly assembly = context::AssembleResolvePrompt(world, Inputs(world), RoomyBudget(), backend);
+
+    const int systemCost = backend.CountTokens(assembly.prompt.messages[0].content) + 4;
+    CHECK(assembly.transcriptBudget == 8192 - 64 - 64 - 512 - systemCost);
+    CHECK(assembly.transcriptCost ==
+          backend.CountTokens("I knock.") + 4 + backend.CountTokens("The door creaks.") + 4);
+    CHECK_FALSE(assembly.transcriptOverBudget);
+}
+
 TEST_CASE("AssembleResolvePrompt reports budget overruns", "[context]")
 {
     const core::World world = MiniWorld();
+    const core::BudgetSettings roomy = RoomyBudget();
 
-    SECTION("transcript over its budget")
+    SECTION("transcript exactly at its budget fits")
     {
-        test::FakeBackend tight(64 + 64 + 512 + 60); // Room for the fixed layers, almost none for L3.
+        const context::ContextInputs inputs = Inputs(world);
+        const Measured measured = Measure(world, inputs, roomy);
+        test::FakeBackend backend(ContextSizeFor(roomy, measured, measured.transcriptCost));
+        const context::Assembly assembly = context::AssembleResolvePrompt(world, inputs, roomy, backend);
+        CHECK(assembly.transcriptBudget == measured.transcriptCost);
+        CHECK_FALSE(assembly.transcriptOverBudget);
+        CHECK_FALSE(assembly.summaryOverBudget);
+        CHECK_FALSE(assembly.tailOverBudget);
+        CHECK_FALSE(assembly.contextOverflow);
+        CHECK(assembly.Fits());
+    }
+    SECTION("transcript one token over its budget")
+    {
         context::ContextInputs inputs = Inputs(world);
         inputs.transcript.front().narration = std::string(400, 'x');
-        const context::Assembly assembly = context::AssembleResolvePrompt(world, inputs, RoomyBudget(), tight);
+        const Measured measured = Measure(world, inputs, roomy);
+        test::FakeBackend backend(ContextSizeFor(roomy, measured, measured.transcriptCost - 1));
+        const context::Assembly assembly = context::AssembleResolvePrompt(world, inputs, roomy, backend);
+        CHECK(assembly.transcriptBudget == measured.transcriptCost - 1);
         CHECK(assembly.transcriptOverBudget);
+        CHECK_FALSE(assembly.summaryOverBudget);
+        CHECK_FALSE(assembly.tailOverBudget);
+        CHECK_FALSE(assembly.contextOverflow);
+        CHECK_FALSE(assembly.Fits());
+    }
+    SECTION("only the context overflows")
+    {
+        // The tail exactly fills its allowance, so the 4 template tokens of its message push the prompt over.
+        const context::ContextInputs inputs = Inputs(world);
+        core::BudgetSettings budget = roomy;
+        budget.tailAllowance = Measure(world, inputs, roomy).tail;
+        const Measured measured = Measure(world, inputs, budget);
+        test::FakeBackend backend(ContextSizeFor(budget, measured, measured.transcriptCost));
+        const context::Assembly assembly = context::AssembleResolvePrompt(world, inputs, budget, backend);
+        CHECK(assembly.contextOverflow);
+        CHECK_FALSE(assembly.transcriptOverBudget);
+        CHECK_FALSE(assembly.summaryOverBudget);
+        CHECK_FALSE(assembly.tailOverBudget);
         CHECK_FALSE(assembly.Fits());
     }
     SECTION("tail over its allowance")
@@ -117,26 +186,48 @@ TEST_CASE("AssembleResolvePrompt reports budget overruns", "[context]")
         test::FakeBackend backend(8192);
         context::ContextInputs inputs = Inputs(world);
         inputs.playerInput = std::string(4000, 'y');
-        CHECK(context::AssembleResolvePrompt(world, inputs, RoomyBudget(), backend).tailOverBudget);
+        const context::Assembly assembly = context::AssembleResolvePrompt(world, inputs, roomy, backend);
+        CHECK(assembly.tailOverBudget);
+        CHECK_FALSE(assembly.transcriptOverBudget);
+        CHECK_FALSE(assembly.summaryOverBudget);
+        CHECK_FALSE(assembly.contextOverflow);
     }
     SECTION("summary over its cap")
     {
         test::FakeBackend backend(8192);
         context::ContextInputs inputs = Inputs(world);
         inputs.summaries.front().text = std::string(2000, 's');
-        CHECK(context::AssembleResolvePrompt(world, inputs, RoomyBudget(), backend).summaryOverBudget);
+        const context::Assembly assembly = context::AssembleResolvePrompt(world, inputs, roomy, backend);
+        CHECK(assembly.summaryOverBudget);
+        CHECK_FALSE(assembly.transcriptOverBudget);
+        CHECK_FALSE(assembly.tailOverBudget);
+        CHECK_FALSE(assembly.contextOverflow);
+    }
+    SECTION("a context too small for the fixed layers is a data error, not a flag")
+    {
+        const context::ContextInputs inputs = Inputs(world);
+        const Measured measured = Measure(world, inputs, roomy);
+        test::FakeBackend small(ContextSizeFor(roomy, measured, -10));
+        CHECK_THROWS_AS(context::AssembleResolvePrompt(world, inputs, roomy, small), core::DataError);
+        CHECK_THROWS_WITH(context::AssembleResolvePrompt(world, inputs, roomy, small),
+                          ContainsSubstring("no room for the transcript"));
+        test::FakeBackend zero(ContextSizeFor(roomy, measured, 0)); // Nothing left is no room either.
+        CHECK_THROWS_WITH(context::AssembleResolvePrompt(world, inputs, roomy, zero),
+                          ContainsSubstring("no room for the transcript"));
+        test::FakeBackend one(ContextSizeFor(roomy, measured, 1));
+        CHECK_NOTHROW(context::AssembleResolvePrompt(world, inputs, roomy, one));
     }
     SECTION("world over its cap is a data error")
     {
         test::FakeBackend backend(8192);
-        core::BudgetSettings budget = RoomyBudget();
+        core::BudgetSettings budget = roomy;
         budget.worldCap = 2;
         CHECK_THROWS_WITH(context::AssembleResolvePrompt(world, Inputs(world), budget, backend), ContainsSubstring("world_cap"));
     }
     SECTION("engine rules over their cap are an engine bug")
     {
         test::FakeBackend backend(8192);
-        core::BudgetSettings budget = RoomyBudget();
+        core::BudgetSettings budget = roomy;
         budget.engineRulesCap = 1;
         CHECK_THROWS_AS(context::AssembleResolvePrompt(world, Inputs(world), budget, backend), core::ContractError);
     }
