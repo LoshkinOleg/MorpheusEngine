@@ -2,6 +2,7 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <filesystem>
+#include <format>
 #include <stdexcept>
 #include <string_view>
 
@@ -194,4 +195,101 @@ TEST_CASE("A failed RunStore::Create leaves no file behind", "[store]")
     std::filesystem::remove(file.parent_path() / "run.db-journal");
     RunStore store = RunStore::Create(file, TestMeta(), TestInitialState());
     CHECK(store.LatestTurn() == 0);
+}
+
+namespace {
+
+TurnRecord TestTurn(int number)
+{
+    TurnRecord record;
+    record.number = number;
+    record.input = std::format("input {}", number);
+    record.resolve = {{"intent", "climb"}};
+    record.rolls = nlohmann::json::array({nlohmann::json{{"total", 14}}});
+    record.applied = nlohmann::json::array({nlohmann::json{{"op", "set"}}});
+    record.rejected = nlohmann::json::array();
+    record.narration = std::format("narration {}", number);
+    record.timings = {{"resolve_ms", 120}};
+    return record;
+}
+
+nlohmann::json StateWithHealth(int health)
+{
+    return {{"player", {{"type", "character"}, {"fields", {{"health", health}}}}}};
+}
+
+} // namespace
+
+TEST_CASE("RunStore commits turns with their resulting state", "[store]")
+{
+    RunStore store = RunStore::Create(FreshDbPath("store_turns"), TestMeta(), TestInitialState());
+    store.CommitTurn(TestTurn(1), StateWithHealth(9));
+    store.CommitTurn(TestTurn(2), StateWithHealth(8));
+
+    CHECK(store.LatestTurn() == 2);
+    CHECK(store.StateAt(1) == StateWithHealth(9));
+    CHECK(store.StateAt(2) == StateWithHealth(8));
+
+    const std::optional<TurnRecord> first = store.Turn(1);
+    REQUIRE(first.has_value());
+    CHECK(first->input == "input 1");
+    CHECK(first->resolve == nlohmann::json({{"intent", "climb"}}));
+    CHECK(first->rolls.at(0).at("total") == 14);
+    CHECK(first->applied.size() == 1);
+    CHECK(first->rejected.empty());
+    CHECK(first->narration == "narration 1");
+    CHECK(first->timings.at("resolve_ms") == 120);
+
+    const std::vector<TurnRecord> both = store.Turns(1, 2);
+    REQUIRE(both.size() == 2);
+    CHECK(both[0].number == 1);
+    CHECK(both[1].number == 2);
+    CHECK_FALSE(store.Turn(3).has_value());
+}
+
+TEST_CASE("RunStore only accepts the next turn number", "[store]")
+{
+    RunStore store = RunStore::Create(FreshDbPath("store_turn_order"), TestMeta(), TestInitialState());
+    CHECK_THROWS_AS(store.CommitTurn(TestTurn(2), StateWithHealth(9)), ContractError);
+    CHECK(store.LatestTurn() == 0);
+
+    store.CommitTurn(TestTurn(1), StateWithHealth(9));
+    CHECK_THROWS_AS(store.CommitTurn(TestTurn(1), StateWithHealth(9)), ContractError);
+    CHECK(store.LatestTurn() == 1);
+}
+
+TEST_CASE("TruncateAfter undoes later turns and snapshots", "[store]")
+{
+    RunStore store = RunStore::Create(FreshDbPath("store_truncate"), TestMeta(), TestInitialState());
+    store.CommitTurn(TestTurn(1), StateWithHealth(9));
+    store.CommitTurn(TestTurn(2), StateWithHealth(8));
+    store.CommitTurn(TestTurn(3), StateWithHealth(7));
+
+    store.TruncateAfter(1);
+    CHECK(store.LatestTurn() == 1);
+    CHECK_FALSE(store.Turn(2).has_value());
+    CHECK_THROWS_AS(store.StateAt(2), ContractError);
+    CHECK(store.StateAt(1) == StateWithHealth(9));
+
+    // The run continues from turn 1 as if turns 2 and 3 never happened.
+    store.CommitTurn(TestTurn(2), StateWithHealth(5));
+    CHECK(store.StateAt(2) == StateWithHealth(5));
+}
+
+TEST_CASE("RunStore::Turn rejects an unparseable stored column", "[store]")
+{
+    const std::filesystem::path file = FreshDbPath("store_bad_turn");
+    {
+        RunStore store = RunStore::Create(file, TestMeta(), TestInitialState());
+        store.CommitTurn(TestTurn(1), StateWithHealth(9));
+    }
+    {
+        Database db = Database::Open(file, false);
+        db.Exec("UPDATE turns SET resolve = '{bad' WHERE number = 1");
+    }
+    RunStore store = RunStore::Open(file);
+    CHECK_THROWS_AS(store.Turn(1), StoreError);
+    CHECK_THROWS_WITH(store.Turn(1), ContainsSubstring("resolve"));
+    CHECK_THROWS_WITH(store.Turn(1), ContainsSubstring("turn 1"));
+    CHECK_THROWS_WITH(store.Turn(1), ContainsSubstring("run.db"));
 }

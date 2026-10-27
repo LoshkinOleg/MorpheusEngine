@@ -177,6 +177,89 @@ nlohmann::json RunStore::StateAt(int turn)
     }
 }
 
+void RunStore::CommitTurn(const TurnRecord& record, const nlohmann::json& stateAfter)
+{
+    const int expected = LatestTurn() + 1;
+    MORPHEUS_REQUIRE(record.number == expected,
+                     std::format("CommitTurn: expected turn {}, got {}", expected, record.number));
+
+    // The turn and its resulting state land together or not at all.
+    _db.Transaction([&] {
+        _db.Prepare("INSERT INTO turns (number, input, resolve, rolls, applied, rejected, narration, timings) "
+                    "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)")
+            .Bind(1, record.number)
+            .Bind(2, record.input)
+            .Bind(3, record.resolve.dump())
+            .Bind(4, record.rolls.dump())
+            .Bind(5, record.applied.dump())
+            .Bind(6, record.rejected.dump())
+            .Bind(7, record.narration)
+            .Bind(8, record.timings.dump())
+            .Run();
+        _db.Prepare("INSERT INTO state_snapshots (turn, state) VALUES (?1, ?2)")
+            .Bind(1, record.number)
+            .Bind(2, stateAfter.dump())
+            .Run();
+    });
+}
+
+std::optional<TurnRecord> RunStore::Turn(int number)
+{
+    std::vector<TurnRecord> found = Turns(number, number);
+    if (found.empty()) {
+        return std::nullopt;
+    }
+    return std::move(found.front());
+}
+
+std::vector<TurnRecord> RunStore::Turns(int fromTurn, int toTurn)
+{
+    Statement query = _db.Prepare("SELECT number, input, resolve, rolls, applied, rejected, narration, timings "
+                                  "FROM turns WHERE number BETWEEN ?1 AND ?2 ORDER BY number");
+    query.Bind(1, fromTurn).Bind(2, toTurn);
+
+    std::vector<TurnRecord> records;
+    while (query.Step()) {
+        TurnRecord record;
+        record.number = static_cast<int>(query.ColumnInt(0));
+
+        // Corrupt saved data is a StoreError naming the file, turn and column, not a raw parse exception.
+        auto parseColumn = [&](int column, const char* name) {
+            try {
+                return nlohmann::json::parse(query.ColumnText(column));
+            } catch (const nlohmann::json::parse_error& error) {
+                throw StoreError(std::format("'{}': turn {} column '{}' is not valid JSON: {}",
+                                             _file.generic_string(), record.number, name, error.what()));
+            }
+        };
+
+        record.input = query.ColumnText(1);
+        record.resolve = parseColumn(2, "resolve");
+        record.rolls = parseColumn(3, "rolls");
+        record.applied = parseColumn(4, "applied");
+        record.rejected = parseColumn(5, "rejected");
+        record.narration = query.ColumnText(6);
+        record.timings = parseColumn(7, "timings");
+        records.push_back(std::move(record));
+    }
+    return records;
+}
+
+void RunStore::TruncateAfter(int turn)
+{
+    MORPHEUS_REQUIRE(turn >= 0, "TruncateAfter: turn must be >= 0");
+
+    // Everything that happened after `turn` goes, in one transaction. Summaries that end at or before `turn`
+    // only cover unchanged turns, so they stay.
+    _db.Transaction([&] {
+        _db.Prepare("DELETE FROM turns WHERE number > ?1").Bind(1, turn).Run();
+        _db.Prepare("DELETE FROM state_snapshots WHERE turn > ?1").Bind(1, turn).Run();
+        _db.Prepare("DELETE FROM summaries WHERE to_turn > ?1").Bind(1, turn).Run();
+        _db.Prepare("DELETE FROM notes WHERE turn > ?1").Bind(1, turn).Run();
+        _db.Prepare("DELETE FROM embeddings WHERE kind = 'turn' AND CAST(ref_id AS INTEGER) > ?1").Bind(1, turn).Run();
+    });
+}
+
 RunStore::RunStore(Database db, RunMeta meta, std::filesystem::path file)
     : _db(std::move(db))
     , _meta(std::move(meta))
