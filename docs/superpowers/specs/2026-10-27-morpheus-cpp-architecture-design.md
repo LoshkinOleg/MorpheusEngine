@@ -24,9 +24,10 @@ Each module is a static library. Dependencies flow downward only.
 
 | Module | Responsibility | Depends on |
 |---|---|---|
-| `core` | World definition, schema-typed state, change validation, dice, turn record types. Pure logic; its only I/O is reading world folders. | - |
+| `core` | World definition, schema-typed state, change validation, dice, turn record types, settings. Pure logic; its only I/O is reading world folders and settings.json. | - |
 | `store` | Per-run SQLite: turns, state snapshots, summaries, notes, embeddings | core |
-| `inference` | `LlmBackend` interface; `LlamaCppBackend` (tokenize, KV sequence reuse, grammar sampling, embeddings) | - |
+| `inference` | `LlmBackend` interface and prompt types (no llama.cpp) | core |
+| `llama` | `LlamaCppBackend`: tokenize, KV prefix reuse, grammar sampling, embeddings, state save/restore. The only module linking llama.cpp; built by the `dev` preset only. | inference |
 | `context` | Layered prompt assembly, exact token budgets, cache-prefix tracking | core, inference |
 | `turn` | Turn orchestration and between-turn maintenance (embedding, folding) | all above |
 | `app` | SDL3 + Dear ImGui frontend: play panel and inspectors | turn (plus read-only views) |
@@ -41,7 +42,7 @@ Each module is a static library. Dependencies flow downward only.
    - Each change is an op: `set`, `add`, `remove` or `create` applied to a `path`, with an optional `value` and a `reason`.
    - The grammar is generated from the world's state schema, so only valid paths and enum values can be emitted.
 3. **Apply (engine).** Roll each check with the run's seeded RNG and select its outcome branch. Validate each change against the schema (path exists, type, range, `create` only for creatable entity types). Apply the valid changes and record the rejected ones with a reason.
-4. **Narrate (LLM, streamed prose).** The prompt is the resolve prompt with three things appended: the resolve output, the engine's resolution record (rolls, outcomes, applied and rejected changes), and the narrate instruction. The model narrates the outcome. It does not decide it.
+4. **Narrate (LLM, streamed prose).** The prompt is the resolve prompt with two messages appended: the resolve output (assistant), then the engine's resolution record (rolls, outcomes, applied and rejected changes) followed by the narrate instruction (user). The model narrates the outcome. It does not decide it.
 5. **Commit (engine).** Write the turn row, the state snapshot and any `assisted`-mode notes in one transaction.
 
 **Between turns, while the worker is idle:**
@@ -80,9 +81,9 @@ VOLATILE TAIL (rebuilt per call)
 ```
 
 - **Token counts are exact,** from the loaded model's tokenizer.
-- **Budget:** `n_ctx - reserved generation (resolve cap + narrate cap) - tail allowance`. L0-L2 have fixed caps; L3 gets the remainder.
+- **Budget:** L0-L2 have fixed caps. L3 gets `n_ctx - resolve cap - narrate cap - tail allowance - templated system message`, and its cost is measured with template tokens included. Overruns are flags for the turn layer (fold, condense, shrink the tail); a context too small for the fixed layers is a settings error.
 - **Compact transcript entries.** Each L3 entry is the input, the narration, and one mechanics line (`[agility vs hard: 14 -> success; location -> bridge_hatch]`). Full resolve JSON stays in the database.
-- **Chat template.** The model's chat template is applied once per layer, so earlier tokens never change.
+- **Messages.** One system message (L0 + L1 + L2), the transcript as user/assistant pairs (L3), then one user message with the tail (T1-T4). The whole prompt goes through the model's chat template; prefix reuse works at the token level, so no per-layer rendering is needed.
 - **Cloud mapping.** The cloud backend maps the same layering onto prompt caching, with a breakpoint at the end of L3.
 
 ## Inference interface
@@ -90,7 +91,7 @@ VOLATILE TAIL (rebuilt per call)
 ```
 LlmBackend
   count_tokens(text) -> int
-  complete(LayeredPrompt, GenerationSpec{grammar?, max_tokens, sampling}, on_token, cancel)
+  complete(Prompt{messages, stableCount}, GenerationSpec{grammar?, max_tokens, sampling}, on_token, cancel)
       -> Completion{text, tokens_reused, tokens_evaluated, timings}
   embed(texts) -> vectors
   save_state() -> blob / restore_state(blob)   (KV sequence state in RAM, used when the GPU is handed to another model)
@@ -100,7 +101,7 @@ LlmBackend
 - `save_state`/`restore_state` carry the cached token list together with the KV sequence state, so prefix reuse still works after a restore.
 - The backend takes grammar text from the caller (`GenerationSpec.grammar`, GBNF). Generating it from the state schema is milestone 3.
 - JSON schemas are converted to GBNF grammars with llama.cpp's json-schema-to-grammar (milestone 3).
-- `settings.json` holds the model paths, `n_ctx`, the number of GPU layers, sampling per call type (resolve runs cooler, narrate warmer), and `memory_mode`.
+- `settings.json` holds the model paths, `n_ctx`, the number of GPU layers, sampling per call type (resolve runs cooler, narrate warmer) and the token budget; `memory_mode` is added with the turn layer (milestone 3).
 
 ## World data and persistence
 

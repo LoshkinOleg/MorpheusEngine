@@ -42,7 +42,15 @@ To check that the models, the Vulkan backend and KV-cache prefix reuse work, run
 ./build/dev/bin/Debug/morpheus_probe.exe settings.json game_projects/sandcrawler "I climb onto the crawler's roof."
 ```
 
-Model-backed tests are tagged `[llama]` and skip unless `MORPHEUS_TEST_CHAT_MODEL` and `MORPHEUS_TEST_EMBED_MODEL` point at the two files.
+llama.cpp prints a few warnings while loading Qwen3 (control-token and `n_ctx_seq` notices); they are expected. The two runs' text can differ slightly even with the same seed.
+
+Model-backed tests are tagged `[llama]` and skip unless both model variables are set (Git Bash, from the repo root):
+
+```
+export MORPHEUS_TEST_CHAT_MODEL="$PWD/models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
+export MORPHEUS_TEST_EMBED_MODEL="$PWD/models/nomic-embed-text-v1.5.Q8_0.gguf"
+./build/dev/bin/Debug/morpheus_tests.exe "[llama]"
+```
 
 ## Layout
 
