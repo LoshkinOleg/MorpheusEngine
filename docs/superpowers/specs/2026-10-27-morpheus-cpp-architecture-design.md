@@ -7,7 +7,7 @@ Date: 2026-10-27. Status: approved design, pre-implementation.
 A text-based RPG engine driven by a local LLM, built first for the author to play their own worlds.
 
 - **Local-first.** llama.cpp runs inside the engine process. A cloud provider can be added behind the same interface later.
-- **Capable local models.** The target is roughly 8-32B GGUF models with 16k+ context. There is no 4 GB ceiling.
+- **Runs on the author's laptop.** The machine is an RTX 3070 Laptop GPU (8 GB VRAM) with 32 GB RAM. That means quantized GGUF chat models of roughly 4-12B parameters with 16k+ context, some layers offloaded to the CPU where needed. The chat model should be multimodal, so it can also read images (see the visualization spec). A larger GPU only removes model swapping and allows bigger models; nothing is redesigned.
 - **The engine owns the game.** It holds structured state and rolls the dice. The LLM proposes outcomes and narrates them.
 - **C++20, one process, one executable.** No HTTP between modules, no router, no Ollama.
 
@@ -93,6 +93,7 @@ LlmBackend
   complete(LayeredPrompt, GenerationSpec{grammar?, max_tokens, sampling}, on_token, cancel)
       -> Completion{text, tokens_reused, tokens_evaluated, timings}
   embed(texts) -> vectors
+  save_state() -> blob / restore_state(blob)   (KV sequence state in RAM, used when the GPU is handed to another model)
 ```
 
 - `LlamaCppBackend` loads two GGUF models in-process: a chat model and an embedding model.
@@ -163,7 +164,8 @@ These carry over as ideas and content, not code:
 ## Not in v1
 
 - A cloud backend implementation (the interface only)
-- Saving the KV cache to disk
+- Persisting the KV cache to disk across sessions (saving it in RAM is in v1)
+- Narrative visualization (separate spec: `2026-10-27-narrative-visualization-design.md`)
 - The plot-consolidation agent ("PlotMaster")
 - GOAP-driven NPCs
 - Authoring tools
