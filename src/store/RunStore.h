@@ -34,6 +34,29 @@ struct TurnRecord {
     nlohmann::json timings = nlohmann::json::object();
 };
 
+// A folded range of turns (story summary, layer L2).
+struct Summary {
+    int fromTurn = 0;
+    int toTurn = 0;
+    std::string text = {};
+};
+
+// An append-only memory written by the model in assisted memory mode.
+struct Note {
+    int turn = 0;
+    std::string text = {};
+};
+
+enum class EmbeddingKind { Lore, Turn };
+
+// refId: lore subject for Lore, decimal turn number for Turn.
+struct EmbeddingRow {
+    EmbeddingKind kind = EmbeddingKind::Lore;
+    std::string refId = {};
+    std::string model = {};
+    std::vector<float> vector = {};
+};
+
 // One run's SQLite database (saves/<world>/<run>.db). The only writer of run data.
 // Tables: run_meta, turns, state_snapshots, summaries, notes, embeddings.
 class RunStore {
@@ -76,6 +99,23 @@ public:
     // Undo: removes every turn, snapshot and note after `turn`, every turn embedding whose turn is after it,
     // and every summary that ends after it. Throws ContractError if turn < 0.
     void TruncateAfter(int turn);
+
+    // Throws ContractError unless 1 <= fromTurn <= toTurn.
+    void AddSummary(const Summary& summary);
+
+    // Ordered by fromTurn.
+    std::vector<Summary> Summaries();
+
+    void AddNote(const Note& note);
+
+    // Ordered by turn, then insertion.
+    std::vector<Note> Notes();
+
+    // Inserts or replaces the vector for (kind, refId, model). Throws ContractError on an empty vector.
+    void PutEmbedding(const EmbeddingRow& row);
+
+    // Every embedding of one kind produced by one embedding model.
+    std::vector<EmbeddingRow> Embeddings(EmbeddingKind kind, const std::string& model);
 
 private:
     RunStore(Database db, RunMeta meta, std::filesystem::path file);

@@ -3,6 +3,7 @@
 
 #include <filesystem>
 #include <format>
+#include <set>
 #include <stdexcept>
 #include <string_view>
 
@@ -292,4 +293,76 @@ TEST_CASE("RunStore::Turn rejects an unparseable stored column", "[store]")
     CHECK_THROWS_WITH(store.Turn(1), ContainsSubstring("resolve"));
     CHECK_THROWS_WITH(store.Turn(1), ContainsSubstring("turn 1"));
     CHECK_THROWS_WITH(store.Turn(1), ContainsSubstring("run.db"));
+}
+
+TEST_CASE("RunStore keeps summaries and notes in order", "[store]")
+{
+    RunStore store = RunStore::Create(FreshDbPath("store_summaries"), TestMeta(), TestInitialState());
+    store.AddSummary({5, 8, "second fold"});
+    store.AddSummary({1, 4, "first fold"});
+    store.AddNote({3, "the captain distrusts Marta"});
+    store.AddNote({1, "storm season"});
+
+    const std::vector<Summary> summaries = store.Summaries();
+    REQUIRE(summaries.size() == 2);
+    CHECK(summaries[0].text == "first fold");
+    CHECK(summaries[1].fromTurn == 5);
+    CHECK(summaries[1].toTurn == 8);
+
+    const std::vector<Note> notes = store.Notes();
+    REQUIRE(notes.size() == 2);
+    CHECK(notes[0].turn == 1);
+    CHECK(notes[1].text == "the captain distrusts Marta");
+
+    CHECK_THROWS_AS(store.AddSummary({4, 2, "backwards"}), ContractError);
+}
+
+TEST_CASE("RunStore stores embeddings per kind and model", "[store]")
+{
+    RunStore store = RunStore::Create(FreshDbPath("store_embeddings"), TestMeta(), TestInitialState());
+    store.PutEmbedding({EmbeddingKind::Lore, "boarding", "embed-a", {0.25f, -1.5f, 3.0f}});
+    store.PutEmbedding({EmbeddingKind::Lore, "boarding", "embed-a", {1.0f}}); // Replaces the previous vector.
+    store.PutEmbedding({EmbeddingKind::Lore, "boarding", "embed-b", {2.0f}});
+    store.PutEmbedding({EmbeddingKind::Turn, "1", "embed-a", {0.5f, -0.125f}});
+
+    const std::vector<EmbeddingRow> lore = store.Embeddings(EmbeddingKind::Lore, "embed-a");
+    REQUIRE(lore.size() == 1);
+    CHECK(lore[0].refId == "boarding");
+    CHECK(lore[0].vector == std::vector<float>{1.0f});
+
+    const std::vector<EmbeddingRow> turns = store.Embeddings(EmbeddingKind::Turn, "embed-a");
+    REQUIRE(turns.size() == 1);
+    CHECK(turns[0].kind == EmbeddingKind::Turn);
+    CHECK(turns[0].vector == std::vector<float>{0.5f, -0.125f});
+
+    CHECK_THROWS_AS(store.PutEmbedding({EmbeddingKind::Turn, "2", "embed-a", {}}), ContractError);
+}
+
+TEST_CASE("TruncateAfter also undoes later summaries, notes and turn embeddings", "[store]")
+{
+    RunStore store = RunStore::Create(FreshDbPath("store_truncate_memory"), TestMeta(), TestInitialState());
+    for (int turn = 1; turn <= 5; ++turn) {
+        store.CommitTurn(TestTurn(turn), StateWithHealth(10 - turn));
+    }
+    store.AddSummary({1, 3, "kept"});
+    store.AddSummary({4, 5, "dropped"});
+    store.AddNote({3, "kept"});
+    store.AddNote({4, "dropped"});
+    store.PutEmbedding({EmbeddingKind::Turn, "3", "embed-a", {1.0f}});
+    store.PutEmbedding({EmbeddingKind::Turn, "4", "embed-a", {1.0f}});
+    store.PutEmbedding({EmbeddingKind::Lore, "boarding", "embed-a", {1.0f}});
+
+    store.TruncateAfter(3);
+
+    REQUIRE(store.Summaries().size() == 1);
+    CHECK(store.Summaries()[0].text == "kept");
+    REQUIRE(store.Notes().size() == 1);
+    CHECK(store.Notes()[0].text == "kept");
+
+    std::set<std::string> turnRefs;
+    for (const EmbeddingRow& row : store.Embeddings(EmbeddingKind::Turn, "embed-a")) {
+        turnRefs.insert(row.refId);
+    }
+    CHECK(turnRefs == std::set<std::string>{"3"});
+    CHECK(store.Embeddings(EmbeddingKind::Lore, "embed-a").size() == 1);
 }

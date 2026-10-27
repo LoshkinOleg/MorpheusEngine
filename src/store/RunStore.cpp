@@ -52,6 +52,18 @@ CREATE TABLE embeddings (
 );
 )sql";
 
+// Stored spelling of an embedding kind. TruncateAfter's SQL relies on "turn".
+const char* KindName(EmbeddingKind kind)
+{
+    switch (kind) {
+    case EmbeddingKind::Lore:
+        return "lore";
+    case EmbeddingKind::Turn:
+        return "turn";
+    }
+    throw morpheus::core::ContractError("KindName: unhandled EmbeddingKind");
+}
+
 } // namespace
 
 RunStore RunStore::Create(const std::filesystem::path& file, RunMeta meta, const nlohmann::json& initialState)
@@ -258,6 +270,66 @@ void RunStore::TruncateAfter(int turn)
         _db.Prepare("DELETE FROM notes WHERE turn > ?1").Bind(1, turn).Run();
         _db.Prepare("DELETE FROM embeddings WHERE kind = 'turn' AND CAST(ref_id AS INTEGER) > ?1").Bind(1, turn).Run();
     });
+}
+
+void RunStore::AddSummary(const Summary& summary)
+{
+    MORPHEUS_REQUIRE(summary.fromTurn >= 1 && summary.fromTurn <= summary.toTurn,
+                     std::format("AddSummary: bad turn range {}..{}", summary.fromTurn, summary.toTurn));
+    _db.Prepare("INSERT INTO summaries (from_turn, to_turn, text) VALUES (?1, ?2, ?3)")
+        .Bind(1, summary.fromTurn)
+        .Bind(2, summary.toTurn)
+        .Bind(3, summary.text)
+        .Run();
+}
+
+std::vector<Summary> RunStore::Summaries()
+{
+    Statement query = _db.Prepare("SELECT from_turn, to_turn, text FROM summaries ORDER BY from_turn, id");
+    std::vector<Summary> summaries;
+    while (query.Step()) {
+        summaries.push_back({static_cast<int>(query.ColumnInt(0)), static_cast<int>(query.ColumnInt(1)),
+                             query.ColumnText(2)});
+    }
+    return summaries;
+}
+
+void RunStore::AddNote(const Note& note)
+{
+    _db.Prepare("INSERT INTO notes (turn, text) VALUES (?1, ?2)").Bind(1, note.turn).Bind(2, note.text).Run();
+}
+
+std::vector<Note> RunStore::Notes()
+{
+    Statement query = _db.Prepare("SELECT turn, text FROM notes ORDER BY turn, id");
+    std::vector<Note> notes;
+    while (query.Step()) {
+        notes.push_back({static_cast<int>(query.ColumnInt(0)), query.ColumnText(1)});
+    }
+    return notes;
+}
+
+void RunStore::PutEmbedding(const EmbeddingRow& row)
+{
+    MORPHEUS_REQUIRE(!row.vector.empty(), "PutEmbedding: vector must not be empty");
+    _db.Prepare("INSERT OR REPLACE INTO embeddings (kind, ref_id, model, vector) VALUES (?1, ?2, ?3, ?4)")
+        .Bind(1, KindName(row.kind))
+        .Bind(2, row.refId)
+        .Bind(3, row.model)
+        .Bind(4, row.vector)
+        .Run();
+}
+
+std::vector<EmbeddingRow> RunStore::Embeddings(EmbeddingKind kind, const std::string& model)
+{
+    Statement query = _db.Prepare("SELECT ref_id, vector FROM embeddings WHERE kind = ?1 AND model = ?2 ORDER BY ref_id");
+    query.Bind(1, KindName(kind)).Bind(2, model);
+
+    std::vector<EmbeddingRow> rows;
+    while (query.Step()) {
+        rows.push_back({kind, query.ColumnText(0), model, query.ColumnFloats(1)});
+    }
+    return rows;
 }
 
 RunStore::RunStore(Database db, RunMeta meta, std::filesystem::path file)
