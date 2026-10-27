@@ -1,4 +1,5 @@
 add_library(morpheus_context STATIC
+    PromptBuilder.cpp
     StateView.cpp
     Transcript.cpp
 )
