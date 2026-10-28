@@ -10,6 +10,7 @@
 #include <nlohmann/json.hpp>
 
 #include "TestPaths.h"
+#include "core/Settings.h"
 
 namespace morpheus::test {
 
@@ -36,6 +37,19 @@ inline std::filesystem::path SettingsFolder(std::string_view name)
         WriteFile(model, "");
     }
     return dir;
+}
+
+// Settings for engines on a ScriptedBackend: the budgets the worker tests use, and model paths that are never opened.
+inline core::Settings EngineSettings()
+{
+    core::Settings settings;
+    settings.chatModel = "models/chat.gguf";
+    settings.embeddingModel = "models/embed.gguf";
+    settings.contextSize = 16384;
+    settings.budget = {256, 256, 256, 1024, 1024, 1024, 512, 256};
+    settings.resolveSampling = {0.3, 40, 0.9};
+    settings.narrateSampling = {0.8, 40, 0.95};
+    return settings;
 }
 
 } // namespace morpheus::test
