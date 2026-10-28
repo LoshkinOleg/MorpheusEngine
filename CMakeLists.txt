@@ -123,6 +123,11 @@ if(MORPHEUS_BUILD_APP OR MORPHEUS_BUILD_TESTS)
     # Our configuration (a throwing IM_ASSERT, no obsolete functions) for every target that includes ImGui.
     target_compile_definitions(imgui_core PUBLIC IMGUI_USER_CONFIG="${PROJECT_SOURCE_DIR}/src/app/ui/ImGuiConfig.h")
     target_compile_features(imgui_core PUBLIC cxx_std_17)
+    if(MSVC)
+        # ImGui's implicitly noexcept destructors (ImGuiContext, ImDrawListSharedData, ImFontAtlas) contain IM_ASSERT,
+        # which our configuration makes throwing: silence C4297 for them.
+        target_compile_options(imgui_core PRIVATE /wd4297)
+    endif()
 
     if(MORPHEUS_BUILD_APP)
         # The SDL3 platform backend and the SDL_Renderer backend, for the app.
@@ -132,6 +137,10 @@ if(MORPHEUS_BUILD_APP OR MORPHEUS_BUILD_TESTS)
         )
         target_include_directories(imgui_sdl3 SYSTEM PUBLIC ${imgui_SOURCE_DIR}/backends)
         target_link_libraries(imgui_sdl3 PUBLIC imgui_core SDL3::SDL3)
+        if(MSVC)
+            # Same as imgui_core: ImGui's noexcept destructors contain the throwing IM_ASSERT.
+            target_compile_options(imgui_sdl3 PRIVATE /wd4297)
+        endif()
     endif()
 endif()
 

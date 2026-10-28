@@ -29,8 +29,8 @@ public:
         io.DeltaTime = 1.0f / 60.0f;
         io.IniFilename = nullptr; // No imgui.ini: every test starts from the default layout.
         io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-        // ImGui 1.92 builds glyphs incrementally for a renderer with texture support. The legacy path that builds the
-        // whole atlas up front (GetTexDataAsRGBA32) is an obsolete function, which our configuration disables.
+        // With IMGUI_DISABLE_OBSOLETE_FUNCTIONS the legacy GetTexDataAsRGBA32 path does not exist, so the context claims
+        // texture support and the atlas builds on demand. Textures are never uploaded headless.
         io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
     }
     HeadlessImGui(const HeadlessImGui&) = delete;
