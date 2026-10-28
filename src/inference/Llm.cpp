@@ -17,4 +17,14 @@ std::string RoleName(Role role)
     throw core::ContractError("RoleName: unhandled Role");
 }
 
+Sampling SamplingFrom(const core::SamplingSettings& settings, std::uint32_t seed)
+{
+    Sampling sampling;
+    sampling.temperature = static_cast<float>(settings.temperature);
+    sampling.topK = settings.topK;
+    sampling.topP = static_cast<float>(settings.topP);
+    sampling.seed = seed;
+    return sampling;
+}
+
 } // namespace morpheus::inference

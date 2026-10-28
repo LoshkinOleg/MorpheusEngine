@@ -49,10 +49,7 @@ int main(int argc, char** argv)
 
         inference::GenerationSpec spec;
         spec.maxTokens = settings.budget.narrateMaxTokens;
-        spec.sampling.temperature = static_cast<float>(settings.narrateSampling.temperature);
-        spec.sampling.topK = settings.narrateSampling.topK;
-        spec.sampling.topP = static_cast<float>(settings.narrateSampling.topP);
-        spec.sampling.seed = 1234;
+        spec.sampling = inference::SamplingFrom(settings.narrateSampling, 1234);
 
         // The second run should reuse almost the whole prompt from the KV cache.
         for (int run = 1; run <= 2; ++run) {

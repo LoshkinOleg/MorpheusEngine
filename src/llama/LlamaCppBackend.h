@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <span>
 #include <string>
@@ -15,6 +16,16 @@ struct llama_model;
 struct llama_vocab;
 
 namespace morpheus::llama {
+
+enum class LogLevel { Debug, Info, Warn, Error };
+
+// Receives llama.cpp and ggml log text, on whichever thread logs, one call per piece llama.cpp emits.
+using LogSink = std::function<void(LogLevel level, std::string_view text)>;
+
+// Routes llama.cpp's process-wide log to `sink`, replacing the previous one. An empty sink restores the default,
+// which writes warnings and errors to stderr. Continuation pieces keep the level of the line they continue.
+// Thread-safe. The sink runs under a lock: it must not call SetLogSink.
+void SetLogSink(LogSink sink);
 
 struct LlamaConfig {
     std::filesystem::path chatModel = {};
@@ -66,7 +77,8 @@ private:
     // The prompt rendered through the chat model's template, ending where the assistant's reply begins.
     std::string RenderPrompt(const inference::Prompt& prompt) const;
 
-    // RenderPrompt tokenized the way Complete evaluates it.
+    // RenderPrompt tokenized the way Complete evaluates it: template text with special tokens parsed, message
+    // contents as plain text. Throws InferenceError if a content contains U+001E.
     std::vector<std::int32_t> TokenizePrompt(const inference::Prompt& prompt) const;
 
     // Decodes `tokens` into the chat cache right after _cachedTokens, then appends them to _cachedTokens.

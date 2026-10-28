@@ -10,6 +10,8 @@
 #include <string_view>
 #include <vector>
 
+#include "core/Settings.h"
+
 namespace morpheus::inference {
 
 // A model or runtime failure: a model file that will not load, a prompt that does not fit, a failed decode.
@@ -42,6 +44,9 @@ struct Sampling {
     float topP = 0.95f;
     std::uint32_t seed = 0;
 };
+
+// The sampling for one call from its settings.json values and the call's seed (core::SamplingSeed).
+Sampling SamplingFrom(const core::SamplingSettings& settings, std::uint32_t seed);
 
 struct GenerationSpec {
     std::string grammar = {}; // GBNF with a "root" rule; empty means unconstrained.

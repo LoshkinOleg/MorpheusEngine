@@ -6,8 +6,10 @@
 #include <cstdio>
 #include <cstring>
 #include <format>
+#include <functional>
 #include <limits>
 #include <mutex>
+#include <string_view>
 
 #include <llama.h>
 
@@ -23,11 +25,49 @@ namespace {
 // Buffer for one token piece (llama_token_to_piece); a longer piece is an error.
 constexpr std::size_t TOKEN_PIECE_BUFFER_BYTES = 256;
 
-// llama.cpp and ggml log through one process-wide callback. Only warnings and errors reach stderr.
-void LogFilter(ggml_log_level level, const char* pText, void* /*pUserData*/)
+// Stands in for message contents while the chat template renders (TokenizePrompt). The turn layer strips control
+// characters from player input, so a real message never contains it.
+constexpr char CONTENT_MARKER = ''; // ASCII record separator.
+
+// The log sink and the level of the line being logged, shared by every thread llama.cpp logs from.
+struct LogRoute {
+    std::mutex mutex = {};
+    LogSink sink = {};
+    LogLevel lastLevel = LogLevel::Info; // Continuation pieces (GGML_LOG_LEVEL_CONT) inherit it.
+};
+
+LogRoute& Route()
 {
-    if (level == GGML_LOG_LEVEL_WARN || level == GGML_LOG_LEVEL_ERROR) {
-        std::fputs(pText, stderr);
+    static LogRoute route;
+    return route;
+}
+
+// llama.cpp and ggml log through one process-wide callback; it forwards to the sink.
+void LogCallback(ggml_log_level level, const char* pText, void* /*pUserData*/)
+{
+    LogRoute& route = Route();
+    std::scoped_lock lock(route.mutex);
+    switch (level) {
+    case GGML_LOG_LEVEL_DEBUG:
+        route.lastLevel = LogLevel::Debug;
+        break;
+    case GGML_LOG_LEVEL_WARN:
+        route.lastLevel = LogLevel::Warn;
+        break;
+    case GGML_LOG_LEVEL_ERROR:
+        route.lastLevel = LogLevel::Error;
+        break;
+    case GGML_LOG_LEVEL_CONT:
+        break; // Continues the previous line at its level.
+    default:
+        route.lastLevel = LogLevel::Info; // INFO and NONE.
+        break;
+    }
+    const std::string_view text = pText != nullptr ? pText : "";
+    if (route.sink) {
+        route.sink(route.lastLevel, text);
+    } else if (route.lastLevel == LogLevel::Warn || route.lastLevel == LogLevel::Error) {
+        std::fwrite(text.data(), 1, text.size(), stderr);
     }
 }
 
@@ -72,6 +112,13 @@ struct SamplerDeleter {
 
 } // namespace
 
+void SetLogSink(LogSink sink)
+{
+    LogRoute& route = Route();
+    std::scoped_lock lock(route.mutex);
+    route.sink = std::move(sink);
+}
+
 void LlamaCppBackend::ModelDeleter::operator()(llama_model* pModel) const
 {
     llama_model_free(pModel);
@@ -91,7 +138,7 @@ LlamaCppBackend::LlamaCppBackend(LlamaConfig config)
     // llama.cpp's global state is initialised once per process and never torn down.
     static std::once_flag initOnce;
     std::call_once(initOnce, [] {
-        llama_log_set(LogFilter, nullptr);
+        llama_log_set(LogCallback, nullptr);
         llama_backend_init();
     });
 
@@ -424,11 +471,47 @@ std::string LlamaCppBackend::RenderPrompt(const inference::Prompt& prompt) const
 
 std::vector<std::int32_t> LlamaCppBackend::TokenizePrompt(const inference::Prompt& prompt) const
 {
+    // Message contents are text, never control tokens: "<|im_end|>" typed by a player must not end its message. So
+    // the template is rendered with a marker in place of each content, and the pieces are tokenized apart:
+    // template text with parse_special (its control tokens are real), contents without it.
+    inference::Prompt marked = prompt;
+    for (inference::Message& message : marked.messages) {
+        if (message.content.find(CONTENT_MARKER) != std::string::npos) {
+            throw InferenceError("a message contains the reserved character U+001E");
+        }
+        message.content = std::string(1, CONTENT_MARKER);
+    }
+    const std::string rendered = RenderPrompt(marked);
+
     const llama_vocab* pVocab = llama_model_get_vocab(_pChatModel.get());
-    // Special tokens written by the template are real control tokens (parse_special). BOS is added when the
-    // model expects one; if the template already wrote it, the duplicate is dropped.
+    // BOS is added when the model expects one; if the template already wrote it, the duplicate is dropped below.
     const bool addBos = llama_vocab_get_add_bos(pVocab);
-    std::vector<std::int32_t> tokens = Tokenize(pVocab, RenderPrompt(prompt), addBos, true);
+    std::vector<std::int32_t> tokens;
+    auto append = [&tokens](const std::vector<std::int32_t>& more) { tokens.insert(tokens.end(), more.begin(), more.end()); };
+    std::size_t start = 0;
+    std::size_t message = 0;
+    for (;;) {
+        const std::size_t marker = rendered.find(CONTENT_MARKER, start);
+        const std::string_view templateText =
+            std::string_view(rendered).substr(start, marker == std::string::npos ? std::string::npos : marker - start);
+        if (!templateText.empty() || (start == 0 && addBos)) {
+            append(Tokenize(pVocab, templateText, start == 0 && addBos, true));
+        }
+        if (marker == std::string::npos) {
+            break;
+        }
+        if (message == prompt.messages.size()) {
+            throw InferenceError("the chat template repeats a message's content");
+        }
+        if (!prompt.messages[message].content.empty()) {
+            append(Tokenize(pVocab, prompt.messages[message].content, false, false));
+        }
+        ++message;
+        start = marker + 1;
+    }
+    if (message != prompt.messages.size()) {
+        throw InferenceError("the chat template drops a message's content");
+    }
     if (addBos && tokens.size() >= 2 && tokens[0] == llama_vocab_bos(pVocab) && tokens[1] == tokens[0]) {
         tokens.erase(tokens.begin());
     }
