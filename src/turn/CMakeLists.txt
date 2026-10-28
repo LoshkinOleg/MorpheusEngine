@@ -1,4 +1,5 @@
 add_library(morpheus_turn STATIC
+    Resolve.cpp
     ResolveGrammar.cpp
 )
 target_include_directories(morpheus_turn PUBLIC ${PROJECT_SOURCE_DIR}/src)
