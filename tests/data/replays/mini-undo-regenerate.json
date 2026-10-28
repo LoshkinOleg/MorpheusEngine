@@ -1,0 +1,41 @@
+{
+  "world": "tests/data/worlds/mini",
+  "seed": 7,
+  "memory_mode": "engine",
+  "steps": [
+    {"input": "I walk to the lighthouse."},
+    {"input": "I climb the stairs."},
+    {"undo": true},
+    {"input": "I light the lantern."},
+    {"regenerate": true}
+  ],
+  "replies": {
+    "resolve": [
+      {"intent": "walk", "checks": [], "changes": [{"op": "set", "path": "player.location", "value": "lighthouse", "reason": "walks there"}]},
+      {"intent": "climb", "checks": [], "changes": [{"op": "set", "path": "player.location", "value": "stairs", "reason": "climbs"}]},
+      {"intent": "light", "checks": [], "changes": [
+        {"op": "add", "path": "player.inventory.oil", "value": -1, "reason": "burns oil"},
+        {"op": "set", "path": "player.location", "value": "lamp room", "reason": "goes up"}]},
+      {"intent": "light", "checks": [], "changes": [{"op": "remove", "path": "player.inventory.lantern", "reason": "the lantern is set in place"}]}
+    ],
+    "narrate": [
+      "You walk to the lighthouse.",
+      "You climb the stairs.",
+      "The oil is gone; you reach the lamp room.",
+      "You set the lantern in its cradle."
+    ]
+  },
+  "expected": {
+    "turns": [
+      {"number": 1, "input": "I walk to the lighthouse.", "checks": [],
+       "applied": [{"change": {"op": "set", "path": "player.location", "value": "lighthouse", "reason": "walks there"}, "note": ""}],
+       "rejected": [], "narration": "You walk to the lighthouse."},
+      {"number": 2, "input": "I light the lantern.", "checks": [],
+       "applied": [{"change": {"op": "remove", "path": "player.inventory.lantern", "reason": "the lantern is set in place"}, "note": ""}],
+       "rejected": [], "narration": "You set the lantern in its cradle."}
+    ],
+    "final_state": {
+      "player": {"type": "character", "fields": {"health": 10, "agility": 3, "location": "lighthouse", "inventory": {}}}
+    }
+  }
+}

@@ -1,5 +1,6 @@
 add_library(morpheus_turn STATIC
     Folding.cpp
+    Replay.cpp
     Resolve.cpp
     ResolveGrammar.cpp
     Retrieval.cpp
