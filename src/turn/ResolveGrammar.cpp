@@ -73,6 +73,7 @@ std::string BuildResolveGrammar(const core::World& world, const nlohmann::json& 
     std::string rules;                           // change-N and enum-N definitions.
     std::vector<std::string> changes;            // Names of the change-N rules.
     std::map<std::string, std::string> enums;    // "type.field" -> enum-N rule name.
+    int itemRuleCount = 0;                       // items-N rules written so far.
 
     // The value rule for a field; an enum gets its own rule the first time it is used.
     auto valueRule = [&](const std::string& typeName, const std::string& fieldName, const core::FieldDef& def) {
@@ -104,7 +105,8 @@ std::string BuildResolveGrammar(const core::World& world, const nlohmann::json& 
 
     // Changes to the fields of every entity that exists now.
     for (auto entity = state.begin(); entity != state.end(); ++entity) {
-        const core::EntityTypeDef* pType = world.schema.FindEntityType(entity.value().at("type").get<std::string>());
+        const std::string typeName = entity.value().at("type").get<std::string>();
+        const core::EntityTypeDef* pType = world.schema.FindEntityType(typeName);
         MORPHEUS_REQUIRE(pType != nullptr, "BuildResolveGrammar: state has an unknown entity type");
         for (const auto& [fieldName, def] : pType->fields) {
             const std::string path = entity.key() + "." + fieldName;
@@ -115,8 +117,8 @@ std::string BuildResolveGrammar(const core::World& world, const nlohmann::json& 
                           pathValue + " int reason");
                 break;
             case core::FieldType::Enum:
-                addChange(Literal("{\"op\":\"set\"") + " " + pathValue + " " +
-                          valueRule(entity.value().at("type").get<std::string>(), fieldName, def) + " reason");
+                addChange(Literal("{\"op\":\"set\"") + " " + pathValue + " " + valueRule(typeName, fieldName, def) +
+                          " reason");
                 break;
             case core::FieldType::String:
                 addChange(Literal("{\"op\":\"set\"") + " " + pathValue + " short-text reason");
@@ -125,12 +127,28 @@ std::string BuildResolveGrammar(const core::World& world, const nlohmann::json& 
                 addChange(Literal("{\"op\":") + " (" + Literal("\"add\"") + " | " + Literal("\"remove\"") + ") " +
                           pathValue + " short-text reason");
                 break;
-            case core::FieldType::Counter:
-                addChange("(" + Literal("{\"op\":\"add\",\"path\":\"" + path + ".") + " item " +
+            case core::FieldType::Counter: {
+                // The item part of the path: an item held now, written by name (so "Rusty Knife" or "water-flask"
+                // can be changed), or the generic rule for a new item. Nothing held means just the generic rule.
+                std::string itemRule = "item";
+                const nlohmann::json& held = entity.value().at("fields").at(fieldName);
+                if (!held.empty()) {
+                    itemRule = std::format("items-{}", itemRuleCount++);
+                    std::string alternatives;
+                    for (const auto& [itemName, count] : held.items()) {
+                        // The name sits inside the JSON path string, so match its JSON-escaped form without the
+                        // surrounding quotes, then escape that once more as a GBNF literal.
+                        const std::string escaped = nlohmann::json(itemName).dump();
+                        alternatives += Literal(escaped.substr(1, escaped.size() - 2)) + " | ";
+                    }
+                    rules += itemRule + " ::= " + alternatives + "item\n";
+                }
+                addChange("(" + Literal("{\"op\":\"add\",\"path\":\"" + path + ".") + " " + itemRule + " " +
                           Literal("\",\"value\":") + " nonzero-int | " +
-                          Literal("{\"op\":\"remove\",\"path\":\"" + path + ".") + " item " + Literal("\"") +
-                          ") reason");
+                          Literal("{\"op\":\"remove\",\"path\":\"" + path + ".") + " " + itemRule + " " +
+                          Literal("\"") + ") reason");
                 break;
+            }
             }
         }
     }
@@ -149,7 +167,6 @@ std::string BuildResolveGrammar(const core::World& world, const nlohmann::json& 
                   Literal(",\"value\":{\"type\":\"" + typeName + "\",\"fields\":{") + fields + " " + Literal("}}") +
                   " reason");
     }
-    MORPHEUS_REQUIRE(!changes.empty(), "BuildResolveGrammar: the state has no fields to change");
 
     std::vector<std::string> difficulties;
     for (const auto& [name, target] : world.difficulties) {
@@ -163,18 +180,22 @@ std::string BuildResolveGrammar(const core::World& world, const nlohmann::json& 
     grammar += "check ::= " + Literal("{\"stat\":") + " stat " + Literal(",\"difficulty\":") + " difficulty " +
                Literal(",\"stakes\":") + " short-text " + Literal(",\"on_success\":") + " branch " +
                Literal(",\"on_failure\":") + " branch " + Literal("}") + "\n";
-    grammar += "branch ::= " + ListOf("change", MAX_BRANCH_CHANGES) + "\n";
-    grammar += "changes ::= " + ListOf("change", MAX_CHANGES) + "\n";
+    // With nothing the model could change (no entity fields, no creatable type) the change lists can only be empty
+    // and there is no `change` rule to reference.
+    grammar += "branch ::= " + (changes.empty() ? Literal("[]") : ListOf("change", MAX_BRANCH_CHANGES)) + "\n";
+    grammar += "changes ::= " + (changes.empty() ? Literal("[]") : ListOf("change", MAX_CHANGES)) + "\n";
     if (assisted) {
         grammar += "notes ::= " + ListOf("long-text", MAX_NOTES) + "\n";
     }
     grammar += "stat ::= " + Alternatives(world.stats) + "\n";
     grammar += "difficulty ::= " + Alternatives(difficulties) + "\n";
-    std::string changeAlternatives;
-    for (const std::string& name : changes) {
-        changeAlternatives += (changeAlternatives.empty() ? "" : " | ") + name;
+    if (!changes.empty()) {
+        std::string changeAlternatives;
+        for (const std::string& name : changes) {
+            changeAlternatives += (changeAlternatives.empty() ? "" : " | ") + name;
+        }
+        grammar += "change ::= " + changeAlternatives + "\n";
     }
-    grammar += "change ::= " + changeAlternatives + "\n";
     return grammar + rules + Terminals();
 }
 
