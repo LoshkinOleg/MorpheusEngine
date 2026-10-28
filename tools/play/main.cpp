@@ -223,6 +223,7 @@ int main(int argc, char** argv)
                 }
                 // The mark comes before the post: maintenance of the previous turn may still be calling the backend on
                 // the worker thread, and a reply it records before the mark belongs to the earlier, committed step.
+                // One it records after the mark is a summary, which RollBack keeps (summaries never break a replay).
                 const std::map<core::CallKind, std::size_t> mark =
                     recording ? recording->Mark() : std::map<core::CallKind, std::size_t>{};
                 turn::ReplayStep step;

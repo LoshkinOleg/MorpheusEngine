@@ -54,9 +54,15 @@ public:
     // How many replies are recorded per kind (kinds with none are absent). Take it before a step that may fail.
     std::map<core::CallKind, std::size_t> Mark() const;
 
-    // Truncates the recording to `mark`: each kind keeps its first marked replies, and a kind absent from the mark
-    // keeps none. Drops the replies of a step that did not commit, which a replay would otherwise misalign. Throws
-    // ContractError if a kind has fewer replies than the mark says.
+    // Truncates the Lookup, Resolve and Narrate replies to `mark`: each kind keeps its first marked replies, and a
+    // kind absent from the mark keeps none. Drops the replies of a step that did not commit, which a replay would
+    // otherwise misalign. Throws ContractError if one of those kinds has fewer replies than the mark says.
+    // Summarize replies are left untouched and the mark's summarize count is ignored. A failed step's own calls are
+    // never summaries (the worker finishes or cancels pending maintenance before a retrieving command, and a summary
+    // made inside a turn's fit loop is rare), whereas the previous turn's maintenance may still be recording
+    // summaries after the mark, and those belong to committed work. A replay tolerates a stray summary: its queue
+    // falls back to a fixed text when it runs out, and unused summaries are not an error, since summaries only
+    // shape prompts and never committed results.
     void RollBack(const std::map<core::CallKind, std::size_t>& mark);
 
     int CountTokens(std::string_view text) override;

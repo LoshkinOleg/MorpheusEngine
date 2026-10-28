@@ -68,14 +68,22 @@ std::map<core::CallKind, std::size_t> RecordingBackend::Mark() const
 void RecordingBackend::RollBack(const std::map<core::CallKind, std::size_t>& mark)
 {
     const std::lock_guard<std::mutex> lock(_mutex);
+    // Summarize replies are never rolled back (see the header), so the mark's summarize count is ignored.
     // A mark can only be restored if nothing before it was lost.
     for (const auto& [kind, count] : mark) {
+        if (kind == core::CallKind::Summarize) {
+            continue;
+        }
         const auto found = _replies.find(kind);
         MORPHEUS_REQUIRE(found != _replies.end() && found->second.size() >= count,
                          "RollBack: fewer '" + CallKindName(kind) + "' replies recorded than the mark holds");
     }
-    // Truncate each kind to its marked count; a kind the mark lacks had none, so it goes entirely.
+    // Truncate each other kind to its marked count; a kind the mark lacks had none, so it goes entirely.
     for (auto it = _replies.begin(); it != _replies.end();) {
+        if (it->first == core::CallKind::Summarize) {
+            ++it;
+            continue;
+        }
         const auto marked = mark.find(it->first);
         const std::size_t keep = marked == mark.end() ? 0 : marked->second;
         it->second.resize(keep);

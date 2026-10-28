@@ -245,6 +245,42 @@ TEST_CASE("RecordingBackend Mark and RollBack restore the recorded reply counts"
     // A mark with more replies than are recorded is an engine bug.
     CHECK_THROWS_AS(recording.RollBack({{core::CallKind::Narrate, 2}}), core::ContractError);
     CHECK_THROWS_AS(recording.RollBack({{core::CallKind::Resolve, 1}}), core::ContractError);
+    CHECK_THROWS_AS(recording.RollBack({{core::CallKind::Lookup, 1}}), core::ContractError);
+}
+
+TEST_CASE("RecordingBackend RollBack keeps summarize replies", "[replay]")
+{
+    const core::World world = core::LoadWorld(test::TestDataDir() / "worlds" / "mini");
+    test::ScriptedBackend inner(16384, [](const inference::Prompt&, const inference::GenerationSpec& spec) {
+        return spec.grammar.empty() ? std::string("prose") : std::string("{}");
+    });
+    turn::RecordingBackend recording(inner);
+    const inference::Prompt narration{{{inference::Role::User, "I walk."}}, 1};
+    const inference::Prompt summarize{{{inference::Role::User, std::string(turn::SUMMARIZE_INSTRUCTION)}}, 1};
+    const inference::GenerationSpec plainSpec;
+    inference::GenerationSpec resolveSpec;
+    resolveSpec.grammar = turn::BuildResolveGrammar(world, world.initialState, core::MemoryMode::Engine);
+
+    // The previous turn's maintenance records a summary before the mark; the step then records a resolve and a
+    // narration, and the previous turn's maintenance records another summary after the mark.
+    recording.Complete(summarize, plainSpec, {}, {});
+    const std::map<core::CallKind, std::size_t> mark = recording.Mark();
+    CHECK(mark == std::map<core::CallKind, std::size_t>{{core::CallKind::Summarize, 1}});
+    recording.Complete(narration, resolveSpec, {}, {});
+    recording.Complete(summarize, plainSpec, {}, {});
+    recording.Complete(narration, plainSpec, {}, {});
+    REQUIRE(recording.Replies().at(core::CallKind::Summarize).size() == 2);
+
+    // The failed step's resolve and narrate replies go; both summaries belong to committed work and stay.
+    recording.RollBack(mark);
+    const auto replies = recording.Replies();
+    CHECK(replies.at(core::CallKind::Summarize) == std::vector<std::string>{"prose", "prose"});
+    CHECK(replies.count(core::CallKind::Resolve) == 0);
+    CHECK(replies.count(core::CallKind::Narrate) == 0);
+
+    // A summarize count in the mark is irrelevant, even one above what is recorded.
+    CHECK_NOTHROW(recording.RollBack({{core::CallKind::Summarize, 5}}));
+    CHECK(recording.Replies().at(core::CallKind::Summarize).size() == 2);
 }
 
 TEST_CASE("RecordingBackend is safe to mark, roll back and read while another thread completes calls", "[replay]")
