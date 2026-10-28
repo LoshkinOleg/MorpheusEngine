@@ -17,9 +17,9 @@
 
 namespace morpheus::turn {
 
-// Which call a completion answers, told apart the way the session makes them: the lookup grammar names "lookups",
-// any other grammar is the resolve call's, and a grammar-free call ending with the summarize or condense
-// instruction is a summary; the rest is narration.
+// Which call a completion answers, told apart the way the session makes them: a grammar that starts with the
+// lookup grammar's root rule is the lookup call's, any other grammar is the resolve call's, and a grammar-free
+// call ending with the summarize or condense instruction is a summary; the rest is narration.
 core::CallKind CallKindOf(const inference::Prompt& prompt, const inference::GenerationSpec& spec);
 
 // Fixture spelling of a call kind: "lookup", "resolve", "narrate" or "summarize".

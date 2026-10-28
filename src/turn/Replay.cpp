@@ -2,14 +2,20 @@
 
 #include "core/Errors.h"
 #include "turn/EngineText.h"
+#include "turn/ResolveGrammar.h"
 
 namespace morpheus::turn {
 
 core::CallKind CallKindOf(const inference::Prompt& prompt, const inference::GenerationSpec& spec)
 {
-    // A grammar means a structured call: the lookup grammar is the only one that names "lookups".
+    // A grammar means a structured call. The lookup grammar is told by its root rule (its first line), which no
+    // resolve grammar shares; searching the whole text would trip on a world with a field named "lookups".
     if (!spec.grammar.empty()) {
-        return spec.grammar.find("lookups") != std::string::npos ? core::CallKind::Lookup : core::CallKind::Resolve;
+        static const std::string LOOKUP_ROOT = [] {
+            const std::string lookup = BuildLookupGrammar();
+            return lookup.substr(0, lookup.find('\n'));
+        }();
+        return spec.grammar.starts_with(LOOKUP_ROOT) ? core::CallKind::Lookup : core::CallKind::Resolve;
     }
     // Without a grammar, the closing instruction tells a summary from narration.
     if (!prompt.messages.empty()) {
