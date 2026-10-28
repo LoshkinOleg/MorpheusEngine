@@ -27,7 +27,7 @@ void Worker::Post(Command command)
 {
     {
         std::scoped_lock lock(_mutex);
-        _commands.push_back(std::move(command));
+        _commands.push_back({++_postedThrough, std::move(command)});
         if (_maintaining) {
             _jobStop.request_stop(); // A command preempts between-turn maintenance.
         }
@@ -38,7 +38,8 @@ void Worker::Post(Command command)
 void Worker::Cancel()
 {
     std::scoped_lock lock(_mutex);
-    _jobStop.request_stop();
+    _cancelledThrough = _postedThrough; // Commands still queued close without running when the worker reaches them.
+    _jobStop.request_stop();            // The running job, if any.
 }
 
 std::vector<Event> Worker::PollEvents()
@@ -101,39 +102,72 @@ void Worker::Run(std::stop_token shutdown)
 
     // Shutdown cancels the running job too, so destroying the worker never waits for a whole turn.
     std::stop_callback cancelOnShutdown(shutdown, [this] { Cancel(); });
+    // Set when a turn commits; cleared only when maintenance finishes (or cannot), or the run is replaced.
     bool maintenanceDue = false;
     for (;;) {
+        // Pick the next job under the lock: a cancelled command to close, a command to run, or maintenance.
         std::optional<Command> command;
+        bool cancelledEarly = false; // The command was cancelled before it started.
         std::stop_token stop;
         {
             std::unique_lock lock(_mutex);
             if (!maintenanceDue && !_commandPosted.wait(lock, shutdown, [this] { return !_commands.empty(); })) {
-                return; // Shutdown while idle.
+                break; // Shutdown while idle.
             }
             if (shutdown.stop_requested()) {
-                return;
+                break;
             }
             if (!_commands.empty()) {
-                command = std::move(_commands.front());
-                _commands.pop_front();
+                const Posted& next = _commands.front();
+                const bool retrieves = std::holds_alternative<SubmitInput>(next.command) ||
+                                       std::holds_alternative<RegenerateTurn>(next.command);
+                if (next.number <= _cancelledThrough) {
+                    cancelledEarly = true;
+                    _commands.pop_front();
+                } else if (!maintenanceDue || !retrieves) {
+                    command = std::move(_commands.front().command);
+                    _commands.pop_front();
+                }
+                // Otherwise maintenance runs first: the retrieving command must see the last turn indexed.
             }
             _jobStop = std::stop_source();
-            _maintaining = !command.has_value();
+            // Only maintenance run while nothing waits is preemptible. Before a retrieving command, preempting it
+            // would only restart it, since every later command waits behind that one anyway.
+            _maintaining = !cancelledEarly && !command && _commands.empty();
             stop = _jobStop.get_token();
         }
-        if (command) {
-            maintenanceDue = execute(*command, stop);
+
+        if (cancelledEarly) {
+            Emit(TurnCancelled{}); // Its closing event; it never ran.
+        } else if (command) {
+            // A StartRun or LoadRun replaces the session (or leaves none when it fails): the run that had
+            // maintenance due is closed and the new run has nothing due, so the flag is cleared. A committed turn
+            // sets it; any other command keeps it.
+            const bool opensRun =
+                std::holds_alternative<StartRun>(*command) || std::holds_alternative<LoadRun>(*command);
+            maintenanceDue = execute(*command, stop) || (maintenanceDue && !opensRun);
         } else {
+            bool finished = true; // A throw counts as finished: rerunning would only throw again.
             try {
-                if (_session) {
-                    _session->Maintain(stop);
-                }
+                MORPHEUS_REQUIRE(_session.has_value(), "Worker: maintenance is due with no run open");
+                finished = _session->Maintain(stop);
+            } catch (const core::ContractError& error) {
+                Emit(MaintenanceFailed{std::string("engine bug: ") + error.what()});
             } catch (const std::exception& error) {
                 Emit(MaintenanceFailed{error.what()});
             }
-            maintenanceDue = false;
+            if (finished) {
+                maintenanceDue = false;
+            } else {
+                // Stopped early. A command preempted it, or Cancel stopped it while a command waits: it stays due
+                // and runs again before the next retrieving command. A Cancel with nothing queued drops it (until
+                // the next commit), so cancelling cannot restart it forever. Shutdown leaves the loop next.
+                std::scoped_lock lock(_mutex);
+                maintenanceDue = !_commands.empty();
+            }
         }
     }
+    _session.reset(); // Close the run here: only the worker thread touches it.
 }
 
 bool Worker::FinishTurn(const std::optional<core::TurnRecord>& record)

@@ -41,8 +41,12 @@ struct UndoTurn {};
 struct RegenerateTurn {};
 using Command = std::variant<StartRun, LoadRun, SubmitInput, UndoTurn, RegenerateTurn>;
 
-// Events (worker to UI). Every command ends with exactly one closing event (IsClosing): RunOpened, TurnCompleted,
-// TurnCancelled, StateChanged or Error. MaintenanceFailed reports between-turn upkeep and closes nothing.
+// Events (worker to UI). Every command ends with exactly one closing event (IsClosing):
+// - StartRun and LoadRun: RunOpened or Error.
+// - SubmitInput and RegenerateTurn: TurnCompleted, TurnCancelled or Error.
+// - UndoTurn: StateChanged or Error.
+// Any command cancelled before the worker picks it up closes with TurnCancelled without running, StartRun, LoadRun
+// and UndoTurn included. MaintenanceFailed reports between-turn upkeep and closes nothing.
 struct RunOpened {
     store::RunMeta meta = {};
     std::vector<core::TurnRecord> history = {};
@@ -68,6 +72,7 @@ struct StateChanged {
 struct MaintenanceFailed {
     std::string message = {};
 };
+// A command failed. A failed StartRun or LoadRun has already closed the previous run, so no run is open after it.
 struct Error {
     std::string message = {};
 };
@@ -78,19 +83,36 @@ using Event = std::variant<RunOpened, TokenStreamed, TurnResolved, TurnCompleted
 bool IsClosing(const Event& event);
 
 // The engine worker thread (architecture spec, "Process and modules"): the only thread that touches the backend
-// and the open run. Commands run one at a time in order. After a committed turn, while no command waits, the
-// worker runs Session::Maintain; a new command preempts it.
+// and the open run, which it also closes on exit. Commands run one at a time in order. A failed StartRun or
+// LoadRun leaves no run open.
+//
+// Maintenance (Session::Maintain) falls due when a turn commits and stays due until it finishes; it folds the
+// transcript and indexes the latest turns and notes, so retrieval needs it done.
+// - While no command waits, the worker runs it. A command posted meanwhile preempts it, so the UI stays responsive;
+//   it stays due.
+// - Before a SubmitInput or RegenerateTurn (the commands that retrieve), a due maintenance runs first, and that
+//   command does not preempt it. So a turn always sees the previous turn's notes, even when it was queued early.
+// - Other commands (StartRun, LoadRun, UndoTurn) run before a due maintenance. Opening a run (or failing to)
+//   replaces the session, which clears it.
+// - An explicit Cancel stops it; it then stays due only if a command waits.
 class Worker {
 private:
-    core::Settings _settings;
+    struct Posted {
+        std::uint64_t number = 0; // Post order, from 1.
+        Command command = {};
+    };
+
+    core::Settings _settings = {};
     inference::LlmBackend* _pBackend = nullptr; // Not owned; used only on the worker thread.
     std::mutex _mutex = {};
     std::condition_variable_any _commandPosted = {};
     std::condition_variable _eventPosted = {};
-    std::deque<Command> _commands = {};
+    std::deque<Posted> _commands = {};
     std::deque<Event> _events = {};
+    std::uint64_t _postedThrough = 0;     // The number of the latest posted command.
+    std::uint64_t _cancelledThrough = 0;  // Commands numbered up to this were cancelled; queued ones never run.
     std::stop_source _jobStop = {};       // The running job's; Cancel and shutdown request it.
-    bool _maintaining = false;            // The running job is maintenance, which a new command preempts.
+    bool _maintaining = false;            // The running job is maintenance that a new command preempts.
     std::optional<Session> _session = {}; // Worker thread only.
     std::jthread _thread = {};            // Last: starts after every other member exists, and is joined first.
 
@@ -102,7 +124,9 @@ public:
 
     void Post(Command command);
 
-    // Cancels the running command (it ends with TurnCancelled) or maintenance. No effect when idle.
+    // Cancels every command posted so far and any running maintenance. A queued command closes with TurnCancelled
+    // without running. A running SubmitInput or RegenerateTurn stops and closes with TurnCancelled; a running
+    // StartRun, LoadRun or UndoTurn does not watch the token and ends with its usual event. No effect when idle.
     void Cancel();
 
     // Every event so far, oldest first. Never blocks: for the UI's frame loop.
