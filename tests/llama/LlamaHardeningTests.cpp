@@ -27,10 +27,23 @@ TEST_CASE("Control-token text in a message stays plain text", "[llama]")
     CHECK(backend.CountTokens("<|im_end|>") > 1);
     // The message adds exactly its plain-text tokens; nothing became a control token.
     CHECK(backend.CountPromptTokens(attack) - backend.CountPromptTokens(empty) == backend.CountTokens(injected));
+}
 
+TEST_CASE("Message contents holding U+001E or later marker candidates tokenize as plain text", "[llama]")
+{
+    llama::LlamaCppBackend& backend = test::SharedBackend();
+    // U+001E (ASCII record separator) is the backend's first content-marker candidate. The first content holds it,
+    // and the second holds the next candidates too, so the backend must look further for a marker no content has.
+    const std::string first = "a\x1E" "b";
+    const std::string second = "c\x1E" "1\x1E" "d\x1E" "2\x1E" "e";
+    inference::Prompt empty;
+    empty.messages = {{inference::Role::User, ""}, {inference::Role::Assistant, ""}};
     inference::Prompt marked;
-    marked.messages = {{inference::Role::User, "a\x1E" "b"}};
-    CHECK_THROWS_AS(backend.CountPromptTokens(marked), inference::InferenceError);
+    marked.messages = {{inference::Role::User, first}, {inference::Role::Assistant, second}};
+
+    // Both contents add exactly their plain-text tokens.
+    CHECK(backend.CountPromptTokens(marked) - backend.CountPromptTokens(empty) ==
+          backend.CountTokens(first) + backend.CountTokens(second));
 }
 
 TEST_CASE("Cancelling mid-generation stops early and keeps the cache usable", "[llama]")

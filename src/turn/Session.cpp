@@ -106,8 +106,8 @@ Session Session::Load(core::World world, core::Settings settings, const std::fil
 std::optional<core::TurnRecord> Session::RunTurn(std::string_view input, const TurnCallbacks& callbacks,
                                                  std::stop_token stop)
 {
-    // Control characters go (newline and tab stay): they have no place in a prompt, and U+001E is the backend's
-    // content marker.
+    // Control characters go (newline and tab stay): they have no place in a prompt. This is hygiene only: the
+    // backend tokenizes any content as plain text.
     std::string kept;
     for (const char c : input) {
         const auto byte = static_cast<unsigned char>(c);

@@ -79,7 +79,8 @@ private:
     std::string RenderPrompt(const inference::Prompt& prompt) const;
 
     // RenderPrompt tokenized the way Complete evaluates it: template text with special tokens parsed, message
-    // contents as plain text. Throws InferenceError if a content contains U+001E.
+    // contents as plain text, whatever bytes they hold. Throws InferenceError if the chat template drops or repeats
+    // a content.
     std::vector<std::int32_t> TokenizePrompt(const inference::Prompt& prompt) const;
 
     // Decodes `tokens` into the chat cache right after _cachedTokens, then appends them to _cachedTokens.
