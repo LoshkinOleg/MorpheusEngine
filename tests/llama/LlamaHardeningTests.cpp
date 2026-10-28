@@ -63,14 +63,23 @@ TEST_CASE("Cancelling mid-generation stops early and keeps the cache usable", "[
 TEST_CASE("llama.cpp log lines reach the log sink", "[llama]")
 {
     test::SharedBackend(); // Skips without models; installs the process-wide log callback.
+    // Declared before the guard's scope so the lines outlive the sink.
     std::vector<std::pair<llama::LogLevel, std::string>> lines;
-    llama::SetLogSink([&](llama::LogLevel level, std::string_view text) { lines.emplace_back(level, std::string(text)); });
+    {
+        llama::SetLogSink([&](llama::LogLevel level, std::string_view text) { lines.emplace_back(level, std::string(text)); });
+        // Restores the default sink when this scope ends, also when a check throws, so no test leaves a capturing sink.
+        struct SinkGuard {
+            ~SinkGuard()
+            {
+                llama::SetLogSink({});
+            }
+        } guard;
 
-    llama::LlamaConfig config;
-    config.chatModel = test::FreshTempDir("llama_log_sink") / "missing.gguf";
-    config.embeddingModel = config.chatModel;
-    CHECK_THROWS_AS(llama::LlamaCppBackend{config}, inference::InferenceError);
-    llama::SetLogSink({});
+        llama::LlamaConfig config;
+        config.chatModel = test::FreshTempDir("llama_log_sink") / "missing.gguf";
+        config.embeddingModel = config.chatModel;
+        CHECK_THROWS_AS(llama::LlamaCppBackend{config}, inference::InferenceError);
+    }
 
     CHECK(std::any_of(lines.begin(), lines.end(), [](const auto& line) { return line.first == llama::LogLevel::Error; }));
 }

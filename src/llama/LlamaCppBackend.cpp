@@ -27,7 +27,7 @@ constexpr std::size_t TOKEN_PIECE_BUFFER_BYTES = 256;
 
 // Stands in for message contents while the chat template renders (TokenizePrompt). The turn layer strips control
 // characters from player input, so a real message never contains it.
-constexpr char CONTENT_MARKER = ''; // ASCII record separator.
+constexpr char CONTENT_MARKER = '\x1E'; // ASCII record separator.
 
 // The log sink and the level of the line being logged, shared by every thread llama.cpp logs from.
 struct LogRoute {
@@ -473,7 +473,9 @@ std::vector<std::int32_t> LlamaCppBackend::TokenizePrompt(const inference::Promp
 {
     // Message contents are text, never control tokens: "<|im_end|>" typed by a player must not end its message. So
     // the template is rendered with a marker in place of each content, and the pieces are tokenized apart:
-    // template text with parse_special (its control tokens are real), contents without it.
+    // template text with parse_special (its control tokens are real), contents without it. This assumes the chat
+    // template copies each content verbatim (true for chatml/Qwen3); a template that trims or rewrites contents is
+    // rejected only if a marker goes missing or repeats.
     inference::Prompt marked = prompt;
     for (inference::Message& message : marked.messages) {
         if (message.content.find(CONTENT_MARKER) != std::string::npos) {

@@ -20,6 +20,7 @@ namespace morpheus::llama {
 enum class LogLevel { Debug, Info, Warn, Error };
 
 // Receives llama.cpp and ggml log text, on whichever thread logs, one call per piece llama.cpp emits.
+// The sink must not throw: it is called from llama.cpp's C code.
 using LogSink = std::function<void(LogLevel level, std::string_view text)>;
 
 // Routes llama.cpp's process-wide log to `sink`, replacing the previous one. An empty sink restores the default,
