@@ -7,7 +7,7 @@ if(NOT MORPHEUS_BUILD_LLAMA)
 endif()
 
 add_executable(morpheus_tests ${MORPHEUS_TEST_SOURCES})
-target_link_libraries(morpheus_tests PRIVATE morpheus_core morpheus_store morpheus_inference morpheus_context Catch2::Catch2WithMain)
+target_link_libraries(morpheus_tests PRIVATE morpheus_core morpheus_store morpheus_inference morpheus_context morpheus_turn Catch2::Catch2WithMain)
 if(MORPHEUS_BUILD_LLAMA)
     target_link_libraries(morpheus_tests PRIVATE morpheus_llama)
 endif()
