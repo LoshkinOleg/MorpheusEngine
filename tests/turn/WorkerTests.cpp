@@ -271,12 +271,20 @@ TEST_CASE("PollEvents returns the queued events in order without blocking", "[wo
     while (closing < 2) {
         REQUIRE(std::chrono::steady_clock::now() < deadline);
         for (turn::Event& event : worker.PollEvents()) {
+            if (closing == 2) {
+                // After the last command closes, only maintenance reports.
+                CHECK(std::holds_alternative<turn::MemoryUpdated>(event));
+                continue;
+            }
             closing += turn::IsClosing(event) ? 1 : 0;
             events.push_back(std::move(event));
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    CHECK(worker.PollEvents().empty()); // Polling drained the queue.
+    // Polling drained the queue; maintenance's report may still come after it.
+    for (const turn::Event& late : worker.PollEvents()) {
+        CHECK(std::holds_alternative<turn::MemoryUpdated>(late));
+    }
 
     // Both commands' events, in the order they were emitted.
     REQUIRE(events.size() >= 4);
@@ -289,4 +297,44 @@ TEST_CASE("PollEvents returns the queued events in order without blocking", "[wo
     }
     CHECK(streamed == "You walk to the lighthouse.");
     CHECK(std::holds_alternative<turn::TurnCompleted>(events.back()));
+}
+
+TEST_CASE("Worker events carry the run's memory, and maintenance reports it", "[worker]")
+{
+    // Assisted mode: the lookup call asks for nothing, and the resolve output writes one note.
+    const std::string resolveWithNote = R"({"intent":"walk","checks":[],"changes":[],"notes":["The keeper hums."]})";
+    test::ScriptedBackend backend(16384, [&](const inference::Prompt&, const inference::GenerationSpec& spec) {
+        if (spec.grammar.find("lookups") != std::string::npos) {
+            return std::string(R"({"lookups":[]})");
+        }
+        return spec.grammar.find("intent") != std::string::npos ? resolveWithNote : std::string("You walk.");
+    });
+    core::Settings settings = TestSettings();
+    settings.memoryMode = core::MemoryMode::Assisted;
+    turn::Worker worker(settings, backend);
+
+    worker.Post(Start("worker_memory"));
+    const std::vector<turn::Event> opened = UntilClosing(worker);
+    REQUIRE(std::holds_alternative<turn::RunOpened>(opened.back()));
+    CHECK(std::get<turn::RunOpened>(opened.back()).memory.notes.empty());
+
+    worker.Post(turn::SubmitInput{"I walk to the lighthouse."});
+    const std::vector<turn::Event> events = UntilClosing(worker);
+    REQUIRE(std::holds_alternative<turn::TurnCompleted>(events.back()));
+    const turn::MemoryView& memory = std::get<turn::TurnCompleted>(events.back()).memory;
+    REQUIRE(memory.notes.size() == 1);
+    CHECK(memory.notes[0].turn == 1);
+    CHECK(memory.notes[0].text == "The keeper hums.");
+
+    // Maintenance runs while the worker is idle and reports the memory when it finishes. It closes nothing.
+    const std::optional<turn::Event> maintained = worker.WaitEvent(std::chrono::seconds(10));
+    REQUIRE(maintained);
+    REQUIRE(std::holds_alternative<turn::MemoryUpdated>(*maintained));
+    CHECK_FALSE(turn::IsClosing(*maintained));
+    CHECK(std::get<turn::MemoryUpdated>(*maintained).memory.notes.size() == 1);
+
+    worker.Post(turn::UndoTurn{});
+    const std::vector<turn::Event> undone = UntilClosing(worker);
+    REQUIRE(std::holds_alternative<turn::StateChanged>(undone.back()));
+    CHECK(std::get<turn::StateChanged>(undone.back()).memory.notes.empty());
 }

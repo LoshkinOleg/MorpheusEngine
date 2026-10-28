@@ -88,7 +88,7 @@ void Worker::Run(std::stop_token shutdown)
             }
             if (std::holds_alternative<UndoTurn>(command)) {
                 _session->Undo();
-                Emit(StateChanged{_session->History(), _session->State()});
+                Emit(StateChanged{_session->History(), _session->State(), Memory()});
                 return false;
             }
             return FinishTurn(_session->Regenerate(Callbacks(), stop));
@@ -152,6 +152,9 @@ void Worker::Run(std::stop_token shutdown)
             try {
                 MORPHEUS_REQUIRE(_session.has_value(), "Worker: maintenance is due with no run open");
                 finished = _session->Maintain(stop);
+                if (finished) {
+                    Emit(MemoryUpdated{Memory()}); // Folding may have changed the summaries.
+                }
             } catch (const core::ContractError& error) {
                 Emit(MaintenanceFailed{std::string("engine bug: ") + error.what()});
             } catch (const std::exception& error) {
@@ -177,13 +180,13 @@ bool Worker::FinishTurn(const std::optional<core::TurnRecord>& record)
         Emit(TurnCancelled{});
         return false;
     }
-    Emit(TurnCompleted{*record, _session->State(), _session->LastAssembly()});
+    Emit(TurnCompleted{*record, _session->State(), Memory(), _session->LastAssembly()});
     return true;
 }
 
 void Worker::EmitOpened()
 {
-    Emit(RunOpened{_session->Meta(), _session->History(), _session->State(), _session->WorldChanged()});
+    Emit(RunOpened{_session->Meta(), _session->History(), _session->State(), Memory(), _session->WorldChanged()});
 }
 
 TurnCallbacks Worker::Callbacks()
@@ -192,6 +195,11 @@ TurnCallbacks Worker::Callbacks()
     callbacks.onResolved = [this](const core::TurnRecord& record) { Emit(TurnResolved{record}); };
     callbacks.onNarrationToken = [this](std::string_view piece) { Emit(TokenStreamed{std::string(piece)}); };
     return callbacks;
+}
+
+MemoryView Worker::Memory()
+{
+    return MemoryView{_session->Summaries(), _session->Notes()};
 }
 
 void Worker::Emit(Event event)

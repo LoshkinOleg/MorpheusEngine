@@ -18,8 +18,8 @@ Two threads talk only through two thread-safe queues:
 - **UI thread:** the ImGui render loop. It never blocks.
 - **Engine worker thread:** the only owner of the llama.cpp context. Turns, summarization and embedding run here, one job at a time.
 - **Commands (UI to worker):** `StartRun`, `LoadRun`, `SubmitInput`, `UndoTurn`, `RegenerateTurn`. Cancel is `Worker::Cancel`, not a command: it interrupts the running command, and a command cancelled before it runs closes with `TurnCancelled` without running.
-- **Events (worker to UI):** `RunOpened`, `TokenStreamed`, `TurnResolved`, `TurnCompleted`, `TurnCancelled`, `StateChanged`, `MaintenanceFailed`, `Error`.
-- Every command ends with exactly one closing event. `MaintenanceFailed` reports between-turn upkeep and closes nothing.
+- **Events (worker to UI):** `RunOpened`, `TokenStreamed`, `TurnResolved`, `TurnCompleted`, `TurnCancelled`, `StateChanged`, `MemoryUpdated`, `MaintenanceFailed`, `Error`. `RunOpened`, `TurnCompleted` and `StateChanged` carry the run's memory (summaries and notes) for the Memory window.
+- Every command ends with exactly one closing event. `MemoryUpdated` (maintenance finished) and `MaintenanceFailed` report between-turn upkeep and close nothing.
 
 Each module is a static library. Dependencies flow downward only.
 

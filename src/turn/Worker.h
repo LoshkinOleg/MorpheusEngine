@@ -46,11 +46,17 @@ using Command = std::variant<StartRun, LoadRun, SubmitInput, UndoTurn, Regenerat
 // - SubmitInput and RegenerateTurn: TurnCompleted, TurnCancelled or Error.
 // - UndoTurn: StateChanged or Error.
 // Any command cancelled before the worker picks it up closes with TurnCancelled without running, StartRun, LoadRun
-// and UndoTurn included. MaintenanceFailed reports between-turn upkeep and closes nothing.
+// and UndoTurn included. MemoryUpdated and MaintenanceFailed report between-turn upkeep and close nothing.
+// The run's memory as the Memory window shows it: every summary and every note, oldest first.
+struct MemoryView {
+    std::vector<core::Summary> summaries = {};
+    std::vector<core::Note> notes = {};
+};
 struct RunOpened {
     store::RunMeta meta = {};
     std::vector<core::TurnRecord> history = {};
     nlohmann::json state = nullptr;
+    MemoryView memory = {};
     bool worldChanged = false; // The world's files changed since the run started.
 };
 struct TokenStreamed {
@@ -62,12 +68,18 @@ struct TurnResolved {
 struct TurnCompleted {
     core::TurnRecord record = {};
     nlohmann::json state = nullptr;
+    MemoryView memory = {};
     context::Assembly assembly = {}; // The resolve prompt, for the context inspector.
 };
 struct TurnCancelled {};
 struct StateChanged {
     std::vector<core::TurnRecord> history = {};
     nlohmann::json state = nullptr;
+    MemoryView memory = {};
+};
+// Between-turn maintenance finished: it may have folded turns into the summary and indexed new notes. Closes nothing.
+struct MemoryUpdated {
+    MemoryView memory = {};
 };
 struct MaintenanceFailed {
     std::string message = {};
@@ -77,7 +89,7 @@ struct Error {
     std::string message = {};
 };
 using Event = std::variant<RunOpened, TokenStreamed, TurnResolved, TurnCompleted, TurnCancelled, StateChanged,
-                           MaintenanceFailed, Error>;
+                           MemoryUpdated, MaintenanceFailed, Error>;
 
 // Whether `event` ends the command it belongs to.
 bool IsClosing(const Event& event);
@@ -143,6 +155,8 @@ private:
 
     void EmitOpened();
     TurnCallbacks Callbacks();
+    // The open run's summaries and notes, for the events that carry them.
+    MemoryView Memory();
     void Emit(Event event);
 };
 

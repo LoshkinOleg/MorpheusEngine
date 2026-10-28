@@ -95,6 +95,7 @@ public:
     nlohmann::json State();                  // After the latest turn.
     std::vector<core::TurnRecord> History(); // Every committed turn, oldest first.
     std::vector<core::Summary> Summaries();
+    std::vector<core::Note> Notes(); // Every committed note, by turn, then the order written.
     const context::Assembly& LastAssembly() const; // The last resolve prompt, for the context inspector.
 
 private:

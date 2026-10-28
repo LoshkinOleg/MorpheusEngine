@@ -237,6 +237,11 @@ std::vector<core::Summary> Session::Summaries()
     return _store.Summaries();
 }
 
+std::vector<core::Note> Session::Notes()
+{
+    return _store.Notes();
+}
+
 const context::Assembly& Session::LastAssembly() const
 {
     return _lastAssembly;
