@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstdint>
 #include <stop_token>
 #include <string>
 
@@ -79,6 +80,32 @@ TEST_CASE("LlamaCppBackend follows a GBNF grammar", "[llama]")
     spec.grammar = R"(root ::= "yes" | "no")";
     const Completion completion = backend.Complete(SimplePrompt("Is sand dry? Answer yes or no."), spec, {}, {});
     CHECK((completion.text == "yes" || completion.text == "no"));
+}
+
+TEST_CASE("LlamaCppBackend keeps output in the grammar when the model's own choice is rejected", "[llama]")
+{
+    LlmBackend& backend = SharedBackend();
+    const Prompt prompt = SimplePrompt("Repeat this word exactly and nothing else: hello");
+
+    // Unconstrained, the model says hello, so the grammar below must reject its preferred first token.
+    const Completion unconstrained = backend.Complete(prompt, Greedy(4), {}, {});
+    INFO("unconstrained: " << unconstrained.text);
+    REQUIRE(unconstrained.text.starts_with("hello"));
+
+    GenerationSpec spec = Greedy(4);
+    spec.grammar = R"(root ::= "yes" | "no")";
+    const Completion greedy = backend.Complete(prompt, spec, {}, {});
+    CHECK((greedy.text == "yes" || greedy.text == "no"));
+    CHECK(backend.Complete(prompt, spec, {}, {}).text == greedy.text);
+
+    // Seeded sampling at a high temperature: still always valid, and the same seed gives the same text.
+    spec.sampling.temperature = 1.5f;
+    for (const std::uint32_t seed : {1u, 2u, 3u, 4u}) {
+        spec.sampling.seed = seed;
+        const Completion first = backend.Complete(prompt, spec, {}, {});
+        CHECK((first.text == "yes" || first.text == "no"));
+        CHECK(backend.Complete(prompt, spec, {}, {}).text == first.text);
+    }
 }
 
 TEST_CASE("LlamaCppBackend returns early when cancelled", "[llama]")
