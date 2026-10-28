@@ -25,3 +25,12 @@ add_library(morpheus_app_ui STATIC
 target_include_directories(morpheus_app_ui PUBLIC ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(morpheus_app_ui PUBLIC morpheus_app_model imgui_core)
 morpheus_target_defaults(morpheus_app_ui)
+
+if(MORPHEUS_BUILD_APP)
+    # The app: the SDL3 window, ImGui's SDL backends and the llama.cpp backend.
+    add_executable(morpheus main.cpp)
+    target_link_libraries(morpheus PRIVATE morpheus_app_ui morpheus_llama imgui_sdl3)
+    morpheus_target_defaults(morpheus)
+    # F5 in Visual Studio runs it from the repository root, where settings.json, game_projects/ and saves/ are.
+    set_target_properties(morpheus PROPERTIES VS_DEBUGGER_WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+endif()

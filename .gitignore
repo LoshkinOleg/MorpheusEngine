@@ -25,3 +25,4 @@ saves/
 .vs/
 /models/
 /settings.json
+/imgui.ini

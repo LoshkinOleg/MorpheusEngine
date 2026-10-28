@@ -14,7 +14,7 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin) # For shared libs: .
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib) # For static libs: .a on linux, .lib on win
 
 # ---- Options ------------------------------------------------------------
-option(MORPHEUS_BUILD_APP "Build the morpheus app (needs MORPHEUS_BUILD_LLAMA; fetches SDL3 and ImGui)" ON)
+option(MORPHEUS_BUILD_APP "Build the morpheus app (needs MORPHEUS_BUILD_LLAMA; fetches SDL3)" ON)
 option(MORPHEUS_BUILD_TESTS "Build morpheus_tests (fetches Catch2)" ON)
 option(MORPHEUS_ASAN "Instrument every target with AddressSanitizer (MSVC only)" OFF)
 option(MORPHEUS_BUILD_LLAMA "Build the llama.cpp backend (fetches and builds llama.cpp)" ON)
@@ -96,6 +96,7 @@ if(MORPHEUS_BUILD_APP)
         GIT_REPOSITORY https://github.com/libsdl-org/SDL.git          # repo
         GIT_TAG        8e37db5e797b6167f3a00d697d816a684bd259c7       # commit SHA to get, SDL3 3.4.10
         GIT_SHALLOW    FALSE                                          # Has to be FALSE to be able to use a commit SHA
+        SYSTEM                                                        # Its headers are external: no /W4 /WX
     )
     FetchContent_MakeAvailable(sdl3)
 endif()
@@ -174,40 +175,9 @@ if(MORPHEUS_BUILD_APP OR MORPHEUS_BUILD_TESTS)
     add_subdirectory(src/app)
 endif()
 
-# ---- App (prototype, replaced in milestone 4) --------------------------
 if(MORPHEUS_BUILD_APP)
-    add_executable(morpheus
-        src/main.cpp
-    )
-
-    # For morpheus cpp and h
-    target_include_directories(morpheus
-        PRIVATE # No sharing with other targets
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-    )
-
-    # Warning flags
-    if(MSVC)
-        target_compile_options(morpheus PRIVATE /W4 /permissive- /Zc:preprocessor) # /W4 is Warning level, /permissive- is for standard compliance, /Zc:preprocessor is for MSVC preprocessor compliance
-    else()
-        target_compile_options(morpheus PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow) # -Wall is for the common warnings set, -Wextra is more warnings, -Wpedantic is for even more warnings, -Wconversion for warnings on narrowing casts, -Wshadow for shadowing
-    endif()
-
-    # C++20 only for morpheus (build fails on llama with C++20)
-    target_compile_features(morpheus PRIVATE cxx_std_20)
-
-    # Link morpheus
-    target_link_libraries(morpheus PRIVATE
-        llama
-        SDL3::SDL3
-        nlohmann_json::nlohmann_json
-        imgui_sdl3
-    )
-
-    # ---- Defines ----
-    target_compile_definitions(morpheus PRIVATE
-        MORPHEUS_MODELS_DIR="${CMAKE_SOURCE_DIR}/third_party/models"
-    )
+    # Visual Studio opens the solution with the app as the startup project.
+    set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT morpheus)
 endif()
 
 # ---- Tests --------------------------------------------------------------

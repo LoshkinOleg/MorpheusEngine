@@ -31,7 +31,7 @@ Each module is a static library. Dependencies flow downward only.
 | `llama` | `LlamaCppBackend`: tokenize, KV prefix reuse, grammar sampling, embeddings, state save/restore. The only module linking llama.cpp; built by the `dev` preset only. | inference |
 | `context` | Layered prompt assembly, exact token budgets, cache-prefix tracking | core, inference |
 | `turn` | Turn orchestration (grammar, resolve and apply, retrieval, folding, session), the worker thread, replay recording | all above |
-| `app` | SDL3 + Dear ImGui frontend: play panel and inspectors | turn (plus read-only views) |
+| `app` | SDL3 + Dear ImGui frontend: the Runs and Play windows, the inspectors, Settings | turn |
 
 **Build:** CMake, with dependencies pulled through FetchContent and pinned to commit SHAs: llama.cpp, nlohmann/json, SDL3, the ImGui fork, the SQLite amalgamation, Catch2 v3. Warnings are treated as errors (`/W4 /permissive-`). Debug builds use AddressSanitizer.
 
@@ -150,12 +150,15 @@ World files are read with CRLF normalized to LF. The world content hash covers e
 
 | Window | Shows |
 |---|---|
+| Runs | Worlds in `game_projects/` and their runs in `saves/<world id>/`: start a new run or continue one |
 | Play | Transcript with streaming prose, input box, undo/regenerate, rolls inline |
 | State | State tree, with last turn's changes highlighted |
 | Context | Last prompt split by layer: tokens per layer, reused vs. evaluated, raw/formatted toggle |
 | Turn log | Resolve JSON, rolls, applied and rejected changes, timings per turn |
 | Memory | Summaries, notes, and last retrieval hits with scores |
 | Settings | Model paths, context size, sampling, `memory_mode` |
+
+The windows dock over one SDL3 window (Dear ImGui's docking branch, SDL_Renderer backend). The UI thread draws from `app::AppController`, which applies the worker's events once per frame. The backend loads on a background thread, so the window opens at once. Settings apply by restarting the worker: the loaded models are kept unless the model paths, embedding prefixes, context size or GPU layers changed, and the open run reopens.
 
 ## Testing (Catch2 v3)
 

@@ -17,7 +17,7 @@ Prerequisites: Visual Studio 2022 with the C++ workload, CMake 3.25+, Git, and t
 
 | Preset | Builds |
 |---|---|
-| `tests` | Engine libraries and tests only (no llama.cpp, SDL3 or ImGui) |
+| `tests` | Engine libraries and tests only (no llama.cpp or SDL3) |
 | `asan` | Same as `tests`, instrumented with AddressSanitizer |
 | `dev` | Everything: llama.cpp with Vulkan, the `morpheus` app and the `morpheus_probe` and `morpheus_play` tools |
 | `dev-asan` | Like `dev`, but llama.cpp on the CPU (no Vulkan) and every target under AddressSanitizer, RelWithDebInfo: the tests, `morpheus_probe` and `morpheus_play`, not the app. Slow, for memory checks of the backend |
@@ -56,6 +56,26 @@ export MORPHEUS_TEST_EMBED_MODEL="$PWD/models/nomic-embed-text-v1.5.Q8_0.gguf"
 ./build/dev/bin/Debug/morpheus_tests.exe "[llama]"
 ```
 
+## Play in the app
+
+The `dev` preset builds `morpheus`, the app. In Visual Studio, open `build/dev/MorpheusEngine.sln`: `morpheus` is the startup project and runs from the repository root, so F5 (or Ctrl+F5) starts it. Pick the RelWithDebInfo configuration to play: Debug is about 2-4x slower. From a shell, run it from the repository root, or pass the root folder:
+
+```
+./build/dev/bin/RelWithDebInfo/morpheus.exe [root]
+```
+
+The root holds `settings.json`, `game_projects/` and `saves/`. The models load in the background while the window opens. The windows dock and can be rearranged; the layout is saved in `imgui.ini` at the root (gitignored), and deleting it restores the default.
+
+- **Runs:** the worlds in `game_projects/` and each world's runs, saved as `saves/<world id>/<name>.db`. Start a new run (a name, and a seed or blank for a random one) or continue a saved one.
+- **Play:** the story, with each turn's rolls and changes in grey under your input. Enter plays the turn (Ctrl+Enter for a new line); Undo, Regenerate (same dice, new text) and Cancel work on the latest turn.
+- **State:** the world state, with what the latest turn changed highlighted.
+- **Turn log:** each turn's intent, rolls, applied and rejected changes, notes, lookups and per-call token counts and timings, and the raw resolve output.
+- **Context:** the latest resolve prompt by layer: tokens per layer, KV-cache reuse per call, and the text as sections or raw.
+- **Memory:** the story summaries, the notes, and what retrieval put in the latest turn's prompt, with scores.
+- **Settings:** model paths, context size, GPU layers, sampling and memory mode. Apply saves `settings.json` and restarts the engine, reopening the run; changing the models, context size or GPU layers reloads the models. The budget is shown and edited in `settings.json`.
+
+`--frames N` exits after N frames, a quick check that the app starts on this machine.
+
 ## Play in the terminal
 
 `morpheus_play` (`dev` preset) plays a world through the engine worker, the same path the app will take:
@@ -83,6 +103,6 @@ An existing run file is continued; otherwise a new run starts, seeded by `--seed
 - `src/llama`: the llama.cpp backend (`dev` preset only)
 - `tools/probe`: `morpheus_probe`, a manual model check (`dev` preset only)
 - `tools/play`: `morpheus_play`, the terminal player (`dev` preset only)
-- `src/main.cpp`: prototype app (replaced in milestone 4)
+- `src/app`: the app. `model/` is its state and actions (no SDL or ImGui), `ui/` its ImGui windows, `main.cpp` the SDL3 window (`dev` preset only)
 - `tests/`: Catch2 tests and test data
 - `game_projects/<id>/`: worlds as data

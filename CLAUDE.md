@@ -11,7 +11,7 @@ Local-first, LLM-driven text RPG engine in C++20. The repository owner acts as p
 ## Build and test (Windows, Visual Studio 2022, CMake >= 3.25, Git Bash)
 - Fast loop (engine libraries + tests, no llama.cpp/SDL/ImGui): `cmake --preset tests`, `cmake --build --preset tests`, `ctest --preset tests`
 - AddressSanitizer: the same three commands with preset `asan`
-- `tests` and `asan` build without llama.cpp. `dev` builds everything, including llama.cpp with Vulkan (needs the Vulkan SDK), the app, `morpheus_probe` and `morpheus_play`.
+- `tests` and `asan` build without llama.cpp. `dev` builds everything, including llama.cpp with Vulkan (needs the Vulkan SDK), the app (`morpheus`, the startup project in Visual Studio, run from the repo root), `morpheus_probe` and `morpheus_play`.
 - `dev-asan` is `dev` with llama.cpp on the CPU (no Vulkan SDK needed) and every target under AddressSanitizer, RelWithDebInfo: the tests, `morpheus_probe` and `morpheus_play`, not the app. Slow, for memory checks of the backend. Binaries land in `build/dev-asan/bin/RelWithDebInfo/`.
 - Model-backed tests are tagged `[llama]` and skip unless `MORPHEUS_TEST_CHAT_MODEL` and `MORPHEUS_TEST_EMBED_MODEL` point at the two GGUF files in `models/`.
 - One tag or test case: `./build/tests/bin/Debug/morpheus_tests.exe "[csv]"`
@@ -22,11 +22,11 @@ Local-first, LLM-driven text RPG engine in C++20. The repository owner acts as p
 - src/inference: the LlmBackend interface and its types. No llama.cpp.
 - src/context: layered prompt assembly with exact token budgets.
 - src/turn: turn orchestration: grammar, resolve and apply, retrieval, folding, session, worker, replay.
-- src/llama: the llama.cpp backend (`dev` preset only). Only this module, tools/probe and tools/play include <llama.h>.
+- src/llama: the llama.cpp backend (`dev` preset only). Only this module, tools/probe, tools/play and src/app/main.cpp link llama.cpp; only src/llama and the tools include <llama.h>.
 - tools/probe: `morpheus_probe`, a manual check of the models, the Vulkan backend and KV-cache reuse (`dev` preset only).
 - tools/play: `morpheus_play`, the terminal player; `--record` writes a replay fixture for tests/data/replays (`dev` preset only).
 - models/ and settings.json: both gitignored, per machine. settings.example.json is the template.
-- src/main.cpp: prototype app, replaced in milestone 4.
+- src/app: the app. model/ (morpheus_app_model): its state and actions, no SDL, ImGui or llama.cpp. ui/ (morpheus_app_ui): the ImGui windows, needing only ImGui's core, so tests draw them headless (tests/app/HeadlessImGui.h). main.cpp (`morpheus`, `dev` preset only): the SDL3 window and the llama.cpp backend. ImGui is upstream's docking branch; IM_ASSERT throws (src/app/ui/ImGuiConfig.h).
 - tests/: Catch2 tests (every tests/**/*.cpp is compiled in), tests/data: test worlds.
 - game_projects/<id>/: worlds as data (world.json, rules.md, lore.csv, state_schema.json, initial_state.json).
 
