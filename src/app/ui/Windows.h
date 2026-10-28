@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -9,6 +10,7 @@
 
 #include "app/model/AppController.h"
 #include "app/model/Catalog.h"
+#include "app/model/SettingsEdit.h"
 
 namespace morpheus::app {
 
@@ -52,6 +54,43 @@ class PlayWindow {
 private:
     std::string _input = {};
     bool _couldPost = false; // Last frame's CanPost: the input takes focus when the engine is ready again.
+
+public:
+    void Draw(AppController& controller);
+};
+
+// The state tree, with the latest turn's changes marked.
+class StateWindow {
+public:
+    void Draw(AppController& controller);
+};
+
+// Every turn, newest first: input, intent, rolls, applied and rejected changes, notes, lookups, per-call numbers and
+// the raw resolve output.
+class TurnLogWindow {
+public:
+    void Draw(AppController& controller);
+};
+
+// The latest resolve prompt by layer: tokens per layer, cache reuse per call, and the text as sections or raw.
+class ContextWindow {
+public:
+    bool showRaw = false; // The prompt as one raw text instead of sections (the window's toggle).
+
+    void Draw(AppController& controller);
+};
+
+// The story summaries, the notes, and the latest turn's retrieval hits with their scores.
+class MemoryWindow {
+public:
+    void Draw(AppController& controller);
+};
+
+// The editable settings. Apply saves settings.json and restarts the engine; Revert reads the file again.
+class SettingsWindow {
+private:
+    std::optional<SettingsEdit> _edit = {}; // Read from the file on the first draw and after Revert.
+    std::string _problem = {};              // Why the file could not be read, or why Apply refused the edit.
 
 public:
     void Draw(AppController& controller);

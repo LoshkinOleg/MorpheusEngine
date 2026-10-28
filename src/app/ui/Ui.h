@@ -11,6 +11,11 @@ class Ui {
 private:
     RunsWindow _runs = {};
     PlayWindow _play = {};
+    StateWindow _state = {};
+    TurnLogWindow _turnLog = {};
+    ContextWindow _context = {};
+    MemoryWindow _memory = {};
+    SettingsWindow _settings = {};
 
 public:
     void Draw(AppController& controller);

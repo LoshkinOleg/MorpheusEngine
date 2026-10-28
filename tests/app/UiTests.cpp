@@ -8,7 +8,9 @@
 #include "app/AppTestSupport.h"
 #include "app/HeadlessImGui.h"
 #include "app/model/AppController.h"
+#include "app/model/SettingsEdit.h"
 #include "app/ui/Ui.h"
+#include "core/MemoryMode.h"
 #include "inference/Llm.h"
 
 using namespace morpheus;
@@ -25,6 +27,25 @@ test::ScriptedBackend::Responder Responder()
 {
     return [](const inference::Prompt&, const inference::GenerationSpec& spec) {
         return spec.grammar.find("intent") != std::string::npos ? MOVE : NARRATION;
+    };
+}
+
+// An assisted-mode turn: the lookup asks for lore about the keeper, and the resolve output has a check with both
+// branches, a note, and a change the engine rejects.
+test::ScriptedBackend::Responder AssistedResponder()
+{
+    return [](const inference::Prompt&, const inference::GenerationSpec& spec) -> std::string {
+        if (spec.grammar.find("lookups") != std::string::npos) {
+            return R"({"lookups":[{"source":"lore","query":"keeper"}]})";
+        }
+        if (spec.grammar.find("intent") != std::string::npos) {
+            return R"({"intent":"climb","checks":[{"stat":"agility","difficulty":"hard","stakes":"a fall",)"
+                   R"("on_success":[{"op":"set","path":"player.location","value":"cliff top","reason":"climbs"}],)"
+                   R"("on_failure":[{"op":"add","path":"player.health","value":-2,"reason":"falls"}]}],)"
+                   R"("changes":[{"op":"set","path":"player.wings","value":true,"reason":"flies"}],)"
+                   R"("notes":["The cliff is slick."]})";
+        }
+        return "You climb.";
     };
 }
 
@@ -91,4 +112,32 @@ TEST_CASE("The UI draws an engine that failed to load", "[ui]")
                     [&] { return controller.Engine().CurrentStatus() == app::EngineHost::Status::Failed; });
     DrawFrames(imgui, controller, ui);
     CHECK_FALSE(controller.CanPost());
+}
+
+TEST_CASE("The inspectors draw a run with checks, notes, lookups and retrieval", "[ui]")
+{
+    test::HeadlessImGui imgui;
+    const std::filesystem::path dir = test::SettingsFolder("ui_inspectors");
+    app::SettingsEdit edit = app::ReadSettingsEdit(dir / "settings.json");
+    edit.memoryMode = core::MemoryMode::Assisted;
+    app::SaveSettingsEdit(dir / "settings.json", edit);
+    app::AppController controller(test::PathsIn(dir), test::ScriptedFactory(AssistedResponder()));
+    app::Ui ui;
+
+    test::PumpUntil(controller, [&] { return controller.CanPost(); });
+    controller.NewRun(controller.Worlds().at(0), "inspect", 7);
+    test::PumpUntil(controller, [&] { return controller.Run().Open() && controller.CanPost(); });
+    for (const char* input : {"I climb the cliff.", "I climb again."}) {
+        controller.Submit(input);
+        test::PumpUntil(controller, [&] { return controller.CanPost(); });
+    }
+    REQUIRE(controller.Run().History().size() == 2);
+    CHECK_FALSE(controller.Run().Memory().notes.empty());
+    CHECK_FALSE(controller.Run().History().back().rejected.empty());
+    DrawFrames(imgui, controller, ui);
+
+    // The Context window's raw view, which the default frames do not show.
+    app::ContextWindow context;
+    context.showRaw = true;
+    imgui.Frame([&] { context.Draw(controller); });
 }

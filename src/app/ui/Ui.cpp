@@ -90,6 +90,11 @@ void Ui::Draw(AppController& controller)
 
     _runs.Draw(controller);
     _play.Draw(controller);
+    _state.Draw(controller);
+    _turnLog.Draw(controller);
+    _context.Draw(controller);
+    _memory.Draw(controller);
+    _settings.Draw(controller);
 }
 
 } // namespace morpheus::app

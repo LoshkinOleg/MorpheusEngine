@@ -16,6 +16,11 @@ add_library(morpheus_app_ui STATIC
     ui/Ui.cpp
     ui/RunsWindow.cpp
     ui/PlayWindow.cpp
+    ui/StateWindow.cpp
+    ui/TurnLogWindow.cpp
+    ui/ContextWindow.cpp
+    ui/MemoryWindow.cpp
+    ui/SettingsWindow.cpp
 )
 target_include_directories(morpheus_app_ui PUBLIC ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(morpheus_app_ui PUBLIC morpheus_app_model imgui_core)
