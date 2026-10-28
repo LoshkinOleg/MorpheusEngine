@@ -1,11 +1,13 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <atomic>
 #include <deque>
 #include <filesystem>
 #include <fstream>
 #include <map>
 #include <optional>
 #include <string>
+#include <thread>
 
 #include <nlohmann/json.hpp>
 
@@ -243,4 +245,77 @@ TEST_CASE("RecordingBackend Mark and RollBack restore the recorded reply counts"
     // A mark with more replies than are recorded is an engine bug.
     CHECK_THROWS_AS(recording.RollBack({{core::CallKind::Narrate, 2}}), core::ContractError);
     CHECK_THROWS_AS(recording.RollBack({{core::CallKind::Resolve, 1}}), core::ContractError);
+}
+
+TEST_CASE("RecordingBackend is safe to mark, roll back and read while another thread completes calls", "[replay]")
+{
+    constexpr int CALLS = 200;
+    // The reply is the call's number, so a surviving reply says which call it came from.
+    int callNumber = 0;
+    test::ScriptedBackend inner(16384, [&callNumber](const inference::Prompt&, const inference::GenerationSpec&) {
+        return std::to_string(callNumber++);
+    });
+    turn::RecordingBackend recording(inner);
+    const inference::Prompt prompt{{{inference::Role::User, "I walk."}}, 1};
+    const inference::GenerationSpec narrateSpec;
+
+    SECTION("readers see a growing recording and lose no reply")
+    {
+        std::atomic<bool> done = false;
+        std::size_t lastSeen = 0;
+        bool shrank = false;
+        // The reader takes marks and copies of the replies the whole time the writer completes calls.
+        std::thread reader([&] {
+            while (!done) {
+                const auto mark = recording.Mark();
+                const auto replies = recording.Replies();
+                const std::size_t seen = replies.contains(core::CallKind::Narrate) ? replies.at(core::CallKind::Narrate).size() : 0;
+                shrank = shrank || seen < lastSeen || (mark.contains(core::CallKind::Narrate) && mark.at(core::CallKind::Narrate) > CALLS);
+                lastSeen = seen;
+            }
+        });
+        for (int i = 0; i < CALLS; ++i) {
+            recording.Complete(prompt, narrateSpec, {}, {});
+        }
+        done = true;
+        reader.join();
+
+        CHECK_FALSE(shrank);
+        CHECK(recording.Replies().at(core::CallKind::Narrate).size() == CALLS);
+        CHECK(recording.Mark() == std::map<core::CallKind, std::size_t>{{core::CallKind::Narrate, CALLS}});
+    }
+
+    SECTION("a rollback racing the completions leaves an intact, ordered recording")
+    {
+        std::atomic<bool> done = false;
+        // A rollback to a mark drops whatever was recorded between taking the mark and rolling back, so this thread
+        // may lose replies; what must hold is that the recording stays consistent and never throws.
+        std::thread rollbacker([&] {
+            while (!done) {
+                recording.RollBack(recording.Mark());
+            }
+        });
+        for (int i = 0; i < CALLS; ++i) {
+            recording.Complete(prompt, narrateSpec, {}, {});
+        }
+        done = true;
+        rollbacker.join();
+
+        // Survivors are whole replies in call order, never duplicated or torn.
+        int previous = -1;
+        const auto replies = recording.Replies();
+        if (replies.contains(core::CallKind::Narrate)) {
+            for (const std::string& text : replies.at(core::CallKind::Narrate)) {
+                const int number = std::stoi(text);
+                CHECK(number > previous);
+                CHECK(number < CALLS);
+                previous = number;
+            }
+        }
+
+        // With the writer stopped, a rollback to the current mark changes nothing.
+        const auto before = recording.Replies();
+        recording.RollBack(recording.Mark());
+        CHECK(recording.Replies() == before);
+    }
 }

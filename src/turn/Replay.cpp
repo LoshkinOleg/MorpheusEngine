@@ -49,13 +49,15 @@ RecordingBackend::RecordingBackend(inference::LlmBackend& inner)
 {
 }
 
-const std::map<core::CallKind, std::vector<std::string>>& RecordingBackend::Replies() const
+std::map<core::CallKind, std::vector<std::string>> RecordingBackend::Replies() const
 {
+    const std::lock_guard<std::mutex> lock(_mutex);
     return _replies;
 }
 
 std::map<core::CallKind, std::size_t> RecordingBackend::Mark() const
 {
+    const std::lock_guard<std::mutex> lock(_mutex);
     std::map<core::CallKind, std::size_t> mark;
     for (const auto& [kind, texts] : _replies) {
         mark[kind] = texts.size();
@@ -65,6 +67,7 @@ std::map<core::CallKind, std::size_t> RecordingBackend::Mark() const
 
 void RecordingBackend::RollBack(const std::map<core::CallKind, std::size_t>& mark)
 {
+    const std::lock_guard<std::mutex> lock(_mutex);
     // A mark can only be restored if nothing before it was lost.
     for (const auto& [kind, count] : mark) {
         const auto found = _replies.find(kind);
@@ -101,7 +104,9 @@ inference::Completion RecordingBackend::Complete(const inference::Prompt& prompt
     inference::Completion completion = _pInner->Complete(prompt, spec, onToken, stop);
     // A cancelled call is discarded by the session, so a replay never sees it.
     if (!completion.cancelled) {
-        _replies[CallKindOf(prompt, spec)].push_back(completion.text);
+        const core::CallKind kind = CallKindOf(prompt, spec);
+        const std::lock_guard<std::mutex> lock(_mutex); // Only the append is guarded, not the inner call above.
+        _replies[kind].push_back(completion.text);
     }
     return completion;
 }
@@ -164,7 +169,9 @@ nlohmann::json MakeReplayFixture(const std::string& worldFolder, std::uint64_t s
         }
     }
     nlohmann::json replies = nlohmann::json::object();
-    for (const auto& [kind, texts] : recording.Replies()) {
+    // One copy, taken under the recording's lock, so the loop sees a consistent recording.
+    const std::map<core::CallKind, std::vector<std::string>> recorded = recording.Replies();
+    for (const auto& [kind, texts] : recorded) {
         replies[CallKindName(kind)] = texts;
     }
     nlohmann::json turns = nlohmann::json::array();

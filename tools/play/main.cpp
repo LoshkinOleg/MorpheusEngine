@@ -4,6 +4,8 @@
 // An existing run file is continued; otherwise a new run starts (seeded by --seed, else randomly). --record needs a
 // new run and writes a replay fixture (see tests/data/replays) when you quit. Run it from the repo root with a
 // repo-relative world path: the fixture stores that path as given. Failed steps are rolled back out of the recording.
+// A maintenance failure reported before you quit refuses the recording; maintenance still running at /quit is
+// cancelled by shutdown and not recorded.
 // At the prompt: /undo, /regen, /state, /quit, or your action.
 
 #include <algorithm>
@@ -162,10 +164,16 @@ int main(int argc, char** argv)
             std::cerr << "--record needs a new run file\n";
             return 2;
         }
-        // The fixture stores the world path as given, and the replay test resolves it from the repo root.
-        if (recordFile && worldFolder.is_absolute()) {
+        // The fixture stores the world path as given, and the replay test resolves it from the repo root. A drive or
+        // a leading slash makes a path non-portable even when it is not "absolute" on this platform.
+        if (recordFile && (worldFolder.has_root_name() || worldFolder.has_root_directory())) {
             std::cerr << "--record needs a world folder path relative to the repo root (run from the repo root), "
-                         "not an absolute path: the fixture stores the path as given\n";
+                         "not a rooted or absolute path: the fixture stores the path as given\n";
+            return 2;
+        }
+        if (recordFile && !std::filesystem::is_directory(worldFolder)) {
+            std::cerr << "--record needs the world folder '" << core::PathText(worldFolder)
+                      << "' to exist relative to the current directory: run morpheus_play from the repo root\n";
             return 2;
         }
 
@@ -213,6 +221,10 @@ int main(int argc, char** argv)
                     std::cout << context::RenderStateView(view.state);
                     continue;
                 }
+                // The mark comes before the post: maintenance of the previous turn may still be calling the backend on
+                // the worker thread, and a reply it records before the mark belongs to the earlier, committed step.
+                const std::map<core::CallKind, std::size_t> mark =
+                    recording ? recording->Mark() : std::map<core::CallKind, std::size_t>{};
                 turn::ReplayStep step;
                 if (line == "/undo") {
                     step.action = turn::ReplayStep::Action::Undo;
@@ -226,21 +238,30 @@ int main(int argc, char** argv)
                 }
                 std::cout << '\n';
                 // A step that does not complete changes nothing, so a replay must see neither it nor its replies.
-                const std::map<core::CallKind, std::size_t> mark =
-                    recording ? recording->Mark() : std::map<core::CallKind, std::size_t>{};
                 if (PrintUntilClosing(worker, view) == StepOutcome::Completed) {
                     steps.push_back(std::move(step));
                 } else if (recording) {
                     recording->RollBack(mark);
                 }
             }
+
+            // Maintenance of the last turn runs after that turn's closing event, so its outcome may still be
+            // queued. Take what has been reported before the worker goes away; maintenance still running now is
+            // cancelled by the shutdown, and its cancelled summary calls are not recorded.
+            for (const turn::Event& event : worker.PollEvents()) {
+                if (const auto* pFailed = std::get_if<turn::MaintenanceFailed>(&event)) {
+                    std::cerr << "maintenance: " << pFailed->message << '\n';
+                    view.maintenanceFailed = true;
+                }
+            }
         }
 
         if (recordFile) {
-            // A replay runs Maintain after every step and requires it to succeed, so it would fail at the same place.
+            // The replay answers embeddings with scripted vectors, so it would not reproduce a maintenance failure
+            // caused by the real models; the recording is refused because its maintenance cannot be trusted.
             if (view.maintenanceFailed) {
-                std::cerr << "error: maintenance failed during this session, so a replay of it would fail at the "
-                             "same step. The fixture was not written.\n";
+                std::cerr << "error: maintenance failed during this session, so the recording is refused: its "
+                             "maintenance cannot be trusted. The fixture was not written.\n";
                 return 1;
             }
             const core::MemoryMode mode = settings.memoryMode.value_or(core::LoadWorld(worldFolder).defaultMemoryMode);

@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <mutex>
 #include <span>
 #include <stop_token>
 #include <string>
@@ -35,15 +36,20 @@ struct ReplayStep {
 
 // Wraps a backend during play and records what a replay fixture needs (architecture spec, "Testing"): the text of
 // every completed call, by kind, in order. Cancelled calls are not recorded. Everything else is forwarded.
+// Mark, RollBack and Replies are safe to call while another thread is inside Complete (the recording is guarded by
+// a mutex that Complete holds only while it appends, never during the inner call). The forwarded calls are only as
+// thread-safe as the wrapped backend.
 class RecordingBackend final : public inference::LlmBackend {
 private:
     inference::LlmBackend* _pInner = nullptr; // Not owned.
+    mutable std::mutex _mutex = {}; // Guards _replies.
     std::map<core::CallKind, std::vector<std::string>> _replies = {};
 
 public:
     explicit RecordingBackend(inference::LlmBackend& inner);
 
-    const std::map<core::CallKind, std::vector<std::string>>& Replies() const;
+    // A copy of the recording, taken under the lock.
+    std::map<core::CallKind, std::vector<std::string>> Replies() const;
 
     // How many replies are recorded per kind (kinds with none are absent). Take it before a step that may fail.
     std::map<core::CallKind, std::size_t> Mark() const;
