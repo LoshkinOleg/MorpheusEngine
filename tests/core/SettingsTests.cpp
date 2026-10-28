@@ -177,6 +177,8 @@ TEST_CASE("LoadSettings keeps a margin for chat-template tokens", "[settings]")
     // tokens and a transcript.
     json["context_size"] = 11008 + 30;
     CHECK_THROWS_WITH(LoadSettings(WriteSettings("settings_margin", json)), ContainsSubstring("no room for the transcript"));
+    CHECK_THROWS_WITH(LoadSettings(WriteSettings("settings_margin_text", json)),
+                      ContainsSubstring("11008 of 11038 context tokens (plus a 64-token chat-template margin)"));
 }
 
 TEST_CASE("SettingsToJson round-trips through LoadSettings", "[settings]")
@@ -193,6 +195,30 @@ TEST_CASE("SettingsToJson round-trips through LoadSettings", "[settings]")
     CHECK(copy.budget.narrateAllowance == original.budget.narrateAllowance);
     CHECK(copy.narrateSampling.topP == original.narrateSampling.topP);
     CHECK(copy.memoryMode == MemoryMode::Assisted);
+}
+
+TEST_CASE("LoadSettings makes model paths absolute for a relative settings path", "[settings]")
+{
+    // Restores the working directory when the test leaves scope, even if a check fails.
+    struct CurrentPathGuard {
+        fs::path saved = fs::current_path();
+        ~CurrentPathGuard() { fs::current_path(saved); }
+    };
+
+    const fs::path file = WriteSettings("settings_relative_path", ValidSettingsJson());
+    const fs::path folder = file.parent_path();
+    // Load through "<folder name>/settings.json" from the folder's parent, so the file's parent path is relative.
+    const fs::path relativeFile = folder.filename() / "settings.json";
+    CurrentPathGuard guard;
+    fs::current_path(folder.parent_path());
+
+    const Settings settings = LoadSettings(relativeFile);
+    CHECK(settings.chatModel.is_absolute());
+    CHECK(settings.embeddingModel.is_absolute());
+    CHECK(fs::equivalent(settings.chatModel, folder / "models" / "chat.gguf"));
+    // The stored form is what run meta records, so it must also be absolute.
+    const fs::path storedChat = SettingsToJson(settings).at("chat_model").get<std::string>();
+    CHECK(storedChat.is_absolute());
 }
 
 TEST_CASE("settings.example.json loads with the current loader", "[settings]")

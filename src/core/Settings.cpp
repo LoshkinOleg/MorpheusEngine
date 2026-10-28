@@ -93,7 +93,13 @@ Settings LoadSettings(const std::filesystem::path& file)
         if (path.is_relative()) {
             path = file.parent_path() / path;
         }
+        // A relative settings path leaves the joined path relative too. Make it absolute now, so stored run meta and
+        // later loads do not depend on the working directory.
         std::error_code error;
+        path = std::filesystem::absolute(path, error);
+        if (error) {
+            throw DataError(std::format("{}: '{}' path '{}' cannot be made absolute: {}", where, key, text, error.message()));
+        }
         if (!std::filesystem::is_regular_file(path, error)) {
             throw DataError(std::format("{}: '{}' file '{}' does not exist", where, key, PathText(path)));
         }
@@ -131,8 +137,9 @@ Settings LoadSettings(const std::filesystem::path& file)
                             settings.budget.narrateAllowance + settings.budget.tailAllowance + settings.budget.engineRulesCap + settings.budget.worldCap +
                             settings.budget.summaryCap;
     if (fixed + SETTINGS_TEMPLATE_MARGIN >= contextSize) {
-        throw DataError(std::format("{}: budget uses {} of {} context tokens and leaves no room for the transcript",
-                                    where, fixed, contextSize));
+        throw DataError(std::format("{}: budget uses {} of {} context tokens (plus a {}-token chat-template margin) and "
+                                    "leaves no room for the transcript",
+                                    where, fixed, contextSize, SETTINGS_TEMPLATE_MARGIN));
     }
 
     // Sampling per call type.
