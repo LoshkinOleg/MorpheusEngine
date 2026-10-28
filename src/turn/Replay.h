@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <span>
@@ -43,6 +44,14 @@ public:
     explicit RecordingBackend(inference::LlmBackend& inner);
 
     const std::map<core::CallKind, std::vector<std::string>>& Replies() const;
+
+    // How many replies are recorded per kind (kinds with none are absent). Take it before a step that may fail.
+    std::map<core::CallKind, std::size_t> Mark() const;
+
+    // Truncates the recording to `mark`: each kind keeps its first marked replies, and a kind absent from the mark
+    // keeps none. Drops the replies of a step that did not commit, which a replay would otherwise misalign. Throws
+    // ContractError if a kind has fewer replies than the mark says.
+    void RollBack(const std::map<core::CallKind, std::size_t>& mark);
 
     int CountTokens(std::string_view text) override;
     int CountPromptTokens(const inference::Prompt& prompt) override;

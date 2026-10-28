@@ -1,5 +1,7 @@
 #include "turn/Replay.h"
 
+#include <iterator>
+
 #include "core/Errors.h"
 #include "turn/EngineText.h"
 #include "turn/ResolveGrammar.h"
@@ -50,6 +52,32 @@ RecordingBackend::RecordingBackend(inference::LlmBackend& inner)
 const std::map<core::CallKind, std::vector<std::string>>& RecordingBackend::Replies() const
 {
     return _replies;
+}
+
+std::map<core::CallKind, std::size_t> RecordingBackend::Mark() const
+{
+    std::map<core::CallKind, std::size_t> mark;
+    for (const auto& [kind, texts] : _replies) {
+        mark[kind] = texts.size();
+    }
+    return mark;
+}
+
+void RecordingBackend::RollBack(const std::map<core::CallKind, std::size_t>& mark)
+{
+    // A mark can only be restored if nothing before it was lost.
+    for (const auto& [kind, count] : mark) {
+        const auto found = _replies.find(kind);
+        MORPHEUS_REQUIRE(found != _replies.end() && found->second.size() >= count,
+                         "RollBack: fewer '" + CallKindName(kind) + "' replies recorded than the mark holds");
+    }
+    // Truncate each kind to its marked count; a kind the mark lacks had none, so it goes entirely.
+    for (auto it = _replies.begin(); it != _replies.end();) {
+        const auto marked = mark.find(it->first);
+        const std::size_t keep = marked == mark.end() ? 0 : marked->second;
+        it->second.resize(keep);
+        it = keep == 0 ? _replies.erase(it) : std::next(it);
+    }
 }
 
 int RecordingBackend::CountTokens(std::string_view text)

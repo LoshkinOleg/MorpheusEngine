@@ -2,17 +2,21 @@
 //
 // Usage: morpheus_play <settings.json> <world folder> <run.db> [--seed N] [--record <fixture.json>]
 // An existing run file is continued; otherwise a new run starts (seeded by --seed, else randomly). --record needs a
-// new run and writes a replay fixture (see tests/data/replays) when you quit.
+// new run and writes a replay fixture (see tests/data/replays) when you quit. Run it from the repo root with a
+// repo-relative world path: the fixture stores that path as given. Failed steps are rolled back out of the recording.
 // At the prompt: /undo, /regen, /state, /quit, or your action.
 
 #include <algorithm>
+#include <charconv>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <filesystem>
 #include <format>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <optional>
 #include <random>
 #include <stdexcept>
@@ -26,6 +30,7 @@
 
 #include "context/StateView.h"
 #include "context/Transcript.h"
+#include "core/Errors.h"
 #include "core/Settings.h"
 #include "core/Text.h"
 #include "core/World.h"
@@ -44,10 +49,14 @@ constexpr std::string_view USAGE =
 struct RunView {
     std::vector<core::TurnRecord> history = {};
     nlohmann::json state = nullptr;
+    bool maintenanceFailed = false; // Set when any maintenance pass failed (checked at quit when recording).
 };
 
-// Prints one command's events up to its closing event and updates `view`. Returns false if it closed with an Error.
-bool PrintUntilClosing(turn::Worker& worker, RunView& view)
+// How a command closed.
+enum class StepOutcome { Completed, Cancelled, Failed };
+
+// Prints one command's events up to its closing event and updates `view`. Returns how the command closed.
+StepOutcome PrintUntilClosing(turn::Worker& worker, RunView& view)
 {
     for (;;) {
         const std::optional<turn::Event> event = worker.WaitEvent(std::chrono::milliseconds(100));
@@ -67,6 +76,7 @@ bool PrintUntilClosing(turn::Worker& worker, RunView& view)
             std::cout << '\n';
         } else if (const auto* pFailed = std::get_if<turn::MaintenanceFailed>(&*event)) {
             std::cerr << "maintenance: " << pFailed->message << '\n';
+            view.maintenanceFailed = true;
         } else if (const auto* pCompleted = std::get_if<turn::TurnCompleted>(&*event)) {
             // "[resolve 41 tok in 830 ms (49.4 tok/s), narrate 120 tok in 2100 ms; prompt 2311 tok, 2290 reused]"
             const nlohmann::json& resolve = pCompleted->record.timings.at("resolve");
@@ -84,7 +94,7 @@ bool PrintUntilClosing(turn::Worker& worker, RunView& view)
                 view.history.push_back(pCompleted->record);
             }
             view.state = pCompleted->state;
-            return true;
+            return StepOutcome::Completed;
         } else if (const auto* pOpened = std::get_if<turn::RunOpened>(&*event)) {
             std::cout << std::format("{} turn(s) played in world '{}'.{}\n", pOpened->history.size(),
                                      pOpened->meta.worldId,
@@ -94,18 +104,21 @@ bool PrintUntilClosing(turn::Worker& worker, RunView& view)
             }
             view.history = pOpened->history;
             view.state = pOpened->state;
-            return true;
+            return StepOutcome::Completed;
         } else if (const auto* pChanged = std::get_if<turn::StateChanged>(&*event)) {
             std::cout << std::format("Back to turn {}.\n", pChanged->history.size());
             view.history = pChanged->history;
             view.state = pChanged->state;
-            return true;
+            return StepOutcome::Completed;
         } else if (std::holds_alternative<turn::TurnCancelled>(*event)) {
             std::cout << "\n[cancelled]\n";
-            return true;
+            return StepOutcome::Cancelled;
+        } else if (const auto* pError = std::get_if<turn::Error>(&*event)) {
+            std::cerr << "error: " << pError->message << '\n';
+            return StepOutcome::Failed;
         } else {
-            std::cerr << "error: " << std::get<turn::Error>(*event).message << '\n';
-            return false;
+            // Every event the worker sends is handled above; a new one must be handled here too.
+            MORPHEUS_REQUIRE(false, "morpheus_play: unhandled worker event, variant index " + std::to_string(event->index()));
         }
     }
 }
@@ -123,7 +136,15 @@ int main(int argc, char** argv)
     for (int i = 4; i < argc; ++i) {
         const std::string_view arg = argv[i];
         if (arg == "--seed" && i + 1 < argc) {
-            seed = std::stoull(argv[++i]);
+            // A bad, negative or overflowing value is a usage error, not an exception or a wrapped number.
+            const std::string_view text = argv[++i];
+            std::uint64_t value = 0;
+            const auto [pEnd, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
+            if (ec != std::errc{} || pEnd != text.data() + text.size()) {
+                std::cerr << USAGE;
+                return 2;
+            }
+            seed = value;
         } else if (arg == "--record" && i + 1 < argc) {
             recordFile = argv[++i];
         } else {
@@ -139,6 +160,12 @@ int main(int argc, char** argv)
         const bool resume = std::filesystem::exists(runFile);
         if (resume && recordFile) {
             std::cerr << "--record needs a new run file\n";
+            return 2;
+        }
+        // The fixture stores the world path as given, and the replay test resolves it from the repo root.
+        if (recordFile && worldFolder.is_absolute()) {
+            std::cerr << "--record needs a world folder path relative to the repo root (run from the repo root), "
+                         "not an absolute path: the fixture stores the path as given\n";
             return 2;
         }
 
@@ -169,7 +196,7 @@ int main(int argc, char** argv)
             } else {
                 worker.Post(turn::StartRun{worldFolder, runFile, runSeed});
             }
-            if (!PrintUntilClosing(worker, view)) {
+            if (PrintUntilClosing(worker, view) != StepOutcome::Completed) {
                 return 1;
             }
 
@@ -198,13 +225,24 @@ int main(int argc, char** argv)
                     worker.Post(turn::SubmitInput{line});
                 }
                 std::cout << '\n';
-                if (PrintUntilClosing(worker, view)) {
-                    steps.push_back(std::move(step)); // Failed commands change nothing and are not replayed.
+                // A step that does not complete changes nothing, so a replay must see neither it nor its replies.
+                const std::map<core::CallKind, std::size_t> mark =
+                    recording ? recording->Mark() : std::map<core::CallKind, std::size_t>{};
+                if (PrintUntilClosing(worker, view) == StepOutcome::Completed) {
+                    steps.push_back(std::move(step));
+                } else if (recording) {
+                    recording->RollBack(mark);
                 }
             }
         }
 
         if (recordFile) {
+            // A replay runs Maintain after every step and requires it to succeed, so it would fail at the same place.
+            if (view.maintenanceFailed) {
+                std::cerr << "error: maintenance failed during this session, so a replay of it would fail at the "
+                             "same step. The fixture was not written.\n";
+                return 1;
+            }
             const core::MemoryMode mode = settings.memoryMode.value_or(core::LoadWorld(worldFolder).defaultMemoryMode);
             std::ofstream out(*recordFile, std::ios::binary);
             out << turn::MakeReplayFixture(core::PathText(worldFolder), runSeed, mode, steps, *recording, view.history,

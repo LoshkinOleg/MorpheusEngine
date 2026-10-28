@@ -70,7 +70,7 @@ An existing run file is continued; otherwise a new run starts, seeded by `--seed
 - `/state`: print the current state
 - `/quit`: leave
 
-`--record <file>` needs a new run file. When you quit, it writes a replay fixture of the session for `tests/data/replays`, where the replay test plays it back without a model.
+`--record <file>` needs a new run file. When you quit, it writes a replay fixture of the session for `tests/data/replays`, where the replay test plays it back without a model. Commands that fail are left out of the fixture, and if maintenance fails during the session no fixture is written. The fixture stores the world path exactly as you typed it, so run `--record` from the repo root with a repo-relative world path (for example `game_projects/sandcrawler`); an absolute path is refused.
 
 ## Layout
 

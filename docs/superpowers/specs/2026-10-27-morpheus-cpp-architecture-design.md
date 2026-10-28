@@ -156,7 +156,7 @@ World files are read with CRLF normalized to LF. The world content hash covers e
 
 ## Testing (Catch2 v3)
 
-- **`core` unit tests:** validation, change ops, dice, schema-to-grammar output.
+- **`core` unit tests:** validation, change ops, dice. Grammar generation and its tests live in `turn` (`ResolveGrammarTests`).
 - **`context` tests:** layer assembly, budgets and folding triggers, using a fake tokenizer.
 - **Replay tests:** a `ScriptedBackend` returns recorded completions, so full turns run deterministically and the tests assert on state and database rows. Replay fixtures live in `tests/data/replays` and are recorded from real play with `morpheus_play --record`.
 

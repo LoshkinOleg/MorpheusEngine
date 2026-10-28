@@ -213,3 +213,34 @@ TEST_CASE("RecordingBackend records each call's text by kind and MakeReplayFixtu
     CHECK(fixture.at("expected").at("turns").at(0).at("narration") == "You walk.");
     CHECK(fixture.at("expected").at("final_state") == session.State());
 }
+
+TEST_CASE("RecordingBackend Mark and RollBack restore the recorded reply counts", "[replay]")
+{
+    test::ScriptedBackend inner(16384, [](const inference::Prompt&, const inference::GenerationSpec& spec) {
+        return spec.grammar.empty() ? std::string("prose") : std::string("{}");
+    });
+    turn::RecordingBackend recording(inner);
+    const inference::Prompt prompt{{{inference::Role::User, "I walk."}}, 1};
+    inference::GenerationSpec narrateSpec;
+    inference::GenerationSpec lookupSpec;
+    lookupSpec.grammar = turn::BuildLookupGrammar();
+
+    recording.Complete(prompt, narrateSpec, {}, {});
+    const std::map<core::CallKind, std::size_t> mark = recording.Mark();
+    CHECK(mark == std::map<core::CallKind, std::size_t>{{core::CallKind::Narrate, 1}});
+
+    // Replies recorded after the mark, of a kind that was marked and of one that was not.
+    recording.Complete(prompt, narrateSpec, {}, {});
+    recording.Complete(prompt, lookupSpec, {}, {});
+    REQUIRE(recording.Replies().at(core::CallKind::Narrate).size() == 2);
+    REQUIRE(recording.Replies().at(core::CallKind::Lookup).size() == 1);
+
+    recording.RollBack(mark);
+    CHECK(recording.Mark() == mark);
+    CHECK(recording.Replies().at(core::CallKind::Narrate) == std::vector<std::string>{"prose"});
+    CHECK(recording.Replies().count(core::CallKind::Lookup) == 0);
+
+    // A mark with more replies than are recorded is an engine bug.
+    CHECK_THROWS_AS(recording.RollBack({{core::CallKind::Narrate, 2}}), core::ContractError);
+    CHECK_THROWS_AS(recording.RollBack({{core::CallKind::Resolve, 1}}), core::ContractError);
+}
