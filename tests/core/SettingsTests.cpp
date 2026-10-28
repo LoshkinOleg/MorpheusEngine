@@ -2,12 +2,14 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <filesystem>
+#include <fstream>
 #include <string>
 
 #include <nlohmann/json.hpp>
 
 #include "TestPaths.h"
 #include "core/Errors.h"
+#include "core/MemoryMode.h"
 #include "core/Settings.h"
 
 using namespace morpheus::core;
@@ -28,7 +30,7 @@ nlohmann::json ValidSettingsJson()
         "gpu_layers": -1,
         "budget": {
             "resolve_max_tokens": 512, "narrate_max_tokens": 768, "narrate_allowance": 512, "tail_allowance": 2048,
-            "engine_rules_cap": 1024, "world_cap": 4096, "summary_cap": 2048
+            "engine_rules_cap": 1024, "world_cap": 4096, "summary_cap": 2048, "retrieval_cap": 768
         },
         "sampling": {
             "resolve": {"temperature": 0.3, "top_k": 40, "top_p": 0.9},
@@ -145,4 +147,65 @@ TEST_CASE("LoadSettings names what is wrong", "[settings]")
         json["sampling"]["narrate"]["temperature"] = 3.0;
         CHECK_THROWS_WITH(LoadSettings(WriteSettings("settings_temperature", json)), ContainsSubstring("temperature"));
     }
+}
+
+TEST_CASE("LoadSettings reads retrieval_cap and an optional memory_mode", "[settings]")
+{
+    nlohmann::json json = ValidSettingsJson();
+    const Settings plain = LoadSettings(WriteSettings("settings_retrieval", json));
+    CHECK(plain.budget.retrievalCap == 768);
+    CHECK_FALSE(plain.memoryMode.has_value());
+
+    json["memory_mode"] = "assisted";
+    CHECK(LoadSettings(WriteSettings("settings_memory_mode", json)).memoryMode == MemoryMode::Assisted);
+
+    json["memory_mode"] = "telepathic";
+    CHECK_THROWS_WITH(LoadSettings(WriteSettings("settings_memory_mode_bad", json)), ContainsSubstring("memory_mode"));
+
+    json["memory_mode"] = "engine";
+    json["budget"]["retrieval_cap"] = 4096; // Over tail_allowance (2048).
+    CHECK_THROWS_WITH(LoadSettings(WriteSettings("settings_retrieval_big", json)), ContainsSubstring("retrieval_cap"));
+
+    json["budget"].erase("retrieval_cap");
+    CHECK_THROWS_WITH(LoadSettings(WriteSettings("settings_retrieval_missing", json)), ContainsSubstring("retrieval_cap"));
+}
+
+TEST_CASE("LoadSettings keeps a margin for chat-template tokens", "[settings]")
+{
+    nlohmann::json json = ValidSettingsJson();
+    // The budget parts (retrieval is inside the tail) sum to 11008; 30 tokens more leaves no room for template
+    // tokens and a transcript.
+    json["context_size"] = 11008 + 30;
+    CHECK_THROWS_WITH(LoadSettings(WriteSettings("settings_margin", json)), ContainsSubstring("no room for the transcript"));
+}
+
+TEST_CASE("SettingsToJson round-trips through LoadSettings", "[settings]")
+{
+    nlohmann::json json = ValidSettingsJson();
+    json["memory_mode"] = "assisted";
+    const Settings original = LoadSettings(WriteSettings("settings_to_json_a", json));
+    // Model paths in the JSON are absolute, so they still resolve from another folder.
+    const Settings copy = LoadSettings(WriteSettings("settings_to_json_b", SettingsToJson(original)));
+    CHECK(copy.chatModel == original.chatModel);
+    CHECK(copy.embeddingDocumentPrefix == original.embeddingDocumentPrefix);
+    CHECK(copy.contextSize == original.contextSize);
+    CHECK(copy.budget.retrievalCap == original.budget.retrievalCap);
+    CHECK(copy.budget.narrateAllowance == original.budget.narrateAllowance);
+    CHECK(copy.narrateSampling.topP == original.narrateSampling.topP);
+    CHECK(copy.memoryMode == MemoryMode::Assisted);
+}
+
+TEST_CASE("settings.example.json loads with the current loader", "[settings]")
+{
+    const fs::path dir = morpheus::test::FreshTempDir("settings_example");
+    fs::copy_file(morpheus::test::RepoDir() / "settings.example.json", dir / "settings.json");
+    std::ifstream stream(dir / "settings.json");
+    const nlohmann::json example = nlohmann::json::parse(stream);
+    // The loader requires the model files to exist: create empty stand-ins at the example's relative paths.
+    for (const char* key : {"chat_model", "embedding_model"}) {
+        const fs::path model = dir / example.at(key).get<std::string>();
+        fs::create_directories(model.parent_path());
+        morpheus::test::WriteFile(model, "x");
+    }
+    CHECK_NOTHROW(LoadSettings(dir / "settings.json"));
 }

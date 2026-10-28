@@ -1,7 +1,12 @@
 #pragma once
 
 #include <filesystem>
+#include <optional>
 #include <string>
+
+#include <nlohmann/json.hpp>
+
+#include "core/MemoryMode.h"
 
 namespace morpheus::core {
 
@@ -20,6 +25,7 @@ struct BudgetSettings {
     int engineRulesCap = 0;   // L0
     int worldCap = 0;         // L1: world rules + always-on lore.
     int summaryCap = 0;       // L2
+    int retrievalCap = 0;     // T2: retrieved lore, history and notes. Part of the tail allowance.
 };
 
 // settings.json: per-machine configuration. Not committed; settings.example.json documents it.
@@ -33,10 +39,15 @@ struct Settings {
     BudgetSettings budget = {};
     SamplingSettings resolveSampling = {};
     SamplingSettings narrateSampling = {};
+    std::optional<MemoryMode> memoryMode = {}; // Overrides the world's default memory_mode when set.
 };
 
 // Loads and validates settings.json. Throws DataError naming the file and key at fault. Unknown keys are errors,
-// both model files must exist, and the budget must leave room for the transcript (L3).
+// both model files must exist, and the budget must leave room for the transcript (L3) and SETTINGS_TEMPLATE_MARGIN
+// chat-template tokens. memory_mode is optional.
 Settings LoadSettings(const std::filesystem::path& file);
+
+// The settings as settings.json JSON, with model paths absolute (UTF-8). Stored in a run's meta for reference.
+nlohmann::json SettingsToJson(const Settings& settings);
 
 } // namespace morpheus::core

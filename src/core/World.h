@@ -8,12 +8,10 @@
 #include <nlohmann/json.hpp>
 
 #include "core/Dice.h"
+#include "core/MemoryMode.h"
 #include "core/StateSchema.h"
 
 namespace morpheus::core {
-
-// Who manages memory beyond the engine's deterministic retrieval (architecture spec, turn flow).
-enum class MemoryMode { Engine, Assisted };
 
 struct LoreEntry {
     std::string subject = {};

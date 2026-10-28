@@ -146,13 +146,11 @@ World LoadWorld(const std::filesystem::path& directory)
         }
 
         const std::string memoryMode = requireString("memory_mode");
-        if (memoryMode == "engine") {
-            world.defaultMemoryMode = MemoryMode::Engine;
-        } else if (memoryMode == "assisted") {
-            world.defaultMemoryMode = MemoryMode::Assisted;
-        } else {
+        const std::optional<MemoryMode> parsedMode = ParseMemoryMode(memoryMode);
+        if (!parsedMode) {
             throw DataError(std::format("{}: memory_mode must be 'engine' or 'assisted', got '{}'", worldWhere, memoryMode));
         }
+        world.defaultMemoryMode = *parsedMode;
 
         if (!json.contains("difficulties") || !json.at("difficulties").is_object() || json.at("difficulties").empty()) {
             throw DataError(worldWhere + ": needs a non-empty 'difficulties' object");

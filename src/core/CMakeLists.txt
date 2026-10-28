@@ -2,6 +2,7 @@ add_library(morpheus_core STATIC
     ContentHash.cpp
     Csv.cpp
     JsonInt.cpp
+    MemoryMode.cpp
     Settings.cpp
     TurnRecord.cpp
     StateSchema.cpp

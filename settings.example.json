@@ -12,7 +12,8 @@
     "tail_allowance": 2048,
     "engine_rules_cap": 1024,
     "world_cap": 4096,
-    "summary_cap": 2048
+    "summary_cap": 2048,
+    "retrieval_cap": 768
   },
   "sampling": {
     "resolve": { "temperature": 0.3, "top_k": 40, "top_p": 0.9 },

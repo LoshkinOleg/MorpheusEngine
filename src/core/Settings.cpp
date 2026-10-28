@@ -14,6 +14,14 @@
 
 namespace morpheus::core {
 
+namespace {
+
+// Chat-template tokens the budget sum must leave room for: the system message, the tail and the two messages the
+// narrate call appends each carry a few. The exact figure is measured per prompt by context::AssembleResolvePrompt.
+constexpr int SETTINGS_TEMPLATE_MARGIN = 64;
+
+} // namespace
+
 Settings LoadSettings(const std::filesystem::path& file)
 {
     const std::string where = std::format("'{}'", PathText(file));
@@ -70,7 +78,7 @@ Settings LoadSettings(const std::filesystem::path& file)
     };
 
     checkKeys(json, "settings", {"chat_model", "embedding_model", "embedding_query_prefix", "embedding_document_prefix",
-                                 "context_size", "gpu_layers", "budget", "sampling"});
+                                 "context_size", "gpu_layers", "budget", "sampling", "memory_mode"});
 
     Settings settings;
 
@@ -97,12 +105,19 @@ Settings LoadSettings(const std::filesystem::path& file)
     settings.embeddingDocumentPrefix = requireString(json, "embedding_document_prefix", "settings");
     settings.contextSize = requireInt(json, "context_size", "settings", 512, 262144);
     settings.gpuLayers = requireInt(json, "gpu_layers", "settings", -1, 10000);
+    if (json.contains("memory_mode")) {
+        const std::string text = requireString(json, "memory_mode", "settings");
+        settings.memoryMode = ParseMemoryMode(text);
+        if (!settings.memoryMode) {
+            throw DataError(std::format("{}: 'memory_mode' must be 'engine' or 'assisted', got '{}'", where, text));
+        }
+    }
 
     // Budget: every part positive and below the context size.
     const nlohmann::json& budget = requireMember(json, "budget", "settings");
     checkKeys(budget, "budget", {"resolve_max_tokens", "narrate_max_tokens", "narrate_allowance", "tail_allowance",
                                  "engine_rules_cap",
-                                 "world_cap", "summary_cap"});
+                                 "world_cap", "summary_cap", "retrieval_cap"});
     const long long contextSize = settings.contextSize;
     settings.budget.resolveMaxTokens = requireInt(budget, "resolve_max_tokens", "budget", 1, contextSize);
     settings.budget.narrateMaxTokens = requireInt(budget, "narrate_max_tokens", "budget", 1, contextSize);
@@ -111,10 +126,11 @@ Settings LoadSettings(const std::filesystem::path& file)
     settings.budget.engineRulesCap = requireInt(budget, "engine_rules_cap", "budget", 1, contextSize);
     settings.budget.worldCap = requireInt(budget, "world_cap", "budget", 1, contextSize);
     settings.budget.summaryCap = requireInt(budget, "summary_cap", "budget", 1, contextSize);
+    settings.budget.retrievalCap = requireInt(budget, "retrieval_cap", "budget", 1, settings.budget.tailAllowance);
     const long long fixed = static_cast<long long>(settings.budget.resolveMaxTokens) + settings.budget.narrateMaxTokens +
                             settings.budget.narrateAllowance + settings.budget.tailAllowance + settings.budget.engineRulesCap + settings.budget.worldCap +
                             settings.budget.summaryCap;
-    if (fixed >= contextSize) {
+    if (fixed + SETTINGS_TEMPLATE_MARGIN >= contextSize) {
         throw DataError(std::format("{}: budget uses {} of {} context tokens and leaves no room for the transcript",
                                     where, fixed, contextSize));
     }
@@ -137,6 +153,35 @@ Settings LoadSettings(const std::filesystem::path& file)
     settings.resolveSampling = readSampling("resolve");
     settings.narrateSampling = readSampling("narrate");
     return settings;
+}
+
+nlohmann::json SettingsToJson(const Settings& settings)
+{
+    auto sampling = [](const SamplingSettings& values) {
+        return nlohmann::json{{"temperature", values.temperature}, {"top_k", values.topK}, {"top_p", values.topP}};
+    };
+    nlohmann::json json = {
+        {"chat_model", PathText(settings.chatModel)},
+        {"embedding_model", PathText(settings.embeddingModel)},
+        {"embedding_query_prefix", settings.embeddingQueryPrefix},
+        {"embedding_document_prefix", settings.embeddingDocumentPrefix},
+        {"context_size", settings.contextSize},
+        {"gpu_layers", settings.gpuLayers},
+        {"budget",
+         {{"resolve_max_tokens", settings.budget.resolveMaxTokens},
+          {"narrate_max_tokens", settings.budget.narrateMaxTokens},
+          {"narrate_allowance", settings.budget.narrateAllowance},
+          {"tail_allowance", settings.budget.tailAllowance},
+          {"engine_rules_cap", settings.budget.engineRulesCap},
+          {"world_cap", settings.budget.worldCap},
+          {"summary_cap", settings.budget.summaryCap},
+          {"retrieval_cap", settings.budget.retrievalCap}}},
+        {"sampling", {{"resolve", sampling(settings.resolveSampling)}, {"narrate", sampling(settings.narrateSampling)}}},
+    };
+    if (settings.memoryMode) {
+        json["memory_mode"] = *settings.memoryMode == MemoryMode::Engine ? "engine" : "assisted";
+    }
+    return json;
 }
 
 } // namespace morpheus::core
