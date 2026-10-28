@@ -7,7 +7,8 @@ namespace morpheus::test {
 
 // Deterministic stand-in for context tests. One token per 4 bytes (rounded up), plus 4 template tokens per
 // message. Generation, embeddings and state are not used by those tests and throw if called.
-class FakeBackend final : public inference::LlmBackend {
+// ScriptedBackend derives from it for turn-layer tests.
+class FakeBackend : public inference::LlmBackend {
 private:
     int _contextSize = 0;
 
