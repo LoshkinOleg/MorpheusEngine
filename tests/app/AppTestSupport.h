@@ -1,16 +1,24 @@
 #pragma once
 
+#include <catch2/catch_test_macros.hpp>
+
+#include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iterator>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 
 #include <nlohmann/json.hpp>
 
 #include "TestPaths.h"
+#include "app/model/AppController.h"
 #include "core/Settings.h"
+#include "fakes/ScriptedBackend.h"
 
 namespace morpheus::test {
 
@@ -50,6 +58,39 @@ inline core::Settings EngineSettings()
     settings.resolveSampling = {0.3, 40, 0.9};
     settings.narrateSampling = {0.8, 40, 0.95};
     return settings;
+}
+
+// App paths for a test: the settings in `dir`, the test worlds, and saves in `dir`.
+inline app::AppPaths PathsIn(const std::filesystem::path& dir)
+{
+    return {dir / "settings.json", TestDataDir() / "worlds", dir / "saves"};
+}
+
+// A factory for ScriptedBackends that answer with `responder`, sized by the settings' context. A piece delay slows
+// streaming, so a test can catch a turn midway.
+inline app::EngineHost::BackendFactory ScriptedFactory(ScriptedBackend::Responder responder,
+                                                       std::chrono::milliseconds pieceDelay = {})
+{
+    return [responder, pieceDelay](const core::Settings& settings) -> std::unique_ptr<inference::LlmBackend> {
+        auto pBackend = std::make_unique<ScriptedBackend>(settings.contextSize, responder);
+        pBackend->SetPieceDelay(pieceDelay);
+        return pBackend;
+    };
+}
+
+// Runs the controller's frames until `done` holds. Fails the test after 10 s.
+template <typename Done>
+void PumpUntil(app::AppController& controller, Done done)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    for (;;) {
+        controller.Frame();
+        if (done()) {
+            return;
+        }
+        REQUIRE(std::chrono::steady_clock::now() < deadline);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
 }
 
 } // namespace morpheus::test
