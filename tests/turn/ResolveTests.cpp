@@ -147,3 +147,114 @@ TEST_CASE("ParseLookupOutput reads lookups and reports unreadable output", "[res
     CHECK(turn::ParseLookupOutput(R"({"lookups":[{"source":"dreams","query":"x"}]})", error).empty());
     CHECK_THAT(error, ContainsSubstring("source"));
 }
+
+TEST_CASE("ParseLookupOutput clears a stale error on success", "[resolve]")
+{
+    std::string error = "left over from an earlier call";
+    const std::vector<turn::Lookup> lookups = turn::ParseLookupOutput(R"({"lookups":[]})", error);
+    CHECK(lookups.empty());
+    CHECK(error.empty());
+}
+
+TEST_CASE("A check with an unknown difficulty is rejected and its changes are dropped", "[resolve]")
+{
+    const core::World world = MiniWorld();
+    const turn::ResolveProposal proposal = turn::ParseResolveOutput(
+        R"({"intent":"x","checks":[{"stat":"agility","difficulty":"impossible","stakes":"a fall",)"
+        R"("on_success":[{"op":"set","path":"player.location","value":"x","reason":""}],"on_failure":[]}],"changes":[]})");
+    const turn::Resolution resolution = turn::ApplyProposal(world, world.initialState, proposal, 42, 1);
+
+    CHECK(resolution.checks.empty());
+    REQUIRE(resolution.rejected.size() == 1);
+    CHECK_THAT(resolution.rejected[0].reason, ContainsSubstring("unknown difficulty 'impossible'"));
+    CHECK(resolution.rejected[0].raw.at("stakes") == "a fall");
+    CHECK(resolution.state == world.initialState);
+}
+
+TEST_CASE("A stat value of 0 leaves the +N part out of the check line", "[resolve]")
+{
+    const core::World world = MiniWorld();
+    test::FakeBackend backend(16384);
+    nlohmann::json state = world.initialState;
+    state["player"]["fields"]["agility"] = 0;
+    const turn::ResolveProposal proposal = turn::ParseResolveOutput(
+        R"({"intent":"hop","checks":[{"stat":"agility","difficulty":"easy","stakes":"a slip","on_success":[],"on_failure":[]}],"changes":[]})");
+    const turn::Resolution resolution = turn::ApplyProposal(world, state, proposal, 42, 1);
+    const core::CheckResult roll = core::RollCheck(world.dice, 0, 8, core::CheckSeed(42, 1, 0));
+
+    // Rolls only, no " +N" between the rolls and the total.
+    CHECK_THAT(turn::RenderNarrateMessage(proposal, resolution, 512, backend),
+               ContainsSubstring(std::format("rolled {} = {}, {}. Stakes: a slip\n", roll.rolls.at(0), roll.total,
+                                             roll.success ? "success" : "failure")));
+}
+
+TEST_CASE("RenderNarrateMessage sheds applied entries from the end", "[resolve]")
+{
+    const core::World world = MiniWorld();
+    test::FakeBackend backend(16384);
+    // Three long applied changes, so each shed entry saves several tokens.
+    const std::string a(80, 'a');
+    const std::string b(80, 'b');
+    const std::string c(80, 'c');
+    const turn::ResolveProposal proposal = turn::ParseResolveOutput(std::format(
+        R"({{"intent":"walk","checks":[],"changes":[)"
+        R"({{"op":"set","path":"player.location","value":"{}","reason":""}},)"
+        R"({{"op":"set","path":"player.location","value":"{}","reason":""}},)"
+        R"({{"op":"set","path":"player.location","value":"{}","reason":""}}]}})",
+        a, b, c));
+    const turn::Resolution resolution = turn::ApplyProposal(world, world.initialState, proposal, 42, 1);
+    REQUIRE(resolution.applied.size() == 3);
+    const int fullTokens = backend.CountTokens(turn::RenderNarrateMessage(proposal, resolution, 4096, backend));
+
+    // Slightly over: the last entry goes.
+    const std::string oneShed = turn::RenderNarrateMessage(proposal, resolution, fullTokens - 10, backend);
+    CHECK_THAT(oneShed, ContainsSubstring(a));
+    CHECK_THAT(oneShed, ContainsSubstring(b));
+    CHECK_THAT(oneShed, !ContainsSubstring(c));
+    CHECK_THAT(oneShed, ContainsSubstring("; and 1 more\n"));
+
+    // Far over: every entry goes, and the line reads "Applied: and 3 more".
+    const std::string allShed = turn::RenderNarrateMessage(proposal, resolution, fullTokens - 60, backend);
+    CHECK_THAT(allShed, !ContainsSubstring(a));
+    CHECK_THAT(allShed, ContainsSubstring("Applied: and 3 more\n"));
+    CHECK(backend.CountTokens(allShed) <= fullTokens - 60);
+}
+
+TEST_CASE("RenderNarrateMessage sheds stakes, then cuts the intent, before giving up", "[resolve]")
+{
+    const core::World world = MiniWorld();
+    test::FakeBackend backend(16384);
+    auto proposalWith = [](const std::string& intent, const std::string& stakes) {
+        return turn::ParseResolveOutput(std::format(
+            R"({{"intent":"{}","checks":[{{"stat":"agility","difficulty":"easy","stakes":"{}",)"
+            R"("on_success":[],"on_failure":[]}}],"changes":[]}})",
+            intent, stakes));
+    };
+    const std::string longIntent(200, 'i');
+    const std::string longStakes(200, 's');
+    const turn::ResolveProposal proposal = proposalWith(longIntent, longStakes);
+    const turn::Resolution resolution = turn::ApplyProposal(world, world.initialState, proposal, 42, 1);
+    const std::string kept(turn::INTENT_SHORT_CHARS, 'i');
+
+    // The stakes alone are enough to shed: the intent stays whole.
+    const turn::ResolveProposal noStakes = proposalWith(longIntent, "");
+    const int withoutStakes = backend.CountTokens(turn::RenderNarrateMessage(
+        noStakes, turn::ApplyProposal(world, world.initialState, noStakes, 42, 1), 4096, backend));
+    const std::string stakesShed = turn::RenderNarrateMessage(proposal, resolution, withoutStakes, backend);
+    CHECK_THAT(stakesShed, !ContainsSubstring("Stakes:"));
+    CHECK_THAT(stakesShed, ContainsSubstring(longIntent));
+    CHECK_THAT(stakesShed, ContainsSubstring("Check: agility vs easy (8)"));
+
+    // Tighter: the intent is cut too, and the message fits.
+    const turn::ResolveProposal shortIntent = proposalWith(kept + "...", "");
+    const int allowance = backend.CountTokens(turn::RenderNarrateMessage(
+        shortIntent, turn::ApplyProposal(world, world.initialState, shortIntent, 42, 1), 4096, backend));
+    const std::string cut = turn::RenderNarrateMessage(proposal, resolution, allowance, backend);
+    CHECK_THAT(cut, !ContainsSubstring("Stakes:"));
+    CHECK_THAT(cut, ContainsSubstring("Intent: " + kept + "...\n"));
+    CHECK_THAT(cut, !ContainsSubstring(kept + "i"));
+    CHECK(backend.CountTokens(cut) <= allowance);
+
+    // Nothing left to shed.
+    CHECK_THROWS_AS(turn::RenderNarrateMessage(proposal, resolution, 5, backend), core::DataError);
+}

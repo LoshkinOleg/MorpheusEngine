@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -13,6 +14,9 @@
 #include "store/RunStore.h"
 
 namespace morpheus::turn {
+
+// Longest intent (in bytes) RenderNarrateMessage keeps when it has to shed the intent to fit the narrate allowance.
+constexpr std::size_t INTENT_SHORT_CHARS = 40;
 
 struct ProposedCheck {
     std::string stat = {};
@@ -60,8 +64,12 @@ Resolution ApplyProposal(const core::World& world, const nlohmann::json& state, 
 //   # Task
 //   <NARRATE_INSTRUCTION>
 // An unreadable proposal gets "The action could not be resolved (<error>). Nothing changed." instead. When the text
-// exceeds `allowance` tokens (budget.narrate_allowance), the Rejected line goes first, then Applied entries from the
-// end ("and N more"). Throws DataError if it still does not fit (narrate_allowance is too small).
+// exceeds `allowance` tokens (budget.narrate_allowance), detail is shed one step at a time, only while still over:
+//   1. the Rejected line;
+//   2. Applied entries from the end ("and N more");
+//   3. every check line's ". Stakes: ..." part;
+//   4. the intent, cut to INTENT_SHORT_CHARS bytes and ended with "...".
+// Throws DataError if it still does not fit (narrate_allowance is too small).
 std::string RenderNarrateMessage(const ResolveProposal& proposal, const Resolution& resolution, int allowance,
                                  inference::LlmBackend& backend);
 
