@@ -3,7 +3,8 @@
 // Usage: morpheus_play <settings.json> <world folder> <run.db> [--seed N] [--record <fixture.json>]
 // An existing run file is continued; otherwise a new run starts (seeded by --seed, else randomly). --record needs a
 // new run and writes a replay fixture (see tests/data/replays) when you quit. Run it from the repo root with a
-// repo-relative world path: the fixture stores that path as given. Failed steps are rolled back out of the recording.
+// repo-relative world path: the fixture stores that path as given. Failed steps are rolled back out of the recording,
+// except summary replies (see RecordingBackend::RollBack).
 // A maintenance failure reported before you quit refuses the recording; maintenance still running at /quit is
 // cancelled by shutdown and not recorded.
 // At the prompt: /undo, /regen, /state, /quit, or your action.

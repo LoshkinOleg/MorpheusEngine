@@ -57,9 +57,11 @@
             "note": ""
           }
         ],
+        "attempt": 0,
         "checks": [],
         "input": "I check the fuel gauge.",
         "narration": "The fuel gauge reads steady—60% full. The numbers are clear, the needle not flickering. You know the crawler’s range is still good, and with the desert stretching out in every direction, there’s no immediate need to worry. But the wind carries a low hum, like distant engines waking up. The sun climbs higher, and the sand shifts beneath your feet, whispering of routes long forgotten. Ahead, the dunes rise like silent sentinels. You’ve heard stories of sandstorms that follow the wind patterns—some say they only come when a crawler passes through a certain point. You don’t know if it’s true. But you also know that the open desert doesn’t care about your fuel levels. It only watches.  \n\nWhat do you do next?",
+        "notes": [],
         "number": 1,
         "rejected": []
       },
@@ -84,9 +86,11 @@
             "note": ""
           }
         ],
+        "attempt": 0,
         "checks": [],
         "input": "I climb onto the roof and scan the horizon with the compass.",
         "narration": "The compass spins gently in your hands, its needle trembling slightly with the wind. You lift it to your eye and point it toward the horizon. The desert stretches endlessly—one side a flat expanse of dunes, the other a jagged silhouette of a rocky ridge you’ve never seen before. The needle doesn’t settle, but it doesn’t spin wildly either. Something is off. The alignment doesn’t match any known route. You remember the elders saying that certain dunes shift with the wind, and that some patterns repeat only after storms. The sky above is clear, but the wind carries the scent of dry stone and distant dust.  \n\nThe ridge ahead seems wrong—too sharp, too isolated. It doesn’t appear on any map. And yet, you feel it in your bones. You don’t know why, but you *know* it’s not supposed to be there.  \n\nWhat do you do next?",
+        "notes": [],
         "number": 2,
         "rejected": []
       },
@@ -102,9 +106,11 @@
             "note": ""
           }
         ],
+        "attempt": 1,
         "checks": [],
         "input": "I order the crew to ration water, half portions for everyone.",
         "narration": "The order is given, quiet and firm. The crew exchanges a glance—some nod, others look uneasy—but no one argues. Water is rationed: half a cup per person, measured with a chipped ceramic spoon. You know the crew will survive, but the silence in the air feels heavier now. The desert holds its breath.  \n\nA distant wind carries a whisper, not of sand, but of dry roots—like something deep beneath the ground is stirring. You don’t know where it comes from.  \n\nThe compass still spins, its needle pointing not at the ridge, but at a pattern you didn’t see before—a faint line across the dunes, like a buried path.  \n\nWhat do you do next?",
+        "notes": [],
         "number": 3,
         "rejected": [
           {

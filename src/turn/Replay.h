@@ -57,12 +57,11 @@ public:
     // Truncates the Lookup, Resolve and Narrate replies to `mark`: each kind keeps its first marked replies, and a
     // kind absent from the mark keeps none. Drops the replies of a step that did not commit, which a replay would
     // otherwise misalign. Throws ContractError if one of those kinds has fewer replies than the mark says.
-    // Summarize replies are left untouched and the mark's summarize count is ignored. A failed step's own calls are
-    // never summaries (the worker finishes or cancels pending maintenance before a retrieving command, and a summary
-    // made inside a turn's fit loop is rare), whereas the previous turn's maintenance may still be recording
-    // summaries after the mark, and those belong to committed work. A replay tolerates a stray summary: its queue
-    // falls back to a fixed text when it runs out, and unused summaries are not an error, since summaries only
-    // shape prompts and never committed results.
+    // Summarize replies are left untouched and the mark's summarize count is ignored. A summary recorded after the
+    // mark belongs to work the session keeps: the previous turn's maintenance may still be running, and a failed or
+    // cancelled turn commits no turn but keeps what its fit loop folded or condensed before the stop. A replay
+    // tolerates a stray summary: its queue falls back to a fixed text when it runs out, and unused summaries are not
+    // an error, since summaries only shape prompts and never committed results.
     void RollBack(const std::map<core::CallKind, std::size_t>& mark);
 
     int CountTokens(std::string_view text) override;
@@ -76,8 +75,8 @@ public:
     void RestoreState(std::span<const std::uint8_t> state) override;
 };
 
-// What a replay checks of one committed turn: {"number", "input", "checks", "applied", "rejected", "narration"},
-// in the store's JSON forms.
+// What a replay checks of one committed turn: {"number", "attempt", "input", "checks", "applied", "rejected",
+// "notes", "narration"}, in the store's JSON forms.
 nlohmann::json TurnResultJson(const core::TurnRecord& record);
 
 // A replay fixture (format in tests/data/replays and the M3 plan): the world folder (relative to the repo root),

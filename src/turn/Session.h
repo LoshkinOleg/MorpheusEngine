@@ -69,9 +69,10 @@ public:
 
     // Plays one turn: retrieve, (assisted mode: look up), resolve, apply, narrate, commit. Control characters other
     // than newline and tab are stripped from `input` and it is trimmed. Returns the committed record, or nullopt
-    // when `stop` cancelled the turn (nothing is committed). Throws TurnError for an empty input or one that does
-    // not fit, DataError when summary_cap is too small for even a condensed summary, and InferenceError from the
-    // backend (nothing is committed).
+    // when `stop` cancelled the turn. Throws TurnError for an empty input or one that does not fit, DataError when
+    // summary_cap is too small for even a condensed summary, and InferenceError from the backend. A cancelled or
+    // failed turn commits no turn, but memory upkeep its fit loop finished before the stop (summaries and their
+    // history embeddings) is kept: it only covers committed turns.
     std::optional<core::TurnRecord> RunTurn(std::string_view input, const TurnCallbacks& callbacks,
                                             std::stop_token stop);
 

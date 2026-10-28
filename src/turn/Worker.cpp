@@ -102,7 +102,8 @@ void Worker::Run(std::stop_token shutdown)
 
     // Shutdown cancels the running job too, so destroying the worker never waits for a whole turn.
     std::stop_callback cancelOnShutdown(shutdown, [this] { Cancel(); });
-    // Set when a turn commits; cleared only when maintenance finishes (or cannot), or the run is replaced.
+    // Set when a turn commits. Cleared when maintenance finishes (or cannot), when a Cancel stops it with no command
+    // queued, or when the run is replaced.
     bool maintenanceDue = false;
     for (;;) {
         // Pick the next job under the lock: a cancelled command to close, a command to run, or maintenance.

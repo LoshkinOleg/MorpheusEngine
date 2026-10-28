@@ -213,6 +213,8 @@ TEST_CASE("RecordingBackend records each call's text by kind and MakeReplayFixtu
     CHECK(fixture.at("steps") == nlohmann::json::parse(R"([{"input": "I walk."}])"));
     CHECK(fixture.at("replies").at("narrate") == nlohmann::json::array({"You walk."}));
     CHECK(fixture.at("expected").at("turns").at(0).at("narration") == "You walk.");
+    CHECK(fixture.at("expected").at("turns").at(0).at("attempt") == 0);
+    CHECK(fixture.at("expected").at("turns").at(0).at("notes") == nlohmann::json::array());
     CHECK(fixture.at("expected").at("final_state") == session.State());
 }
 

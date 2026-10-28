@@ -23,6 +23,7 @@ struct RetrievalHit {
     std::string refId = {};
     std::string text = {}; // As the prompt shows it.
     float score = 0.0f;
+    int tokens = 0; // What its prompt line costs against the retrieval cap (set by Retrieve).
 };
 
 // Similarity search over a run's memory (architecture spec, turn flow step 1): lore that is not always on, folded
@@ -55,7 +56,8 @@ public:
     void SyncLore(const core::World& world, store::RunStore& store, inference::LlmBackend& backend);
 
     // Indexes turns 1..foldedThrough ("Turn N: input -> narration") and every note ("Note from turn N: text"),
-    // embedding where missing or stale. Throws ContractError if foldedThrough < 0.
+    // embedding where missing or stale. Throws ContractError if foldedThrough < 0, and InferenceError when the
+    // backend cannot embed a text (the engine cuts them, so that is a runtime failure).
     void SyncHistory(store::RunStore& store, int foldedThrough, inference::LlmBackend& backend);
 
     // The best hits for `query` among `sources`. Each hit scores at least RETRIEVAL_MIN_SCORE (cosine, plus

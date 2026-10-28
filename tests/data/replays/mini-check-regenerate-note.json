@@ -1,0 +1,60 @@
+{
+  "world": "tests/data/worlds/mini",
+  "seed": 7,
+  "memory_mode": "assisted",
+  "steps": [
+    {"input": "I climb the cliff."},
+    {"regenerate": true},
+    {"input": "I listen to the keeper."},
+    {"input": "What song does the keeper hum?"}
+  ],
+  "replies": {
+    "lookup": [
+      {"lookups": []},
+      {"lookups": []},
+      {"lookups": [{"source": "lore", "query": "keeper"}]},
+      {"lookups": [{"source": "notes", "query": "keeper shanty"}]}
+    ],
+    "resolve": [
+      {"intent": "climb", "checks": [{"stat": "agility", "difficulty": "hard", "stakes": "a fall",
+        "on_success": [{"op": "set", "path": "player.location", "value": "cliff top", "reason": "climbs up"}],
+        "on_failure": [{"op": "add", "path": "player.health", "value": -2, "reason": "falls"}]}],
+       "changes": [], "notes": []},
+      {"intent": "climb carefully", "checks": [{"stat": "agility", "difficulty": "hard", "stakes": "a fall onto the rocks",
+        "on_success": [{"op": "set", "path": "player.location", "value": "cliff top", "reason": "climbs up"}],
+        "on_failure": [{"op": "add", "path": "player.health", "value": -2, "reason": "slips and falls"}]}],
+       "changes": [], "notes": ["The cliff is slick with spray."]},
+      {"intent": "listen", "checks": [],
+       "changes": [{"op": "set", "path": "player.location", "value": "lighthouse", "reason": "goes to the keeper"}],
+       "notes": ["The keeper hums an old sea shanty."]},
+      {"intent": "ask", "checks": [],
+       "changes": [{"op": "add", "path": "player.inventory.oil", "value": -1, "reason": "pays with oil"}],
+       "notes": []}
+    ],
+    "narrate": [
+      "You reach for the first handhold.",
+      "You climb slowly, testing each hold.",
+      "The keeper hums as he trims the wick.",
+      "\"An old shanty,\" the keeper says."
+    ]
+  },
+  "expected": {
+    "turns": [
+      {"number": 1, "attempt": 1, "input": "I climb the cliff.",
+       "checks": [{"stat": "agility", "difficulty": "hard", "stakes": "a fall onto the rocks",
+                   "rolls": [15], "stat_value": 3, "total": 18, "target": 16, "success": true}],
+       "applied": [{"change": {"op": "set", "path": "player.location", "value": "cliff top", "reason": "climbs up"}, "note": ""}],
+       "rejected": [], "notes": ["The cliff is slick with spray."], "narration": "You climb slowly, testing each hold."},
+      {"number": 2, "attempt": 0, "input": "I listen to the keeper.", "checks": [],
+       "applied": [{"change": {"op": "set", "path": "player.location", "value": "lighthouse", "reason": "goes to the keeper"}, "note": ""}],
+       "rejected": [], "notes": ["The keeper hums an old sea shanty."], "narration": "The keeper hums as he trims the wick."},
+      {"number": 3, "attempt": 0, "input": "What song does the keeper hum?", "checks": [], "applied": [],
+       "rejected": [{"raw": {"op": "add", "path": "player.inventory.oil", "value": -1, "reason": "pays with oil"},
+                     "reason": "no item 'oil' to decrease"}],
+       "notes": [], "narration": "\"An old shanty,\" the keeper says."}
+    ],
+    "final_state": {
+      "player": {"type": "character", "fields": {"health": 10, "agility": 3, "location": "lighthouse", "inventory": {"lantern": 1}}}
+    }
+  }
+}

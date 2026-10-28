@@ -37,7 +37,7 @@ Each module is a static library. Dependencies flow downward only.
 
 ## Turn flow (resolve, then narrate)
 
-1. **Retrieve (engine).** Embed the player input. Rank lore entries, folded past turns and (in `assisted` mode) notes by cosine similarity, boosting lore subjects named in the input. Take at most 6 hits by score, then trim them to `retrieval_cap` tokens. Turns still in L3 are not searchable, since they are already in the prompt.
+1. **Retrieve (engine).** Embed the player input. Rank lore entries, folded past turns and (in `assisted` mode) notes by cosine similarity, boosting lore subjects named in the input. Take at most 6 hits by score, then trim them to `retrieval_cap` tokens. Turns still in L3 are not searchable, since they are already in the prompt. In `assisted` mode the model's lookups add hits only within what is left of `retrieval_cap`, and the turn's telemetry records which of them reached the resolve prompt.
 2. **Resolve (LLM, JSON grammar).** The model returns `{intent, checks[], changes[]}`.
    - Each check has `stat` (one of world.json `stats`), `difficulty`, `stakes`, `on_success[]` and `on_failure[]`.
    - Each change is an op: `set`, `add`, `remove` or `create` applied to a `path`, with an optional `value` and a `reason`.
@@ -58,6 +58,8 @@ Each module is a static library. Dependencies flow downward only.
 **Undo and regenerate:** delete the rows after turn N-1, reload that turn's snapshot, and re-run. Both resync the memory index with the store, so an undone turn, its notes and any summary covering it leave retrieval too.
 - Regenerate keeps the dice (`CheckSeed`) and samples new text (`SamplingSeed` with the turn's attempt number).
 - A cancelled or failed regenerate puts the previous turn back, with the summaries that covered it.
+
+**Cancel and failure:** a cancelled or failed turn commits no turn. Memory upkeep its fit loop finished before the stop (summaries and their history embeddings) is kept, since it only covers committed turns.
 
 **`memory_mode` (per world, overridable in settings).** This setting decides who manages memory. The world sets the default, and an optional `memory_mode` key in `settings.json` overrides it.
 - `engine` (default): memory is fully deterministic.

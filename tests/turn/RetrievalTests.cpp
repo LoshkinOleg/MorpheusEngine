@@ -154,3 +154,20 @@ TEST_CASE("Lore that cannot be embedded or repeats a subject is a world error", 
     CHECK_THROWS_MATCHES(turn::MemoryIndex(std::string("p: ")).SyncLore(doubled, store, roomy), core::DataError,
                          Catch::Matchers::MessageMatches(ContainsSubstring("two entries")));
 }
+
+TEST_CASE("A history text that cannot be embedded is a runtime failure, not a world error", "[retrieval]")
+{
+    // History and note texts are cut by the engine, so a failure to embed one is the backend's (InferenceError),
+    // never bad world or memory data.
+    const core::World world = MiniWorld();
+    store::RunStore store = NewRun("retrieval_history_error", world);
+    core::TurnRecord first;
+    first.number = 1;
+    first.input = "I find a brass key.";
+    first.narration = "The brass key is cold.";
+    store.CommitTurn(first, world.initialState);
+
+    test::ScriptedBackend backend(16384);
+    backend.SetEmbedLimit(20);
+    CHECK_THROWS_AS(turn::MemoryIndex(std::string("p: ")).SyncHistory(store, 1, backend), inference::InferenceError);
+}

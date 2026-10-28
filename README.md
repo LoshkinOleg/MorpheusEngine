@@ -13,14 +13,14 @@ The earlier C# implementation lives on the `master` branch. This branch (`cpp`) 
 
 ## Build (Windows)
 
-Prerequisites: Visual Studio 2022 with the C++ workload, CMake 3.25+, Git, and the Vulkan SDK (only for the `dev` preset, which builds llama.cpp with Vulkan). CMake fetches every dependency at a pinned commit.
+Prerequisites: Visual Studio 2022 with the C++ workload, CMake 3.25+, Git, and the Vulkan SDK (only for the `dev` preset, which builds llama.cpp with Vulkan; `dev-asan` runs llama.cpp on the CPU and needs no Vulkan SDK). CMake fetches every dependency at a pinned commit.
 
 | Preset | Builds |
 |---|---|
 | `tests` | Engine libraries and tests only (no llama.cpp, SDL3 or ImGui) |
 | `asan` | Same as `tests`, instrumented with AddressSanitizer |
-| `dev-asan` | llama.cpp on the CPU (no Vulkan) and the tests under AddressSanitizer, RelWithDebInfo; slow, for memory checks of the backend |
 | `dev` | Everything: llama.cpp with Vulkan, the `morpheus` app and the `morpheus_probe` and `morpheus_play` tools |
+| `dev-asan` | Like `dev`, but llama.cpp on the CPU (no Vulkan) and every target under AddressSanitizer, RelWithDebInfo: the tests, `morpheus_probe` and `morpheus_play`, not the app. Slow, for memory checks of the backend |
 
 ```
 cmake --preset tests
@@ -37,7 +37,7 @@ The `dev` preset runs models in-process through llama.cpp. Download two GGUF fil
 
 Then copy `settings.example.json` (the template) to `settings.json` at the repository root and adjust it for your machine. `settings.json` is gitignored. Relative model paths resolve against the settings file's folder.
 
-- `budget.retrieval_cap` caps the retrieved memory (lore, past turns, notes) placed in the prompt, in tokens. It is part of `budget.tail_allowance`.
+- `budget.retrieval_cap` caps the retrieved memory (lore, past turns, notes) placed in the prompt, in tokens, including what `assisted`-mode lookups add. It is part of `budget.tail_allowance`.
 - The optional top-level `"memory_mode": "engine" | "assisted"` overrides the world's default memory mode.
 
 To check that the models, the Vulkan backend and KV-cache prefix reuse work, run the probe. It prints the prompt size and streams two completions; the second should report almost the whole prompt as reused:
@@ -71,7 +71,7 @@ An existing run file is continued; otherwise a new run starts, seeded by `--seed
 - `/state`: print the current state
 - `/quit`: leave
 
-`--record <file>` needs a new run file. When you quit, it writes a replay fixture of the session for `tests/data/replays`, where the replay test plays it back without a model. Commands that fail are left out of the fixture, together with their replies, except summaries: a summary recorded around a failed step, or cut short by `/quit` while maintenance is still running, never breaks a replay. If maintenance fails during the session no fixture is written. That guard covers maintenance failures reported before you quit: maintenance still running at `/quit` is cancelled by shutdown, and its cancelled summary calls are not recorded. The fixture stores the world path exactly as you typed it, so run `--record` from the repo root with a repo-relative world path (for example `game_projects/sandcrawler`); a rooted or absolute path, or a world folder that does not exist from the current directory, is refused.
+`--record <file>` needs a new run file. When you quit, it writes a replay fixture of the session for `tests/data/replays`, where the replay test plays it back without a model. Commands that fail are left out of the fixture, together with their replies, except summaries: a summary recorded around a failed step stays in the fixture and never breaks a replay. If maintenance fails during the session no fixture is written. That guard covers maintenance failures reported before you quit: maintenance still running at `/quit` is cancelled by shutdown, and a summary call it cancels is not recorded at all. The fixture stores the world path exactly as you typed it, so run `--record` from the repo root with a repo-relative world path (for example `game_projects/sandcrawler`); a rooted or absolute path, or a world folder that does not exist from the current directory, is refused.
 
 ## Layout
 

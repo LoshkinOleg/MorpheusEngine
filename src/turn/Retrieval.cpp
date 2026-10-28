@@ -150,6 +150,7 @@ std::vector<RetrievalHit> MemoryIndex::Retrieve(std::string_view query, std::spa
             continue;
         }
         used += cost;
+        hit.tokens = cost;
         kept.push_back(std::move(hit));
     }
     return kept;
@@ -176,13 +177,22 @@ std::vector<std::vector<float>> MemoryIndex::Vectors(store::EmbeddingKind kind, 
             vectors.push_back(it->second.vector);
             continue;
         }
+        // A lore entry that cannot be embedded is a world problem (too long for the embedding model): a DataError
+        // naming its subject. History and note texts are cut by the engine, so their failures are the backend's and
+        // stay InferenceError.
+        auto embed = [&backend, &document] {
+            return backend.Embed({document.text}, inference::EmbedPurpose::Document).at(0);
+        };
         std::vector<float> vector;
-        try {
-            vector = backend.Embed({document.text}, inference::EmbedPurpose::Document).at(0);
-        } catch (const inference::InferenceError& error) {
-            throw core::DataError(std::format("{} '{}' cannot be embedded: {}",
-                                              kind == store::EmbeddingKind::Lore ? "lore.csv entry" : "memory",
-                                              document.refId, error.what()));
+        if (kind != store::EmbeddingKind::Lore) {
+            vector = embed();
+        } else {
+            try {
+                vector = embed();
+            } catch (const inference::InferenceError& error) {
+                throw core::DataError(
+                    std::format("lore.csv entry '{}' cannot be embedded: {}", document.refId, error.what()));
+            }
         }
         store.PutEmbedding({kind, document.refId, model, vector, hash.Hex()});
         vectors.push_back(std::move(vector));

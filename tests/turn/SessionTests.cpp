@@ -161,6 +161,39 @@ TEST_CASE("Unreadable resolve output still narrates, with nothing changed", "[se
     CHECK(session.State() == MiniWorld().initialState);
 }
 
+TEST_CASE("The resolve telemetry records why the output could not be read", "[session]")
+{
+    SECTION("cut off")
+    {
+        test::ScriptedBackend backend(16384, Responder(R"({"intent":"walk","checks":[)"));
+        turn::Session session =
+            turn::Session::Start(MiniWorld(), TestSettings(), NewRunFile("session_resolve_error_cut"), 42, backend);
+        const std::optional<core::TurnRecord> record = session.RunTurn("I walk.", {}, {});
+        REQUIRE(record);
+        CHECK_FALSE(record->timings.at("resolve").value("error", std::string()).empty());
+    }
+    SECTION("of the wrong shape")
+    {
+        // Valid JSON, so the record keeps it as it is: only the telemetry says why nothing was applied.
+        test::ScriptedBackend backend(16384, Responder(R"({"intent":"walk","checks":"none","changes":[]})"));
+        turn::Session session =
+            turn::Session::Start(MiniWorld(), TestSettings(), NewRunFile("session_resolve_error_shape"), 42, backend);
+        const std::optional<core::TurnRecord> record = session.RunTurn("I walk.", {}, {});
+        REQUIRE(record);
+        CHECK_FALSE(record->resolve.contains("unparsed"));
+        CHECK_FALSE(record->timings.at("resolve").value("error", std::string()).empty());
+    }
+    SECTION("but not for readable output")
+    {
+        test::ScriptedBackend backend(16384, Responder(MOVE));
+        turn::Session session =
+            turn::Session::Start(MiniWorld(), TestSettings(), NewRunFile("session_resolve_no_error"), 42, backend);
+        const std::optional<core::TurnRecord> record = session.RunTurn("I walk.", {}, {});
+        REQUIRE(record);
+        CHECK_FALSE(record->timings.at("resolve").contains("error"));
+    }
+}
+
 TEST_CASE("Cancelling a turn commits nothing", "[session]")
 {
     test::ScriptedBackend backend(16384, Responder(MOVE, "You walk a long way."));
@@ -525,6 +558,7 @@ TEST_CASE("Assisted mode looks things up before resolving and keeps notes", "[se
     REQUIRE(record->timings.contains("lookup"));
     // The best match comes first. The fake embedding also lets a weaker "storm" hit through the score floor.
     CHECK(record->timings.at("lookup").at("requests").at(0).at("added").at(0) == "keeper");
+    CHECK(record->timings.at("lookup").at("requests").at(0).at("kept").at(0) == "keeper"); // It reached the prompt.
 
     // After maintenance the note is searchable memory for later turns.
     REQUIRE(session.Maintain({}));
@@ -660,6 +694,32 @@ TEST_CASE("Undoing below a condensed summary puts back a long transcript that st
     REQUIRE(session.Maintain({}));
     REQUIRE(session.RunTurn("I walk.", {}, {}));
     CHECK(session.LastAssembly().Fits());
+}
+
+TEST_CASE("Assisted-mode lookups share retrieval_cap with the automatic hits", "[session]")
+{
+    // The automatic hit's line, "- storm: Storms arrive at dusk." and a newline, costs 8 tokens of a cap of 15, so
+    // the looked-up keeper entry (12 tokens) no longer fits.
+    core::Settings settings = TestSettings();
+    settings.memoryMode = core::MemoryMode::Assisted;
+    settings.budget.retrievalCap = 15;
+    const std::string listen = R"({"intent":"listen","checks":[],"changes":[],"notes":[]})";
+    test::ScriptedBackend backend(16384, [&](const inference::Prompt& prompt, const inference::GenerationSpec& spec) {
+        if (spec.grammar.find("lookups") != std::string::npos) {
+            return std::string(R"({"lookups":[{"source":"lore","query":"keeper"}]})");
+        }
+        return Responder(listen, "Dusk comes.")(prompt, spec);
+    });
+    turn::Session session = turn::Session::Start(MiniWorld(), settings, NewRunFile("session_lookup_cap"), 42, backend);
+
+    const std::optional<core::TurnRecord> record = session.RunTurn("Do storms arrive at dusk?", {}, {});
+    REQUIRE(record);
+    REQUIRE(record->timings.at("retrieval").size() == 1);
+    CHECK(record->timings.at("retrieval").at(0).at("ref") == "storm");
+    const nlohmann::json& request = record->timings.at("lookup").at("requests").at(0);
+    CHECK(request.at("added").empty());
+    CHECK(request.at("kept").empty());
+    CHECK_THAT(Tail(session.LastAssembly().prompt), !ContainsSubstring("The keeper says"));
 }
 
 TEST_CASE("Engine mode makes no lookup call and keeps no notes", "[session]")

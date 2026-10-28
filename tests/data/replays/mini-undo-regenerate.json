@@ -27,12 +27,12 @@
   },
   "expected": {
     "turns": [
-      {"number": 1, "input": "I walk to the lighthouse.", "checks": [],
+      {"number": 1, "attempt": 0, "input": "I walk to the lighthouse.", "checks": [],
        "applied": [{"change": {"op": "set", "path": "player.location", "value": "lighthouse", "reason": "walks there"}, "note": ""}],
-       "rejected": [], "narration": "You walk to the lighthouse."},
-      {"number": 2, "input": "I light the lantern.", "checks": [],
+       "rejected": [], "notes": [], "narration": "You walk to the lighthouse."},
+      {"number": 2, "attempt": 1, "input": "I light the lantern.", "checks": [],
        "applied": [{"change": {"op": "remove", "path": "player.inventory.lantern", "reason": "the lantern is set in place"}, "note": ""}],
-       "rejected": [], "narration": "You set the lantern in its cradle."}
+       "rejected": [], "notes": [], "narration": "You set the lantern in its cradle."}
     ],
     "final_state": {
       "player": {"type": "character", "fields": {"health": 10, "agility": 3, "location": "lighthouse", "inventory": {}}}

@@ -11,8 +11,8 @@ Local-first, LLM-driven text RPG engine in C++20. The repository owner acts as p
 ## Build and test (Windows, Visual Studio 2022, CMake >= 3.25, Git Bash)
 - Fast loop (engine libraries + tests, no llama.cpp/SDL/ImGui): `cmake --preset tests`, `cmake --build --preset tests`, `ctest --preset tests`
 - AddressSanitizer: the same three commands with preset `asan`
-- `dev-asan`: llama.cpp on the CPU (no Vulkan) and the tests under AddressSanitizer, RelWithDebInfo; slow, for memory checks of the backend. Binaries land in `build/dev-asan/bin/RelWithDebInfo/`.
 - `tests` and `asan` build without llama.cpp. `dev` builds everything, including llama.cpp with Vulkan (needs the Vulkan SDK), the app, `morpheus_probe` and `morpheus_play`.
+- `dev-asan` is `dev` with llama.cpp on the CPU (no Vulkan SDK needed) and every target under AddressSanitizer, RelWithDebInfo: the tests, `morpheus_probe` and `morpheus_play`, not the app. Slow, for memory checks of the backend. Binaries land in `build/dev-asan/bin/RelWithDebInfo/`.
 - Model-backed tests are tagged `[llama]` and skip unless `MORPHEUS_TEST_CHAT_MODEL` and `MORPHEUS_TEST_EMBED_MODEL` point at the two GGUF files in `models/`.
 - One tag or test case: `./build/tests/bin/Debug/morpheus_tests.exe "[csv]"`
 

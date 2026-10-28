@@ -154,8 +154,9 @@ nlohmann::json TurnResultJson(const core::TurnRecord& record)
     for (const core::RejectedChange& change : record.rejected) {
         rejected.push_back(core::RejectedChangeToJson(change));
     }
-    return {{"number", record.number}, {"input", record.input}, {"checks", checks},
-            {"applied", applied},      {"rejected", rejected},  {"narration", record.narration}};
+    return {{"number", record.number},   {"attempt", record.attempt}, {"input", record.input},
+            {"checks", checks},          {"applied", applied},        {"rejected", rejected},
+            {"notes", record.notes},     {"narration", record.narration}};
 }
 
 nlohmann::json MakeReplayFixture(const std::string& worldFolder, std::uint64_t seed, core::MemoryMode mode,

@@ -337,7 +337,7 @@ inference::Completion LlamaCppBackend::Complete(const inference::Prompt& prompt,
             // Advance the grammar's parse state past the chosen token.
             llama_sampler_accept(pGrammar.get(), token);
         }
-        // The chain sees every generated token too (llama_sampler_sample did this before the grammar was split out).
+        // The chain sees every generated token too, so its samplers' state follows the output.
         llama_sampler_accept(pChain.get(), token);
 
         if (llama_vocab_is_eog(pVocab, token)) {

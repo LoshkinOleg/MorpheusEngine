@@ -267,7 +267,8 @@ std::optional<core::TurnRecord> Session::PlayTurn(const std::string& input, int 
                                                      _settings.budget.retrievalCap, RETRIEVAL_MAX_HITS, *_pBackend);
 
     // Assisted mode: the model may ask for lookups first. Their hits join the tail after the automatic ones, so
-    // the fit loop sheds them first.
+    // the fit loop sheds them first. lookupSources[i] is the i-th request's source, for the telemetry at commit.
+    std::vector<store::EmbeddingKind> lookupSources;
     if (_mode == core::MemoryMode::Assisted) {
         std::optional<context::Assembly> lookupAssembly =
             AssembleFitting(state, hits, input, LOOKUP_INSTRUCTION, turn, attempt, stop);
@@ -284,6 +285,12 @@ std::optional<core::TurnRecord> Session::PlayTurn(const std::string& input, int 
             return std::nullopt;
         }
 
+        // Lookups share retrieval_cap with the automatic hits: each gets what is left of it, so all retrieved
+        // memory in the prompt stays within the cap.
+        int capLeft = _settings.budget.retrievalCap;
+        for (const RetrievalHit& hit : hits) {
+            capLeft -= hit.tokens;
+        }
         std::string lookupError;
         nlohmann::json lookupTelemetry = Telemetry(looked);
         lookupTelemetry["requests"] = nlohmann::json::array();
@@ -291,16 +298,18 @@ std::optional<core::TurnRecord> Session::PlayTurn(const std::string& input, int 
             const std::array<store::EmbeddingKind, 1> source = {lookup.source};
             nlohmann::json added = nlohmann::json::array();
             // The query is cut like the automatic one above.
-            for (RetrievalHit& hit : _index.Retrieve(core::CutUtf8(lookup.query, EMBED_TEXT_CHARS), source,
-                                                     _settings.budget.retrievalCap, LOOKUP_MAX_HITS, *_pBackend)) {
+            for (RetrievalHit& hit : _index.Retrieve(core::CutUtf8(lookup.query, EMBED_TEXT_CHARS), source, capLeft,
+                                                     LOOKUP_MAX_HITS, *_pBackend)) {
                 const bool known = std::any_of(hits.begin(), hits.end(), [&hit](const RetrievalHit& other) {
                     return other.kind == hit.kind && other.refId == hit.refId;
                 });
                 if (!known) {
                     added.push_back(hit.refId);
+                    capLeft -= hit.tokens;
                     hits.push_back(std::move(hit));
                 }
             }
+            lookupSources.push_back(lookup.source);
             lookupTelemetry["requests"].push_back(
                 {{"source", kindText(lookup.source)}, {"query", lookup.query}, {"added", std::move(added)}});
         }
@@ -363,10 +372,30 @@ std::optional<core::TurnRecord> Session::PlayTurn(const std::string& input, int 
 
     // 5. Commit.
     telemetry["resolve"] = Telemetry(resolved);
+    if (!proposal.error.empty()) {
+        // Why nothing was proposed: the record's resolve output alone does not say so for JSON of the wrong shape.
+        telemetry["resolve"]["error"] = proposal.error;
+    }
     telemetry["narrate"] = Telemetry(narrated);
     telemetry["retrieval"] = nlohmann::json::array(); // The hits that made it into the prompt.
     for (const RetrievalHit& hit : hits) {
         telemetry["retrieval"].push_back({{"source", kindText(hit.kind)}, {"ref", hit.refId}, {"score", hit.score}});
+    }
+    if (telemetry.contains("lookup")) {
+        // Which of each lookup's added hits the fit loops kept, so they reached the resolve prompt.
+        nlohmann::json& requests = telemetry["lookup"]["requests"];
+        for (std::size_t i = 0; i < requests.size(); ++i) {
+            nlohmann::json kept = nlohmann::json::array();
+            for (const nlohmann::json& ref : requests[i].at("added")) {
+                const bool inPrompt = std::any_of(hits.begin(), hits.end(), [&](const RetrievalHit& hit) {
+                    return hit.kind == lookupSources[i] && hit.refId == ref.get<std::string>();
+                });
+                if (inPrompt) {
+                    kept.push_back(ref);
+                }
+            }
+            requests[i]["kept"] = std::move(kept);
+        }
     }
     record.timings = std::move(telemetry);
     _store.CommitTurn(record, resolution.state);
