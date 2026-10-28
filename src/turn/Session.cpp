@@ -447,16 +447,51 @@ std::optional<context::Assembly> Session::AssembleFitting(const nlohmann::json& 
 bool Session::FoldOldest(const inference::Message& systemMessage, const std::vector<core::TurnRecord>& transcript,
                          int turn, int attempt, std::stop_token stop)
 {
-    const std::size_t count = std::max<std::size_t>(1, transcript.size() / 2);
-    const std::vector<core::TurnRecord> oldest(transcript.begin(),
-                                               transcript.begin() + static_cast<std::ptrdiff_t>(count));
+    MORPHEUS_REQUIRE(!transcript.empty(), "FoldOldest: there is no transcript to fold");
     inference::GenerationSpec spec;
     spec.maxTokens = std::max(1, _settings.budget.summaryCap / FOLD_SUMMARY_DIVISOR);
     spec.sampling = inference::SamplingFrom(
         _settings.resolveSampling, core::SamplingSeed(_store.Meta().rngSeed, turn, core::CallKind::Summarize, attempt));
-    const std::optional<core::Summary> summary = SummarizeTurns(systemMessage, oldest, spec, *_pBackend, stop);
-    if (!summary) {
-        return false;
+
+    // The oldest `count` turns of the transcript.
+    auto oldest = [&transcript](std::size_t count) {
+        return std::vector<core::TurnRecord>(transcript.begin(), transcript.begin() + static_cast<std::ptrdiff_t>(count));
+    };
+    // Whether a fold call over the oldest `count` turns fits the context: its prompt plus the summary's max_tokens,
+    // measured exactly as the backend measures a call. The transcript can be far larger than the context (a run
+    // loaded with a smaller context_size, or turns put back by undoing past a condensed summary).
+    auto fits = [&](std::size_t count) {
+        const int promptTokens = _pBackend->CountPromptTokens(SummarizePrompt(systemMessage, oldest(count)));
+        return spec.maxTokens <= _pBackend->ContextSize() - promptTokens;
+    };
+
+    // Fold the oldest half (at least one turn), or the longest prefix of it that fits. More turns never cost fewer
+    // tokens, so a binary search between "fits" and "does not fit" finds that prefix with few token counts.
+    const std::size_t half = std::max<std::size_t>(1, transcript.size() / 2);
+    std::size_t count = half;
+    if (!fits(half)) {
+        std::size_t fitting = 0;  // Longest prefix known to fit; 0 means none is known to.
+        std::size_t tooLong = half; // Shortest prefix known not to fit.
+        while (tooLong - fitting > 1) {
+            const std::size_t middle = fitting + (tooLong - fitting) / 2;
+            if (fits(middle)) {
+                fitting = middle;
+            } else {
+                tooLong = middle;
+            }
+        }
+        count = fitting;
+    }
+
+    std::optional<core::Summary> summary;
+    if (count == 0) {
+        // Not even the oldest turn fits a call: the engine writes its summary, so folding always makes progress.
+        summary = SummarizeFallback(oldest(1), spec.maxTokens);
+    } else {
+        summary = SummarizeTurns(systemMessage, oldest(count), spec, *_pBackend, stop);
+        if (!summary) {
+            return false;
+        }
     }
     _store.AddSummary(*summary);
     // Folded turns leave the transcript, so they become searchable history.
@@ -470,9 +505,19 @@ bool Session::Condense(const inference::Message& systemMessage, int turn, int at
     spec.maxTokens = std::max(1, _settings.budget.summaryCap / CONDENSE_SUMMARY_DIVISOR);
     spec.sampling = inference::SamplingFrom(
         _settings.resolveSampling, core::SamplingSeed(_store.Meta().rngSeed, turn, core::CallKind::Summarize, attempt));
-    const std::optional<core::Summary> merged = CondenseSummaries(systemMessage, _store.Summaries(), spec, *_pBackend, stop);
-    if (!merged) {
-        return false;
+    const std::vector<core::Summary> summaries = _store.Summaries();
+
+    // The condense prompt holds every summary in its system message. Summaries written under a larger summary_cap
+    // can make it larger than the context: then the engine condenses them itself, so the loop still makes progress.
+    const int promptTokens = _pBackend->CountPromptTokens(CondensePrompt(systemMessage));
+    std::optional<core::Summary> merged;
+    if (spec.maxTokens <= _pBackend->ContextSize() - promptTokens) {
+        merged = CondenseSummaries(systemMessage, summaries, spec, *_pBackend, stop);
+        if (!merged) {
+            return false;
+        }
+    } else {
+        merged = CondenseFallback(summaries, spec.maxTokens);
     }
     _store.ReplaceSummaries(*merged);
     return true;

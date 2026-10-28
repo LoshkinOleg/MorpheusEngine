@@ -533,6 +533,135 @@ TEST_CASE("Assisted mode looks things up before resolving and keeps notes", "[se
                ContainsSubstring("Note from turn 1: The keeper hums an old sea shanty."));
 }
 
+TEST_CASE("A run loaded with a much smaller context folds what fits and stays playable", "[session]")
+{
+    // Twelve turns of about 520 tokens each are played in a roomy context, where nothing folds. At a context of
+    // 3000 that transcript is about twice the context: half of it would not fit one fold call.
+    const fs::path file = NewRunFile("session_shrunk_context");
+    test::ScriptedBackend roomyBackend(16384, Responder(MOVE, std::string(2000, 'w')));
+    {
+        turn::Session session = turn::Session::Start(MiniWorld(), FoldingSettings(), file, 42, roomyBackend);
+        for (int i = 0; i < 12; ++i) {
+            REQUIRE(session.RunTurn("I walk.", {}, {}));
+            REQUIRE(session.Maintain({}));
+        }
+        REQUIRE(session.Summaries().empty());
+    }
+
+    // The small backend throws InferenceError for any call whose prompt plus max_tokens is over its context.
+    test::ScriptedBackend smallBackend(3000, Responder(MOVE, std::string(2000, 'w')));
+    turn::Session session = turn::Session::Load(MiniWorld(), FoldingSettings(), file, smallBackend);
+    SECTION("the next turn folds")
+    {
+        REQUIRE(session.RunTurn("I walk.", {}, {}));
+        CHECK(session.LastAssembly().Fits());
+        REQUIRE(session.Maintain({}));
+    }
+    SECTION("maintenance folds")
+    {
+        REQUIRE(session.Maintain({}));
+        REQUIRE(session.RunTurn("I walk.", {}, {}));
+        CHECK(session.LastAssembly().Fits());
+    }
+    const std::vector<core::Summary> summaries = session.Summaries();
+    REQUIRE(summaries.size() >= 2); // No single fold call could take the oldest half.
+    CHECK(summaries.front().fromTurn == 1);
+    CHECK(summaries.front().text == "Summary.");
+    REQUIRE(session.RunTurn("I walk.", {}, {}));
+}
+
+TEST_CASE("A turn too long to fold with a model call gets the engine's summary", "[session]")
+{
+    // Turn 1's narration (about 3000 tokens) is as long as the small context itself.
+    const fs::path file = NewRunFile("session_fold_fallback");
+    int narrations = 0;
+    auto responder = [&narrations](const inference::Prompt& prompt, const inference::GenerationSpec& spec) {
+        const bool narrate = spec.grammar.empty() && prompt.messages.back().content != turn::SUMMARIZE_INSTRUCTION &&
+                             prompt.messages.back().content != turn::CONDENSE_INSTRUCTION;
+        const std::string narration = narrate && ++narrations == 1 ? std::string(12000, 'w') : std::string(2000, 'w');
+        return Responder(MOVE, narration)(prompt, spec);
+    };
+    test::ScriptedBackend roomyBackend(16384, responder);
+    {
+        core::Settings roomy = FoldingSettings();
+        roomy.budget.narrateMaxTokens = 3200; // So the long narration is within what the model may write.
+        turn::Session session = turn::Session::Start(MiniWorld(), roomy, file, 42, roomyBackend);
+        for (int i = 0; i < 3; ++i) {
+            REQUIRE(session.RunTurn("I walk.", {}, {}));
+        }
+    }
+
+    test::ScriptedBackend smallBackend(3000, Responder(MOVE, std::string(2000, 'w')));
+    turn::Session session = turn::Session::Load(MiniWorld(), FoldingSettings(), file, smallBackend);
+    REQUIRE(session.RunTurn("I walk.", {}, {}));
+    CHECK(session.LastAssembly().Fits());
+    const std::vector<core::Summary> summaries = session.Summaries();
+    REQUIRE_FALSE(summaries.empty());
+    CHECK(summaries.front().fromTurn == 1);
+    CHECK(summaries.front().toTurn == 1);
+    CHECK(summaries.front().text == "Turn 1: I walk. [player.location = \"lighthouse\"]");
+    REQUIRE(session.Maintain({}));
+}
+
+TEST_CASE("A summary too big to condense with a model call gets the engine's condensed summary", "[session]")
+{
+    // A run whose summaries were written under a much larger summary_cap: together about 3000 tokens, as large as
+    // the small context, so the condense prompt (the system message holds them) cannot fit.
+    const fs::path file = NewRunFile("session_condense_fallback");
+    test::ScriptedBackend roomyBackend(16384, Responder(MOVE));
+    {
+        turn::Session session = turn::Session::Start(MiniWorld(), FoldingSettings(), file, 42, roomyBackend);
+        for (int i = 0; i < 3; ++i) {
+            REQUIRE(session.RunTurn("I walk.", {}, {}));
+        }
+    }
+    {
+        store::RunStore store = store::RunStore::Open(file);
+        store.AddSummary({1, 1, std::string(6000, 's')});
+        store.AddSummary({2, 2, std::string(6000, 't')});
+    }
+
+    test::ScriptedBackend smallBackend(3000, Responder(MOVE));
+    turn::Session session = turn::Session::Load(MiniWorld(), FoldingSettings(), file, smallBackend);
+    REQUIRE(session.RunTurn("I walk.", {}, {}));
+    CHECK(session.LastAssembly().Fits());
+    for (const test::ScriptedBackend::Call& call : smallBackend.Calls()) {
+        CHECK(call.prompt.messages.back().content != std::string(turn::CONDENSE_INSTRUCTION));
+    }
+    const std::vector<core::Summary> summaries = session.Summaries();
+    REQUIRE(summaries.size() == 1);
+    CHECK(summaries[0].fromTurn == 1);
+    CHECK(summaries[0].toTurn == 2);
+    CHECK(summaries[0].text.starts_with("Turns 1-1: sss"));
+    REQUIRE(session.Maintain({}));
+}
+
+TEST_CASE("Undoing below a condensed summary puts back a long transcript that still plays", "[session]")
+{
+    // A summary_cap of 16 condenses every few folds, so one summary soon covers turn 1 to K. Undoing below K deletes
+    // it and puts turns 1 to K-1 back into the transcript: more than half the context of 3000 when K is 11 or more.
+    core::Settings settings = FoldingSettings();
+    settings.budget.summaryCap = 16;
+    test::ScriptedBackend backend(3000, Responder(MOVE, std::string(2000, 'w')));
+    turn::Session session = turn::Session::Start(MiniWorld(), settings, NewRunFile("session_undo_condensed"), 42, backend);
+    for (int i = 0; i < 16; ++i) {
+        REQUIRE(session.RunTurn("I walk.", {}, {}));
+        REQUIRE(session.Maintain({}));
+    }
+    const int condensedThrough = session.Summaries().front().toTurn;
+    REQUIRE(condensedThrough >= 11);
+    while (static_cast<int>(session.History().size()) >= condensedThrough) {
+        session.Undo();
+    }
+    REQUIRE(session.Summaries().empty());
+
+    REQUIRE(session.RunTurn("I walk.", {}, {}));
+    CHECK(session.LastAssembly().Fits());
+    REQUIRE(session.Maintain({}));
+    REQUIRE(session.RunTurn("I walk.", {}, {}));
+    CHECK(session.LastAssembly().Fits());
+}
+
 TEST_CASE("Engine mode makes no lookup call and keeps no notes", "[session]")
 {
     test::ScriptedBackend backend(16384, Responder(R"({"intent":"listen","checks":[],"changes":[]})"));

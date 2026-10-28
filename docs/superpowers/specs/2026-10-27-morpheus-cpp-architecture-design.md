@@ -50,7 +50,8 @@ Each module is a static library. Dependencies flow downward only.
 
 **Between turns (maintenance):**
 - If the recent-turns layer is over budget, fold its oldest half into the story summary with one summarization call. If the summary is over `summary_cap`, condense the summaries into one. A `summary_cap` too small for even a condensed summary is a `DataError`.
-- If the model writes an empty summary, the engine writes one itself: a line per folded turn (its input and mechanics line), or per condensed summary, cut to the summary's size.
+- Each memory call must fit the context: its prompt plus its `max_tokens`, measured like any call. A fold takes only as many of the oldest half's turns as fit. The transcript can be far larger than the context, for a run loaded with a smaller `context_size` or turns put back by undoing past a condensed summary.
+- If the model writes an empty summary, or not even one turn (or, for a condense, the summaries) fits a call, the engine writes the summary itself: a line per folded turn (its input and mechanics line), or per condensed summary, cut to the summary's size. Folding always makes progress.
 - Embed the folded turns and the new notes, so retrieval can find them.
 - The worker runs maintenance while no command waits, and a new command preempts it. Before a `SubmitInput` or `RegenerateTurn`, which retrieve, a due maintenance runs to completion first, so a turn always sees the previous turn's notes.
 

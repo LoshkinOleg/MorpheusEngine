@@ -21,7 +21,8 @@
 
 namespace morpheus::test {
 
-// A backend for turn-layer tests. Tokens are counted like FakeBackend. Complete asks the responder for the reply,
+// A backend for turn-layer tests. Tokens are counted like FakeBackend. Complete enforces the context like the real
+// backend (InferenceError when the prompt plus maxTokens is over ContextSize()), then asks the responder for the reply,
 // streams it in pieces of about 4 bytes that never split a UTF-8 character (stopping early when `stop` is
 // requested), and records the call. Embed maps a text to a bag of words (lower-cased [a-z0-9] runs hashed into
 // EMBED_DIMS dimensions, L2-normalized), so texts sharing words score higher. Save/RestoreState keep nothing.
@@ -77,11 +78,17 @@ public:
                                    const inference::TokenCallback& onToken, std::stop_token stop) override
     {
         MORPHEUS_REQUIRE(static_cast<bool>(_responder), "ScriptedBackend: no responder for Complete");
+        MORPHEUS_REQUIRE(spec.maxTokens > 0, "Complete: maxTokens must be positive");
+        // The context limit, checked like LlamaCppBackend::Complete checks it: before anything else happens.
+        inference::Completion completion;
+        completion.promptTokens = CountPromptTokens(prompt);
+        if (spec.maxTokens > ContextSize() - completion.promptTokens) {
+            throw inference::InferenceError(std::format("prompt ({} tokens) plus max_tokens ({}) exceeds the context size ({})",
+                                                        completion.promptTokens, spec.maxTokens, ContextSize()));
+        }
         _calls.push_back({prompt, spec});
         const std::string reply = _responder(prompt, spec);
 
-        inference::Completion completion;
-        completion.promptTokens = CountPromptTokens(prompt);
         completion.tokensEvaluated = completion.promptTokens;
         std::size_t at = 0;
         while (at < reply.size()) {

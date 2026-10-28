@@ -167,3 +167,43 @@ TEST_CASE("A fallback summary is cut to about four bytes per token of the cap", 
     REQUIRE(merged);
     CHECK(merged->text == "Turns 1-2: " + std::string(29, 'y')); // 40 bytes in all
 }
+
+TEST_CASE("The fold and condense prompts and fallbacks are the ones the folding calls use", "[folding]")
+{
+    const inference::Message system = {inference::Role::System, "S"};
+    const std::vector<core::TurnRecord> turns = {Turn(3, "I knock.", "The door creaks."),
+                                                 MechanicalTurn(4, "I jump the gap.")};
+    const std::vector<core::Summary> summaries = {{1, 3, "The keeper lit the lamp."}, {4, 9, "The ship sank."}};
+    inference::GenerationSpec spec;
+    spec.maxTokens = 10;
+
+    // The prompts the session measures before a call are the prompts the calls send.
+    test::ScriptedBackend backend = BlankBackend();
+    const std::optional<core::Summary> summary = turn::SummarizeTurns(system, turns, spec, backend, {});
+    const std::optional<core::Summary> merged = turn::CondenseSummaries(system, summaries, spec, backend, {});
+    REQUIRE(backend.Calls().size() == 2);
+    const inference::Prompt summarizePrompt = turn::SummarizePrompt(system, turns);
+    const inference::Prompt condensePrompt = turn::CondensePrompt(system);
+    REQUIRE(backend.Calls()[0].prompt.messages.size() == summarizePrompt.messages.size());
+    for (std::size_t i = 0; i < summarizePrompt.messages.size(); ++i) {
+        CHECK(backend.Calls()[0].prompt.messages[i].content == summarizePrompt.messages[i].content);
+    }
+    CHECK(backend.Calls()[0].prompt.stableCount == summarizePrompt.stableCount);
+    REQUIRE(backend.Calls()[1].prompt.messages.size() == condensePrompt.messages.size());
+    CHECK(backend.Calls()[1].prompt.messages.back().content == condensePrompt.messages.back().content);
+    CHECK(backend.Calls()[1].prompt.stableCount == condensePrompt.stableCount);
+
+    // The fallbacks, written without a model call, are what the calls write when the model writes nothing.
+    REQUIRE(summary);
+    REQUIRE(merged);
+    const core::Summary summaryFallback = turn::SummarizeFallback(turns, spec.maxTokens);
+    const core::Summary condenseFallback = turn::CondenseFallback(summaries, spec.maxTokens);
+    CHECK(summaryFallback.fromTurn == 3);
+    CHECK(summaryFallback.toTurn == 4);
+    CHECK(summaryFallback.text == summary->text);
+    CHECK(condenseFallback.fromTurn == 1);
+    CHECK(condenseFallback.toTurn == 9);
+    CHECK(condenseFallback.text == merged->text);
+    CHECK_THROWS_AS(turn::SummarizeFallback({}, 10), core::ContractError);
+    CHECK_THROWS_AS(turn::CondenseFallback({}, 10), core::ContractError);
+}
