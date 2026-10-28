@@ -322,3 +322,35 @@ TEST_CASE("narrate_allowance and the narrate message overhead count toward the c
         CHECK(context::AssembleResolvePrompt(world, inputs, tight, backend).contextOverflow);
     }
 }
+
+TEST_CASE("The world reference sits in L1 between the rules and the lore", "[context]")
+{
+    const core::World world = MiniWorld();
+    test::FakeBackend backend(100000);
+    const context::Assembly assembly = context::AssembleResolvePrompt(world, Inputs(world), RoomyBudget(), backend);
+    const std::string& system = assembly.prompt.messages.front().content;
+    const std::size_t rules = system.find("You are the GM of a tiny test world.");
+    const std::size_t reference = system.find("# Game reference");
+    const std::size_t lore = system.find("# Lore");
+    REQUIRE(reference != std::string::npos);
+    CHECK(rules < reference);
+    CHECK(reference < lore);
+}
+
+TEST_CASE("An over-cap summary is a flag even when it leaves the transcript no room", "[context]")
+{
+    const core::World world = MiniWorld();
+    core::BudgetSettings budget = RoomyBudget(); // summary_cap 256
+    context::ContextInputs inputs = Inputs(world);
+    inputs.summaries = {{1, 4, std::string(4000, 's')}}; // About 1000 tokens.
+    // The tail exactly fills its allowance, so the context has no slack for the template tokens and overflows.
+    budget.tailAllowance = Measure(world, inputs, budget).tail;
+    const Measured measured = Measure(world, inputs, budget);
+    // One token short of room for the full system message: before this change, a no-room DataError.
+    test::FakeBackend backend(budget.resolveMaxTokens + budget.narrateMaxTokens + budget.narrateAllowance +
+                              budget.tailAllowance + measured.systemCost - 1);
+    const context::Assembly assembly = context::AssembleResolvePrompt(world, inputs, budget, backend);
+    CHECK(assembly.summaryOverBudget);
+    CHECK(assembly.contextOverflow);
+    CHECK(assembly.transcriptBudget > 0);
+}

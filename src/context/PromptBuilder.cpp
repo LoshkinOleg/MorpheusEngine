@@ -1,10 +1,12 @@
 #include "context/PromptBuilder.h"
 
+#include <algorithm>
 #include <format>
 #include <utility>
 
 #include "context/StateView.h"
 #include "context/Transcript.h"
+#include "context/WorldReference.h"
 #include "core/Errors.h"
 
 namespace morpheus::context {
@@ -15,11 +17,12 @@ Assembly AssembleResolvePrompt(const core::World& world, const ContextInputs& in
     MORPHEUS_REQUIRE(!inputs.engineRules.empty() && !inputs.playerInput.empty() && !inputs.instruction.empty(),
                      "AssembleResolvePrompt: engine rules, player input and instruction are required");
 
-    // L1: the world's rules, then its always-on lore.
+    // L1: the world's rules, its game reference, then its always-on lore.
     std::string worldText = "# World\n" + world.rules;
     if (!worldText.ends_with('\n')) {
         worldText += '\n';
     }
+    worldText += "\n" + RenderWorldReference(world);
     std::string lore;
     for (const core::LoreEntry& entry : world.lore) {
         if (entry.alwaysOn) {
@@ -91,15 +94,17 @@ Assembly AssembleResolvePrompt(const core::World& world, const ContextInputs& in
     assembly.tailOverBudget = tokens.tail > budget.tailAllowance;
 
     // L3 gets what the templated system message, the tail allowance, the narrate allowance and both generations
-    // leave.
+    // leave, with the summary counted at most at its cap: an over-cap summary is a flag (condense it), not a
+    // settings error.
+    const int summaryExcess = std::max(0, tokens.summary - budget.summaryCap);
     assembly.transcriptBudget = backend.ContextSize() - budget.resolveMaxTokens - budget.narrateMaxTokens -
-                                budget.narrateAllowance - budget.tailAllowance - systemCost;
+                                budget.narrateAllowance - budget.tailAllowance - (systemCost - summaryExcess);
     if (assembly.transcriptBudget <= 0) {
         // Folding turns cannot fix this: the settings or the world leave L3 nothing, so it is not a flag.
         throw core::DataError(std::format("context_size {} leaves no room for the transcript after the system "
                                           "layers ({} tokens), the tail allowance, the narrate allowance and both "
                                           "generations",
-                                          backend.ContextSize(), systemCost));
+                                          backend.ContextSize(), systemCost - summaryExcess));
     }
     assembly.transcriptOverBudget = assembly.transcriptCost > assembly.transcriptBudget;
 

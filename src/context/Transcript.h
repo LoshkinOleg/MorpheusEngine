@@ -8,10 +8,14 @@
 
 namespace morpheus::context {
 
+// One applied change as the mechanics line and the resolution record show it, e.g. `player.health -3 (clamped
+// to 0)`: set "path = value"; add "path +N" / "path -N" / "path +item"; remove "path -item" or "path removed";
+// create "id created"; an engine note follows in parentheses.
+std::string RenderChangePart(const core::AppliedChange& applied);
+
 // One line recording what the engine did in a turn, for the transcript (L3):
 //   [agility vs hard: 14/16 failure; player.location = "deck"; player.health -3 (clamped to 0); npc:marta created]
-// set: "path = value"; add: "path +N" / "path -N" / "path +item"; remove: "path -item" or "path removed";
-// create: "id created"; an engine note follows in parentheses. Rejected changes are left out.
+// Each change is a RenderChangePart. Rejected changes are left out.
 // Returns "" when the turn had no checks and no applied changes.
 std::string RenderMechanicsLine(const core::TurnRecord& record);
 

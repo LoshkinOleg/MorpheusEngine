@@ -7,6 +7,34 @@
 
 namespace morpheus::context {
 
+std::string RenderChangePart(const core::AppliedChange& applied)
+{
+    const core::Change& change = applied.change;
+    std::string part;
+    switch (change.op) {
+    case core::ChangeOp::Set:
+        part = std::format("{} = {}", change.path, change.value.dump());
+        break;
+    case core::ChangeOp::Add:
+        // Numeric add (int field or counter item) or a list item.
+        part = change.value.is_number_integer() ? std::format("{} {:+}", change.path, change.value.get<long long>())
+                                                : std::format("{} +{}", change.path, change.value.get<std::string>());
+        break;
+    case core::ChangeOp::Remove:
+        // A list item names what was removed; a counter item is removed whole.
+        part = change.value.is_string() ? std::format("{} -{}", change.path, change.value.get<std::string>())
+                                        : std::format("{} removed", change.path);
+        break;
+    case core::ChangeOp::Create:
+        part = std::format("{} created", change.path);
+        break;
+    }
+    if (!applied.note.empty()) {
+        part += std::format(" ({})", applied.note);
+    }
+    return part;
+}
+
 std::string RenderMechanicsLine(const core::TurnRecord& record)
 {
     std::vector<std::string> parts;
@@ -15,30 +43,7 @@ std::string RenderMechanicsLine(const core::TurnRecord& record)
                                     check.result.target, check.result.success ? "success" : "failure"));
     }
     for (const core::AppliedChange& applied : record.applied) {
-        const core::Change& change = applied.change;
-        std::string part;
-        switch (change.op) {
-        case core::ChangeOp::Set:
-            part = std::format("{} = {}", change.path, change.value.dump());
-            break;
-        case core::ChangeOp::Add:
-            // Numeric add (int field or counter item) or a list item.
-            part = change.value.is_number_integer() ? std::format("{} {:+}", change.path, change.value.get<long long>())
-                                                    : std::format("{} +{}", change.path, change.value.get<std::string>());
-            break;
-        case core::ChangeOp::Remove:
-            // A list item names what was removed; a counter item is removed whole.
-            part = change.value.is_string() ? std::format("{} -{}", change.path, change.value.get<std::string>())
-                                            : std::format("{} removed", change.path);
-            break;
-        case core::ChangeOp::Create:
-            part = std::format("{} created", change.path);
-            break;
-        }
-        if (!applied.note.empty()) {
-            part += std::format(" ({})", applied.note);
-        }
-        parts.push_back(std::move(part));
+        parts.push_back(RenderChangePart(applied));
     }
 
     if (parts.empty()) {

@@ -2,8 +2,11 @@
 
 #include <nlohmann/json.hpp>
 
+#include "TestPaths.h"
 #include "context/StateView.h"
 #include "context/Transcript.h"
+#include "context/WorldReference.h"
+#include "core/World.h"
 
 using namespace morpheus;
 
@@ -72,4 +75,43 @@ TEST_CASE("RenderTranscript turns each turn into a user and an assistant message
     CHECK(messages[1].content == "You slip and hit the deck.");
     CHECK(messages[2].content == "I wait."); // No mechanics: no extra line.
     CHECK(messages[3].content == "Nothing happens.");
+}
+
+TEST_CASE("RenderWorldReference lists checks, stats and entity types", "[context]")
+{
+    const core::World world = core::LoadWorld(test::TestDataDir() / "worlds" / "mini");
+    CHECK(context::RenderWorldReference(world) ==
+          "# Game reference\n"
+          "Checks roll 1d20+stat and succeed at or above the difficulty: easy 8, hard 16.\n"
+          "Stats (int fields of player): agility.\n"
+          "Entity types:\n"
+          "- character: agility (int 0..5), health (int 0..10), inventory (counter), location (string)\n"
+          "- npc (creatable): disposition (enum: wary, friendly)\n");
+}
+
+TEST_CASE("RenderMechanicsLine covers every change form", "[context]")
+{
+    core::TurnRecord record;
+    core::CheckResult success;
+    success.total = 18;
+    success.target = 8;
+    success.success = true;
+    record.checks = {{"grit", "easy", "", success}};
+    record.applied = {
+        {core::Change{core::ChangeOp::Add, "player.inventory.water", 2, ""}, ""},
+        {core::Change{core::ChangeOp::Add, "player.inventory.rope", -1, ""}, "none left"},
+        {core::Change{core::ChangeOp::Remove, "player.conditions", "tired", ""}, ""},
+    };
+    CHECK(context::RenderMechanicsLine(record) ==
+          "[grit vs easy: 18/8 success; player.inventory.water +2; player.inventory.rope -1 (none left); "
+          "player.conditions -tired]");
+    CHECK(context::RenderChangePart(record.applied[1]) == "player.inventory.rope -1 (none left)");
+}
+
+TEST_CASE("RenderStateView prints list items and an empty state", "[context]")
+{
+    CHECK(context::RenderStateView(nlohmann::json::object()).empty());
+    const nlohmann::json state = nlohmann::json::parse(
+        R"({"player": {"type": "captain", "fields": {"conditions": ["tired", "hungry"]}}})");
+    CHECK(context::RenderStateView(state) == "player (captain): conditions [tired, hungry]\n");
 }

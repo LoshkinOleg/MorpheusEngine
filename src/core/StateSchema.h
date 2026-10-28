@@ -49,6 +49,9 @@ public:
     // nullptr when the type does not exist.
     const EntityTypeDef* FindEntityType(const std::string& typeName) const;
 
+    // Every entity type, by name.
+    const std::map<std::string, EntityTypeDef>& EntityTypes() const;
+
     // Every field of the type at its default: the declared "default", else int -> min, enum -> first value,
     // string -> "", list -> [], counter -> {}. Throws ContractError for an unknown type.
     nlohmann::json DefaultFields(const std::string& typeName) const;

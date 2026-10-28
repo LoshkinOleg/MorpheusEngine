@@ -240,6 +240,11 @@ const EntityTypeDef* StateSchema::FindEntityType(const std::string& typeName) co
     return it == _entityTypes.end() ? nullptr : &it->second;
 }
 
+const std::map<std::string, EntityTypeDef>& StateSchema::EntityTypes() const
+{
+    return _entityTypes;
+}
+
 nlohmann::json StateSchema::DefaultFields(const std::string& typeName) const
 {
     const EntityTypeDef* pType = FindEntityType(typeName);
