@@ -4,7 +4,6 @@
 #include <array>
 #include <cstddef>
 #include <format>
-#include <iterator>
 #include <utility>
 
 #include "core/Dice.h"
@@ -33,6 +32,13 @@ nlohmann::json Telemetry(const inference::Completion& completion)
             {"evaluated", completion.tokensEvaluated},   {"generated", completion.tokensGenerated},
             {"prompt_ms", completion.promptMs},          {"generate_ms", completion.generateMs},
             {"stopped_at_limit", completion.stoppedAtLimit}};
+}
+
+// Thrown when a summary is still over summary_cap right after a condense: condensing again would only repeat it.
+core::DataError CondensedOverCap(int summaryCap, int summaryTokens)
+{
+    return core::DataError(std::format("summary_cap {} is too small for even a condensed summary ({} tokens)",
+                                       summaryCap, summaryTokens));
 }
 
 } // namespace
@@ -65,6 +71,7 @@ Session Session::Start(core::World world, core::Settings settings, const std::fi
     } catch (...) {
         // The run never started: close the database (a moved-from store holds no handle), then remove the file.
         { store::RunStore closing = std::move(store); }
+        // A file that cannot be removed is deliberately secondary: the caller needs the error that stopped the start.
         std::error_code ignored;
         std::filesystem::remove(file, ignored);
         throw;
@@ -122,6 +129,8 @@ void Session::Undo()
         throw TurnError("there is no turn to undo");
     }
     _store.TruncateAfter(latest - 1);
+    // The undone turn's notes, and folded turns whose summary went with it, must no longer be retrieved.
+    _index.SyncHistory(_store, FoldedThrough(), *_pBackend);
 }
 
 std::optional<core::TurnRecord> Session::Regenerate(const TurnCallbacks& callbacks, std::stop_token stop)
@@ -132,15 +141,38 @@ std::optional<core::TurnRecord> Session::Regenerate(const TurnCallbacks& callbac
     }
     const core::TurnRecord previous = *_store.Turn(latest);
     const nlohmann::json previousState = _store.StateAt(latest);
+    // Truncating also deletes the summaries that cover the latest turn, so they are kept for a restore.
+    const std::vector<core::Summary> previousSummaries = _store.Summaries();
+
+    // Puts the previous turn back after a cancelled or failed attempt, with its summaries, and indexes it again.
+    auto restore = [&] {
+        _store.CommitTurn(previous, previousState);
+        const bool summaryTruncated =
+            std::any_of(previousSummaries.begin(), previousSummaries.end(),
+                        [latest](const core::Summary& summary) { return summary.toTurn >= latest; });
+        if (summaryTruncated) {
+            // Those summaries ran through the latest turn, so anything the attempt folded or condensed covers turns
+            // they already cover: put every summary back exactly as it was.
+            _store.ReplaceSummaries(previousSummaries.front());
+            for (std::size_t i = 1; i < previousSummaries.size(); ++i) {
+                _store.AddSummary(previousSummaries[i]);
+            }
+        }
+        _index.SyncHistory(_store, FoldedThrough(), *_pBackend);
+    };
+
     _store.TruncateAfter(latest - 1);
     try {
+        // The previous attempt, its notes and the turns of any summary covering it are gone: they must not be
+        // retrieved for the attempt that replaces it.
+        _index.SyncHistory(_store, FoldedThrough(), *_pBackend);
         std::optional<core::TurnRecord> record = PlayTurn(previous.input, previous.attempt + 1, callbacks, stop);
         if (!record) {
-            _store.CommitTurn(previous, previousState);
+            restore();
         }
         return record;
     } catch (...) {
-        _store.CommitTurn(previous, previousState);
+        restore();
         throw;
     }
 }
@@ -149,20 +181,28 @@ bool Session::Maintain(std::stop_token stop)
 {
     const int latest = _store.LatestTurn();
     const nlohmann::json state = _store.StateAt(latest);
+    // Every pass condenses or folds. A fold shrinks the transcript, and a summary still over its cap right after a
+    // condense throws, so the loop ends.
+    bool condensed = false; // The summary was just condensed, with nothing folded into it since.
     for (;;) {
         // The next input is unknown: a placeholder tail measures the stable layers. The turn checks the real tail.
         const context::ContextInputs inputs = Inputs(state, {}, std::string(MAINTENANCE_INPUT), RESOLVE_INSTRUCTION);
         const context::Assembly assembly = context::AssembleResolvePrompt(_world, inputs, _settings.budget, *_pBackend);
         if (assembly.summaryOverBudget) {
+            if (condensed) {
+                throw CondensedOverCap(_settings.budget.summaryCap, assembly.tokens.summary);
+            }
             if (!Condense(assembly.prompt.messages.front(), latest, 0, stop)) {
                 return false;
             }
+            condensed = true;
             continue;
         }
         if (assembly.transcriptOverBudget && !inputs.transcript.empty()) {
             if (!FoldOldest(assembly.prompt.messages.front(), inputs.transcript, latest, 0, stop)) {
                 return false;
             }
+            condensed = false;
             continue;
         }
         break;
@@ -222,9 +262,9 @@ std::optional<core::TurnRecord> Session::PlayTurn(const std::string& input, int 
         throw core::ContractError("PlayTurn: unhandled EmbeddingKind");
     };
 
-    // 1. Retrieve.
-    std::vector<RetrievalHit> hits =
-        _index.Retrieve(input, ALL_SOURCES, _settings.budget.retrievalCap, RETRIEVAL_MAX_HITS, *_pBackend);
+    // 1. Retrieve. The query is cut like embedded documents, so a very long input still fits the embedding context.
+    std::vector<RetrievalHit> hits = _index.Retrieve(core::CutUtf8(input, EMBED_TEXT_CHARS), ALL_SOURCES,
+                                                     _settings.budget.retrievalCap, RETRIEVAL_MAX_HITS, *_pBackend);
 
     // 2. Resolve.
     std::optional<context::Assembly> assembly =
@@ -316,7 +356,9 @@ std::optional<context::Assembly> Session::AssembleFitting(const nlohmann::json& 
                                                           const std::string& input, std::string_view instruction,
                                                           int turn, int attempt, std::stop_token stop)
 {
-    // Every pass sheds a hit, condenses the summary below its cap, or folds turns, so the loop ends.
+    // Every pass sheds a hit, condenses the summary, or folds turns. Hits and the transcript only shrink, and a
+    // summary still over its cap right after a condense throws, so the loop ends.
+    bool condensed = false; // The summary was just condensed, with nothing folded into it since.
     for (;;) {
         const context::ContextInputs inputs = Inputs(state, hits, input, instruction);
         context::Assembly assembly = context::AssembleResolvePrompt(_world, inputs, _settings.budget, *_pBackend);
@@ -332,9 +374,13 @@ std::optional<context::Assembly> Session::AssembleFitting(const nlohmann::json& 
             continue;
         }
         if (assembly.summaryOverBudget) {
+            if (condensed) {
+                throw CondensedOverCap(_settings.budget.summaryCap, assembly.tokens.summary);
+            }
             if (!Condense(assembly.prompt.messages.front(), turn, attempt, stop)) {
                 return std::nullopt;
             }
+            condensed = true;
             continue;
         }
         // The transcript is over its budget, or the whole prompt overflows. contextOverflow is the authoritative fit
@@ -343,6 +389,7 @@ std::optional<context::Assembly> Session::AssembleFitting(const nlohmann::json& 
             if (!FoldOldest(assembly.prompt.messages.front(), inputs.transcript, turn, attempt, stop)) {
                 return std::nullopt;
             }
+            condensed = false;
             continue;
         }
         if (!hits.empty()) {

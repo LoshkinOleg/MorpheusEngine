@@ -47,8 +47,8 @@ struct TurnCallbacks {
 // Every backend call happens inside these methods, on the caller's thread (the engine worker). Not thread-safe.
 class Session {
 private:
-    core::World _world;     // Set by the constructor.
-    core::Settings _settings;
+    core::World _world = {}; // Set by the constructor.
+    core::Settings _settings = {};
     core::MemoryMode _mode = core::MemoryMode::Engine;
     store::RunStore _store; // Set by the constructor.
     inference::LlmBackend* _pBackend = nullptr; // Not owned; outlives the session.
@@ -70,19 +70,23 @@ public:
     // Plays one turn: retrieve, (assisted mode: look up), resolve, apply, narrate, commit. Control characters other
     // than newline and tab are stripped from `input` and it is trimmed. Returns the committed record, or nullopt
     // when `stop` cancelled the turn (nothing is committed). Throws TurnError for an empty input or one that does
-    // not fit, and InferenceError from the backend (nothing is committed).
+    // not fit, DataError when summary_cap is too small for even a condensed summary, and InferenceError from the
+    // backend (nothing is committed).
     std::optional<core::TurnRecord> RunTurn(std::string_view input, const TurnCallbacks& callbacks,
                                             std::stop_token stop);
 
-    // Removes the latest turn. Throws TurnError when there is none.
+    // Removes the latest turn, with its notes and any summary covering it, from the run and from retrieval.
+    // Throws TurnError when there is none.
     void Undo();
 
     // Plays the latest turn's input again as a new attempt: same dice, newly sampled text. If it is cancelled or
-    // fails, the previous turn is put back. Throws TurnError when there is no turn.
+    // fails, the previous turn is put back with the summaries that covered it. Throws TurnError when there is no
+    // turn.
     std::optional<core::TurnRecord> Regenerate(const TurnCallbacks& callbacks, std::stop_token stop);
 
     // Between-turn upkeep: folds or condenses while the transcript or the summary is over budget, then indexes
-    // folded turns and notes. Returns false if `stop` cancelled it (it can simply run again later).
+    // folded turns and notes. Returns false if `stop` cancelled it (it can simply run again later). Throws DataError
+    // when summary_cap is too small for even a condensed summary.
     bool Maintain(std::stop_token stop);
 
     const store::RunMeta& Meta() const;

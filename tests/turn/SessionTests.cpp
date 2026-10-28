@@ -1,8 +1,10 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <cstddef>
 #include <filesystem>
 #include <optional>
+#include <stdexcept>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -66,6 +68,31 @@ test::ScriptedBackend::Responder Responder(std::string resolve, std::string narr
 fs::path NewRunFile(const std::string& name)
 {
     return test::FreshTempDir(name) / "run.db";
+}
+
+// For a context of 3000 with 2000-byte narrations. FakeBackend counts 1 token per 4 bytes: L0+L1 is about 477
+// tokens, so L3 gets about 1255, while each turn adds about 520. Two turns fit the transcript, three do not.
+core::Settings FoldingSettings()
+{
+    core::Settings settings = TestSettings();
+    settings.budget = {64, 600, 200, 400, 1024, 1024, 512, 100};
+    return settings;
+}
+
+// FoldingSettings with room in the tail for one history snippet (about 160 tokens): the tail allowance and the
+// retrieval cap grow by 200, so a context of 3200 keeps the transcript budget near 1255.
+core::Settings RetrievingFoldingSettings()
+{
+    core::Settings settings = FoldingSettings();
+    settings.budget.tailAllowance += 200;
+    settings.budget.retrievalCap += 200;
+    return settings;
+}
+
+// The resolve prompt's tail (its last message): state, retrieved snippets, input and instruction.
+std::string Tail(const inference::Prompt& prompt)
+{
+    return prompt.messages.back().content;
 }
 
 } // namespace
@@ -187,12 +214,10 @@ TEST_CASE("Regenerate keeps the rolls and samples new text", "[session]")
 
 TEST_CASE("Folding keeps every prompt within the context", "[session]")
 {
-    core::Settings settings = TestSettings();
-    // FakeBackend counts 1 token per 4 bytes: the system message is about 700 tokens, so L3 gets about 1000, while
-    // each turn adds about 520 (a 2000-byte narration). Folding must start by the third turn.
-    settings.budget = {64, 600, 200, 400, 1024, 1024, 512, 100};
+    // Two turns fit the transcript and three do not (FoldingSettings), so folding must start by the third turn.
     test::ScriptedBackend backend(3000, Responder(MOVE, std::string(2000, 'w')));
-    turn::Session session = turn::Session::Start(MiniWorld(), settings, NewRunFile("session_folding"), 42, backend);
+    turn::Session session =
+        turn::Session::Start(MiniWorld(), FoldingSettings(), NewRunFile("session_folding"), 42, backend);
 
     for (int i = 0; i < 6; ++i) {
         REQUIRE(session.RunTurn("I walk.", {}, {}));
@@ -237,4 +262,239 @@ TEST_CASE("Player input is cleaned and must not be empty", "[session]")
     REQUIRE(record);
     CHECK(record->input == "I walk.");
     CHECK_THROWS_AS(session.RunTurn(" \x02 ", {}, {}), turn::TurnError);
+}
+
+TEST_CASE("Load refuses a run whose latest state no longer fits the world's schema", "[session]")
+{
+    test::ScriptedBackend backend(16384, Responder(MOVE));
+    const fs::path file = NewRunFile("session_load_schema");
+    {
+        turn::Session session = turn::Session::Start(MiniWorld(), TestSettings(), file, 42, backend);
+        REQUIRE(session.RunTurn("I walk.", {}, {})); // location becomes "lighthouse".
+    }
+
+    // The location becomes an enum without "lighthouse": the initial state still fits, the stored state does not.
+    const fs::path editedFolder = test::FreshTempDir("session_load_schema_world") / "mini";
+    fs::copy(test::TestDataDir() / "worlds" / "mini", editedFolder, fs::copy_options::recursive);
+    test::WriteFile(editedFolder / "state_schema.json", R"({
+  "entity_types": {
+    "character": {
+      "fields": {
+        "health": { "type": "int", "min": 0, "max": 10 },
+        "agility": { "type": "int", "min": 0, "max": 5 },
+        "location": { "type": "enum", "values": ["shore"] },
+        "inventory": { "type": "counter" }
+      }
+    }
+  }
+}
+)");
+    CHECK_THROWS_AS(turn::Session::Load(core::LoadWorld(editedFolder), TestSettings(), file, backend), core::DataError);
+}
+
+TEST_CASE("Regenerate puts the previous turn back when the new attempt fails", "[session]")
+{
+    int resolves = 0;
+    test::ScriptedBackend backend(16384, [&resolves](const inference::Prompt& prompt, const inference::GenerationSpec& spec) {
+        if (spec.grammar.find("intent") != std::string::npos && ++resolves == 2) {
+            throw inference::InferenceError("the model stopped responding");
+        }
+        return Responder(MOVE, "You walk to the lighthouse.")(prompt, spec);
+    });
+    turn::Session session =
+        turn::Session::Start(MiniWorld(), TestSettings(), NewRunFile("session_regenerate_fail"), 42, backend);
+    REQUIRE(session.RunTurn("I walk to the lighthouse.", {}, {}));
+
+    CHECK_THROWS_AS(session.Regenerate({}, {}), inference::InferenceError);
+    REQUIRE(session.History().size() == 1);
+    CHECK(session.History()[0].attempt == 0);
+    CHECK(session.History()[0].narration == "You walk to the lighthouse.");
+    CHECK(session.State().at("player").at("fields").at("location") == "lighthouse");
+}
+
+TEST_CASE("Undo takes undone turns out of retrieval", "[session]")
+{
+    test::ScriptedBackend backend(3200, Responder(MOVE, std::string(2000, 'w')));
+    turn::Session session =
+        turn::Session::Start(MiniWorld(), RetrievingFoldingSettings(), NewRunFile("session_undo_index"), 42, backend);
+
+    // Three turns, then Maintain folds turn 1, which becomes searchable history: the next turn retrieves it.
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(session.RunTurn("I walk.", {}, {}));
+    }
+    REQUIRE(session.Maintain({}));
+    REQUIRE(session.Summaries().size() == 1);
+    REQUIRE(session.Summaries()[0].toTurn == 1);
+    REQUIRE(session.RunTurn("I walk.", {}, {}));
+    REQUIRE_THAT(Tail(session.LastAssembly().prompt), ContainsSubstring("Turn 1:"));
+
+    // Undoing below the summary deletes it and turn 1: the new turn 1 must not retrieve the undone one.
+    for (int i = 0; i < 4; ++i) {
+        session.Undo();
+    }
+    REQUIRE(session.Summaries().empty());
+    REQUIRE(session.RunTurn("I walk.", {}, {}));
+    CHECK_THAT(Tail(session.LastAssembly().prompt), !ContainsSubstring("Turn 1:"));
+}
+
+TEST_CASE("A cancelled regenerate keeps the summary that covers the latest turn", "[session]")
+{
+    // A 6000-byte narration (about 1500 tokens) is over the transcript budget on its own, so Maintain folds turn 1.
+    test::ScriptedBackend backend(3200, Responder(MOVE, std::string(6000, 'w')));
+    turn::Session session = turn::Session::Start(MiniWorld(), RetrievingFoldingSettings(),
+                                                 NewRunFile("session_regenerate_fold"), 42, backend);
+    REQUIRE(session.RunTurn("I walk.", {}, {}));
+    REQUIRE(session.Maintain({}));
+    REQUIRE(session.Summaries().size() == 1);
+    REQUIRE(session.Summaries()[0].toTurn == 1);
+
+    // The attempt is cancelled at its resolve call, whose prompt must not retrieve the attempt it replaces.
+    std::stop_source stop;
+    stop.request_stop();
+    CHECK_FALSE(session.Regenerate({}, stop.get_token()));
+    const auto& calls = backend.Calls();
+    REQUIRE_FALSE(calls.empty());
+    REQUIRE_THAT(calls.back().spec.grammar, ContainsSubstring("intent"));
+    CHECK_THAT(Tail(calls.back().prompt), !ContainsSubstring("Turn 1:"));
+
+    // Turn 1 is back, with its summary, and searchable again.
+    REQUIRE(session.History().size() == 1);
+    CHECK(session.History()[0].attempt == 0);
+    const std::vector<core::Summary> summaries = session.Summaries();
+    REQUIRE(summaries.size() == 1);
+    CHECK(summaries[0].fromTurn == 1);
+    CHECK(summaries[0].toTurn == 1);
+    REQUIRE(session.RunTurn("I walk.", {}, {}));
+    CHECK_THAT(Tail(session.LastAssembly().prompt), ContainsSubstring("Turn 1:"));
+}
+
+TEST_CASE("A summary_cap too small for a condensed summary throws instead of condensing forever", "[session]")
+{
+    // "# Story so far\nTurns 1-1: Summary.\n" is 9 tokens, over a cap of 8 even after condensing.
+    core::Settings settings = FoldingSettings();
+    settings.budget.summaryCap = 8;
+    // A regression would condense forever: past a call limit the responder throws, so the checks below fail.
+    int calls = 0;
+    test::ScriptedBackend backend(3000, [&calls](const inference::Prompt& prompt, const inference::GenerationSpec& spec) {
+        if (++calls > 50) {
+            throw std::runtime_error("runaway: more than 50 model calls");
+        }
+        return Responder(MOVE, std::string(2000, 'w'))(prompt, spec);
+    });
+    turn::Session session = turn::Session::Start(MiniWorld(), settings, NewRunFile("session_summary_cap"), 42, backend);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(session.RunTurn("I walk.", {}, {}));
+    }
+
+    SECTION("in Maintain")
+    {
+        CHECK_THROWS_AS(session.Maintain({}), core::DataError);
+    }
+    SECTION("in the turn")
+    {
+        CHECK_THROWS_AS(session.RunTurn("I walk.", {}, {}), core::DataError);
+        CHECK(session.History().size() == 3);
+    }
+}
+
+TEST_CASE("A turn folds the transcript itself when it is over budget", "[session]")
+{
+    test::ScriptedBackend backend(3000, Responder(MOVE, std::string(2000, 'w')));
+    turn::Session session =
+        turn::Session::Start(MiniWorld(), FoldingSettings(), NewRunFile("session_turn_folds"), 42, backend);
+
+    // No Maintain between turns: from the fourth turn on, the turn's own fit loop has to fold.
+    for (int i = 0; i < 6; ++i) {
+        REQUIRE(session.RunTurn("I walk.", {}, {}));
+        CHECK(session.LastAssembly().Fits());
+    }
+    const std::vector<core::Summary> summaries = session.Summaries();
+    REQUIRE_FALSE(summaries.empty());
+    CHECK(summaries.front().fromTurn == 1);
+}
+
+TEST_CASE("A turn condenses a summary that is over its cap", "[session]")
+{
+    test::ScriptedBackend backend(3000, Responder(MOVE, std::string(2000, 'w')));
+    const fs::path file = NewRunFile("session_turn_condenses");
+    {
+        // Each Maintain from the third turn on folds one turn into a summary of its own.
+        turn::Session session = turn::Session::Start(MiniWorld(), FoldingSettings(), file, 42, backend);
+        for (int i = 0; i < 6; ++i) {
+            REQUIRE(session.RunTurn("I walk.", {}, {}));
+            REQUIRE(session.Maintain({}));
+        }
+        REQUIRE(session.Summaries().size() >= 3);
+    }
+
+    // Three or more summaries are at least 19 tokens, over a cap of 16; condensed into one they are 9.
+    core::Settings smallCap = FoldingSettings();
+    smallCap.budget.summaryCap = 16;
+    turn::Session session = turn::Session::Load(MiniWorld(), smallCap, file, backend);
+    const std::size_t callsBefore = backend.Calls().size();
+    REQUIRE(session.RunTurn("I walk.", {}, {}));
+    CHECK(session.LastAssembly().Fits());
+    CHECK(session.Summaries().size() == 1);
+    bool condensed = false;
+    for (std::size_t i = callsBefore; i < backend.Calls().size(); ++i) {
+        condensed = condensed || backend.Calls()[i].prompt.messages.back().content == turn::CONDENSE_INSTRUCTION;
+    }
+    CHECK(condensed);
+}
+
+TEST_CASE("An input whose tail is over tail_allowance is a TurnError", "[session]")
+{
+    core::Settings settings = TestSettings();
+    settings.budget.tailAllowance = 300;
+    test::ScriptedBackend backend(16384, Responder(MOVE));
+    turn::Session session = turn::Session::Start(MiniWorld(), settings, NewRunFile("session_tail_error"), 42, backend);
+    CHECK_THROWS_AS(session.RunTurn(std::string(2000, 'x'), {}, {}), turn::TurnError);
+    CHECK(backend.Calls().empty());
+    CHECK(session.History().empty());
+}
+
+TEST_CASE("A prompt that overflows the context sheds retrieval hits as a last resort", "[session]")
+{
+    const std::string input = "I ask the keeper about the storm.";
+
+    // A roomy run measures the prompt with its lore hits.
+    test::ScriptedBackend roomyBackend(16384, Responder(MOVE));
+    turn::Session roomy =
+        turn::Session::Start(MiniWorld(), TestSettings(), NewRunFile("session_shed_roomy"), 42, roomyBackend);
+    const std::optional<core::TurnRecord> roomyRecord = roomy.RunTurn(input, {}, {});
+    REQUIRE(roomyRecord);
+    REQUIRE_FALSE(roomyRecord->timings.at("retrieval").empty());
+    const context::Assembly measured = roomy.LastAssembly();
+
+    // The tight run's tail allowance is exactly that tail, so the tail is not over budget, and its context is one
+    // token short of the prompt plus the narrate message and both generations (FakeBackend: 4 template tokens per
+    // message), so the prompt overflows with every hit. There is no transcript to fold: only shedding hits helps.
+    core::Settings settings = TestSettings();
+    settings.budget.tailAllowance = measured.tokens.tail;
+    const core::BudgetSettings& budget = settings.budget;
+    const int contextSize = measured.tokens.total + budget.narrateAllowance + 4 + 4 + budget.resolveMaxTokens +
+                            budget.narrateMaxTokens - 1;
+    test::ScriptedBackend tightBackend(contextSize, Responder(MOVE));
+    turn::Session tight =
+        turn::Session::Start(MiniWorld(), settings, NewRunFile("session_shed_tight"), 42, tightBackend);
+    const std::optional<core::TurnRecord> tightRecord = tight.RunTurn(input, {}, {});
+    REQUIRE(tightRecord);
+    CHECK(tight.LastAssembly().Fits());
+    CHECK(tightRecord->timings.at("retrieval").size() < roomyRecord->timings.at("retrieval").size());
+}
+
+TEST_CASE("A very long input is cut for the retrieval query", "[session]")
+{
+    core::Settings settings = TestSettings();
+    settings.budget.tailAllowance = 2048;
+    test::ScriptedBackend backend(16384, Responder(MOVE));
+    backend.SetEmbedLimit(turn::EMBED_TEXT_CHARS); // An embedding context that holds no more than that.
+    turn::Session session = turn::Session::Start(MiniWorld(), settings, NewRunFile("session_long_input"), 42, backend);
+    std::string input;
+    while (input.size() <= turn::EMBED_TEXT_CHARS) {
+        input += "I ask the keeper about the storm. ";
+    }
+    const std::optional<core::TurnRecord> record = session.RunTurn(input, {}, {});
+    REQUIRE(record);
+    CHECK(record->input.size() > turn::EMBED_TEXT_CHARS);
 }
