@@ -1,0 +1,3 @@
+add_executable(morpheus_play main.cpp)
+target_link_libraries(morpheus_play PRIVATE morpheus_turn morpheus_llama)
+morpheus_target_defaults(morpheus_play)

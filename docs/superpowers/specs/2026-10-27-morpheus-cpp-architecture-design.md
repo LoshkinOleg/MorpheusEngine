@@ -17,8 +17,9 @@ Two threads talk only through two thread-safe queues:
 
 - **UI thread:** the ImGui render loop. It never blocks.
 - **Engine worker thread:** the only owner of the llama.cpp context. Turns, summarization and embedding run here, one job at a time.
-- **Commands (UI to worker):** `StartRun`, `LoadRun`, `SubmitInput`, `Undo`, `Regenerate`, `Cancel`.
-- **Events (worker to UI):** `TokenStreamed`, `TurnResolved`, `TurnCompleted`, `StateChanged`, `Error`.
+- **Commands (UI to worker):** `StartRun`, `LoadRun`, `SubmitInput`, `UndoTurn`, `RegenerateTurn`. Cancel is `Worker::Cancel`, not a command: it interrupts the running command, and a command cancelled before it runs closes with `TurnCancelled` without running.
+- **Events (worker to UI):** `RunOpened`, `TokenStreamed`, `TurnResolved`, `TurnCompleted`, `TurnCancelled`, `StateChanged`, `MaintenanceFailed`, `Error`.
+- Every command ends with exactly one closing event. `MaintenanceFailed` reports between-turn upkeep and closes nothing.
 
 Each module is a static library. Dependencies flow downward only.
 
@@ -29,39 +30,47 @@ Each module is a static library. Dependencies flow downward only.
 | `inference` | `LlmBackend` interface and prompt types (no llama.cpp) | core |
 | `llama` | `LlamaCppBackend`: tokenize, KV prefix reuse, grammar sampling, embeddings, state save/restore. The only module linking llama.cpp; built by the `dev` preset only. | inference |
 | `context` | Layered prompt assembly, exact token budgets, cache-prefix tracking | core, inference |
-| `turn` | Turn orchestration and between-turn maintenance (embedding, folding) | all above |
+| `turn` | Turn orchestration (grammar, resolve and apply, retrieval, folding, session), the worker thread, replay recording | all above |
 | `app` | SDL3 + Dear ImGui frontend: play panel and inspectors | turn (plus read-only views) |
 
 **Build:** CMake, with dependencies pulled through FetchContent and pinned to commit SHAs: llama.cpp, nlohmann/json, SDL3, the ImGui fork, the SQLite amalgamation, Catch2 v3. Warnings are treated as errors (`/W4 /permissive-`). Debug builds use AddressSanitizer.
 
 ## Turn flow (resolve, then narrate)
 
-1. **Retrieve (engine).** Embed the player input. Rank lore entries and past turns by cosine similarity, boosting entities named in the input. Trim the result to the retrieval budget.
+1. **Retrieve (engine).** Embed the player input. Rank lore entries, folded past turns and (in `assisted` mode) notes by cosine similarity, boosting lore subjects named in the input. Take at most 6 hits by score, then trim them to `retrieval_cap` tokens. Turns still in L3 are not searchable, since they are already in the prompt.
 2. **Resolve (LLM, JSON grammar).** The model returns `{intent, checks[], changes[]}`.
    - Each check has `stat` (one of world.json `stats`), `difficulty`, `stakes`, `on_success[]` and `on_failure[]`.
    - Each change is an op: `set`, `add`, `remove` or `create` applied to a `path`, with an optional `value` and a `reason`.
-   - The grammar is generated from the world's state schema, so only valid paths and enum values can be emitted.
+   - The engine generates the GBNF grammar itself (`turn::BuildResolveGrammar`) from the live state and the schema, so only valid paths, value types and enum values can be emitted. Counter items already held are matched by name; a new item follows a generic name rule. The grammar also bounds sizes (checks, changes, text lengths), which bounds the resolution record.
+   - Output the engine cannot read (cut off at `resolve_max_tokens`, or JSON of the wrong shape) is a model mistake: the turn goes on with nothing proposed, and the narrate call still runs.
 3. **Apply (engine).** Roll each check with the run's seeded RNG and select its outcome branch. Validate each change against the schema (path exists, type, range, `create` only for creatable entity types). Apply the valid changes and record the rejected ones with a reason.
 4. **Narrate (LLM, streamed prose).** The prompt is the resolve prompt with two messages appended: the resolve output (assistant), then the engine's resolution record (rolls, outcomes, applied and rejected changes) followed by the narrate instruction (user). The model narrates the outcome. It does not decide it.
+   - The narrate message is fitted to `narrate_allowance`. While it is over, detail is shed in this order: the rejected changes, then applied changes from the end, then each check's stakes, then the intent is cut short. If it still does not fit, `narrate_allowance` is too small (a `DataError`).
 5. **Commit (engine).** Write the turn row, the state snapshot and any `assisted`-mode notes in one transaction.
 
-**Between turns, while the worker is idle:**
-- Embed the finished turn.
-- If the recent-turns layer is over budget, fold its oldest half into the story summary with one summarization call.
+**Between turns (maintenance):**
+- If the recent-turns layer is over budget, fold its oldest half into the story summary with one summarization call. If the summary is over `summary_cap`, condense the summaries into one. A `summary_cap` too small for even a condensed summary is a `DataError`.
+- If the model writes an empty summary, the engine writes one itself: a line per folded turn (its input and mechanics line), or per condensed summary, cut to the summary's size.
+- Embed the folded turns and the new notes, so retrieval can find them.
+- The worker runs maintenance while no command waits, and a new command preempts it. Before a `SubmitInput` or `RegenerateTurn`, which retrieve, a due maintenance runs to completion first, so a turn always sees the previous turn's notes.
 
-**Undo and regenerate:** delete the rows after turn N-1, reload that turn's snapshot, and re-run.
+**Undo and regenerate:** delete the rows after turn N-1, reload that turn's snapshot, and re-run. Both resync the memory index with the store, so an undone turn, its notes and any summary covering it leave retrieval too.
+- Regenerate keeps the dice (`CheckSeed`) and samples new text (`SamplingSeed` with the turn's attempt number).
+- A cancelled or failed regenerate puts the previous turn back, with the summaries that covered it.
 
-**`memory_mode` (per model/settings).** This setting decides who manages memory.
+**`memory_mode` (per world, overridable in settings).** This setting decides who manages memory. The world sets the default, and an optional `memory_mode` key in `settings.json` overrides it.
 - `engine` (default): memory is fully deterministic.
-- `assisted`: the resolve grammar additionally allows:
-  - up to N `lookup` requests (lore or history) before resolving, with results appended to the tail;
-  - append-only `notes`.
+- `assisted`: the model additionally gets:
+  - a lookup call before resolving: up to 3 `lookup` requests (lore, history or notes), with results appended to the tail;
+  - append-only `notes` in the resolve output.
+- Notes are embedded and retrieved (T2), not pinned in L2, so the cached prefix stays stable.
 
 The model never edits or deletes memory.
 
 **Error policy.** Engine bugs and model mistakes are handled differently.
 - **Engine bugs** (broken invariants, corrupt data, bad world files): assert or throw, and fail loudly.
-- **Model mistakes** (invalid changes, unknown entities, lookups over budget): reject, log and show in the inspector, then continue the turn. Grammars guarantee the output parses, so v1 has no retry loops.
+- **Model mistakes** (invalid changes, unknown entities, unreadable output, lookups over budget): reject, log and show in the inspector, then continue the turn. Grammars guarantee the output parses, so v1 has no retry loops.
+- **A turn that cannot run as asked** (nothing to undo or regenerate, an empty input, an input too long for the tail): `TurnError`, with a message for the player. Nothing changes.
 
 ## Context layout and KV cache
 
@@ -102,9 +111,9 @@ LlmBackend
 
 - `LlamaCppBackend` loads two GGUF models in-process: a chat model and an embedding model. It is built with Vulkan.
 - `save_state`/`restore_state` carry the cached token list together with the KV sequence state, so prefix reuse still works after a restore.
-- The backend takes grammar text from the caller (`GenerationSpec.grammar`, GBNF). Generating it from the state schema is milestone 3.
-- JSON schemas are converted to GBNF grammars with llama.cpp's json-schema-to-grammar (milestone 3).
-- `settings.json` holds the model paths, `n_ctx`, the number of GPU layers, sampling per call type (resolve runs cooler, narrate warmer) and the token budget; `memory_mode` is added with the turn layer (milestone 3).
+- The backend takes grammar text from the caller (`GenerationSpec.grammar`, GBNF). The resolve and lookup grammars are generated by `turn::BuildResolveGrammar` / `BuildLookupGrammar`.
+- Grammar sampling checks the sampled token first: the sampler chain picks a token, and only that token is checked against the grammar. Only if the grammar rejects it is the full candidate set masked and the token sampled again. The output always satisfies the grammar.
+- `settings.json` holds the model paths, `n_ctx`, the number of GPU layers, sampling per call type (resolve runs cooler, narrate warmer), the token budget (including `retrieval_cap`) and an optional `memory_mode`.
 
 ## World data and persistence
 
@@ -128,6 +137,8 @@ saves/<id>/<run>.db
 | `notes` | append-only model notes (`assisted` mode), committed in the same transaction as their turn |
 | `embeddings` | kind, ref id, embedding model, content hash of the embedded text, vector |
 
+Changes are validated against the schema: the path exists, the value has the field's type and range, and `create` is only for creatable entity types. Removing more of a counted item than is held is rejected; reaching exactly 0 removes the item.
+
 Rows are append-only, except that undo removes the rows after the target turn. Similarity search is brute-force cosine in memory. Each embedding stores the hash of the text it was computed from, and a changed hash means the vector is re-computed.
 
 World files are read with CRLF normalized to LF. The world content hash covers each file's name, length and text, so a saved run can detect world edits reliably across checkouts.
@@ -147,7 +158,7 @@ World files are read with CRLF normalized to LF. The world content hash covers e
 
 - **`core` unit tests:** validation, change ops, dice, schema-to-grammar output.
 - **`context` tests:** layer assembly, budgets and folding triggers, using a fake tokenizer.
-- **Replay tests:** a `ScriptedBackend` returns recorded completions, so full turns run deterministically and the tests assert on state and database rows. A record mode turns real play sessions into fixtures.
+- **Replay tests:** a `ScriptedBackend` returns recorded completions, so full turns run deterministically and the tests assert on state and database rows. Replay fixtures live in `tests/data/replays` and are recorded from real play with `morpheus_play --record`.
 
 ## Carried over from the C# version
 

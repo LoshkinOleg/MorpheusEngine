@@ -130,6 +130,7 @@ add_subdirectory(src/turn)
 if(MORPHEUS_BUILD_LLAMA)
     add_subdirectory(src/llama)
     add_subdirectory(tools/probe)
+    add_subdirectory(tools/play)
 endif()
 
 # ---- App (prototype, replaced in milestone 4) --------------------------

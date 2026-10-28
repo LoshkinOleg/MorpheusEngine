@@ -1,0 +1,162 @@
+{
+  "expected": {
+    "final_state": {
+      "crawler": {
+        "fields": {
+          "ammunition": 40,
+          "cargo": {},
+          "crew": 20,
+          "food": 50,
+          "fuel": 60,
+          "hull": 100,
+          "location": "open desert",
+          "morale": "steady",
+          "vehicles": {
+            "sand_bike": 2
+          },
+          "water": 50
+        },
+        "type": "crawler"
+      },
+      "player": {
+        "fields": {
+          "agility": 1,
+          "conditions": [
+            "water_rationing"
+          ],
+          "grit": 2,
+          "health": 10,
+          "inventory": {
+            "compass": 2,
+            "pistol": 1
+          },
+          "location": "open desert",
+          "presence": 2,
+          "wits": 3
+        },
+        "type": "captain"
+      },
+      "world": {
+        "fields": {
+          "day": 1,
+          "time_of_day": "dawn"
+        },
+        "type": "world"
+      }
+    },
+    "turns": [
+      {
+        "applied": [
+          {
+            "change": {
+              "op": "set",
+              "path": "player.location",
+              "reason": "The player is still in the open desert, no change in location.",
+              "value": "open desert"
+            },
+            "note": ""
+          }
+        ],
+        "checks": [],
+        "input": "I check the fuel gauge.",
+        "narration": "The fuel gauge reads steady—60% full. The numbers are clear, the needle not flickering. You know the crawler’s range is still good, and with the desert stretching out in every direction, there’s no immediate need to worry. But the wind carries a low hum, like distant engines waking up. The sun climbs higher, and the sand shifts beneath your feet, whispering of routes long forgotten. Ahead, the dunes rise like silent sentinels. You’ve heard stories of sandstorms that follow the wind patterns—some say they only come when a crawler passes through a certain point. You don’t know if it’s true. But you also know that the open desert doesn’t care about your fuel levels. It only watches.  \n\nWhat do you do next?",
+        "number": 1,
+        "rejected": []
+      },
+      {
+        "applied": [
+          {
+            "change": {
+              "op": "set",
+              "path": "player.location",
+              "reason": "player remains on the crawler's roof, still in the open desert",
+              "value": "open desert"
+            },
+            "note": ""
+          },
+          {
+            "change": {
+              "op": "add",
+              "path": "player.inventory.compass",
+              "reason": "player uses the compass to scan the horizon",
+              "value": 1
+            },
+            "note": ""
+          }
+        ],
+        "checks": [],
+        "input": "I climb onto the roof and scan the horizon with the compass.",
+        "narration": "The compass spins gently in your hands, its needle trembling slightly with the wind. You lift it to your eye and point it toward the horizon. The desert stretches endlessly—one side a flat expanse of dunes, the other a jagged silhouette of a rocky ridge you’ve never seen before. The needle doesn’t settle, but it doesn’t spin wildly either. Something is off. The alignment doesn’t match any known route. You remember the elders saying that certain dunes shift with the wind, and that some patterns repeat only after storms. The sky above is clear, but the wind carries the scent of dry stone and distant dust.  \n\nThe ridge ahead seems wrong—too sharp, too isolated. It doesn’t appear on any map. And yet, you feel it in your bones. You don’t know why, but you *know* it’s not supposed to be there.  \n\nWhat do you do next?",
+        "number": 2,
+        "rejected": []
+      },
+      {
+        "applied": [
+          {
+            "change": {
+              "op": "add",
+              "path": "player.conditions",
+              "reason": "Crew begins water rationing; player marks this condition to track ongoing policy",
+              "value": "water_rationing"
+            },
+            "note": ""
+          }
+        ],
+        "checks": [],
+        "input": "I order the crew to ration water, half portions for everyone.",
+        "narration": "The order is given, quiet and firm. The crew exchanges a glance—some nod, others look uneasy—but no one argues. Water is rationed: half a cup per person, measured with a chipped ceramic spoon. You know the crew will survive, but the silence in the air feels heavier now. The desert holds its breath.  \n\nA distant wind carries a whisper, not of sand, but of dry roots—like something deep beneath the ground is stirring. You don’t know where it comes from.  \n\nThe compass still spins, its needle pointing not at the ridge, but at a pattern you didn’t see before—a faint line across the dunes, like a buried path.  \n\nWhat do you do next?",
+        "number": 3,
+        "rejected": [
+          {
+            "raw": {
+              "op": "add",
+              "path": "player.inventory.water",
+              "reason": "Player orders crew to ration water, reducing personal consumption by half; one unit of water is consumed from the shared",
+              "value": -10
+            },
+            "reason": "no item 'water' to decrease"
+          }
+        ]
+      }
+    ]
+  },
+  "memory_mode": "engine",
+  "replies": {
+    "narrate": [
+      "The fuel gauge reads steady—60% full. The numbers are clear, the needle not flickering. You know the crawler’s range is still good, and with the desert stretching out in every direction, there’s no immediate need to worry. But the wind carries a low hum, like distant engines waking up. The sun climbs higher, and the sand shifts beneath your feet, whispering of routes long forgotten. Ahead, the dunes rise like silent sentinels. You’ve heard stories of sandstorms that follow the wind patterns—some say they only come when a crawler passes through a certain point. You don’t know if it’s true. But you also know that the open desert doesn’t care about your fuel levels. It only watches.  \n\nWhat do you do next?",
+      "The compass spins gently in your hands, its needle trembling slightly with the wind. You lift it to your eye and point it toward the horizon. The desert stretches endlessly—one side a flat expanse of dunes, the other a jagged silhouette of a rocky ridge you’ve never seen before. The needle doesn’t settle, but it doesn’t spin wildly either. Something is off. The alignment doesn’t match any known route. You remember the elders saying that certain dunes shift with the wind, and that some patterns repeat only after storms. The sky above is clear, but the wind carries the scent of dry stone and distant dust.  \n\nThe ridge ahead seems wrong—too sharp, too isolated. It doesn’t appear on any map. And yet, you feel it in your bones. You don’t know why, but you *know* it’s not supposed to be there.  \n\nWhat do you do next?",
+      "The order spreads through the crew like a ripple through sand. They nod, eyes sharp with discipline, and begin adjusting their daily use of water—less for washing, less for cooking, less for drinking. You feel the weight of it in the air, a quiet tension that settles into the bones of the crawler. The water level in the tanks drops by five units, a small mark, but it’s real. The crew knows the risk: if an oasis dries up, they’ll be stranded. You’ve seen what happens when the water runs out. The desert doesn’t forgive.  \n\nBut the horizon still holds secrets. That jagged ridge—still unmapped—now pulses with a faint, unnatural stillness. The wind seems to pause when it passes near it. You can’t ignore it.  \n\nWhat do you do next?",
+      "The order is passed through the crew, and for a moment, silence falls over the crawler. Then, the voices begin—low, measured, like a rhythm beneath the wind. Half the water is now shared, rationed carefully, each person given only what they need to survive. The air tastes drier, the sand sharper. You feel it in your skin, the weight of the decision. Your wits flicker, drained by the effort of making it official.  \n\nBut the crew doesn’t react with anger. They don’t complain. They simply begin to follow the new rules, their eyes scanning the horizon with more purpose now. Still, one of the younger crew members, who always talks too much, mutters something about the desert not being fair. You don’t answer. You know what’s coming.  \n\nAhead, the ridge shifts in the wind. A new shadow forms in the sand.  \n\nWhat do you do next?",
+      "The order is given, quiet and firm. The crew exchanges a glance—some nod, others look uneasy—but no one argues. Water is rationed: half a cup per person, measured with a chipped ceramic spoon. You know the crew will survive, but the silence in the air feels heavier now. The desert holds its breath.  \n\nA distant wind carries a whisper, not of sand, but of dry roots—like something deep beneath the ground is stirring. You don’t know where it comes from.  \n\nThe compass still spins, its needle pointing not at the ridge, but at a pattern you didn’t see before—a faint line across the dunes, like a buried path.  \n\nWhat do you do next?"
+    ],
+    "resolve": [
+      "{\"intent\":\"He checks the fuel gauge.\",\"checks\":[],\"changes\":[{\"op\":\"set\",\"path\":\"player.location\",\"value\":\"open desert\",\"reason\":\"The player is still in the open desert, no change in location.\"}]}",
+      "{\"intent\":\"scan horizon with compass\",\"checks\":[],\"changes\":[{\"op\":\"set\",\"path\":\"player.location\",\"value\":\"open desert\",\"reason\":\"player remains on the crawler's roof, still in the open desert\"},{\"op\":\"add\",\"path\":\"player.inventory.compass\",\"value\":1,\"reason\":\"player uses the compass to scan the horizon\"}]}",
+      "{\"intent\":\"He orders the crew to ration water.\",\"checks\":[],\"changes\":[{\"op\":\"add\",\"path\":\"player.conditions\",\"value\":\"water_rationing_initiated\",\"reason\":\"Player orders crew to ration water.\"},{\"op\":\"add\",\"path\":\"player.inventory.water\",\"value\":-5,\"reason\":\"Water rationing reduces daily consumption by 5 units.\"},{\"op\":\"add\",\"path\":\"crawler.water\",\"value\":-5,\"reason\":\"Crew rationing reduces crawler's water reserves by 5 units.\"}]}",
+      "{\"intent\":\"He orders the crew to ration water, cutting portions in half.\",\"checks\":[],\"changes\":[{\"op\":\"add\",\"path\":\"player.inventory.water\",\"value\":-1,\"reason\":\"Player orders crew to ration water, reducing personal consumption by half, thus consuming one unit of water from the ral\"},{\"op\":\"add\",\"path\":\"player.conditions\",\"value\":\"water_rationing\",\"reason\":\"Player implements water rationing, marking the crew's current state\"},{\"op\":\"add\",\"path\":\"player.wits\",\"value\":-1,\"reason\":\"Player makes a decision that requires mental effort and coordination, reducing wits by one\"}]}",
+      "{\"intent\":\"He orders the crew to ration water, giving half portions to each member.\",\"checks\":[],\"changes\":[{\"op\":\"add\",\"path\":\"player.inventory.water\",\"value\":-10,\"reason\":\"Player orders crew to ration water, reducing personal consumption by half; one unit of water is consumed from the shared\"},{\"op\":\"add\",\"path\":\"player.conditions\",\"value\":\"water_rationing\",\"reason\":\"Crew begins water rationing; player marks this condition to track ongoing policy\"}]}"
+    ]
+  },
+  "seed": 1234,
+  "steps": [
+    {
+      "input": "I check the fuel gauge."
+    },
+    {
+      "input": "I climb onto the roof and scan the horizon with the compass."
+    },
+    {
+      "input": "I order the crew to ration water."
+    },
+    {
+      "undo": true
+    },
+    {
+      "input": "I order the crew to ration water, half portions for everyone."
+    },
+    {
+      "regenerate": true
+    }
+  ],
+  "world": "game_projects/sandcrawler"
+}

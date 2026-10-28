@@ -11,7 +11,7 @@ Local-first, LLM-driven text RPG engine in C++20. The repository owner acts as p
 ## Build and test (Windows, Visual Studio 2022, CMake >= 3.25, Git Bash)
 - Fast loop (engine libraries + tests, no llama.cpp/SDL/ImGui): `cmake --preset tests`, `cmake --build --preset tests`, `ctest --preset tests`
 - AddressSanitizer: the same three commands with preset `asan`
-- `tests` and `asan` build without llama.cpp. `dev` builds everything, including llama.cpp with Vulkan (needs the Vulkan SDK), the app and `morpheus_probe`.
+- `tests` and `asan` build without llama.cpp. `dev` builds everything, including llama.cpp with Vulkan (needs the Vulkan SDK), the app, `morpheus_probe` and `morpheus_play`.
 - Model-backed tests are tagged `[llama]` and skip unless `MORPHEUS_TEST_CHAT_MODEL` and `MORPHEUS_TEST_EMBED_MODEL` point at the two GGUF files in `models/`.
 - One tag or test case: `./build/tests/bin/Debug/morpheus_tests.exe "[csv]"`
 
@@ -20,8 +20,10 @@ Local-first, LLM-driven text RPG engine in C++20. The repository owner acts as p
 - src/store: one SQLite database per run.
 - src/inference: the LlmBackend interface and its types. No llama.cpp.
 - src/context: layered prompt assembly with exact token budgets.
-- src/llama: the llama.cpp backend (`dev` preset only). Only this module and tools/probe include <llama.h>.
+- src/turn: turn orchestration: grammar, resolve and apply, retrieval, folding, session, worker, replay.
+- src/llama: the llama.cpp backend (`dev` preset only). Only this module, tools/probe and tools/play include <llama.h>.
 - tools/probe: `morpheus_probe`, a manual check of the models, the Vulkan backend and KV-cache reuse (`dev` preset only).
+- tools/play: `morpheus_play`, the terminal player; `--record` writes a replay fixture for tests/data/replays (`dev` preset only).
 - models/ and settings.json: both gitignored, per machine. settings.example.json is the template.
 - src/main.cpp: prototype app, replaced in milestone 4.
 - tests/: Catch2 tests (every tests/**/*.cpp is compiled in), tests/data: test worlds.
