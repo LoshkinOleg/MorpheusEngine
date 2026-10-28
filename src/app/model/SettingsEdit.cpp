@@ -1,7 +1,9 @@
 #include "app/model/SettingsEdit.h"
 
+#include <cstddef>
 #include <format>
 #include <fstream>
+#include <string>
 #include <system_error>
 
 #include <nlohmann/json.hpp>
@@ -68,41 +70,61 @@ core::Settings SaveSettingsEdit(const std::filesystem::path& file, const Setting
         return nlohmann::ordered_json{
             {"temperature", sampling.temperature}, {"top_k", sampling.topK}, {"top_p", sampling.topP}};
     };
-    json["chat_model"] = edit.chatModel;
-    json["embedding_model"] = edit.embeddingModel;
-    json["context_size"] = edit.contextSize;
-    json["gpu_layers"] = edit.gpuLayers;
-    json["sampling"]["resolve"] = samplingJson(edit.resolveSampling);
-    json["sampling"]["narrate"] = samplingJson(edit.narrateSampling);
-    if (edit.memoryMode) {
-        json["memory_mode"] = *edit.memoryMode == core::MemoryMode::Engine ? "engine" : "assisted";
-    } else {
-        json.erase("memory_mode");
+    try {
+        json["chat_model"] = edit.chatModel;
+        json["embedding_model"] = edit.embeddingModel;
+        json["context_size"] = edit.contextSize;
+        json["gpu_layers"] = edit.gpuLayers;
+        json["sampling"]["resolve"] = samplingJson(edit.resolveSampling);
+        json["sampling"]["narrate"] = samplingJson(edit.narrateSampling);
+        if (edit.memoryMode) {
+            json["memory_mode"] = *edit.memoryMode == core::MemoryMode::Engine ? "engine" : "assisted";
+        } else {
+            json.erase("memory_mode");
+        }
+    } catch (const nlohmann::json::exception& error) {
+        // Valid JSON of the wrong shape, such as "sampling": [] or a top-level array.
+        throw core::DataError(std::format("{}: {}", core::PathText(file), error.what()));
     }
 
     // Check the result with the real loader before replacing anything. The check file sits beside the settings
     // file, so relative model paths resolve the same way.
     std::filesystem::path checkFile = file;
     checkFile += ".new";
-    {
-        std::ofstream stream(checkFile, std::ios::binary | std::ios::trunc);
-        stream << json.dump(2) << '\n';
-        stream.close();
-        if (stream.fail()) {
-            throw core::DataError(std::format("cannot write {}", core::PathText(checkFile)));
-        }
-    }
-    core::Settings settings;
     try {
-        settings = core::LoadSettings(checkFile);
-    } catch (const core::DataError&) {
-        // The settings error is what the player needs; a check file that will not delete must not replace it.
+        {
+            std::ofstream stream(checkFile, std::ios::binary | std::ios::trunc);
+            stream << json.dump(2) << '\n';
+            stream.close();
+            if (stream.fail()) {
+                throw core::DataError(std::format("cannot write {}", core::PathText(checkFile)));
+            }
+        }
+        core::Settings settings;
+        try {
+            settings = core::LoadSettings(checkFile);
+        } catch (const core::DataError& error) {
+            // The loader names the check file; the player knows only the settings file.
+            std::string message = error.what();
+            const std::string checkText = core::PathText(checkFile);
+            for (std::size_t at = message.find(checkText); at != std::string::npos; at = message.find(checkText, at)) {
+                message.replace(at, checkText.size(), core::PathText(file));
+            }
+            throw core::DataError(message);
+        }
+        std::error_code renameError;
+        std::filesystem::rename(checkFile, file, renameError); // Replaces the settings file in one step.
+        if (renameError) {
+            throw core::DataError(std::format("cannot replace {}: {}", core::PathText(file), renameError.message()));
+        }
+        return settings;
+    } catch (...) {
+        // Whatever failed, the settings file is as it was and no check file stays behind. A check file that will not
+        // delete must not replace the error the player needs.
         std::error_code ignored;
         std::filesystem::remove(checkFile, ignored);
         throw;
     }
-    std::filesystem::rename(checkFile, file); // Replaces the settings file in one step.
-    return settings;
 }
 
 } // namespace morpheus::app

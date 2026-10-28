@@ -41,17 +41,18 @@ struct UndoTurn {};
 struct RegenerateTurn {};
 using Command = std::variant<StartRun, LoadRun, SubmitInput, UndoTurn, RegenerateTurn>;
 
+// The run's memory as the Memory window shows it: every summary and every note, oldest first.
+struct MemoryView {
+    std::vector<core::Summary> summaries = {};
+    std::vector<core::Note> notes = {};
+};
+
 // Events (worker to UI). Every command ends with exactly one closing event (IsClosing):
 // - StartRun and LoadRun: RunOpened or Error.
 // - SubmitInput and RegenerateTurn: TurnCompleted, TurnCancelled or Error.
 // - UndoTurn: StateChanged or Error.
 // Any command cancelled before the worker picks it up closes with TurnCancelled without running, StartRun, LoadRun
 // and UndoTurn included. MemoryUpdated and MaintenanceFailed report between-turn upkeep and close nothing.
-// The run's memory as the Memory window shows it: every summary and every note, oldest first.
-struct MemoryView {
-    std::vector<core::Summary> summaries = {};
-    std::vector<core::Note> notes = {};
-};
 struct RunOpened {
     store::RunMeta meta = {};
     std::vector<core::TurnRecord> history = {};

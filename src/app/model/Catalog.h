@@ -46,7 +46,8 @@ std::vector<RunEntry> ListRuns(const std::filesystem::path& savesDir, std::strin
 std::filesystem::path RunFile(const std::filesystem::path& savesDir, std::string_view worldId, std::string_view name);
 
 // Why `name` cannot name a new run of world `worldId`, or "" when it can. A name has 1..RUN_NAME_MAX_CHARS
-// letters, digits, '-' or '_', and no run of that name may exist yet.
+// letters, digits, '-' or '_', is not a Windows device name (con, prn, aux, nul, com1-com9, lpt1-lpt9, in any case),
+// and no run of that name may exist yet.
 std::string RunNameProblem(const std::filesystem::path& savesDir, std::string_view worldId, std::string_view name);
 
 // The name suggested for a new run: "run-YYYYMMDD-HHMMSS", in UTC.

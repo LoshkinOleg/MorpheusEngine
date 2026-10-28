@@ -17,9 +17,11 @@ AppController::AppController(AppPaths paths, EngineHost::BackendFactory factory)
     : _paths(std::move(paths))
     , _engine(std::move(factory))
 {
-    // Invalid settings stop the app here, naming the file and key.
-    _engine.Start(core::LoadSettings(_paths.settingsFile));
+    // Invalid settings stop the app here, naming the file and key. A missing worlds folder is checked before the
+    // engine starts: a throw after Start would leave ~EngineHost waiting for the model load before the error shows.
+    core::Settings settings = core::LoadSettings(_paths.settingsFile);
     _worlds = ListWorlds(_paths.projectsDir);
+    _engine.Start(std::move(settings));
 }
 
 void AppController::Frame()

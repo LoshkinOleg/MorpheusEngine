@@ -1,6 +1,7 @@
 #include "app/model/Catalog.h"
 
 #include <algorithm>
+#include <cctype>
 #include <charconv>
 #include <format>
 #include <limits>
@@ -77,6 +78,15 @@ std::string RunNameProblem(const std::filesystem::path& savesDir, std::string_vi
     });
     if (!plain) {
         return "a run name may only use letters, digits, '-' and '_'";
+    }
+    // Windows reserves these device names for every extension, so "con.db" cannot be created there. Compared without
+    // case, as the file system does.
+    std::string lower(name);
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](char c) { return static_cast<char>(std::tolower(c)); });
+    const bool deviceNumber = lower.size() == 4 && (lower.starts_with("com") || lower.starts_with("lpt")) &&
+                              lower[3] >= '1' && lower[3] <= '9';
+    if (lower == "con" || lower == "prn" || lower == "aux" || lower == "nul" || deviceNumber) {
+        return std::format("'{}' is a reserved device name on Windows", name);
     }
     if (std::filesystem::exists(RunFile(savesDir, worldId, name))) {
         return std::format("a run named '{}' already exists", name);

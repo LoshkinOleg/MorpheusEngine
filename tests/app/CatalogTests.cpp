@@ -70,6 +70,15 @@ TEST_CASE("RunNameProblem accepts plain new names only", "[catalog]")
     CHECK_FALSE(app::RunNameProblem(saves, "mini", "my run").empty());
     CHECK_FALSE(app::RunNameProblem(saves, "mini", "../escape").empty());
 
+    // Windows device names are not usable as file names, whatever the case or extension.
+    for (const char* reserved : {"con", "CON", "prn", "aux", "nul", "NUL", "com1", "Com9", "lpt1", "LPT9"}) {
+        CHECK_THAT(app::RunNameProblem(saves, "mini", reserved), ContainsSubstring("reserved"));
+    }
+    CHECK(app::RunNameProblem(saves, "mini", "console").empty());
+    CHECK(app::RunNameProblem(saves, "mini", "com10").empty());
+    CHECK(app::RunNameProblem(saves, "mini", "com0").empty());
+    CHECK(app::RunNameProblem(saves, "mini", "nul2").empty());
+
     std::filesystem::create_directories(saves / "mini");
     test::WriteFile(app::RunFile(saves, "mini", "taken"), "");
     CHECK_THAT(app::RunNameProblem(saves, "mini", "taken"), ContainsSubstring("already exists"));

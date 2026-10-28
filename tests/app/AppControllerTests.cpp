@@ -11,8 +11,10 @@
 #include "TestPaths.h"
 #include "app/AppTestSupport.h"
 #include "app/model/AppController.h"
+#include "core/Errors.h"
 #include "core/Settings.h"
 #include "fakes/ScriptedBackend.h"
+#include "inference/Llm.h"
 
 using namespace morpheus;
 using Catch::Matchers::ContainsSubstring;
@@ -125,6 +127,58 @@ TEST_CASE("Invalid settings are refused without touching the engine or the run",
     CHECK_THAT(controller.ApplySettings(edit), ContainsSubstring("does not exist"));
     CHECK(controller.CanPost());
     CHECK(controller.Run().Open());
+}
+
+TEST_CASE("A missing worlds folder fails before any model load starts", "[app_controller]")
+{
+    const std::filesystem::path dir = test::SettingsFolder("app_no_worlds");
+    app::AppPaths paths = test::PathsIn(dir);
+    paths.projectsDir = dir / "no_such_worlds";
+    std::atomic<int> made = 0;
+    const app::EngineHost::BackendFactory scripted = test::ScriptedFactory(Responder("You walk."));
+    CHECK_THROWS_AS(app::AppController(paths,
+                                       [&](const core::Settings& settings) {
+                                           ++made;
+                                           return scripted(settings);
+                                       }),
+                    core::DataError);
+    CHECK(made == 0); // The engine never started, so nothing waited on a model load.
+}
+
+TEST_CASE("A run reopens after a settings restart that failed first", "[app_controller]")
+{
+    const std::filesystem::path dir = test::SettingsFolder("app_reopen_failed");
+    // The first and third backends load; the second throws, as a model that cannot be loaded would.
+    std::atomic<int> made = 0;
+    const app::EngineHost::BackendFactory scripted = test::ScriptedFactory(Responder("You walk."));
+    app::AppController controller(test::PathsIn(dir), [&](const core::Settings& settings) {
+        if (++made == 2) {
+            throw inference::InferenceError("model load failed");
+        }
+        return scripted(settings);
+    });
+    OpenNewRun(controller, "survivor");
+    controller.Submit("I walk to the lighthouse.");
+    test::PumpUntil(controller, [&] { return controller.CanPost(); });
+
+    // A backend setting reloads the models, and that load fails.
+    app::SettingsEdit edit = app::ReadSettingsEdit(dir / "settings.json");
+    edit.gpuLayers = edit.gpuLayers == 7 ? 8 : 7;
+    REQUIRE(controller.ApplySettings(edit).empty());
+    test::PumpUntil(controller, [&] { return controller.Engine().CurrentStatus() == app::EngineHost::Status::Failed; });
+    CHECK_FALSE(controller.CanPost());
+    CHECK_FALSE(controller.Run().Open());
+    CHECK_FALSE(controller.OpenRun());
+
+    // A working edit loads again, and the run comes back with its history.
+    edit.gpuLayers = edit.gpuLayers == 7 ? 8 : 7;
+    REQUIRE(controller.CanApplySettings());
+    REQUIRE(controller.ApplySettings(edit).empty());
+    test::PumpUntil(controller, [&] { return controller.Run().Open() && controller.CanPost(); });
+    CHECK(controller.Run().History().size() == 1);
+    REQUIRE(controller.OpenRun());
+    CHECK(controller.OpenRun()->runFile == app::RunFile(dir / "saves", "mini", "survivor"));
+    CHECK(made == 3);
 }
 
 TEST_CASE("A cancelled turn offers its input again", "[app_controller]")

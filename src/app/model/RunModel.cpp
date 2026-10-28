@@ -1,5 +1,6 @@
 #include "app/model/RunModel.h"
 
+#include <cstddef>
 #include <utility>
 #include <variant>
 
@@ -10,23 +11,28 @@ namespace morpheus::app {
 void RunModel::OnPosted(const turn::Command& command)
 {
     MORPHEUS_REQUIRE(_busy == Busy::None, "RunModel: a command is already running");
-    _lastError.clear();
     if (std::holds_alternative<turn::StartRun>(command) || std::holds_alternative<turn::LoadRun>(command)) {
+        _lastError.clear();
         _busy = Busy::Opening;
         return;
     }
     MORPHEUS_REQUIRE(_open, "RunModel: a turn command needs an open run");
     if (const auto* pInput = std::get_if<turn::SubmitInput>(&command)) {
+        _lastError.clear();
         _busy = Busy::Turn;
         _pending = PendingTurn{pInput->text};
         return;
     }
     MORPHEUS_REQUIRE(!_history.empty(), "RunModel: undo and regenerate need a committed turn");
     if (std::holds_alternative<turn::RegenerateTurn>(command)) {
+        _lastError.clear();
         _busy = Busy::Regenerate;
         _pending = PendingTurn{_history.back().input}; // The same input, played again.
         return;
     }
+    // Only an explicit UndoTurn is left; a new command type must be handled above, not treated as an undo.
+    MORPHEUS_REQUIRE(std::holds_alternative<turn::UndoTurn>(command), "RunModel: an unknown command was posted");
+    _lastError.clear();
     _busy = Busy::Undo;
 }
 
@@ -62,6 +68,7 @@ void RunModel::Apply(const turn::Event& event)
     _pending.reset();
 
     if (const auto* pOpened = std::get_if<turn::RunOpened>(&event)) {
+        MORPHEUS_REQUIRE(finished == Busy::Opening, "RunModel: RunOpened closes only a StartRun or LoadRun");
         _open = true;
         _meta = pOpened->meta;
         _worldChanged = pOpened->worldChanged;
@@ -89,6 +96,7 @@ void RunModel::Apply(const turn::Event& event)
         return;
     }
     if (const auto* pChanged = std::get_if<turn::StateChanged>(&event)) {
+        MORPHEUS_REQUIRE(finished == Busy::Undo, "RunModel: StateChanged closes only an UndoTurn");
         _history = pChanged->history;
         _state = pChanged->state;
         _memory = pChanged->memory;

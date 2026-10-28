@@ -163,3 +163,29 @@ TEST_CASE("RunModel rejects commands and events the UI cannot produce", "[run_mo
     model.OnPosted(turn::SubmitInput{"I walk."});
     CHECK_THROWS_AS(model.OnPosted(turn::SubmitInput{"I run."}), core::ContractError); // One at a time.
 }
+
+TEST_CASE("RunModel checks that a closing event matches the command it closes", "[run_model]")
+{
+    // RunOpened closes only a StartRun or LoadRun.
+    app::RunModel turnRunning = OpenModel();
+    turnRunning.OnPosted(turn::SubmitInput{"I walk."});
+    CHECK_THROWS_AS(turnRunning.Apply(turn::RunOpened{}), core::ContractError);
+
+    // StateChanged closes only an UndoTurn.
+    app::RunModel opening;
+    opening.OnPosted(turn::LoadRun{});
+    CHECK_THROWS_AS(opening.Apply(turn::StateChanged{{}, nlohmann::json::object(), {}}), core::ContractError);
+}
+
+TEST_CASE("A rejected post leaves the model and its last error as they were", "[run_model]")
+{
+    app::RunModel model = OpenModel();
+    model.OnPosted(turn::SubmitInput{"I fly."});
+    model.Apply(turn::Error{"input too long"});
+    REQUIRE(model.LastError() == "input too long");
+
+    // Undo needs a committed turn; the rejected post must not clear the error the player has not seen yet.
+    CHECK_THROWS_AS(model.OnPosted(turn::UndoTurn{}), core::ContractError);
+    CHECK(model.LastError() == "input too long");
+    CHECK(model.CurrentBusy() == app::RunModel::Busy::None);
+}

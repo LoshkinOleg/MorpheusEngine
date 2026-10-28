@@ -176,7 +176,9 @@ int main(int argc, char** argv)
         if (!std::filesystem::exists(fontFile)) {
             throw std::runtime_error("font file " + core::PathText(fontFile) + " does not exist");
         }
-        io.Fonts->AddFontFromFileTTF(core::PathText(fontFile).c_str(), FONT_SIZE);
+        if (io.Fonts->AddFontFromFileTTF(core::PathText(fontFile).c_str(), FONT_SIZE) == nullptr) {
+            throw std::runtime_error("cannot load font file " + core::PathText(fontFile));
+        }
 
         const ImGuiBackends backends(pWindow.get(), pRenderer.get());
 

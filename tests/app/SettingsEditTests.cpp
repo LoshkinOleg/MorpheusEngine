@@ -2,6 +2,7 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <filesystem>
+#include <fstream>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -63,7 +64,46 @@ TEST_CASE("SaveSettingsEdit leaves the file untouched when the edit is invalid",
     app::SettingsEdit edit = app::ReadSettingsEdit(file);
     edit.chatModel = "models/missing.gguf";
 
+    // The loader's reason reaches the player, and names the real file rather than the check file.
     CHECK_THROWS_WITH(app::SaveSettingsEdit(file, edit), ContainsSubstring("does not exist"));
+    CHECK_THROWS_WITH(app::SaveSettingsEdit(file, edit), ContainsSubstring("settings.json"));
+    CHECK_THROWS_WITH(app::SaveSettingsEdit(file, edit), !ContainsSubstring("settings.json.new"));
+    CHECK(test::ReadFile(file) == before);
+    CHECK_FALSE(std::filesystem::exists(dir / "settings.json.new"));
+}
+
+TEST_CASE("SaveSettingsEdit reports a misshapen settings file as a DataError", "[settings_edit]")
+{
+    const std::filesystem::path dir = test::SettingsFolder("settings_edit_misshapen");
+    const std::filesystem::path file = dir / "settings.json";
+    const app::SettingsEdit edit = app::ReadSettingsEdit(file);
+
+    // Valid JSON that is not the settings shape: the patch itself fails, not the parse.
+    nlohmann::json badSampling = nlohmann::json::parse(test::ReadFile(file));
+    badSampling["sampling"] = nlohmann::json::array();
+    for (const nlohmann::json& misshapen : {badSampling, nlohmann::json::array({1, 2})}) {
+        test::WriteFile(file, misshapen.dump(2));
+        const std::string before = test::ReadFile(file);
+        CHECK_THROWS_AS(app::SaveSettingsEdit(file, edit), core::DataError);
+        CHECK_THROWS_WITH(app::SaveSettingsEdit(file, edit), ContainsSubstring("settings.json"));
+        CHECK(test::ReadFile(file) == before);
+        CHECK_FALSE(std::filesystem::exists(dir / "settings.json.new"));
+    }
+}
+
+TEST_CASE("SaveSettingsEdit reports a file it cannot replace and leaves no check file", "[settings_edit]")
+{
+    const std::filesystem::path dir = test::SettingsFolder("settings_edit_unreplaceable");
+    const std::filesystem::path file = dir / "settings.json";
+    const app::SettingsEdit edit = app::ReadSettingsEdit(file);
+
+    // A reader that holds the file open without delete sharing makes Windows refuse to replace it.
+    const std::string before = test::ReadFile(file);
+    std::ifstream holder(file, std::ios::binary);
+    REQUIRE(holder.is_open());
+    CHECK_THROWS_WITH(app::SaveSettingsEdit(file, edit), ContainsSubstring("cannot replace"));
+    CHECK_THROWS_AS(app::SaveSettingsEdit(file, edit), core::DataError);
+    holder.close();
     CHECK(test::ReadFile(file) == before);
     CHECK_FALSE(std::filesystem::exists(dir / "settings.json.new"));
 }
