@@ -168,6 +168,12 @@ if(MORPHEUS_BUILD_LLAMA)
     add_subdirectory(tools/play)
 endif()
 
+# ---- App ---------------------------------------------------------------
+# The model and UI libraries build with the tests too (ImGui is fetched for both); the executable needs the app.
+if(MORPHEUS_BUILD_APP OR MORPHEUS_BUILD_TESTS)
+    add_subdirectory(src/app)
+endif()
+
 # ---- App (prototype, replaced in milestone 4) --------------------------
 if(MORPHEUS_BUILD_APP)
     add_executable(morpheus
