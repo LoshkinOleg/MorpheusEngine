@@ -120,3 +120,16 @@ TEST_CASE("Dice outputs are pinned so replays stay stable", "[dice]")
     CHECK(result.total == 9);
     CHECK_FALSE(result.success);
 }
+
+TEST_CASE("SamplingSeed is stable and separates turns, calls and attempts", "[dice]")
+{
+    const std::uint32_t resolve = SamplingSeed(42, 3, CallKind::Resolve, 0);
+    CHECK(SamplingSeed(42, 3, CallKind::Resolve, 0) == resolve);
+    CHECK(SamplingSeed(42, 3, CallKind::Narrate, 0) != resolve);
+    CHECK(SamplingSeed(42, 3, CallKind::Resolve, 1) != resolve);
+    CHECK(SamplingSeed(42, 4, CallKind::Resolve, 0) != resolve);
+    CHECK(SamplingSeed(43, 3, CallKind::Resolve, 0) != resolve);
+    CHECK(SamplingSeed(42, 0, CallKind::Summarize, 0) == SamplingSeed(42, 0, CallKind::Summarize, 0));
+    CHECK_THROWS_AS(SamplingSeed(42, -1, CallKind::Resolve, 0), ContractError);
+    CHECK_THROWS_AS(SamplingSeed(42, 1, CallKind::Resolve, -1), ContractError);
+}

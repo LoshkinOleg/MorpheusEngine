@@ -40,6 +40,13 @@ struct CheckResult {
 // regenerated turn reproduces its rolls. Throws ContractError if turn < 1 or checkIndex < 0.
 std::uint64_t CheckSeed(std::uint64_t runSeed, int turn, int checkIndex);
 
+// Which model call a sampling seed is for.
+enum class CallKind { Lookup, Resolve, Narrate, Summarize };
+
+// Sampling seed for one model call, from (runSeed, turn, kind, attempt). A regenerated turn (attempt + 1) samples
+// new text while CheckSeed keeps its dice. Throws ContractError unless turn >= 0 and 0 <= attempt < 2^24.
+std::uint32_t SamplingSeed(std::uint64_t runSeed, int turn, CallKind kind, int attempt);
+
 // Rolls rule.count dice with rule.sides faces, adds statValue when rule.addStat, and compares with target.
 CheckResult RollCheck(const DiceRule& rule, int statValue, int target, std::uint64_t seed);
 

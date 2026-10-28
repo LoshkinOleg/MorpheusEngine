@@ -12,6 +12,7 @@
 #include <llama.h>
 
 #include "core/Errors.h"
+#include "core/Text.h"
 
 namespace morpheus::llama {
 
@@ -62,13 +63,6 @@ void FillBatch(llama_batch& batch, std::span<const std::int32_t> tokens, std::si
     batch.n_tokens = static_cast<int32_t>(tokens.size());
 }
 
-// The UTF-8 bytes of a char8_t string, as a std::string. Paths go to llama.cpp and into messages as UTF-8, never
-// through the ANSI code page that path::string() would use on Windows.
-std::string Utf8(const std::u8string& text)
-{
-    return std::string(reinterpret_cast<const char*>(text.data()), text.size());
-}
-
 struct SamplerDeleter {
     void operator()(llama_sampler* pSampler) const
     {
@@ -108,7 +102,7 @@ LlamaCppBackend::LlamaCppBackend(LlamaConfig config)
         const std::u8string pathUtf8 = path.u8string();
         llama_model* pModel = llama_model_load_from_file(reinterpret_cast<const char*>(pathUtf8.c_str()), params);
         if (pModel == nullptr) {
-            throw InferenceError(std::format("cannot load model '{}'", Utf8(path.generic_u8string())));
+            throw InferenceError(std::format("cannot load model '{}'", core::PathText(path)));
         }
         return std::unique_ptr<llama_model, ModelDeleter>(pModel);
     };
@@ -141,11 +135,11 @@ LlamaCppBackend::LlamaCppBackend(LlamaConfig config)
         }
         if (llama_pooling_type(_pEmbedContext.get()) == LLAMA_POOLING_TYPE_NONE) {
             throw InferenceError(std::format("'{}' has no pooling; use a sentence-embedding model",
-                                             Utf8(_config.embeddingModel.generic_u8string())));
+                                             core::PathText(_config.embeddingModel)));
         }
         if (llama_pooling_type(_pEmbedContext.get()) == LLAMA_POOLING_TYPE_RANK) {
             throw InferenceError(std::format("'{}' is a reranker, not a sentence-embedding model",
-                                             Utf8(_config.embeddingModel.generic_u8string())));
+                                             core::PathText(_config.embeddingModel)));
         }
     }
 }
@@ -340,7 +334,7 @@ std::vector<std::vector<float>> LlamaCppBackend::Embed(const std::vector<std::st
 std::string LlamaCppBackend::EmbeddingModelId() const
 {
     // UTF-8, so the id is the same on every machine and code page.
-    return Utf8(_config.embeddingModel.stem().u8string());
+    return core::PathText(_config.embeddingModel.stem());
 }
 
 std::vector<std::uint8_t> LlamaCppBackend::SaveState()

@@ -7,6 +7,7 @@ add_library(morpheus_core STATIC
     StateSchema.cpp
     Changes.cpp
     Dice.cpp
+    Text.cpp
     World.cpp
 )
 target_include_directories(morpheus_core PUBLIC ${PROJECT_SOURCE_DIR}/src)

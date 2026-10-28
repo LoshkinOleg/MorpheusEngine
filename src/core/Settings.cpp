@@ -10,12 +10,13 @@
 
 #include "core/Errors.h"
 #include "core/JsonInt.h"
+#include "core/Text.h"
 
 namespace morpheus::core {
 
 Settings LoadSettings(const std::filesystem::path& file)
 {
-    const std::string where = std::format("'{}'", file.generic_string());
+    const std::string where = std::format("'{}'", PathText(file));
 
     std::ifstream stream(file, std::ios::binary);
     if (!stream) {
@@ -84,8 +85,9 @@ Settings LoadSettings(const std::filesystem::path& file)
         if (path.is_relative()) {
             path = file.parent_path() / path;
         }
-        if (!std::filesystem::is_regular_file(path)) {
-            throw DataError(std::format("{}: '{}' file '{}' does not exist", where, key, path.generic_string()));
+        std::error_code error;
+        if (!std::filesystem::is_regular_file(path, error)) {
+            throw DataError(std::format("{}: '{}' file '{}' does not exist", where, key, PathText(path)));
         }
         return path;
     };

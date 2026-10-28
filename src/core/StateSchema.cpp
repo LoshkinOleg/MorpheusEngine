@@ -9,6 +9,7 @@
 
 #include "core/Errors.h"
 #include "core/JsonInt.h"
+#include "core/Text.h"
 
 namespace morpheus::core {
 
@@ -179,43 +180,43 @@ std::string StateSchema::CheckFieldValue(const FieldDef& def, const nlohmann::js
     switch (def.type) {
     case FieldType::Int: {
         if (!value.is_number_integer()) {
-            return std::format("expected an integer, got {}", value.dump());
+            return std::format("expected an integer, got {}", ShortJson(value));
         }
         // Range-check through the shared helper, which never wraps a huge unsigned value.
         if (!JsonIntInRange(value, def.min, def.max)) {
-            return std::format("{} is outside {}..{}", value.dump(), def.min, def.max);
+            return std::format("{} is outside {}..{}", ShortJson(value), def.min, def.max);
         }
         return {};
     }
     case FieldType::Enum:
         if (!value.is_string() ||
             std::find(def.values.begin(), def.values.end(), value.get<std::string>()) == def.values.end()) {
-            return std::format("expected one of {}, got {}", nlohmann::json(def.values).dump(), value.dump());
+            return std::format("expected one of {}, got {}", nlohmann::json(def.values).dump(), ShortJson(value));
         }
         return {};
     case FieldType::String:
         if (!value.is_string()) {
-            return std::format("expected a string, got {}", value.dump());
+            return std::format("expected a string, got {}", ShortJson(value));
         }
         return {};
     case FieldType::List: {
         if (!value.is_array()) {
-            return std::format("expected an array of strings, got {}", value.dump());
+            return std::format("expected an array of strings, got {}", ShortJson(value));
         }
         std::set<std::string> seen;
         for (const nlohmann::json& item : value) {
             if (!item.is_string() || item.get<std::string>().empty()) {
-                return std::format("list items must be non-empty strings, got {}", item.dump());
+                return std::format("list items must be non-empty strings, got {}", ShortJson(item));
             }
             if (!seen.insert(item.get<std::string>()).second) {
-                return std::format("list item {} appears twice", item.dump());
+                return std::format("list item {} appears twice", ShortJson(item));
             }
         }
         return {};
     }
     case FieldType::Counter:
         if (!value.is_object()) {
-            return std::format("expected an object of item counts, got {}", value.dump());
+            return std::format("expected an object of item counts, got {}", ShortJson(value));
         }
         for (auto it = value.begin(); it != value.end(); ++it) {
             if (it.key().empty() || it.key().find('.') != std::string::npos) {
@@ -225,7 +226,7 @@ std::string StateSchema::CheckFieldValue(const FieldDef& def, const nlohmann::js
             const bool inRange = JsonIntInRange(count, 1, std::numeric_limits<int>::max()).has_value();
             if (!inRange) {
                 return std::format("count of '{}' must be an integer in 1..{}, got {}", it.key(),
-                                   std::numeric_limits<int>::max(), count.dump());
+                                   std::numeric_limits<int>::max(), ShortJson(count));
             }
         }
         return {};

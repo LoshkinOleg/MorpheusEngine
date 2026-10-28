@@ -13,6 +13,7 @@
 #include "core/Csv.h"
 #include "core/Errors.h"
 #include "core/JsonInt.h"
+#include "core/Text.h"
 
 namespace morpheus::core {
 
@@ -23,7 +24,7 @@ std::string ReadTextFile(const std::filesystem::path& file)
 {
     std::ifstream stream(file, std::ios::binary);
     if (!stream) {
-        throw DataError(std::format("cannot read '{}'", file.generic_string()));
+        throw DataError(std::format("cannot read '{}'", PathText(file)));
     }
     std::ostringstream buffer;
     buffer << stream.rdbuf();
@@ -36,7 +37,7 @@ nlohmann::json ParseJsonFile(const std::filesystem::path& file, const std::strin
     try {
         return nlohmann::json::parse(text);
     } catch (const nlohmann::json::parse_error& e) {
-        throw DataError(std::format("'{}': {}", file.generic_string(), e.what()));
+        throw DataError(std::format("'{}': {}", PathText(file), e.what()));
     }
 }
 
@@ -49,7 +50,7 @@ World LoadWorld(const std::filesystem::path& directory)
     if (dir.filename().empty()) {
         dir = dir.parent_path();
     }
-    const std::string folderName = dir.filename().string();
+    const std::string folderName = PathText(dir.filename());
 
     // Read every file up front: the content hash covers all of them, names included, in this fixed order.
     // Hash format, per file in order: the file name, "\n", the decimal byte length of the normalized text, "\n",
@@ -70,7 +71,7 @@ World LoadWorld(const std::filesystem::path& directory)
                 // A '\r' directly before '\n' is dropped (CRLF becomes LF); a carriage return on its own means a
                 // malformed file.
                 if (i + 1 >= raw.size() || raw[i + 1] != '\n') {
-                    throw DataError(std::format("'{}': stray carriage return on line {}", (dir / name).generic_string(), line));
+                    throw DataError(std::format("'{}': stray carriage return on line {}", PathText(dir / name), line));
                 }
                 continue;
             }
@@ -92,7 +93,7 @@ World LoadWorld(const std::filesystem::path& directory)
 
     // world.json: identity, dice, difficulties, defaults.
     const std::filesystem::path worldFile = dir / "world.json";
-    const std::string worldWhere = std::format("'{}'", worldFile.generic_string());
+    const std::string worldWhere = std::format("'{}'", PathText(worldFile));
     {
         const nlohmann::json json = ParseJsonFile(worldFile, texts.at("world.json"));
         if (!json.is_object()) {
@@ -173,12 +174,12 @@ World LoadWorld(const std::filesystem::path& directory)
     // rules.md: the GM instructions, used verbatim.
     world.rules = texts.at("rules.md");
     if (world.rules.find_first_not_of(" \t\r\n") == std::string::npos) {
-        throw DataError(std::format("'{}': must not be empty", (dir / "rules.md").generic_string()));
+        throw DataError(std::format("'{}': must not be empty", PathText(dir / "rules.md")));
     }
 
     // lore.csv: header "subject,data" or "subject,data,always_on", then one entry per record.
     {
-        const std::string loreWhere = std::format("'{}'", (dir / "lore.csv").generic_string());
+        const std::string loreWhere = std::format("'{}'", PathText(dir / "lore.csv"));
         std::vector<std::vector<std::string>> records;
         try {
             records = ParseCsv(texts.at("lore.csv"));
@@ -229,7 +230,7 @@ World LoadWorld(const std::filesystem::path& directory)
         try {
             world.schema = StateSchema::FromJson(json);
         } catch (const DataError& e) {
-            throw DataError(std::format("'{}': {}", file.generic_string(), e.what()));
+            throw DataError(std::format("'{}': {}", PathText(file), e.what()));
         }
     }
     {
@@ -238,7 +239,7 @@ World LoadWorld(const std::filesystem::path& directory)
         try {
             world.schema.ValidateState(world.initialState);
         } catch (const DataError& e) {
-            throw DataError(std::format("'{}': {}", file.generic_string(), e.what()));
+            throw DataError(std::format("'{}': {}", PathText(file), e.what()));
         }
     }
 

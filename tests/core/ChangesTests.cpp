@@ -119,7 +119,7 @@ TEST_CASE("add and remove on counter items", "[changes]")
 
     const ApplyResult usedUp = ApplySingle(R"({"op": "add", "path": "player.inventory.rope", "value": -1})");
     CHECK(PlayerField(usedUp, "inventory") == nlohmann::json::object());
-    CHECK(usedUp.applied.at(0).note == "removed (count reached 0)");
+    CHECK(usedUp.applied.at(0).note == "none left");
 
     CHECK(ApplySingle(R"({"op": "add", "path": "player.inventory.water", "value": -1})").rejected.size() == 1);
     CHECK(PlayerField(ApplySingle(R"({"op": "remove", "path": "player.inventory.rope"})"), "inventory") ==
@@ -246,15 +246,15 @@ TEST_CASE("ChangeToJson round-trips through ParseChange", "[changes]")
 
 TEST_CASE("add accepts INT_MIN as a negative delta", "[changes]")
 {
-    // A delta of INT_MIN is in int range: health clamps to its minimum and the rope count drops to zero.
+    // A delta of INT_MIN is in int range: health clamps to its minimum; removing that many ropes is over-removal.
     const ApplyResult health = ApplySingle(R"({"op": "add", "path": "player.health", "value": -2147483648})");
     REQUIRE(health.rejected.empty());
     CHECK(PlayerField(health, "health") == 0);
     CHECK(health.applied.at(0).note == "clamped to 0");
 
     const ApplyResult rope = ApplySingle(R"({"op": "add", "path": "player.inventory.rope", "value": -2147483648})");
-    REQUIRE(rope.rejected.empty());
-    CHECK(PlayerField(rope, "inventory") == nlohmann::json::object());
+    REQUIRE(rope.rejected.size() == 1);
+    CHECK_THAT(rope.rejected[0].reason, ContainsSubstring("only 1 'rope' held, cannot remove 2147483648"));
 }
 
 TEST_CASE("ApplyChanges throws ContractError when the state breaks the schema contract", "[changes]")
@@ -279,4 +279,20 @@ TEST_CASE("ApplyChanges throws ContractError when the state breaks the schema co
     nlohmann::json noFields = TestState();
     noFields["player"].erase("fields");
     CHECK_THROWS_AS(ApplyChanges(TestSchema(), noFields, setLocation), ContractError);
+}
+
+TEST_CASE("removing more of a counter item than is held is rejected", "[changes]")
+{
+    const ApplyResult result = ApplySingle(R"({"op": "add", "path": "player.inventory.rope", "value": -3})");
+    REQUIRE(result.rejected.size() == 1);
+    CHECK_THAT(result.rejected[0].reason, ContainsSubstring("only 1 'rope' held"));
+    CHECK(PlayerField(result, "inventory") == nlohmann::json({{"rope", 1}}));
+}
+
+TEST_CASE("rejection reasons cut huge proposed values", "[changes]")
+{
+    const nlohmann::json change = {{"op", "set"}, {"path", "player.health"}, {"value", std::string(1000, 'x')}};
+    const ApplyResult result = ApplyChanges(TestSchema(), TestState(), nlohmann::json::array({change}));
+    REQUIRE(result.rejected.size() == 1);
+    CHECK(result.rejected[0].reason.size() < 200);
 }

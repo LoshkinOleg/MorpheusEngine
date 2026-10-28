@@ -6,6 +6,7 @@
 
 #include "core/Errors.h"
 #include "core/JsonInt.h"
+#include "core/Text.h"
 
 namespace morpheus::core {
 
@@ -193,7 +194,7 @@ ApplyResult ApplyChanges(const StateSchema& schema, const nlohmann::json& state,
             if (def.type == FieldType::Int) {
                 const std::optional<long long> delta = JsonIntInRange(change.value, INT_MIN_VALUE, INT_MAX_VALUE);
                 if (!delta) {
-                    return std::format("add on an int field needs an integer in int range, got {}", change.value.dump());
+                    return std::format("add on an int field needs an integer in int range, got {}", ShortJson(change.value));
                 }
                 // Both operands are int-ranged, so the sum fits in long long.
                 const long long wanted = field.get<long long>() + *delta;
@@ -222,7 +223,7 @@ ApplyResult ApplyChanges(const StateSchema& schema, const nlohmann::json& state,
                 const std::optional<long long> parsedDelta = JsonIntInRange(change.value, INT_MIN_VALUE, INT_MAX_VALUE);
                 if (!parsedDelta || *parsedDelta == 0) {
                     return std::format("add on a counter item needs a non-zero integer in int range, got {}",
-                                       change.value.dump());
+                                       ShortJson(change.value));
                 }
                 const long long delta = *parsedDelta;
                 const std::string& item = parts[2];
@@ -235,9 +236,12 @@ ApplyResult ApplyChanges(const StateSchema& schema, const nlohmann::json& state,
                 if (next > INT_MAX_VALUE) {
                     return std::format("count of '{}' would exceed {}", item, INT_MAX_VALUE);
                 }
-                if (next <= 0) {
+                if (next < 0) {
+                    return std::format("only {} '{}' held, cannot remove {}", current, item, -delta);
+                }
+                if (next == 0) {
                     field.erase(item);
-                    note = "removed (count reached 0)";
+                    note = "none left";
                 } else {
                     field[item] = next;
                 }
@@ -248,7 +252,7 @@ ApplyResult ApplyChanges(const StateSchema& schema, const nlohmann::json& state,
             if (def.type == FieldType::List) {
                 const auto it = std::find(field.begin(), field.end(), change.value);
                 if (it == field.end()) {
-                    return std::format("{} is not in the list", change.value.dump());
+                    return std::format("{} is not in the list", ShortJson(change.value));
                 }
                 field.erase(it);
                 return {};

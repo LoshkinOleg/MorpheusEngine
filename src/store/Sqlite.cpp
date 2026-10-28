@@ -7,6 +7,7 @@
 #include <sqlite3.h>
 
 #include "core/Errors.h"
+#include "core/Text.h"
 
 namespace morpheus::store {
 
@@ -123,7 +124,7 @@ Database Database::Open(const std::filesystem::path& file, bool create)
     if (rc != SQLITE_OK) {
         const std::string message = pDb != nullptr ? sqlite3_errmsg(pDb) : sqlite3_errstr(rc);
         sqlite3_close_v2(pDb);
-        throw StoreError(std::format("cannot open '{}': {}", file.generic_string(), message));
+        throw StoreError(std::format("cannot open '{}': {}", core::PathText(file), message));
     }
     return Database(pDb);
 }

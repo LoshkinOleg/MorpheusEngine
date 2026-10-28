@@ -53,8 +53,8 @@ nlohmann::json ChangeToJson(const Change& change);
 // - add:    int -> adds an integer value in int range, clamped to [min, max] (note "clamped to N");
 //           list -> appends the string if absent (note "already present" otherwise);
 //           counter item -> adds a non-zero integer in int range; the count may not exceed INT_MAX (rejected);
-//           at 0 or below the item is removed (note "removed (count reached 0)");
-//           decreasing an absent item is rejected.
+//           decreasing below 0 is rejected ("only N 'item' held"); reaching exactly 0 removes the item (note
+//           "none left"); decreasing an absent item is rejected.
 // - remove: list -> removes the string (must be present); counter item -> removes the item (must be present).
 // - create: new entity id of a creatable type; missing fields take their defaults.
 // `proposedChanges` must be a JSON array (ContractError otherwise); individual malformed entries are rejected.

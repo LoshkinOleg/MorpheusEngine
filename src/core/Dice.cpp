@@ -9,6 +9,13 @@
 
 namespace morpheus::core {
 
+namespace {
+
+// Mixed into the run seed so that sampling seeds and check seeds never coincide for the same turn.
+constexpr std::uint64_t SAMPLING_SALT = 0x53414D504C494E47ULL; // "SAMPLING"
+
+} // namespace
+
 SplitMix64::SplitMix64(std::uint64_t seed)
     : _state(seed)
 {
@@ -78,6 +85,17 @@ std::uint64_t CheckSeed(std::uint64_t runSeed, int turn, int checkIndex)
     // Then turn in the high half, check index in the low half, and one more SplitMix64 step to spread the bits.
     SplitMix64 mixer(base ^ ((static_cast<std::uint64_t>(turn) << 32) | static_cast<std::uint64_t>(checkIndex)));
     return mixer.Next();
+}
+
+std::uint32_t SamplingSeed(std::uint64_t runSeed, int turn, CallKind kind, int attempt)
+{
+    MORPHEUS_REQUIRE(turn >= 0 && attempt >= 0 && attempt < (1 << 24),
+                     "SamplingSeed: turn must be >= 0 and attempt in 0..2^24-1");
+    const std::uint64_t base = SplitMix64(runSeed ^ SAMPLING_SALT).Next();
+    // Turn in the high half; kind and attempt in the low half (attempt < 2^24 leaves the kind bits alone).
+    SplitMix64 mixer(base ^ ((static_cast<std::uint64_t>(turn) << 32) | (static_cast<std::uint64_t>(kind) << 24) |
+                             static_cast<std::uint64_t>(attempt)));
+    return static_cast<std::uint32_t>(mixer.Next() >> 32);
 }
 
 CheckResult RollCheck(const DiceRule& rule, int statValue, int target, std::uint64_t seed)

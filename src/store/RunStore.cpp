@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "core/Errors.h"
+#include "core/Text.h"
 
 namespace morpheus::store {
 
@@ -69,11 +70,20 @@ const char* KindName(EmbeddingKind kind)
 
 RunStore RunStore::Create(const std::filesystem::path& file, RunMeta meta, const nlohmann::json& initialState)
 {
-    if (std::filesystem::exists(file)) {
-        throw StoreError(std::format("run database '{}' already exists", file.generic_string()));
+    std::error_code error;
+    const bool exists = std::filesystem::exists(file, error);
+    if (error) {
+        throw StoreError(std::format("cannot check '{}': {}", core::PathText(file), error.message()));
+    }
+    if (exists) {
+        throw StoreError(std::format("run database '{}' already exists", core::PathText(file)));
     }
     if (file.has_parent_path()) {
-        std::filesystem::create_directories(file.parent_path());
+        std::filesystem::create_directories(file.parent_path(), error);
+        if (error) {
+            throw StoreError(
+                std::format("cannot create the folder for '{}': {}", core::PathText(file), error.message()));
+        }
     }
     meta.createdAt = std::format("{:%Y-%m-%dT%H:%M:%SZ}",
                                  std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now()));
@@ -113,8 +123,13 @@ RunStore RunStore::Create(const std::filesystem::path& file, RunMeta meta, const
 
 RunStore RunStore::Open(const std::filesystem::path& file)
 {
-    if (!std::filesystem::exists(file)) {
-        throw StoreError(std::format("run database '{}' does not exist", file.generic_string()));
+    std::error_code error;
+    const bool exists = std::filesystem::exists(file, error);
+    if (error) {
+        throw StoreError(std::format("cannot check '{}': {}", core::PathText(file), error.message()));
+    }
+    if (!exists) {
+        throw StoreError(std::format("run database '{}' does not exist", core::PathText(file)));
     }
     Database db = Database::Open(file, false);
 
@@ -129,14 +144,14 @@ RunStore RunStore::Open(const std::filesystem::path& file)
     auto value = [&](const char* key) -> const std::string& {
         const auto it = values.find(key);
         if (it == values.end()) {
-            throw StoreError(std::format("'{}': run_meta has no '{}'", file.generic_string(), key));
+            throw StoreError(std::format("'{}': run_meta has no '{}'", core::PathText(file), key));
         }
         return it->second;
     };
 
     if (value("schema_version") != std::to_string(SCHEMA_VERSION)) {
         throw StoreError(std::format("'{}': schema version {} is not the supported version {}",
-                                     file.generic_string(), value("schema_version"), SCHEMA_VERSION));
+                                     core::PathText(file), value("schema_version"), SCHEMA_VERSION));
     }
 
     RunMeta meta;
@@ -150,14 +165,14 @@ RunStore RunStore::Open(const std::filesystem::path& file)
         std::from_chars(seedText.data(), seedText.data() + seedText.size(), meta.rngSeed);
     if (seedError != std::errc() || pSeedEnd != seedText.data() + seedText.size()) {
         throw StoreError(std::format("'{}': run_meta 'rng_seed' is not a valid seed: '{}'",
-                                     file.generic_string(), seedText));
+                                     core::PathText(file), seedText));
     }
 
     try {
         meta.settings = nlohmann::json::parse(value("settings"));
     } catch (const nlohmann::json::parse_error& error) {
         throw StoreError(std::format("'{}': run_meta 'settings' is not valid JSON: {}",
-                                     file.generic_string(), error.what()));
+                                     core::PathText(file), error.what()));
     }
     meta.createdAt = value("created_at");
     return RunStore(std::move(db), std::move(meta), file);
@@ -186,7 +201,7 @@ nlohmann::json RunStore::StateAt(int turn)
         return nlohmann::json::parse(query.ColumnText(0));
     } catch (const nlohmann::json::parse_error& error) {
         throw StoreError(std::format("'{}': state snapshot for turn {} is not valid JSON: {}",
-                                     _file.generic_string(), turn, error.what()));
+                                     core::PathText(_file), turn, error.what()));
     }
 }
 
@@ -261,7 +276,7 @@ std::vector<core::TurnRecord> RunStore::Turns(int fromTurn, int toTurn)
                 return nlohmann::json::parse(query.ColumnText(column));
             } catch (const nlohmann::json::parse_error& error) {
                 throw StoreError(std::format("'{}': turn {} column '{}' is not valid JSON: {}",
-                                             _file.generic_string(), record.number, name, error.what()));
+                                             core::PathText(_file), record.number, name, error.what()));
             }
         };
 
@@ -277,7 +292,7 @@ std::vector<core::TurnRecord> RunStore::Turns(int fromTurn, int toTurn)
                 }
             } catch (const core::DataError& error) {
                 throw StoreError(std::format("'{}': turn {} column '{}' is malformed: {}",
-                                             _file.generic_string(), record.number, name, error.what()));
+                                             core::PathText(_file), record.number, name, error.what()));
             }
         };
 
@@ -303,7 +318,7 @@ std::vector<core::TurnRecord> RunStore::Turns(int fromTurn, int toTurn)
         const int noteTurn = static_cast<int>(noteQuery.ColumnInt(0));
         const auto it = byNumber.find(noteTurn);
         if (it == byNumber.end()) {
-            throw StoreError(std::format("'{}': note for turn {} has no matching turn row", _file.generic_string(), noteTurn));
+            throw StoreError(std::format("'{}': note for turn {} has no matching turn row", core::PathText(_file), noteTurn));
         }
         it->second->notes.push_back(noteQuery.ColumnText(1));
     }
