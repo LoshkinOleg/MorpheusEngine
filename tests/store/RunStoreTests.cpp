@@ -445,3 +445,55 @@ TEST_CASE("TruncateAfter also undoes later summaries, notes and turn embeddings"
     CHECK(turnRefs == std::set<std::string>{"3"});
     CHECK(store.Embeddings(EmbeddingKind::Lore, "embed-a").size() == 1);
 }
+
+TEST_CASE("A turn's attempt number round-trips", "[store]")
+{
+    RunStore store = RunStore::Create(FreshDbPath("store_attempt"), TestMeta(), TestInitialState());
+    morpheus::core::TurnRecord record;
+    record.number = 1;
+    record.attempt = 2;
+    record.input = "I wait.";
+    record.narration = "Time passes.";
+    store.CommitTurn(record, TestInitialState());
+    CHECK(store.Turn(1)->attempt == 2);
+    CHECK(store.Turns(1, 1).at(0).attempt == 2);
+}
+
+TEST_CASE("ReplaceSummaries swaps every summary for one", "[store]")
+{
+    RunStore store = RunStore::Create(FreshDbPath("store_replace_summaries"), TestMeta(), TestInitialState());
+    store.AddSummary({1, 3, "first"});
+    store.AddSummary({4, 6, "second"});
+    store.ReplaceSummaries({1, 6, "both"});
+    const std::vector<morpheus::core::Summary> summaries = store.Summaries();
+    REQUIRE(summaries.size() == 1);
+    CHECK(summaries[0].fromTurn == 1);
+    CHECK(summaries[0].toTurn == 6);
+    CHECK(summaries[0].text == "both");
+    CHECK_THROWS_AS(store.ReplaceSummaries({3, 2, "backwards"}), morpheus::core::ContractError);
+}
+
+TEST_CASE("Turn and note embeddings come back in numeric order and go with their turns", "[store]")
+{
+    RunStore store = RunStore::Create(FreshDbPath("store_note_embeddings"), TestMeta(), TestInitialState());
+    for (const char* ref : {"10", "9", "2"}) {
+        store.PutEmbedding({EmbeddingKind::Turn, ref, "embed-a", {1.0f}, "h"});
+    }
+    for (const char* ref : {"10.0", "2.1", "2.0"}) {
+        store.PutEmbedding({EmbeddingKind::Note, ref, "embed-a", {1.0f}, "h"});
+    }
+
+    std::vector<std::string> turnRefs;
+    for (const EmbeddingRow& row : store.Embeddings(EmbeddingKind::Turn, "embed-a")) {
+        turnRefs.push_back(row.refId);
+    }
+    CHECK(turnRefs == std::vector<std::string>{"2", "9", "10"});
+
+    store.TruncateAfter(5);
+    std::vector<std::string> noteRefs;
+    for (const EmbeddingRow& row : store.Embeddings(EmbeddingKind::Note, "embed-a")) {
+        noteRefs.push_back(row.refId);
+    }
+    CHECK(noteRefs == std::vector<std::string>{"2.0", "2.1"});
+    CHECK(store.Embeddings(EmbeddingKind::Turn, "embed-a").size() == 1);
+}

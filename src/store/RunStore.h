@@ -22,9 +22,10 @@ struct RunMeta {
     std::string createdAt = {}; // ISO-8601 UTC, set by RunStore::Create.
 };
 
-enum class EmbeddingKind { Lore, Turn };
+enum class EmbeddingKind { Lore, Turn, Note };
 
-// refId: lore subject for Lore, decimal turn number for Turn.
+// refId: lore subject for Lore, decimal turn number for Turn, "<turn>.<index>" for Note (index: the note's
+// position among that turn's notes).
 struct EmbeddingRow {
     EmbeddingKind kind = EmbeddingKind::Lore;
     std::string refId = {};
@@ -77,12 +78,16 @@ public:
     // valid JSON or has the wrong shape, or a note has no matching turn row.
     std::vector<core::TurnRecord> Turns(int fromTurn, int toTurn);
 
-    // Undo: removes every turn, snapshot and note after `turn`, every turn embedding whose turn is after it,
+    // Undo: removes every turn, snapshot and note after `turn`, every turn and note embedding whose turn is after it,
     // and every summary that ends after it. Throws ContractError if turn < 0.
     void TruncateAfter(int turn);
 
     // Throws ContractError unless 1 <= fromTurn <= toTurn.
     void AddSummary(const core::Summary& summary);
+
+    // Condensing: replaces every summary with `merged` in one transaction. Throws ContractError unless
+    // 1 <= merged.fromTurn <= merged.toTurn.
+    void ReplaceSummaries(const core::Summary& merged);
 
     // Ordered by fromTurn.
     std::vector<core::Summary> Summaries();
@@ -95,6 +100,7 @@ public:
     void PutEmbedding(const EmbeddingRow& row);
 
     // Every embedding of one kind produced by one embedding model, with the content hash it was stored with.
+    // Ordered by the number refId starts with, then refId.
     std::vector<EmbeddingRow> Embeddings(EmbeddingKind kind, const std::string& model);
 
 private:

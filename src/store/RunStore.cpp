@@ -21,6 +21,7 @@ CREATE TABLE run_meta (
 );
 CREATE TABLE turns (
     number    INTEGER PRIMARY KEY,
+    attempt   INTEGER NOT NULL,
     input     TEXT NOT NULL,
     resolve   TEXT NOT NULL,
     checks    TEXT NOT NULL,
@@ -54,7 +55,7 @@ CREATE TABLE embeddings (
 );
 )sql";
 
-// Stored spelling of an embedding kind. TruncateAfter's SQL relies on "turn".
+// Stored spelling of an embedding kind. TruncateAfter's SQL relies on "turn" and "note".
 const char* KindName(EmbeddingKind kind)
 {
     switch (kind) {
@@ -62,6 +63,8 @@ const char* KindName(EmbeddingKind kind)
         return "lore";
     case EmbeddingKind::Turn:
         return "turn";
+    case EmbeddingKind::Note:
+        return "note";
     }
     throw morpheus::core::ContractError("KindName: unhandled EmbeddingKind");
 }
@@ -227,16 +230,17 @@ void RunStore::CommitTurn(const core::TurnRecord& record, const nlohmann::json& 
 
     // The turn, its resulting state and its notes land together or not at all.
     _db.Transaction([&] {
-        _db.Prepare("INSERT INTO turns (number, input, resolve, checks, applied, rejected, narration, timings) "
-                    "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)")
+        _db.Prepare("INSERT INTO turns (number, attempt, input, resolve, checks, applied, rejected, narration, timings) "
+                    "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)")
             .Bind(1, record.number)
-            .Bind(2, record.input)
-            .Bind(3, record.resolve.dump())
-            .Bind(4, checks.dump())
-            .Bind(5, applied.dump())
-            .Bind(6, rejected.dump())
-            .Bind(7, record.narration)
-            .Bind(8, record.timings.dump())
+            .Bind(2, record.attempt)
+            .Bind(3, record.input)
+            .Bind(4, record.resolve.dump())
+            .Bind(5, checks.dump())
+            .Bind(6, applied.dump())
+            .Bind(7, rejected.dump())
+            .Bind(8, record.narration)
+            .Bind(9, record.timings.dump())
             .Run();
         _db.Prepare("INSERT INTO state_snapshots (turn, state) VALUES (?1, ?2)")
             .Bind(1, record.number)
@@ -261,7 +265,7 @@ std::optional<core::TurnRecord> RunStore::Turn(int number)
 
 std::vector<core::TurnRecord> RunStore::Turns(int fromTurn, int toTurn)
 {
-    Statement query = _db.Prepare("SELECT number, input, resolve, checks, applied, rejected, narration, timings "
+    Statement query = _db.Prepare("SELECT number, attempt, input, resolve, checks, applied, rejected, narration, timings "
                                   "FROM turns WHERE number BETWEEN ?1 AND ?2 ORDER BY number");
     query.Bind(1, fromTurn).Bind(2, toTurn);
 
@@ -296,13 +300,14 @@ std::vector<core::TurnRecord> RunStore::Turns(int fromTurn, int toTurn)
             }
         };
 
-        record.input = query.ColumnText(1);
-        record.resolve = parseColumn(2, "resolve");
-        convertColumn(3, "checks", core::CheckOutcomeFromJson, record.checks);
-        convertColumn(4, "applied", core::AppliedChangeFromJson, record.applied);
-        convertColumn(5, "rejected", core::RejectedChangeFromJson, record.rejected);
-        record.narration = query.ColumnText(6);
-        record.timings = parseColumn(7, "timings");
+        record.attempt = static_cast<int>(query.ColumnInt(1));
+        record.input = query.ColumnText(2);
+        record.resolve = parseColumn(3, "resolve");
+        convertColumn(4, "checks", core::CheckOutcomeFromJson, record.checks);
+        convertColumn(5, "applied", core::AppliedChangeFromJson, record.applied);
+        convertColumn(6, "rejected", core::RejectedChangeFromJson, record.rejected);
+        record.narration = query.ColumnText(7);
+        record.timings = parseColumn(8, "timings");
         records.push_back(std::move(record));
     }
 
@@ -336,7 +341,10 @@ void RunStore::TruncateAfter(int turn)
         _db.Prepare("DELETE FROM state_snapshots WHERE turn > ?1").Bind(1, turn).Run();
         _db.Prepare("DELETE FROM summaries WHERE to_turn > ?1").Bind(1, turn).Run();
         _db.Prepare("DELETE FROM notes WHERE turn > ?1").Bind(1, turn).Run();
-        _db.Prepare("DELETE FROM embeddings WHERE kind = 'turn' AND CAST(ref_id AS INTEGER) > ?1").Bind(1, turn).Run();
+        // CAST('12.0' AS INTEGER) is 12, so note refs ("<turn>.<index>") compare by their turn.
+        _db.Prepare("DELETE FROM embeddings WHERE kind IN ('turn', 'note') AND CAST(ref_id AS INTEGER) > ?1")
+            .Bind(1, turn)
+            .Run();
     });
 }
 
@@ -349,6 +357,23 @@ void RunStore::AddSummary(const core::Summary& summary)
         .Bind(2, summary.toTurn)
         .Bind(3, summary.text)
         .Run();
+}
+
+void RunStore::ReplaceSummaries(const core::Summary& merged)
+{
+    MORPHEUS_REQUIRE(merged.fromTurn >= 1 && merged.fromTurn <= merged.toTurn,
+                     std::format("ReplaceSummaries: bad turn range {}..{}", merged.fromTurn, merged.toTurn));
+
+    // The old summaries go and the merged one arrives together, so a failure never leaves the run without
+    // its story so far.
+    _db.Transaction([&] {
+        _db.Prepare("DELETE FROM summaries").Run();
+        _db.Prepare("INSERT INTO summaries (from_turn, to_turn, text) VALUES (?1, ?2, ?3)")
+            .Bind(1, merged.fromTurn)
+            .Bind(2, merged.toTurn)
+            .Bind(3, merged.text)
+            .Run();
+    });
 }
 
 std::vector<core::Summary> RunStore::Summaries()
@@ -389,7 +414,8 @@ void RunStore::PutEmbedding(const EmbeddingRow& row)
 std::vector<EmbeddingRow> RunStore::Embeddings(EmbeddingKind kind, const std::string& model)
 {
     Statement query = _db.Prepare(
-        "SELECT ref_id, vector, content_hash FROM embeddings WHERE kind = ?1 AND model = ?2 ORDER BY ref_id");
+        "SELECT ref_id, vector, content_hash FROM embeddings WHERE kind = ?1 AND model = ?2 "
+        "ORDER BY CAST(ref_id AS INTEGER), ref_id");
     query.Bind(1, KindName(kind)).Bind(2, model);
 
     std::vector<EmbeddingRow> rows;

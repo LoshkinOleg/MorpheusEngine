@@ -22,6 +22,7 @@ struct CheckOutcome {
 // the context module.
 struct TurnRecord {
     int number = 0;
+    int attempt = 0; // 0 for the first try; each regenerate adds 1 (new text sampling, same dice).
     std::string input = {};
     nlohmann::json resolve = nlohmann::json::object(); // Resolve call output exactly as the model produced it.
     std::vector<CheckOutcome> checks = {};
