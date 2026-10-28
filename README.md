@@ -19,6 +19,7 @@ Prerequisites: Visual Studio 2022 with the C++ workload, CMake 3.25+, Git, and t
 |---|---|
 | `tests` | Engine libraries and tests only (no llama.cpp, SDL3 or ImGui) |
 | `asan` | Same as `tests`, instrumented with AddressSanitizer |
+| `dev-asan` | llama.cpp on the CPU (no Vulkan) and the tests under AddressSanitizer, RelWithDebInfo; slow, for memory checks of the backend |
 | `dev` | Everything: llama.cpp with Vulkan, the `morpheus` app and the `morpheus_probe` and `morpheus_play` tools |
 
 ```

@@ -32,12 +32,25 @@
       "cacheVariables": {
         "MORPHEUS_ASAN": "ON"
       }
+    },
+    {
+      "name": "dev-asan",
+      "displayName": "llama.cpp on the CPU + tests under AddressSanitizer",
+      "inherits": "dev",
+      "binaryDir": "${sourceDir}/build/dev-asan",
+      "cacheVariables": {
+        "MORPHEUS_BUILD_APP": "OFF",
+        "MORPHEUS_VULKAN": "OFF",
+        "MORPHEUS_ASAN": "ON",
+        "GGML_OPENMP": "OFF"
+      }
     }
   ],
   "buildPresets": [
     { "name": "dev", "configurePreset": "dev", "configuration": "Debug" },
     { "name": "tests", "configurePreset": "tests", "configuration": "Debug" },
-    { "name": "asan", "configurePreset": "asan", "configuration": "Debug" }
+    { "name": "asan", "configurePreset": "asan", "configuration": "Debug" },
+    { "name": "dev-asan", "configurePreset": "dev-asan", "configuration": "RelWithDebInfo" }
   ],
   "testPresets": [
     {
@@ -58,6 +71,13 @@
       "name": "asan",
       "configurePreset": "asan",
       "configuration": "Debug",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error" }
+    },
+    {
+      "name": "dev-asan",
+      "configurePreset": "dev-asan",
+      "configuration": "RelWithDebInfo",
       "output": { "outputOnFailure": true },
       "execution": { "noTestsAction": "error" }
     }
