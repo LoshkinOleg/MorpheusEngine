@@ -1,5 +1,7 @@
 #include "turn/Folding.h"
 
+#include <cstddef>
+#include <format>
 #include <string>
 #include <utility>
 
@@ -9,17 +11,6 @@
 #include "turn/EngineText.h"
 
 namespace morpheus::turn {
-
-namespace {
-
-// The summary text from a completion: trimmed; a model that wrote nothing still leaves a marker, not a blank.
-std::string SummaryText(const std::string& output)
-{
-    std::string text = core::Trim(output);
-    return text.empty() ? std::string("(no summary)") : text;
-}
-
-} // namespace
 
 std::optional<core::Summary> SummarizeTurns(const inference::Message& systemMessage,
                                             const std::vector<core::TurnRecord>& turns,
@@ -40,7 +31,19 @@ std::optional<core::Summary> SummarizeTurns(const inference::Message& systemMess
     if (completion.cancelled) {
         return std::nullopt;
     }
-    return core::Summary{turns.front().number, turns.back().number, SummaryText(completion.text)};
+
+    // The model's summary, trimmed. When it wrote nothing, the engine writes a factual one so folding still
+    // makes progress: each turn's input and mechanics line, cut to about the summary's token cap.
+    std::string text = core::Trim(completion.text);
+    if (text.empty()) {
+        for (const core::TurnRecord& turn : turns) {
+            const std::string mechanics = context::RenderMechanicsLine(turn);
+            text += std::format("{}Turn {}: {}{}{}", text.empty() ? "" : "\n", turn.number, turn.input,
+                                mechanics.empty() ? "" : " ", mechanics);
+        }
+        text = core::CutUtf8(text, static_cast<std::size_t>(spec.maxTokens) * FALLBACK_BYTES_PER_TOKEN);
+    }
+    return core::Summary{turns.front().number, turns.back().number, std::move(text)};
 }
 
 std::optional<core::Summary> CondenseSummaries(const inference::Message& systemMessage,
@@ -59,7 +62,18 @@ std::optional<core::Summary> CondenseSummaries(const inference::Message& systemM
     if (completion.cancelled) {
         return std::nullopt;
     }
-    return core::Summary{summaries.front().fromTurn, summaries.back().toTurn, SummaryText(completion.text)};
+
+    // The model's summary, trimmed. When it wrote nothing, the engine writes one from the summaries it was
+    // given, cut to about the summary's token cap.
+    std::string text = core::Trim(completion.text);
+    if (text.empty()) {
+        for (const core::Summary& summary : summaries) {
+            text += std::format("{}Turns {}-{}: {}", text.empty() ? "" : "\n", summary.fromTurn, summary.toTurn,
+                                summary.text);
+        }
+        text = core::CutUtf8(text, static_cast<std::size_t>(spec.maxTokens) * FALLBACK_BYTES_PER_TOKEN);
+    }
+    return core::Summary{summaries.front().fromTurn, summaries.back().toTurn, std::move(text)};
 }
 
 } // namespace morpheus::turn

@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "context/Transcript.h"
 #include "core/Errors.h"
 #include "fakes/ScriptedBackend.h"
 #include "turn/EngineText.h"
@@ -21,6 +22,33 @@ core::TurnRecord Turn(int number, const std::string& input, const std::string& n
     record.input = input;
     record.narration = narration;
     return record;
+}
+
+// A turn with one check and one applied change, so its mechanics line is not empty.
+core::TurnRecord MechanicalTurn(int number, const std::string& input)
+{
+    core::TurnRecord record = Turn(number, input, "Narration.");
+    core::CheckOutcome check;
+    check.stat = "agility";
+    check.difficulty = "hard";
+    check.result.total = 14;
+    check.result.target = 16;
+    check.result.success = false;
+    record.checks.push_back(check);
+    core::AppliedChange applied;
+    applied.change.op = core::ChangeOp::Add;
+    applied.change.path = "player.health";
+    applied.change.value = -3;
+    record.applied.push_back(applied);
+    return record;
+}
+
+// A backend whose model writes only whitespace.
+test::ScriptedBackend BlankBackend()
+{
+    return test::ScriptedBackend(16384, [](const inference::Prompt&, const inference::GenerationSpec&) {
+        return std::string("  \n\t ");
+    });
 }
 
 } // namespace
@@ -76,6 +104,66 @@ TEST_CASE("Folding calls return nothing when cancelled and reject empty input", 
     stop.request_stop();
     CHECK_FALSE(turn::SummarizeTurns({inference::Role::System, "S"}, {Turn(1, "a", "b")}, {}, backend, stop.get_token()));
     CHECK_FALSE(turn::CondenseSummaries({inference::Role::System, "S"}, {{1, 1, "a"}}, {}, backend, stop.get_token()));
+
+    // The two cancelled calls reached the backend; the rejected calls must not add any.
+    const std::size_t callsBefore = backend.Calls().size();
     CHECK_THROWS_AS(turn::SummarizeTurns({inference::Role::System, "S"}, {}, {}, backend, {}), core::ContractError);
     CHECK_THROWS_AS(turn::CondenseSummaries({inference::Role::System, "S"}, {}, {}, backend, {}), core::ContractError);
+    CHECK(backend.Calls().size() == callsBefore);
+}
+
+TEST_CASE("Folding calls reject a message that is not a system message", "[folding]")
+{
+    test::ScriptedBackend backend(16384, [](const inference::Prompt&, const inference::GenerationSpec&) {
+        return std::string("Summary.");
+    });
+    const inference::Message user = {inference::Role::User, "not a system message"};
+    CHECK_THROWS_AS(turn::SummarizeTurns(user, {Turn(1, "a", "b")}, {}, backend, {}), core::ContractError);
+    CHECK_THROWS_AS(turn::CondenseSummaries(user, {{1, 1, "a"}}, {}, backend, {}), core::ContractError);
+    CHECK(backend.Calls().empty());
+}
+
+TEST_CASE("SummarizeTurns writes a factual fallback when the model writes nothing", "[folding]")
+{
+    test::ScriptedBackend backend = BlankBackend();
+    const std::vector<core::TurnRecord> turns = {Turn(3, "I knock.", "The door creaks."),
+                                                 MechanicalTurn(4, "I jump the gap.")};
+    const std::string mechanics = context::RenderMechanicsLine(turns[1]);
+    REQUIRE_FALSE(mechanics.empty());
+
+    const std::optional<core::Summary> summary =
+        turn::SummarizeTurns({inference::Role::System, "S"}, turns, inference::GenerationSpec{}, backend, {});
+    REQUIRE(summary);
+    CHECK(summary->fromTurn == 3);
+    CHECK(summary->toTurn == 4);
+    CHECK(summary->text == "Turn 3: I knock.\nTurn 4: I jump the gap. " + mechanics);
+}
+
+TEST_CASE("CondenseSummaries writes a factual fallback when the model writes nothing", "[folding]")
+{
+    test::ScriptedBackend backend = BlankBackend();
+    const std::optional<core::Summary> merged = turn::CondenseSummaries(
+        {inference::Role::System, "S"}, {{1, 3, "The keeper lit the lamp."}, {4, 9, "The ship sank."}},
+        inference::GenerationSpec{}, backend, {});
+    REQUIRE(merged);
+    CHECK(merged->fromTurn == 1);
+    CHECK(merged->toTurn == 9);
+    CHECK(merged->text == "Turns 1-3: The keeper lit the lamp.\nTurns 4-9: The ship sank.");
+}
+
+TEST_CASE("A fallback summary is cut to about four bytes per token of the cap", "[folding]")
+{
+    test::ScriptedBackend backend = BlankBackend();
+    inference::GenerationSpec spec;
+    spec.maxTokens = 10;
+
+    const std::optional<core::Summary> summary =
+        turn::SummarizeTurns({inference::Role::System, "S"}, {Turn(1, std::string(200, 'x'), "b")}, spec, backend, {});
+    REQUIRE(summary);
+    CHECK(summary->text == "Turn 1: " + std::string(32, 'x')); // 40 bytes in all
+
+    const std::optional<core::Summary> merged =
+        turn::CondenseSummaries({inference::Role::System, "S"}, {{1, 2, std::string(200, 'y')}}, spec, backend, {});
+    REQUIRE(merged);
+    CHECK(merged->text == "Turns 1-2: " + std::string(29, 'y')); // 40 bytes in all
 }
