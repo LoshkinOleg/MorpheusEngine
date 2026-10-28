@@ -266,6 +266,50 @@ std::optional<core::TurnRecord> Session::PlayTurn(const std::string& input, int 
     std::vector<RetrievalHit> hits = _index.Retrieve(core::CutUtf8(input, EMBED_TEXT_CHARS), ALL_SOURCES,
                                                      _settings.budget.retrievalCap, RETRIEVAL_MAX_HITS, *_pBackend);
 
+    // Assisted mode: the model may ask for lookups first. Their hits join the tail after the automatic ones, so
+    // the fit loop sheds them first.
+    if (_mode == core::MemoryMode::Assisted) {
+        std::optional<context::Assembly> lookupAssembly =
+            AssembleFitting(state, hits, input, LOOKUP_INSTRUCTION, turn, attempt, stop);
+        if (!lookupAssembly) {
+            return std::nullopt;
+        }
+        inference::GenerationSpec lookupSpec;
+        lookupSpec.grammar = BuildLookupGrammar();
+        lookupSpec.maxTokens = LOOKUP_MAX_TOKENS;
+        lookupSpec.sampling = inference::SamplingFrom(
+            _settings.resolveSampling, core::SamplingSeed(seed, turn, core::CallKind::Lookup, attempt));
+        const inference::Completion looked = _pBackend->Complete(lookupAssembly->prompt, lookupSpec, {}, stop);
+        if (looked.cancelled) {
+            return std::nullopt;
+        }
+
+        std::string lookupError;
+        nlohmann::json lookupTelemetry = Telemetry(looked);
+        lookupTelemetry["requests"] = nlohmann::json::array();
+        for (const Lookup& lookup : ParseLookupOutput(looked.text, lookupError)) {
+            const std::array<store::EmbeddingKind, 1> source = {lookup.source};
+            nlohmann::json added = nlohmann::json::array();
+            // The query is cut like the automatic one above.
+            for (RetrievalHit& hit : _index.Retrieve(core::CutUtf8(lookup.query, EMBED_TEXT_CHARS), source,
+                                                     _settings.budget.retrievalCap, LOOKUP_MAX_HITS, *_pBackend)) {
+                const bool known = std::any_of(hits.begin(), hits.end(), [&hit](const RetrievalHit& other) {
+                    return other.kind == hit.kind && other.refId == hit.refId;
+                });
+                if (!known) {
+                    added.push_back(hit.refId);
+                    hits.push_back(std::move(hit));
+                }
+            }
+            lookupTelemetry["requests"].push_back(
+                {{"source", kindText(lookup.source)}, {"query", lookup.query}, {"added", std::move(added)}});
+        }
+        if (!lookupError.empty()) {
+            lookupTelemetry["error"] = lookupError;
+        }
+        telemetry["lookup"] = std::move(lookupTelemetry);
+    }
+
     // 2. Resolve.
     std::optional<context::Assembly> assembly =
         AssembleFitting(state, hits, input, RESOLVE_INSTRUCTION, turn, attempt, stop);

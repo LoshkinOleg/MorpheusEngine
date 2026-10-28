@@ -498,3 +498,46 @@ TEST_CASE("A very long input is cut for the retrieval query", "[session]")
     REQUIRE(record);
     CHECK(record->input.size() > turn::EMBED_TEXT_CHARS);
 }
+
+TEST_CASE("Assisted mode looks things up before resolving and keeps notes", "[session]")
+{
+    core::Settings settings = TestSettings();
+    settings.memoryMode = core::MemoryMode::Assisted;
+    const std::string listen =
+        R"({"intent":"listen","checks":[],"changes":[],"notes":["The keeper hums an old sea shanty."]})";
+    test::ScriptedBackend backend(16384, [&](const inference::Prompt& prompt, const inference::GenerationSpec& spec) {
+        if (spec.grammar.find("lookups") != std::string::npos) {
+            return std::string(R"({"lookups":[{"source":"lore","query":"keeper"}]})");
+        }
+        return Responder(listen, "The keeper hums.")(prompt, spec);
+    });
+    turn::Session session = turn::Session::Start(MiniWorld(), settings, NewRunFile("session_assisted"), 42, backend);
+
+    const std::optional<core::TurnRecord> record = session.RunTurn("I listen.", {}, {});
+    REQUIRE(record);
+    const auto& calls = backend.Calls(); // lookup, resolve, narrate
+    REQUIRE(calls.size() == 3);
+    CHECK_THAT(calls[0].prompt.messages.back().content, ContainsSubstring(std::string(turn::LOOKUP_INSTRUCTION)));
+    CHECK_THAT(calls[1].prompt.messages.back().content, ContainsSubstring("keeper: The keeper says"));
+    CHECK_THAT(calls[1].prompt.messages.front().content, ContainsSubstring("# Memory"));
+    CHECK_THAT(calls[1].spec.grammar, ContainsSubstring("notes ::="));
+    CHECK(record->notes == std::vector<std::string>{"The keeper hums an old sea shanty."});
+    REQUIRE(record->timings.contains("lookup"));
+    // The best match comes first. The fake embedding also lets a weaker "storm" hit through the score floor.
+    CHECK(record->timings.at("lookup").at("requests").at(0).at("added").at(0) == "keeper");
+
+    // After maintenance the note is searchable memory for later turns.
+    REQUIRE(session.Maintain({}));
+    REQUIRE(session.RunTurn("What shanty does the keeper hum?", {}, {}));
+    CHECK_THAT(backend.Calls().at(4).prompt.messages.back().content,
+               ContainsSubstring("Note from turn 1: The keeper hums an old sea shanty."));
+}
+
+TEST_CASE("Engine mode makes no lookup call and keeps no notes", "[session]")
+{
+    test::ScriptedBackend backend(16384, Responder(R"({"intent":"listen","checks":[],"changes":[]})"));
+    turn::Session session = turn::Session::Start(MiniWorld(), TestSettings(), NewRunFile("session_engine_mode"), 42, backend);
+    REQUIRE(session.RunTurn("I listen.", {}, {}));
+    CHECK(backend.Calls().size() == 2);
+    CHECK_THAT(backend.Calls().at(0).prompt.messages.front().content, !ContainsSubstring("# Memory"));
+}
