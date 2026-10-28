@@ -16,7 +16,7 @@
     },
     {
       "name": "tests",
-      "displayName": "Engine libraries + tests only (no llama.cpp, SDL3 or ImGui)",
+      "displayName": "Engine libraries + tests only (no llama.cpp or SDL3)",
       "inherits": "dev",
       "binaryDir": "${sourceDir}/build/tests",
       "cacheVariables": {

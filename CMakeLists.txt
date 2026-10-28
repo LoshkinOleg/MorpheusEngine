@@ -98,15 +98,41 @@ if(MORPHEUS_BUILD_APP)
         GIT_SHALLOW    FALSE                                          # Has to be FALSE to be able to use a commit SHA
     )
     FetchContent_MakeAvailable(sdl3)
+endif()
 
-    # imgui
+if(MORPHEUS_BUILD_APP OR MORPHEUS_BUILD_TESTS)
+    # Dear ImGui, docking branch: the app's UI, and the tests draw every window headless. The repository has no
+    # CMake build, so its targets are defined here, like SQLite's.
     FetchContent_Declare(
         imgui
-        GIT_REPOSITORY https://github.com/LoshkinOleg/cmake-ready-imgui-sdl3.git
-        GIT_TAG        5acd6de3ed4efb06d665628b01fba0fe3e63f7bc
-        GIT_SHALLOW    FALSE # Has to be FALSE to be able to use a commit SHA
+        GIT_REPOSITORY https://github.com/ocornut/imgui.git
+        GIT_TAG        b61e56346a92cfcaf1f43a545ca37b0b32239654       # commit SHA to get, v1.92.8-docking
+        GIT_SHALLOW    FALSE                                          # Has to be FALSE to be able to use a commit SHA
     )
     FetchContent_MakeAvailable(imgui)
+
+    # Core ImGui and its std::string input helpers, without a platform or renderer backend.
+    add_library(imgui_core STATIC
+        ${imgui_SOURCE_DIR}/imgui.cpp
+        ${imgui_SOURCE_DIR}/imgui_draw.cpp
+        ${imgui_SOURCE_DIR}/imgui_tables.cpp
+        ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+        ${imgui_SOURCE_DIR}/misc/cpp/imgui_stdlib.cpp
+    )
+    target_include_directories(imgui_core SYSTEM PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/misc/cpp)
+    # Our configuration (a throwing IM_ASSERT, no obsolete functions) for every target that includes ImGui.
+    target_compile_definitions(imgui_core PUBLIC IMGUI_USER_CONFIG="${PROJECT_SOURCE_DIR}/src/app/ui/ImGuiConfig.h")
+    target_compile_features(imgui_core PUBLIC cxx_std_17)
+
+    if(MORPHEUS_BUILD_APP)
+        # The SDL3 platform backend and the SDL_Renderer backend, for the app.
+        add_library(imgui_sdl3 STATIC
+            ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp
+            ${imgui_SOURCE_DIR}/backends/imgui_impl_sdlrenderer3.cpp
+        )
+        target_include_directories(imgui_sdl3 SYSTEM PUBLIC ${imgui_SOURCE_DIR}/backends)
+        target_link_libraries(imgui_sdl3 PUBLIC imgui_core SDL3::SDL3)
+    endif()
 endif()
 
 if(MORPHEUS_BUILD_TESTS)
@@ -160,7 +186,7 @@ if(MORPHEUS_BUILD_APP)
         llama
         SDL3::SDL3
         nlohmann_json::nlohmann_json
-        imgui::imgui
+        imgui_sdl3
     )
 
     # ---- Defines ----
