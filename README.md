@@ -72,13 +72,13 @@ The root holds `settings.json`, `game_projects/` and `saves/`. The models load i
 - **Turn log:** each turn's intent, rolls, applied and rejected changes, notes, lookups and per-call token counts and timings, and the raw resolve output.
 - **Context:** the latest resolve prompt by layer: tokens per layer, KV-cache reuse per call, and the text as sections or raw.
 - **Memory:** the story summaries, the notes, and what retrieval put in the latest turn's prompt, with scores.
-- **Settings:** model paths, context size, GPU layers, sampling and memory mode. Apply saves `settings.json` and restarts the engine, reopening the run; changing the models, context size or GPU layers reloads the models. The budget is shown and edited in `settings.json`.
+- **Settings:** model paths, context size, GPU layers, sampling and memory mode. Apply saves `settings.json` and restarts the engine, reopening the run; changing the models, the embedding prefixes, the context size or GPU layers reloads the models. The budget is shown and edited in `settings.json`.
 
 `--frames N` exits after N frames, a quick check that the app starts on this machine.
 
 ## Play in the terminal
 
-`morpheus_play` (`dev` preset) plays a world through the engine worker, the same path the app will take:
+`morpheus_play` (`dev` preset) plays a world through the engine worker, the same path the app takes:
 
 ```
 ./build/dev/bin/Debug/morpheus_play.exe <settings.json> <world folder> <run.db> [--seed N] [--record <fixture.json>]

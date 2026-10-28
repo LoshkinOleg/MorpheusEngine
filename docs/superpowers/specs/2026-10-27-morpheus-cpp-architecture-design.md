@@ -31,9 +31,9 @@ Each module is a static library. Dependencies flow downward only.
 | `llama` | `LlamaCppBackend`: tokenize, KV prefix reuse, grammar sampling, embeddings, state save/restore. The only module linking llama.cpp; built by the `dev` preset only. | inference |
 | `context` | Layered prompt assembly, exact token budgets, cache-prefix tracking | core, inference |
 | `turn` | Turn orchestration (grammar, resolve and apply, retrieval, folding, session), the worker thread, replay recording | all above |
-| `app` | SDL3 + Dear ImGui frontend: the Runs and Play windows, the inspectors, Settings | turn |
+| `app` | SDL3 + Dear ImGui frontend: the Runs and Play windows, the inspectors, Settings | turn, llama (`main.cpp`'s backend factory) |
 
-**Build:** CMake, with dependencies pulled through FetchContent and pinned to commit SHAs: llama.cpp, nlohmann/json, SDL3, the ImGui fork, the SQLite amalgamation, Catch2 v3. Warnings are treated as errors (`/W4 /permissive-`). Debug builds use AddressSanitizer.
+**Build:** CMake, with dependencies pulled through FetchContent and pinned to commit SHAs: llama.cpp, nlohmann/json, SDL3, ImGui (upstream's docking branch, v1.92.8-docking), the SQLite amalgamation, Catch2 v3. Warnings are treated as errors (`/W4 /permissive-`). AddressSanitizer is opt-in: the `asan` and `dev-asan` presets.
 
 ## Turn flow (resolve, then narrate)
 
