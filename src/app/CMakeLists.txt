@@ -30,6 +30,10 @@ if(MORPHEUS_BUILD_APP)
     # The app: the SDL3 window, ImGui's SDL backends and the llama.cpp backend.
     add_executable(morpheus main.cpp)
     target_link_libraries(morpheus PRIVATE morpheus_app_ui morpheus_llama imgui_sdl3)
+    if(WIN32)
+        # shell32 and ole32: the Windows fonts folder, for the UI font.
+        target_link_libraries(morpheus PRIVATE shell32 ole32)
+    endif()
     morpheus_target_defaults(morpheus)
     # F5 in Visual Studio runs it from the repository root, where settings.json, game_projects/ and saves/ are.
     set_target_properties(morpheus PROPERTIES VS_DEBUGGER_WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")

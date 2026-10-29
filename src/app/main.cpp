@@ -16,6 +16,14 @@
 #include <string_view>
 #include <system_error>
 
+#ifdef _WIN32
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <knownfolders.h>
+#include <shlobj.h>
+#endif
+
 #include <SDL3/SDL.h>
 #include <imgui.h>
 #include <imgui_impl_sdl3.h>
@@ -48,6 +56,14 @@ struct RendererDeleter {
         SDL_DestroyRenderer(pRenderer);
     }
 };
+#ifdef _WIN32
+struct CoTaskMemDeleter {
+    void operator()(wchar_t* pText) const
+    {
+        CoTaskMemFree(pText);
+    }
+};
+#endif
 struct ImGuiContextDeleter {
     void operator()(ImGuiContext* pContext) const
     {
@@ -170,11 +186,16 @@ int main(int argc, char** argv)
         // The UI font covers the punctuation narration uses (dashes, curly quotes), which ImGui's built-in font lacks:
         // Segoe UI on Windows, DejaVu Sans elsewhere (Debian and Ubuntu install it with fonts-dejavu-core).
 #ifdef _WIN32
-        const char* pWindowsDir = SDL_getenv("WINDIR");
-        if (!pWindowsDir) {
-            throw std::runtime_error("WINDIR is not set, so the Windows fonts folder cannot be found");
+        // The Fonts folder comes from the shell rather than an environment variable, whose name and case depend on
+        // how the app was started. The shell allocates the path, which is freed even when the call fails.
+        PWSTR pFontsDirRaw = nullptr;
+        const HRESULT fontsResult = SHGetKnownFolderPath(FOLDERID_Fonts, 0, nullptr, &pFontsDirRaw);
+        const std::unique_ptr<wchar_t, CoTaskMemDeleter> pFontsDir(pFontsDirRaw);
+        if (FAILED(fontsResult)) {
+            throw std::runtime_error("cannot find the Windows fonts folder (HRESULT " + std::to_string(fontsResult) +
+                                     ")");
         }
-        const std::filesystem::path fontFile = std::filesystem::path(pWindowsDir) / "Fonts" / "segoeui.ttf";
+        const std::filesystem::path fontFile = std::filesystem::path(pFontsDir.get()) / "segoeui.ttf";
 #else
         const std::filesystem::path fontFile = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
 #endif
