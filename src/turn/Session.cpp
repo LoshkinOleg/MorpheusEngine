@@ -25,13 +25,22 @@ constexpr std::array<store::EmbeddingKind, 3> ALL_SOURCES = {store::EmbeddingKin
 // Stands in for the next input when maintenance measures the stable layers between turns.
 constexpr std::string_view MAINTENANCE_INPUT = "(the player's next action)";
 
-// One model call's numbers for the turn telemetry (TurnRecord::timings).
-nlohmann::json Telemetry(const inference::Completion& completion)
+// One model call's numbers for the turn telemetry (TurnRecord::timings). A call that was allowed to think also
+// gets its thinking block: its numbers and its text, kept so the turn log can show why the model did what it did.
+// The thinking text goes nowhere else: not into the narration, the transcript or a later prompt.
+nlohmann::json Telemetry(const inference::Completion& completion, const inference::GenerationSpec& spec)
 {
-    return {{"prompt_tokens", completion.promptTokens},  {"reused", completion.tokensReused},
-            {"evaluated", completion.tokensEvaluated},   {"generated", completion.tokensGenerated},
-            {"prompt_ms", completion.promptMs},          {"generate_ms", completion.generateMs},
-            {"stopped_at_limit", completion.stoppedAtLimit}};
+    nlohmann::json telemetry = {{"prompt_tokens", completion.promptTokens},  {"reused", completion.tokensReused},
+                                {"evaluated", completion.tokensEvaluated},   {"generated", completion.tokensGenerated},
+                                {"prompt_ms", completion.promptMs},          {"generate_ms", completion.generateMs},
+                                {"stopped_at_limit", completion.stoppedAtLimit}};
+    if (spec.thinkingMaxTokens > 0) {
+        telemetry["thinking"] = {{"tokens", completion.thinkingTokens},
+                                 {"ms", completion.thinkingMs},
+                                 {"stopped_at_limit", completion.thinkingStoppedAtLimit},
+                                 {"text", completion.thinking}};
+    }
+    return telemetry;
 }
 
 // Thrown when a summary is still over summary_cap right after a condense: condensing again would only repeat it.
@@ -297,7 +306,7 @@ std::optional<core::TurnRecord> Session::PlayTurn(const std::string& input, int 
             capLeft -= hit.tokens;
         }
         std::string lookupError;
-        nlohmann::json lookupTelemetry = Telemetry(looked);
+        nlohmann::json lookupTelemetry = Telemetry(looked, lookupSpec);
         lookupTelemetry["requests"] = nlohmann::json::array();
         for (const Lookup& lookup : ParseLookupOutput(looked.text, lookupError)) {
             const std::array<store::EmbeddingKind, 1> source = {lookup.source};
@@ -334,6 +343,7 @@ std::optional<core::TurnRecord> Session::PlayTurn(const std::string& input, int 
     inference::GenerationSpec resolveSpec;
     resolveSpec.grammar = BuildResolveGrammar(_world, state, _mode);
     resolveSpec.maxTokens = _settings.budget.resolveMaxTokens;
+    resolveSpec.thinkingMaxTokens = _settings.budget.resolveThinkingTokens;
     resolveSpec.sampling =
         inference::SamplingFrom(_settings.resolveSampling, core::SamplingSeed(seed, turn, core::CallKind::Resolve, attempt));
     const inference::Completion resolved = _pBackend->Complete(assembly->prompt, resolveSpec, {}, stop);
@@ -366,6 +376,7 @@ std::optional<core::TurnRecord> Session::PlayTurn(const std::string& input, int 
                               RenderNarrateMessage(proposal, resolution, _settings.budget.narrateAllowance, *_pBackend));
     inference::GenerationSpec narrateSpec;
     narrateSpec.maxTokens = _settings.budget.narrateMaxTokens;
+    narrateSpec.thinkingMaxTokens = _settings.budget.narrateThinkingTokens;
     narrateSpec.sampling =
         inference::SamplingFrom(_settings.narrateSampling, core::SamplingSeed(seed, turn, core::CallKind::Narrate, attempt));
     const inference::Completion narrated =
@@ -376,12 +387,12 @@ std::optional<core::TurnRecord> Session::PlayTurn(const std::string& input, int 
     record.narration = core::Trim(narrated.text);
 
     // 5. Commit.
-    telemetry["resolve"] = Telemetry(resolved);
+    telemetry["resolve"] = Telemetry(resolved, resolveSpec);
     if (!proposal.error.empty()) {
         // Why nothing was proposed: the record's resolve output alone does not say so for JSON of the wrong shape.
         telemetry["resolve"]["error"] = proposal.error;
     }
-    telemetry["narrate"] = Telemetry(narrated);
+    telemetry["narrate"] = Telemetry(narrated, narrateSpec);
     telemetry["retrieval"] = nlohmann::json::array(); // The hits that made it into the prompt.
     for (const RetrievalHit& hit : hits) {
         telemetry["retrieval"].push_back({{"source", kindText(hit.kind)}, {"ref", hit.refId}, {"score", hit.score}});

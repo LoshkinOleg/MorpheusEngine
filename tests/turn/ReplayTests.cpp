@@ -34,7 +34,7 @@ core::Settings ReplaySettings()
     settings.embeddingModel = "models/embed.gguf";
     settings.embeddingDocumentPrefix = "search_document: ";
     settings.contextSize = 16384;
-    settings.budget = {512, 768, 512, 2048, 1024, 4096, 2048, 768}; // As settings.example.json.
+    settings.budget = {512, 768, 512, 2048, 1024, 4096, 2048, 768}; // As settings.example.json, without thinking.
     settings.resolveSampling = {0.3, 40, 0.9};
     settings.narrateSampling = {0.8, 40, 0.95};
     return settings;

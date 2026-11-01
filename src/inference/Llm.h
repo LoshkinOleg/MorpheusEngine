@@ -49,21 +49,28 @@ struct Sampling {
 Sampling SamplingFrom(const core::SamplingSettings& settings, std::uint32_t seed);
 
 struct GenerationSpec {
-    std::string grammar = {}; // GBNF with a "root" rule; empty means unconstrained.
-    int maxTokens = 256;
+    std::string grammar = {}; // GBNF with a "root" rule; empty means unconstrained. Applies to the answer only.
+    int maxTokens = 256;      // The answer: the text after any thinking.
+    // > 0 lets a thinking model reason before it answers, in a block of at most this many tokens (its markers
+    // included). The block is unconstrained, never streamed and kept out of Completion::text. 0: no thinking.
+    int thinkingMaxTokens = 0;
     Sampling sampling = {};
 };
 
 struct Completion {
-    std::string text = {};
+    std::string text = {};     // The answer. Empty when the model ended its reply inside the thinking block.
+    std::string thinking = {}; // The reasoning written in the thinking block, without its markers.
+    int thinkingTokens = 0;    // Tokens the thinking block took, markers included.
+    bool thinkingStoppedAtLimit = false; // The block reached thinkingMaxTokens and the backend closed it.
+    double thinkingMs = 0.0;
     int promptTokens = 0;     // Tokens in the templated prompt.
     int tokensReused = 0;     // Prompt tokens served from the KV cache.
     int tokensEvaluated = 0;  // Prompt tokens computed for this call.
-    int tokensGenerated = 0;
-    bool stoppedAtLimit = false; // Generation reached maxTokens before an end-of-generation token.
+    int tokensGenerated = 0;     // Answer tokens.
+    bool stoppedAtLimit = false; // The answer reached maxTokens before an end-of-generation token.
     bool cancelled = false;
     double promptMs = 0.0;
-    double generateMs = 0.0;
+    double generateMs = 0.0; // The answer; thinkingMs covers the thinking block.
 };
 
 enum class EmbedPurpose { Query, Document };
@@ -79,13 +86,18 @@ public:
     // Tokens in raw text: no chat template, no special tokens.
     virtual int CountTokens(std::string_view text) = 0;
 
-    // Tokens in the full templated prompt, exactly as Complete would evaluate it.
+    // Tokens in the full templated prompt, exactly as Complete would evaluate it without thinking. A call with
+    // thinking evaluates no more than that: the markers of its thinking block count against thinkingMaxTokens.
     virtual int CountPromptTokens(const Prompt& prompt) = 0;
 
     virtual int ContextSize() const = 0;
 
-    // Generates the assistant's reply to `prompt`. Throws InferenceError if prompt + spec.maxTokens exceeds the
-    // context. Throws ContractError for maxTokens <= 0 or a grammar that does not parse. Cancellation through `stop` returns early with completion.cancelled set; it is not an error.
+    // Generates the assistant's reply to `prompt`: with spec.thinkingMaxTokens > 0 a thinking block first, then the
+    // answer, which alone is streamed to onToken and constrained by spec.grammar. Throws InferenceError if prompt +
+    // spec.thinkingMaxTokens + spec.maxTokens exceeds the context, or if thinking is asked of a model without a
+    // thinking mode. Throws ContractError for maxTokens <= 0, a negative thinkingMaxTokens, one too small to close
+    // the block, or a grammar that does not parse. Cancellation through `stop` returns early with
+    // completion.cancelled set; it is not an error.
     virtual Completion Complete(const Prompt& prompt, const GenerationSpec& spec, const TokenCallback& onToken,
                                 std::stop_token stop) = 0;
 

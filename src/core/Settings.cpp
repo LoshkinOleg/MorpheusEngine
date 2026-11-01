@@ -121,20 +121,31 @@ Settings LoadSettings(const std::filesystem::path& file)
 
     // Budget: every part positive and below the context size.
     const nlohmann::json& budget = requireMember(json, "budget", "settings");
-    checkKeys(budget, "budget", {"resolve_max_tokens", "narrate_max_tokens", "narrate_allowance", "tail_allowance",
-                                 "engine_rules_cap",
+    checkKeys(budget, "budget", {"resolve_max_tokens", "narrate_max_tokens", "resolve_thinking_tokens",
+                                 "narrate_thinking_tokens", "narrate_allowance", "tail_allowance", "engine_rules_cap",
                                  "world_cap", "summary_cap", "retrieval_cap"});
     const long long contextSize = settings.contextSize;
     settings.budget.resolveMaxTokens = requireInt(budget, "resolve_max_tokens", "budget", 1, contextSize);
     settings.budget.narrateMaxTokens = requireInt(budget, "narrate_max_tokens", "budget", 1, contextSize);
+    // A thinking budget is 0 (that call does not think) or at least MIN_THINKING_TOKENS.
+    auto requireThinking = [&](const char* key) {
+        const int value = requireInt(budget, key, "budget", 0, contextSize);
+        if (value > 0 && value < MIN_THINKING_TOKENS) {
+            throw DataError(std::format("{}: budget '{}' must be 0 (no thinking) or at least {}, not {}", where, key,
+                                        MIN_THINKING_TOKENS, value));
+        }
+        return value;
+    };
+    settings.budget.resolveThinkingTokens = requireThinking("resolve_thinking_tokens");
+    settings.budget.narrateThinkingTokens = requireThinking("narrate_thinking_tokens");
     settings.budget.narrateAllowance = requireInt(budget, "narrate_allowance", "budget", 1, contextSize);
     settings.budget.tailAllowance = requireInt(budget, "tail_allowance", "budget", 1, contextSize);
     settings.budget.engineRulesCap = requireInt(budget, "engine_rules_cap", "budget", 1, contextSize);
     settings.budget.worldCap = requireInt(budget, "world_cap", "budget", 1, contextSize);
     settings.budget.summaryCap = requireInt(budget, "summary_cap", "budget", 1, contextSize);
     settings.budget.retrievalCap = requireInt(budget, "retrieval_cap", "budget", 1, settings.budget.tailAllowance);
-    const long long fixed = static_cast<long long>(settings.budget.resolveMaxTokens) + settings.budget.narrateMaxTokens +
-                            settings.budget.narrateAllowance + settings.budget.tailAllowance + settings.budget.engineRulesCap + settings.budget.worldCap +
+    const long long fixed = static_cast<long long>(settings.budget.ResolveGenerationTokens()) +
+                            settings.budget.NarrateGenerationTokens() + settings.budget.narrateAllowance + settings.budget.tailAllowance + settings.budget.engineRulesCap + settings.budget.worldCap +
                             settings.budget.summaryCap;
     if (fixed + SETTINGS_TEMPLATE_MARGIN >= contextSize) {
         throw DataError(std::format("{}: budget uses {} of {} context tokens (plus a {}-token chat-template margin) and "
@@ -177,6 +188,8 @@ nlohmann::json SettingsToJson(const Settings& settings)
         {"budget",
          {{"resolve_max_tokens", settings.budget.resolveMaxTokens},
           {"narrate_max_tokens", settings.budget.narrateMaxTokens},
+          {"resolve_thinking_tokens", settings.budget.resolveThinkingTokens},
+          {"narrate_thinking_tokens", settings.budget.narrateThinkingTokens},
           {"narrate_allowance", settings.budget.narrateAllowance},
           {"tail_allowance", settings.budget.tailAllowance},
           {"engine_rules_cap", settings.budget.engineRulesCap},

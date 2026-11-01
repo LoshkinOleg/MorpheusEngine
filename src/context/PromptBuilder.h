@@ -52,13 +52,13 @@ struct Assembly {
     }
 };
 
-// Builds the resolve prompt: one system message (L0 + L1 + L2), the transcript (L3), then one user message with
-// the volatile tail (T1-T4). L1 is the world's rules, game reference (RenderWorldReference) and always-on lore.
+// Builds the resolve prompt: one system message (L0 + L1 + L2), the transcript (L3), then one user message with the
+// volatile tail (T1-T4). L1 is the world's rules, game reference (RenderWorldReference) and always-on lore.
 // prompt.stableCount marks the end of L3. Throws ContractError if L0 exceeds engine_rules_cap (engine text too
 // long) and DataError if L1 exceeds world_cap (the world is too big) or if the context leaves no room for the
-// transcript after the system message (its summary counted at most at summary_cap), the tail allowance, the
-// narrate allowance and both generations (folding cannot fix that). Other overruns, an over-cap summary among
-// them, are flags for the turn layer to act on.
+// transcript after the system message (its summary counted at most at summary_cap), the tail allowance, the narrate
+// allowance and both generations, thinking blocks included (folding cannot fix that). Other overruns, an over-cap
+// summary among them, are flags for the turn layer to act on.
 //
 // The narrate call appends two messages that are not part of this prompt: the resolve output (assistant, up to
 // resolveMaxTokens) and the resolution record + instruction (user). budget.narrateAllowance is reserved for the

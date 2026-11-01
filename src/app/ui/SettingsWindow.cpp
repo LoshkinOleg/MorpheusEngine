@@ -66,6 +66,8 @@ void SettingsWindow::Draw(AppController& controller)
             const core::BudgetSettings& budget = controller.Engine().CurrentSettings().budget;
             const std::pair<const char*, int> rows[] = {
                 {"resolve_max_tokens", budget.resolveMaxTokens}, {"narrate_max_tokens", budget.narrateMaxTokens},
+                {"resolve_thinking_tokens", budget.resolveThinkingTokens},
+                {"narrate_thinking_tokens", budget.narrateThinkingTokens},
                 {"narrate_allowance", budget.narrateAllowance},  {"tail_allowance", budget.tailAllowance},
                 {"engine_rules_cap", budget.engineRulesCap},     {"world_cap", budget.worldCap},
                 {"summary_cap", budget.summaryCap},              {"retrieval_cap", budget.retrievalCap}};

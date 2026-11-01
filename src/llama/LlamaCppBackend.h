@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -40,6 +41,12 @@ struct LlamaConfig {
 
 // llama.cpp in-process: a chat model for generation and token counting, plus a sentence-embedding model.
 // The chat KV cache is reused by longest common token prefix across calls. Not thread-safe: one thread owns it.
+//
+// Thinking models: a chat model whose template has the enable_thinking switch (Qwen3 and later) reasons in a
+// "<think>...</think>" block before it answers. llama_chat_apply_template renders such templates as plain chatml,
+// without the block, so the backend writes it itself, as the model's own template would: every prompt ends with an
+// empty block ("<think>\n\n</think>\n\n", thinking off), or with the open marker when the call may think. A block
+// that reaches its budget is closed with CLOSE_THINKING_TEXT.
 class LlamaCppBackend final : public inference::LlmBackend {
 public:
     struct ModelDeleter {
@@ -49,6 +56,20 @@ public:
         void operator()(llama_context* pContext) const;
     };
 
+    // The thinking block's markers, tokenized with the chat model's vocabulary.
+    struct ThinkingMarkers {
+        std::vector<std::int32_t> open = {};     // "<think>\n": the prompt's end when the call may think.
+        std::vector<std::int32_t> skip = {};     // "<think>\n\n</think>\n\n": the prompt's end otherwise.
+        std::vector<std::int32_t> close = {};    // CLOSE_THINKING_TEXT: ends a block that ran out of budget.
+        std::vector<std::int32_t> afterEnd = {}; // "\n\n": follows "</think>" when the model ends the block itself.
+        std::int32_t endToken = 0;               // "</think>", a single token.
+    };
+
+    // Closes a thinking block that reached its budget: a nudge to answer from the thinking so far (the wording
+    // Qwen documents for budget-limited thinking), then the end marker and the blank line before the answer.
+    static constexpr const char* CLOSE_THINKING_TEXT =
+        "\n\nConsidering the limited time, I have to give the solution based on the thinking directly now.\n</think>\n\n";
+
 private:
     LlamaConfig _config = {};
     std::unique_ptr<llama_model, ModelDeleter> _pChatModel = nullptr;
@@ -56,9 +77,11 @@ private:
     std::unique_ptr<llama_model, ModelDeleter> _pEmbedModel = nullptr;
     std::unique_ptr<llama_context, ContextDeleter> _pEmbedContext = nullptr;
     std::vector<std::int32_t> _cachedTokens = {}; // Exactly the tokens in the chat KV cache (sequence 0), in order.
+    std::optional<ThinkingMarkers> _thinking = {}; // Set when the chat model is a thinking model.
 
 public:
-    // Loads both models and creates their contexts. Throws InferenceError if either fails.
+    // Loads both models and creates their contexts. Throws InferenceError if either fails, or if the chat template
+    // has a thinking switch but "<think>" and "</think>" are not single tokens.
     explicit LlamaCppBackend(LlamaConfig config);
     ~LlamaCppBackend() override;
     LlamaCppBackend(const LlamaCppBackend&) = delete;
@@ -79,8 +102,8 @@ private:
     std::string RenderPrompt(const inference::Prompt& prompt) const;
 
     // RenderPrompt tokenized the way Complete evaluates it: template text with special tokens parsed, message
-    // contents as plain text, whatever bytes they hold. Throws InferenceError if the chat template drops or repeats
-    // a content.
+    // contents as plain text, whatever bytes they hold. A thinking model's prompt ends with the empty thinking block
+    // (ThinkingMarkers::skip). Throws InferenceError if the chat template drops or repeats a content.
     std::vector<std::int32_t> TokenizePrompt(const inference::Prompt& prompt) const;
 
     // Decodes `tokens` into the chat cache right after _cachedTokens, then appends them to _cachedTokens.

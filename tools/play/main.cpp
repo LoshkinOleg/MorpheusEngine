@@ -91,6 +91,19 @@ StepOutcome PrintUntilClosing(turn::Worker& worker, RunView& view)
                                      resolveTokens, resolveMs, resolveTokens * 1000.0 / std::max(1.0, resolveMs),
                                      narrate.at("generated").get<int>(), narrate.at("generate_ms").get<double>(),
                                      resolve.at("prompt_tokens").get<int>(), resolve.at("reused").get<int>());
+            // "[thinking: resolve 2048 tok in 61200 ms (hit budget), narrate 900 tok in 27000 ms]", for calls that thought.
+            std::string thinking;
+            for (const auto& [name, call] : {std::pair{"resolve", &resolve}, std::pair{"narrate", &narrate}}) {
+                if (call->contains("thinking")) {
+                    const nlohmann::json& block = call->at("thinking");
+                    thinking += std::format("{}{} {} tok in {:.0f} ms{}", thinking.empty() ? "" : ", ", name,
+                                            block.at("tokens").get<int>(), block.at("ms").get<double>(),
+                                            block.at("stopped_at_limit").get<bool>() ? " (hit budget)" : "");
+                }
+            }
+            if (!thinking.empty()) {
+                std::cout << "[thinking: " << thinking << "]\n";
+            }
             if (!view.history.empty() && view.history.back().number == pCompleted->record.number) {
                 view.history.back() = pCompleted->record; // A regenerated turn replaces the last one.
             } else {

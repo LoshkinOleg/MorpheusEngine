@@ -1,13 +1,15 @@
 {
-  "chat_model": "models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+  "chat_model": "models/Qwen3.8-27B-UD-Q4_K_M.gguf",
   "embedding_model": "models/nomic-embed-text-v1.5.Q8_0.gguf",
   "embedding_query_prefix": "search_query: ",
   "embedding_document_prefix": "search_document: ",
-  "context_size": 16384,
-  "gpu_layers": -1,
+  "context_size": 24576,
+  "gpu_layers": 24,
   "budget": {
     "resolve_max_tokens": 512,
     "narrate_max_tokens": 768,
+    "resolve_thinking_tokens": 2048,
+    "narrate_thinking_tokens": 1536,
     "narrate_allowance": 512,
     "tail_allowance": 2048,
     "engine_rules_cap": 1024,
@@ -16,7 +18,7 @@
     "retrieval_cap": 768
   },
   "sampling": {
-    "resolve": { "temperature": 0.3, "top_k": 40, "top_p": 0.9 },
-    "narrate": { "temperature": 0.8, "top_k": 40, "top_p": 0.95 }
+    "resolve": { "temperature": 1.0, "top_k": 20, "top_p": 0.95 },
+    "narrate": { "temperature": 1.0, "top_k": 20, "top_p": 0.95 }
   }
 }

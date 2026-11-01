@@ -52,4 +52,27 @@ inline llama::LlamaCppBackend& SharedBackend()
     return *pBackend;
 }
 
+// Thinking tests need a thinking chat model too (its chat template has enable_thinking, as Qwen3.5 and later do):
+//   MORPHEUS_TEST_THINKING_MODEL  e.g. Qwen3.8-27B-UD-Q4_K_M.gguf, or a small Qwen3.5 for a quick run
+// with MORPHEUS_TEST_EMBED_MODEL. The calling test is skipped when either is unset. Shared like SharedBackend.
+inline llama::LlamaCppBackend& SharedThinkingBackend()
+{
+    const std::string chatModel = EnvironmentVariable("MORPHEUS_TEST_THINKING_MODEL");
+    const std::string embedModel = EnvironmentVariable("MORPHEUS_TEST_EMBED_MODEL");
+    if (chatModel.empty() || embedModel.empty()) {
+        SKIP("set MORPHEUS_TEST_THINKING_MODEL and MORPHEUS_TEST_EMBED_MODEL to run thinking tests");
+    }
+    static std::unique_ptr<llama::LlamaCppBackend> pBackend = [&] {
+        llama::LlamaConfig config;
+        config.chatModel = chatModel;
+        config.embeddingModel = embedModel;
+        config.embeddingQueryPrefix = "search_query: ";
+        config.embeddingDocumentPrefix = "search_document: ";
+        config.contextSize = 8192; // A resolve prompt, a thinking block and a long answer.
+        config.gpuLayers = -1;
+        return std::make_unique<llama::LlamaCppBackend>(config);
+    }();
+    return *pBackend;
+}
+
 } // namespace morpheus::test

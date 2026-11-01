@@ -166,6 +166,27 @@ LlamaCppBackend::LlamaCppBackend(LlamaConfig config)
         }
     }
 
+    // Thinking mode: the chat template's own enable_thinking switch marks a model that reasons in a <think> block.
+    // Its markers must be single special tokens, or the block could not be recognised while generating.
+    if (const char* pTemplate = llama_model_chat_template(_pChatModel.get(), nullptr);
+        pTemplate != nullptr && std::string_view(pTemplate).find("enable_thinking") != std::string_view::npos) {
+        const llama_vocab* pVocab = llama_model_get_vocab(_pChatModel.get());
+        const std::vector<std::int32_t> start = Tokenize(pVocab, "<think>", false, true);
+        const std::vector<std::int32_t> end = Tokenize(pVocab, "</think>", false, true);
+        if (start.size() != 1 || end.size() != 1) {
+            throw InferenceError(std::format("'{}' has a thinking switch in its chat template, but '<think>' and "
+                                             "'</think>' are not single tokens",
+                                             core::PathText(_config.chatModel)));
+        }
+        ThinkingMarkers markers;
+        markers.open = Tokenize(pVocab, "<think>\n", false, true);
+        markers.skip = Tokenize(pVocab, "<think>\n\n</think>\n\n", false, true);
+        markers.close = Tokenize(pVocab, CLOSE_THINKING_TEXT, false, true);
+        markers.afterEnd = Tokenize(pVocab, "\n\n", false, false);
+        markers.endToken = end.front();
+        _thinking = std::move(markers);
+    }
+
     // Embedding model: pooled sentence embeddings. A whole text is one ubatch, as encoder models require.
     _pEmbedModel = loadModel(_config.embeddingModel);
     {
@@ -212,16 +233,34 @@ inference::Completion LlamaCppBackend::Complete(const inference::Prompt& prompt,
                                                 const inference::TokenCallback& onToken, std::stop_token stop)
 {
     MORPHEUS_REQUIRE(spec.maxTokens > 0, "Complete: maxTokens must be positive");
+    MORPHEUS_REQUIRE(spec.thinkingMaxTokens >= 0, "Complete: thinkingMaxTokens must not be negative");
     using Clock = std::chrono::steady_clock;
     const Clock::time_point promptStart = Clock::now();
     const llama_vocab* pVocab = llama_model_get_vocab(_pChatModel.get());
 
+    // Thinking is asked of the model: it must have a thinking mode, and the budget must hold the closing text.
+    const bool think = spec.thinkingMaxTokens > 0;
+    if (think && !_thinking) {
+        throw InferenceError(std::format("'{}' has no thinking mode, so it cannot think before answering (set the "
+                                         "thinking budgets to 0)",
+                                         core::PathText(_config.chatModel)));
+    }
+    MORPHEUS_REQUIRE(!think || spec.thinkingMaxTokens > static_cast<int>(_thinking->close.size()),
+                     "Complete: thinkingMaxTokens is too small to close the thinking block");
+
     inference::Completion completion;
-    const std::vector<std::int32_t> tokens = TokenizePrompt(prompt);
+    std::vector<std::int32_t> tokens = TokenizePrompt(prompt);
+    if (think) {
+        // The prompt ends with the empty block (thinking off); open the block instead.
+        tokens.resize(tokens.size() - _thinking->skip.size());
+        tokens.insert(tokens.end(), _thinking->open.begin(), _thinking->open.end());
+    }
     completion.promptTokens = static_cast<int>(tokens.size());
-    if (spec.maxTokens > ContextSize() - completion.promptTokens) {
-        throw InferenceError(std::format("prompt ({} tokens) plus max_tokens ({}) exceeds the context size ({})",
-                                         completion.promptTokens, spec.maxTokens, ContextSize()));
+    if (spec.thinkingMaxTokens + spec.maxTokens > ContextSize() - completion.promptTokens) {
+        throw InferenceError(std::format("prompt ({} tokens) plus thinking ({}) and max_tokens ({}) exceeds the "
+                                         "context size ({})",
+                                         completion.promptTokens, spec.thinkingMaxTokens, spec.maxTokens,
+                                         ContextSize()));
     }
 
     // Samplers, built before the prompt is decoded so an invalid grammar fails without touching the KV cache. The
@@ -309,9 +348,59 @@ inference::Completion LlamaCppBackend::Complete(const inference::Prompt& prompt,
         return array.data[array.selected].id;
     };
 
-    // Generate. Every accepted token is decoded right away, so the cache always matches _cachedTokens.
+    // Think: sample with the chain alone (no grammar, nothing streamed) until the model ends its block or the
+    // budget runs out, keeping room for the closing text. Every token is decoded right away, as below.
+    bool answering = true; // False when the model ended its reply inside the block: there is no answer.
+    if (think) {
+        const Clock::time_point thinkStart = Clock::now();
+        const int freeTokens = spec.thinkingMaxTokens - static_cast<int>(_thinking->close.size());
+        bool ended = false;
+        for (int i = 0; i < freeTokens && !ended; ++i) {
+            if (stop.stop_requested()) {
+                completion.cancelled = true;
+                completion.thinkingMs = std::chrono::duration<double, std::milli>(Clock::now() - thinkStart).count();
+                return completion;
+            }
+            llama_token_data_array array = fillCandidates();
+            llama_sampler_apply(pChain.get(), &array);
+            const llama_token token = selectedToken(array);
+            llama_sampler_accept(pChain.get(), token);
+            if (llama_vocab_is_eog(pVocab, token)) {
+                answering = false;
+                ended = true;
+            } else if (token == _thinking->endToken) {
+                // The model closed the block: the end marker, then the blank line its template puts before the
+                // answer, so the answer starts where it would. Only the last decode needs logits.
+                const std::int32_t endToken = token;
+                DecodeChat(std::span(&endToken, 1), false);
+                DecodeChat(_thinking->afterEnd, true);
+                completion.thinkingTokens += 1 + static_cast<int>(_thinking->afterEnd.size());
+                ended = true;
+            } else {
+                char piece[TOKEN_PIECE_BUFFER_BYTES];
+                const int32_t length =
+                    llama_token_to_piece(pVocab, token, piece, static_cast<int32_t>(sizeof(piece)), 0, false);
+                MORPHEUS_REQUIRE(length >= 0, std::format("Complete: a token piece is longer than {} bytes",
+                                                          TOKEN_PIECE_BUFFER_BYTES));
+                completion.thinking.append(piece, static_cast<std::size_t>(length));
+                ++completion.thinkingTokens;
+                const std::int32_t thought = token;
+                DecodeChat(std::span(&thought, 1), true);
+            }
+        }
+        if (!ended) {
+            // Out of budget: close the block for the model.
+            DecodeChat(_thinking->close, true);
+            completion.thinkingTokens += static_cast<int>(_thinking->close.size());
+            completion.thinkingStoppedAtLimit = true;
+        }
+        completion.thinkingMs = std::chrono::duration<double, std::milli>(Clock::now() - thinkStart).count();
+    }
+
+    // Generate the answer. Every accepted token is decoded right away, so the cache always matches _cachedTokens.
+    const Clock::time_point answerStart = Clock::now();
     std::string pending; // Generated bytes not yet streamed (an incomplete UTF-8 character).
-    for (int i = 0; i < spec.maxTokens; ++i) {
+    for (int i = 0; answering && i < spec.maxTokens; ++i) {
         if (stop.stop_requested()) {
             completion.cancelled = true;
             break;
@@ -365,7 +454,7 @@ inference::Completion LlamaCppBackend::Complete(const inference::Prompt& prompt,
     if (!pending.empty() && onToken) {
         onToken(pending);
     }
-    completion.generateMs = std::chrono::duration<double, std::milli>(Clock::now() - generateStart).count();
+    completion.generateMs = std::chrono::duration<double, std::milli>(Clock::now() - answerStart).count();
     return completion;
 }
 
@@ -569,6 +658,10 @@ std::vector<std::int32_t> LlamaCppBackend::TokenizePrompt(const inference::Promp
     }
     if (addBos && tokens.size() >= 2 && tokens[0] == llama_vocab_bos(pVocab) && tokens[1] == tokens[0]) {
         tokens.erase(tokens.begin());
+    }
+    // A thinking model's reply starts with its thinking block: empty here (thinking off), as its template writes it.
+    if (_thinking) {
+        tokens.insert(tokens.end(), _thinking->skip.begin(), _thinking->skip.end());
     }
     MORPHEUS_REQUIRE(!tokens.empty(), "TokenizePrompt: the rendered prompt has no tokens");
     return tokens;

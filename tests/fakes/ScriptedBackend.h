@@ -22,9 +22,11 @@
 namespace morpheus::test {
 
 // A backend for turn-layer tests. Tokens are counted like FakeBackend. Complete enforces the context like the real
-// backend (InferenceError when the prompt plus maxTokens is over ContextSize()), then asks the responder for the reply,
-// streams it in pieces of about 4 bytes that never split a UTF-8 character (stopping early when `stop` is
-// requested), and records the call. Embed maps a text to a bag of words (lower-cased [a-z0-9] runs hashed into
+// backend (InferenceError when the prompt plus thinkingMaxTokens plus maxTokens is over ContextSize()), then asks the
+// responder for the reply, streams it in pieces of about 4 bytes that never split a UTF-8 character (stopping early
+// when `stop` is requested), and records the call. With a thinker set it is a thinking model: a call with
+// thinkingMaxTokens > 0 gets the thinker's text as its thinking block (never streamed). Without one, such a call
+// throws InferenceError, as the real backend does for a model without a thinking mode. Embed maps a text to a bag of words (lower-cased [a-z0-9] runs hashed into
 // EMBED_DIMS dimensions, L2-normalized), so texts sharing words score higher. Save/RestoreState keep nothing.
 class ScriptedBackend final : public FakeBackend {
 public:
@@ -39,6 +41,7 @@ public:
 
 private:
     Responder _responder = {};
+    Responder _thinker = {};
     std::vector<Call> _calls = {};
     int _embeddedTexts = 0;
     std::size_t _embedLimit = 0; // Longest text Embed accepts, in bytes; 0 means no limit.
@@ -68,6 +71,12 @@ public:
         _embedLimit = bytes;
     }
 
+    // Makes this a thinking model: `thinker` writes the thinking block of calls that may think.
+    void SetThinker(Responder thinker)
+    {
+        _thinker = std::move(thinker);
+    }
+
     // Sleeps before each streamed piece, so tests can cancel mid-reply.
     void SetPieceDelay(std::chrono::milliseconds delay)
     {
@@ -79,14 +88,28 @@ public:
     {
         MORPHEUS_REQUIRE(static_cast<bool>(_responder), "ScriptedBackend: no responder for Complete");
         MORPHEUS_REQUIRE(spec.maxTokens > 0, "Complete: maxTokens must be positive");
+        MORPHEUS_REQUIRE(spec.thinkingMaxTokens >= 0, "Complete: thinkingMaxTokens must not be negative");
+        const bool think = spec.thinkingMaxTokens > 0;
+        if (think && !_thinker) {
+            throw inference::InferenceError("the scripted model has no thinking mode");
+        }
         // The context limit, checked like LlamaCppBackend::Complete checks it: before anything else happens.
         inference::Completion completion;
         completion.promptTokens = CountPromptTokens(prompt);
-        if (spec.maxTokens > ContextSize() - completion.promptTokens) {
-            throw inference::InferenceError(std::format("prompt ({} tokens) plus max_tokens ({}) exceeds the context size ({})",
-                                                        completion.promptTokens, spec.maxTokens, ContextSize()));
+        if (spec.thinkingMaxTokens + spec.maxTokens > ContextSize() - completion.promptTokens) {
+            throw inference::InferenceError(std::format("prompt ({} tokens) plus thinking ({}) and max_tokens ({}) "
+                                                        "exceeds the context size ({})",
+                                                        completion.promptTokens, spec.thinkingMaxTokens,
+                                                        spec.maxTokens, ContextSize()));
         }
         _calls.push_back({prompt, spec});
+        if (think) {
+            // The block, whole: a thought longer than the budget counts as one the backend had to close.
+            completion.thinking = _thinker(prompt, spec);
+            const int tokens = CountTokens(completion.thinking);
+            completion.thinkingTokens = std::min(tokens, spec.thinkingMaxTokens);
+            completion.thinkingStoppedAtLimit = tokens > spec.thinkingMaxTokens;
+        }
         const std::string reply = _responder(prompt, spec);
 
         completion.tokensEvaluated = completion.promptTokens;

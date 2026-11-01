@@ -10,6 +10,10 @@
 
 namespace morpheus::core {
 
+// Smallest non-zero thinking budget: the backend closes a block that runs out with a sentence of its own, which
+// must fit inside the budget.
+constexpr int MIN_THINKING_TOKENS = 64;
+
 struct SamplingSettings {
     double temperature = 0.0; // 0 means greedy decoding.
     int topK = 40;
@@ -18,14 +22,27 @@ struct SamplingSettings {
 
 // Token budget for one assembled prompt (architecture spec, "Context layout and KV cache").
 struct BudgetSettings {
-    int resolveMaxTokens = 0; // Generation reserved for the resolve call.
-    int narrateMaxTokens = 0; // Generation reserved for the narrate call.
+    int resolveMaxTokens = 0; // The resolve call's answer (its JSON).
+    int narrateMaxTokens = 0; // The narrate call's answer (the prose).
     int narrateAllowance = 0; // Resolution record + narrate instruction appended for the narrate call.
     int tailAllowance = 0;    // State view + retrieved snippets + player input + instruction (T1-T4).
     int engineRulesCap = 0;   // L0
     int worldCap = 0;         // L1: world rules + always-on lore.
     int summaryCap = 0;       // L2
     int retrievalCap = 0;     // T2: retrieved lore, history and notes. Part of the tail allowance.
+    // Last, so positional initializers of the fields above stay valid.
+    int resolveThinkingTokens = 0; // The resolve call's thinking block; 0 turns its thinking off.
+    int narrateThinkingTokens = 0; // The narrate call's thinking block; 0 turns its thinking off.
+
+    // Generation reserved for each call: its thinking block and its answer.
+    int ResolveGenerationTokens() const
+    {
+        return resolveThinkingTokens + resolveMaxTokens;
+    }
+    int NarrateGenerationTokens() const
+    {
+        return narrateThinkingTokens + narrateMaxTokens;
+    }
 };
 
 // settings.json: per-machine configuration. Not committed; settings.example.json documents it.

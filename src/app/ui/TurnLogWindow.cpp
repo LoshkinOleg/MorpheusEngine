@@ -21,6 +21,7 @@ namespace {
 
 constexpr std::size_t TITLE_INPUT_CHARS = 60;    // The input shown in a turn's header, in bytes.
 constexpr float RESOLVE_JSON_LINES = 12.0f;      // Height of the raw resolve output, in lines.
+constexpr float THINKING_LINES = 16.0f;          // Height of a call's thinking text, in lines.
 constexpr const char* CALLS[] = {"lookup", "resolve", "narrate"}; // Model calls, in turn order.
 
 } // namespace
@@ -99,9 +100,10 @@ void TurnLogWindow::Draw(AppController& controller)
 
                 // Each model call's numbers.
                 ImGui::SeparatorText("Calls");
-                if (ImGui::BeginTable("calls", 6,
+                if (ImGui::BeginTable("calls", 8,
                                       ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
-                    for (const char* header : {"Call", "Prompt", "Reused", "Generated", "Prompt ms", "Generate ms"}) {
+                    for (const char* header :
+                         {"Call", "Prompt", "Reused", "Thinking", "Thinking ms", "Generated", "Prompt ms", "Generate ms"}) {
                         ImGui::TableSetupColumn(header);
                     }
                     ImGui::TableHeadersRow();
@@ -121,6 +123,23 @@ void TurnLogWindow::Draw(AppController& controller)
                         ImGui::Text("%d", stats->promptTokens);
                         ImGui::TableNextColumn();
                         ImGui::Text("%d", stats->reused);
+                        // A call that did not think shows dashes, not zeros.
+                        ImGui::TableNextColumn();
+                        if (stats->thinking) {
+                            ImGui::Text("%d", stats->thinking->tokens);
+                            if (stats->thinking->stoppedAtLimit) {
+                                ImGui::SameLine();
+                                ImGui::TextColored(WARNING_COLOR, "(hit budget)");
+                            }
+                        } else {
+                            ImGui::TextDisabled("-");
+                        }
+                        ImGui::TableNextColumn();
+                        if (stats->thinking) {
+                            ImGui::Text("%.0f", stats->thinking->ms);
+                        } else {
+                            ImGui::TextDisabled("-");
+                        }
                         ImGui::TableNextColumn();
                         ImGui::Text("%d", stats->generated);
                         ImGui::TableNextColumn();
@@ -133,6 +152,21 @@ void TurnLogWindow::Draw(AppController& controller)
                 if (timings.is_object() && timings.contains("resolve") && timings.at("resolve").contains("error")) {
                     TextWrappedColored(ERROR_COLOR, "Unreadable resolve output: " +
                                                         timings.at("resolve").at("error").get<std::string>());
+                }
+
+                // Each call's reasoning, as the model wrote it in its thinking block.
+                for (const char* call : CALLS) {
+                    const std::optional<CallStats> stats = CallStatsOf(timings, call);
+                    if (!stats || !stats->thinking) {
+                        continue;
+                    }
+                    if (ImGui::TreeNode(call, "%s thinking", call)) {
+                        std::string text = stats->thinking->text;
+                        ImGui::InputTextMultiline("##thinking", &text,
+                                                  ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * THINKING_LINES),
+                                                  ImGuiInputTextFlags_ReadOnly);
+                        ImGui::TreePop();
+                    }
                 }
 
                 // The resolve output exactly as the model wrote it.

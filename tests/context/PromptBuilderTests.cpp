@@ -57,8 +57,8 @@ Measured Measure(const core::World& world, const context::ContextInputs& inputs,
 // The context size that gives L3 exactly `transcriptBudget` tokens.
 int ContextSizeFor(const core::BudgetSettings& budget, const Measured& measured, int transcriptBudget)
 {
-    return budget.resolveMaxTokens + budget.narrateMaxTokens + budget.narrateAllowance + budget.tailAllowance +
-           measured.systemCost + transcriptBudget;
+    return budget.ResolveGenerationTokens() + budget.NarrateGenerationTokens() + budget.narrateAllowance +
+           budget.tailAllowance + measured.systemCost + transcriptBudget;
 }
 
 } // namespace
@@ -295,6 +295,34 @@ TEST_CASE("The narrate call fits the context whenever the resolve prompt fits", 
         CHECK(assembly.contextOverflow);
         CHECK_FALSE(assembly.Fits());
     }
+}
+
+TEST_CASE("Thinking budgets are reserved with the generations they precede", "[context]")
+{
+    const core::World world = MiniWorld();
+    // A transcript longer than both thinking budgets, so reserving them overruns it instead of leaving it no room.
+    context::ContextInputs inputs = Inputs(world);
+    inputs.transcript.front().narration = std::string(1200, 'x');
+    const core::BudgetSettings plain = RoomyBudget();
+    core::BudgetSettings thinking = plain;
+    thinking.resolveThinkingTokens = 96;
+    thinking.narrateThinkingTokens = 80;
+
+    // The same context leaves the transcript exactly both thinking budgets less.
+    test::FakeBackend backend(4096);
+    const context::Assembly without = context::AssembleResolvePrompt(world, inputs, plain, backend);
+    const context::Assembly with = context::AssembleResolvePrompt(world, inputs, thinking, backend);
+    CHECK(with.transcriptBudget == without.transcriptBudget - 96 - 80);
+
+    // At the context that just fits without thinking, the thinking budgets overflow it.
+    const Measured measured = Measure(world, inputs, plain);
+    test::FakeBackend exact(ContextSizeFor(plain, measured, measured.transcriptCost));
+    REQUIRE(context::AssembleResolvePrompt(world, inputs, plain, exact).Fits());
+    const context::Assembly overrun = context::AssembleResolvePrompt(world, inputs, thinking, exact);
+    CHECK(overrun.transcriptOverBudget);
+    CHECK_FALSE(overrun.Fits());
+    test::FakeBackend roomier(ContextSizeFor(thinking, measured, measured.transcriptCost));
+    CHECK(context::AssembleResolvePrompt(world, inputs, thinking, roomier).Fits());
 }
 
 TEST_CASE("narrate_allowance and the narrate message overhead count toward the context overflow", "[context]")

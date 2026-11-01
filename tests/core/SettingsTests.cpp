@@ -29,7 +29,8 @@ nlohmann::json ValidSettingsJson()
         "context_size": 16384,
         "gpu_layers": -1,
         "budget": {
-            "resolve_max_tokens": 512, "narrate_max_tokens": 768, "narrate_allowance": 512, "tail_allowance": 2048,
+            "resolve_max_tokens": 512, "narrate_max_tokens": 768, "resolve_thinking_tokens": 0,
+            "narrate_thinking_tokens": 0, "narrate_allowance": 512, "tail_allowance": 2048,
             "engine_rules_cap": 1024, "world_cap": 4096, "summary_cap": 2048, "retrieval_cap": 768
         },
         "sampling": {
@@ -170,6 +171,48 @@ TEST_CASE("LoadSettings reads retrieval_cap and an optional memory_mode", "[sett
     CHECK_THROWS_WITH(LoadSettings(WriteSettings("settings_retrieval_missing", json)), ContainsSubstring("retrieval_cap"));
 }
 
+TEST_CASE("LoadSettings reads the thinking budgets", "[settings]")
+{
+    nlohmann::json json = ValidSettingsJson();
+    json["budget"]["resolve_thinking_tokens"] = 2048;
+    json["budget"]["narrate_thinking_tokens"] = MIN_THINKING_TOKENS;
+    const Settings settings = LoadSettings(WriteSettings("settings_thinking", json));
+    CHECK(settings.budget.resolveThinkingTokens == 2048);
+    CHECK(settings.budget.narrateThinkingTokens == MIN_THINKING_TOKENS);
+    CHECK(settings.budget.ResolveGenerationTokens() == 2048 + 512);
+    CHECK(settings.budget.NarrateGenerationTokens() == MIN_THINKING_TOKENS + 768);
+
+    SECTION("zero turns a call's thinking off")
+    {
+        json["budget"]["narrate_thinking_tokens"] = 0;
+        CHECK(LoadSettings(WriteSettings("settings_thinking_off", json)).budget.NarrateGenerationTokens() == 768);
+    }
+    SECTION("each budget is required")
+    {
+        json["budget"].erase("narrate_thinking_tokens");
+        CHECK_THROWS_WITH(LoadSettings(WriteSettings("settings_thinking_missing", json)),
+                          ContainsSubstring("narrate_thinking_tokens"));
+    }
+    SECTION("a negative budget")
+    {
+        json["budget"]["resolve_thinking_tokens"] = -1;
+        CHECK_THROWS_WITH(LoadSettings(WriteSettings("settings_thinking_negative", json)),
+                          ContainsSubstring("resolve_thinking_tokens"));
+    }
+    SECTION("a budget too small to close the block")
+    {
+        json["budget"]["resolve_thinking_tokens"] = MIN_THINKING_TOKENS - 1;
+        CHECK_THROWS_WITH(LoadSettings(WriteSettings("settings_thinking_small", json)),
+                          ContainsSubstring("resolve_thinking_tokens") && ContainsSubstring("at least 64"));
+    }
+    SECTION("thinking counts toward the transcript room")
+    {
+        // The other parts use 11008 of 16384 tokens; 2048 + 64 thinking still fits, 4096 more does not.
+        json["budget"]["narrate_thinking_tokens"] = 4096;
+        CHECK_THROWS_WITH(LoadSettings(WriteSettings("settings_thinking_room", json)), ContainsSubstring("transcript"));
+    }
+}
+
 TEST_CASE("LoadSettings keeps a margin for chat-template tokens", "[settings]")
 {
     nlohmann::json json = ValidSettingsJson();
@@ -185,6 +228,8 @@ TEST_CASE("SettingsToJson round-trips through LoadSettings", "[settings]")
 {
     nlohmann::json json = ValidSettingsJson();
     json["memory_mode"] = "assisted";
+    json["budget"]["resolve_thinking_tokens"] = 128;
+    json["budget"]["narrate_thinking_tokens"] = 256;
     const Settings original = LoadSettings(WriteSettings("settings_to_json_a", json));
     // Model paths in the JSON are absolute, so they still resolve from another folder.
     const Settings copy = LoadSettings(WriteSettings("settings_to_json_b", SettingsToJson(original)));
@@ -193,6 +238,8 @@ TEST_CASE("SettingsToJson round-trips through LoadSettings", "[settings]")
     CHECK(copy.contextSize == original.contextSize);
     CHECK(copy.budget.retrievalCap == original.budget.retrievalCap);
     CHECK(copy.budget.narrateAllowance == original.budget.narrateAllowance);
+    CHECK(copy.budget.resolveThinkingTokens == original.budget.resolveThinkingTokens);
+    CHECK(copy.budget.narrateThinkingTokens == original.budget.narrateThinkingTokens);
     CHECK(copy.narrateSampling.topP == original.narrateSampling.topP);
     CHECK(copy.memoryMode == MemoryMode::Assisted);
 }

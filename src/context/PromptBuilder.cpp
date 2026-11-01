@@ -95,10 +95,11 @@ Assembly AssembleResolvePrompt(const core::World& world, const ContextInputs& in
 
     // L3 gets what the templated system message, the tail allowance, the narrate allowance and both generations
     // leave, with the summary counted at most at its cap: an over-cap summary is a flag (condense it), not a
-    // settings error.
+    // settings error. A generation is a call's thinking block plus its answer. Reserving both thinking blocks is
+    // conservative: the resolve call's block is not part of the narrate prompt, so the two never share a context.
     const int summaryExcess = std::max(0, tokens.summary - budget.summaryCap);
-    assembly.transcriptBudget = backend.ContextSize() - budget.resolveMaxTokens - budget.narrateMaxTokens -
-                                budget.narrateAllowance - budget.tailAllowance - (systemCost - summaryExcess);
+    assembly.transcriptBudget = backend.ContextSize() - budget.ResolveGenerationTokens() -
+                                budget.NarrateGenerationTokens() - budget.narrateAllowance - budget.tailAllowance - (systemCost - summaryExcess);
     if (assembly.transcriptBudget <= 0) {
         // Folding turns cannot fix this: the settings or the world leave L3 nothing, so it is not a flag.
         throw core::DataError(std::format("context_size {} leaves no room for the transcript after the system "
@@ -119,7 +120,8 @@ Assembly AssembleResolvePrompt(const core::World& world, const ContextInputs& in
     emptyAssistant.messages.push_back({inference::Role::Assistant, ""});
     const int resolveOutputOverhead = backend.CountPromptTokens(emptyAssistant);
     assembly.contextOverflow = tokens.total + budget.narrateAllowance + narrateMessageOverhead +
-                                   resolveOutputOverhead + budget.resolveMaxTokens + budget.narrateMaxTokens >
+                                   resolveOutputOverhead + budget.ResolveGenerationTokens() +
+                                   budget.NarrateGenerationTokens() >
                                backend.ContextSize();
     return assembly;
 }

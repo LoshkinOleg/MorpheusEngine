@@ -125,6 +125,69 @@ TEST_CASE("A turn resolves, applies, narrates and commits", "[session]")
     CHECK(session.Meta().modelId == "chat");
 }
 
+TEST_CASE("Resolve and narrate think within their budgets, and the thinking stays in the telemetry", "[session]")
+{
+    core::Settings settings = TestSettings();
+    settings.budget.resolveThinkingTokens = 512;
+    settings.budget.narrateThinkingTokens = 384;
+    test::ScriptedBackend backend(16384, Responder(MOVE, "You walk to the lighthouse."));
+    backend.SetThinker([](const inference::Prompt&, const inference::GenerationSpec& spec) {
+        return spec.grammar.empty() ? std::string("Keep the prose short.") : std::string("Walking is safe.");
+    });
+    turn::Session session = turn::Session::Start(MiniWorld(), settings, NewRunFile("session_thinking"), 42, backend);
+
+    std::string streamed;
+    turn::TurnCallbacks callbacks;
+    callbacks.onNarrationToken = [&](std::string_view piece) { streamed += piece; };
+    const std::optional<core::TurnRecord> record = session.RunTurn("I walk to the lighthouse.", callbacks, {});
+    REQUIRE(record);
+
+    // Each call gets its own budget.
+    const auto& calls = backend.Calls();
+    REQUIRE(calls.size() == 2);
+    CHECK(calls[0].spec.thinkingMaxTokens == 512);
+    CHECK(calls[1].spec.thinkingMaxTokens == 384);
+
+    // The thinking reaches the telemetry only: not the narration, the stream or the narrate prompt.
+    CHECK(record->narration == "You walk to the lighthouse.");
+    CHECK(streamed == "You walk to the lighthouse.");
+    for (const inference::Message& message : calls[1].prompt.messages) {
+        CHECK_THAT(message.content, !ContainsSubstring("Walking is safe."));
+    }
+    const nlohmann::json& resolveThinking = record->timings.at("resolve").at("thinking");
+    CHECK(resolveThinking.at("text") == "Walking is safe.");
+    CHECK(resolveThinking.at("tokens") == backend.CountTokens("Walking is safe."));
+    CHECK(resolveThinking.at("stopped_at_limit") == false);
+    CHECK(record->timings.at("narrate").at("thinking").at("text") == "Keep the prose short.");
+
+    // A history reload brings the thinking back with the turn.
+    CHECK(session.History().back().timings.at("narrate").at("thinking").at("text") == "Keep the prose short.");
+}
+
+TEST_CASE("Calls without a thinking budget do not think", "[session]")
+{
+    core::Settings settings = TestSettings();
+    settings.budget.resolveThinkingTokens = 512; // Narrate keeps a budget of 0.
+    test::ScriptedBackend backend(16384, Responder(MOVE));
+    backend.SetThinker([](const inference::Prompt&, const inference::GenerationSpec&) { return std::string("Hmm."); });
+    turn::Session session = turn::Session::Start(MiniWorld(), settings, NewRunFile("session_thinking_off"), 42, backend);
+    const std::optional<core::TurnRecord> record = session.RunTurn("I walk to the lighthouse.", {}, {});
+    REQUIRE(record);
+
+    CHECK(backend.Calls()[1].spec.thinkingMaxTokens == 0);
+    CHECK(record->timings.at("resolve").contains("thinking"));
+    CHECK_FALSE(record->timings.at("narrate").contains("thinking"));
+}
+
+TEST_CASE("Thinking budgets fail the turn on a model without a thinking mode", "[session]")
+{
+    core::Settings settings = TestSettings();
+    settings.budget.resolveThinkingTokens = 512;
+    test::ScriptedBackend backend(16384, Responder(MOVE)); // No thinker: not a thinking model.
+    turn::Session session = turn::Session::Start(MiniWorld(), settings, NewRunFile("session_no_thinking_mode"), 42, backend);
+    CHECK_THROWS_AS(session.RunTurn("I walk to the lighthouse.", {}, {}), inference::InferenceError);
+}
+
 TEST_CASE("The narrate prompt extends the resolve prompt", "[session]")
 {
     test::ScriptedBackend backend(16384, Responder(MOVE));

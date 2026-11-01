@@ -26,6 +26,14 @@ struct PromptSection {
     std::string text = {};
 };
 
+// A call's thinking block from the turn telemetry: present only for calls that were allowed to think.
+struct ThinkingStats {
+    int tokens = 0; // Markers included.
+    double ms = 0.0;
+    bool stoppedAtLimit = false; // The block hit its thinking budget and was closed by the backend.
+    std::string text = {};
+};
+
 // One model call's numbers from the turn telemetry (TurnRecord::timings).
 struct CallStats {
     int promptTokens = 0;
@@ -34,7 +42,8 @@ struct CallStats {
     int generated = 0;
     double promptMs = 0.0;
     double generateMs = 0.0;
-    bool stoppedAtLimit = false; // Generation hit its max_tokens.
+    bool stoppedAtLimit = false; // The answer hit its max_tokens.
+    std::optional<ThinkingStats> thinking = {}; // nullopt when the call did not think.
 };
 
 // One retrieval hit that reached the turn's resolve prompt.
@@ -56,8 +65,8 @@ std::vector<PromptSection> PromptSections(const inference::Prompt& prompt);
 // The whole prompt as one copyable text: each message under a "=== role ===" line.
 std::string RawPrompt(const inference::Prompt& prompt);
 
-// The numbers of call `call` ("lookup", "resolve" or "narrate") in a turn's telemetry; nullopt when the turn made
-// no such call.
+// The numbers of call `call` ("lookup", "resolve" or "narrate") in a turn's telemetry, with its thinking block when
+// it had one; nullopt when the turn made no such call.
 std::optional<CallStats> CallStatsOf(const nlohmann::json& timings, std::string_view call);
 
 // The retrieval hits in a turn's telemetry, with their text: a lore hit shows its subject (its ref), a history hit

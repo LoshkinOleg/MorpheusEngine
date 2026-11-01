@@ -70,7 +70,8 @@ TEST_CASE("CallStatsOf reads one call's numbers from the telemetry", "[inspect]"
           {"generate_ms", 800.0}, {"stopped_at_limit", false}}},
         {"narrate",
          {{"prompt_tokens", 1000}, {"reused", 990}, {"evaluated", 10}, {"generated", 300}, {"prompt_ms", 3.0},
-          {"generate_ms", 2500.0}, {"stopped_at_limit", true}}}};
+          {"generate_ms", 2500.0}, {"stopped_at_limit", true},
+          {"thinking", {{"tokens", 640}, {"ms", 90000.0}, {"stopped_at_limit", true}, {"text", "Slow the scene."}}}}}};
     const std::optional<app::CallStats> resolve = app::CallStatsOf(timings, "resolve");
     REQUIRE(resolve);
     CHECK(resolve->promptTokens == 900);
@@ -79,7 +80,15 @@ TEST_CASE("CallStatsOf reads one call's numbers from the telemetry", "[inspect]"
     CHECK(resolve->generated == 70);
     CHECK(resolve->promptMs == 12.5);
     CHECK_FALSE(resolve->stoppedAtLimit);
-    CHECK(app::CallStatsOf(timings, "narrate")->stoppedAtLimit);
+    CHECK_FALSE(resolve->thinking); // The resolve call did not think.
+    const std::optional<app::CallStats> narrate = app::CallStatsOf(timings, "narrate");
+    REQUIRE(narrate);
+    CHECK(narrate->stoppedAtLimit);
+    REQUIRE(narrate->thinking);
+    CHECK(narrate->thinking->tokens == 640);
+    CHECK(narrate->thinking->ms == 90000.0);
+    CHECK(narrate->thinking->stoppedAtLimit);
+    CHECK(narrate->thinking->text == "Slow the scene.");
     CHECK_FALSE(app::CallStatsOf(timings, "lookup")); // Engine mode makes no lookup call.
 }
 

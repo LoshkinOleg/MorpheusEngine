@@ -59,10 +59,18 @@ std::optional<CallStats> CallStatsOf(const nlohmann::json& timings, std::string_
     }
     try {
         const nlohmann::json& numbers = timings.at(key);
-        return CallStats{numbers.at("prompt_tokens").get<int>(), numbers.at("reused").get<int>(),
-                         numbers.at("evaluated").get<int>(),     numbers.at("generated").get<int>(),
-                         numbers.at("prompt_ms").get<double>(),  numbers.at("generate_ms").get<double>(),
-                         numbers.at("stopped_at_limit").get<bool>()};
+        CallStats stats{numbers.at("prompt_tokens").get<int>(), numbers.at("reused").get<int>(),
+                        numbers.at("evaluated").get<int>(),     numbers.at("generated").get<int>(),
+                        numbers.at("prompt_ms").get<double>(),  numbers.at("generate_ms").get<double>(),
+                        numbers.at("stopped_at_limit").get<bool>()};
+        // Only calls that were allowed to think carry a thinking block.
+        if (numbers.contains("thinking")) {
+            const nlohmann::json& thinking = numbers.at("thinking");
+            stats.thinking = ThinkingStats{thinking.at("tokens").get<int>(), thinking.at("ms").get<double>(),
+                                           thinking.at("stopped_at_limit").get<bool>(),
+                                           thinking.at("text").get<std::string>()};
+        }
+        return stats;
     } catch (const nlohmann::json::exception& error) {
         throw core::DataError(std::format("turn telemetry '{}': {}", key, error.what()));
     }

@@ -66,13 +66,17 @@ inline app::AppPaths PathsIn(const std::filesystem::path& dir)
     return {dir / "settings.json", TestDataDir() / "worlds", dir / "saves"};
 }
 
-// A factory for ScriptedBackends that answer with `responder`, sized by the settings' context. A piece delay slows
-// streaming, so a test can catch a turn midway.
+// A factory for ScriptedBackends that answer with `responder`, sized by the settings' context. They are thinking
+// models, like the one settings.example.json names, so calls with a thinking budget get a short thought. A piece
+// delay slows streaming, so a test can catch a turn midway.
 inline app::EngineHost::BackendFactory ScriptedFactory(ScriptedBackend::Responder responder,
                                                        std::chrono::milliseconds pieceDelay = {})
 {
     return [responder, pieceDelay](const core::Settings& settings) -> std::unique_ptr<inference::LlmBackend> {
         auto pBackend = std::make_unique<ScriptedBackend>(settings.contextSize, responder);
+        pBackend->SetThinker([](const inference::Prompt&, const inference::GenerationSpec&) {
+            return std::string("Thinking it over.");
+        });
         pBackend->SetPieceDelay(pieceDelay);
         return pBackend;
     };

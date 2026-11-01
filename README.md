@@ -32,13 +32,18 @@ ctest --preset tests
 
 The `dev` preset runs models in-process through llama.cpp. Download two GGUF files into `models/` (gitignored):
 
-- `Qwen3-4B-Instruct-2507-Q4_K_M.gguf` (chat, about 2.5 GB) from Hugging Face `unsloth/Qwen3-4B-Instruct-2507-GGUF`
+- `Qwen3.8-27B-UD-Q4_K_M.gguf` (chat, a thinking model, about 16.5 GB) from Hugging Face `unsloth/Qwen3.8-27B-GGUF`
 - `nomic-embed-text-v1.5.Q8_0.gguf` (embeddings, about 140 MB) from Hugging Face `nomic-ai/nomic-embed-text-v1.5-GGUF`
+
+The model-backed tests also use `Qwen3-4B-Instruct-2507-Q4_K_M.gguf` (about 2.5 GB, `unsloth/Qwen3-4B-Instruct-2507-GGUF`), a model without a thinking mode, which also plays much faster on small GPUs.
 
 Then copy `settings.example.json` (the template) to `settings.json` at the repository root and adjust it for your machine. `settings.json` is gitignored. Relative model paths resolve against the settings file's folder.
 
 - `budget.retrieval_cap` caps the retrieved memory (lore, past turns, notes) placed in the prompt, in tokens, including what `assisted`-mode lookups add. It is part of `budget.tail_allowance`.
 - The optional top-level `"memory_mode": "engine" | "assisted"` overrides the world's default memory mode.
+- `budget.resolve_thinking_tokens` and `budget.narrate_thinking_tokens` let a thinking model (one whose chat template has `enable_thinking`, such as Qwen3.5 and later) reason before the resolve and narrate answers, up to that many tokens each; 0 turns a call's thinking off, otherwise the minimum is 64. A block that runs out is closed by the engine and the model answers from what it has. The reasoning never reaches the player or a later prompt; it is kept in the turn's telemetry and shown in the Turn log window. Both budgets are reserved in the context, like `resolve_max_tokens` and `narrate_max_tokens`. With a model that has no thinking mode, set both to 0.
+- `gpu_layers` is how many of the chat model's layers go to the GPU (-1: all). A model larger than the GPU's memory needs a lower number: the rest runs on the CPU, slower. The example's 24 is a starting point for Qwen3.8-27B on a 10 GB GPU; raise it until loading fails for lack of memory, then step back.
+- Qwen recommends temperature 1.0, top_k 20 and top_p 0.95 for its models in thinking mode, as in the example.
 
 To check that the models, the Vulkan backend and KV-cache prefix reuse work, run the probe. It prints the prompt size and streams two completions; the second should report almost the whole prompt as reused:
 
@@ -46,13 +51,14 @@ To check that the models, the Vulkan backend and KV-cache prefix reuse work, run
 ./build/dev/bin/Debug/morpheus_probe.exe settings.json game_projects/sandcrawler "I climb onto the crawler's roof."
 ```
 
-llama.cpp prints a few warnings while loading Qwen3 (control-token and `n_ctx_seq` notices); they are expected. The two runs' text can differ slightly even with the same seed.
+llama.cpp prints a few warnings while loading Qwen3 (control-token and `n_ctx_seq` notices); they are expected. The two runs' text can differ slightly even with the same seed. Qwen3.5 and later (Qwen3.8 among them) mix linear-attention layers into the model, whose cache llama.cpp cannot cut back to a shared prefix: with them every call evaluates its whole prompt, and the probe reports 0 reused.
 
-Model-backed tests are tagged `[llama]` and skip unless both model variables are set (Git Bash, from the repo root):
+Model-backed tests are tagged `[llama]` and skip unless both model variables are set (Git Bash, from the repo root). The thinking tests also need `MORPHEUS_TEST_THINKING_MODEL`, a thinking model: Qwen3.8 itself, or the small `Qwen3.5-0.8B-Q4_K_M.gguf` (`unsloth/Qwen3.5-0.8B-GGUF`, about 530 MB) for a quick run:
 
 ```
 export MORPHEUS_TEST_CHAT_MODEL="$PWD/models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
 export MORPHEUS_TEST_EMBED_MODEL="$PWD/models/nomic-embed-text-v1.5.Q8_0.gguf"
+export MORPHEUS_TEST_THINKING_MODEL="$PWD/models/Qwen3.5-0.8B-Q4_K_M.gguf"
 ./build/dev/bin/Debug/morpheus_tests.exe "[llama]"
 ```
 
