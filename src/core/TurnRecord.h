@@ -29,6 +29,7 @@ struct TurnRecord {
     std::vector<AppliedChange> applied = {};
     std::vector<RejectedChange> rejected = {};
     std::string narration = {};
+    std::string digest = {}; // The last review's one or two sentence digest; empty when there was none.
     nlohmann::json timings = nlohmann::json::object();
     std::vector<std::string> notes = {}; // Model-written notes (assisted memory mode), committed with the turn.
 };

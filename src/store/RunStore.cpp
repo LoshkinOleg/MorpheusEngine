@@ -28,6 +28,7 @@ CREATE TABLE turns (
     applied   TEXT NOT NULL,
     rejected  TEXT NOT NULL,
     narration TEXT NOT NULL,
+    digest    TEXT NOT NULL,
     timings   TEXT NOT NULL
 );
 CREATE TABLE state_snapshots (
@@ -230,8 +231,8 @@ void RunStore::CommitTurn(const core::TurnRecord& record, const nlohmann::json& 
 
     // The turn, its resulting state and its notes land together or not at all.
     _db.Transaction([&] {
-        _db.Prepare("INSERT INTO turns (number, attempt, input, resolve, checks, applied, rejected, narration, timings) "
-                    "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)")
+        _db.Prepare("INSERT INTO turns (number, attempt, input, resolve, checks, applied, rejected, narration, digest, "
+                    "timings) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)")
             .Bind(1, record.number)
             .Bind(2, record.attempt)
             .Bind(3, record.input)
@@ -240,7 +241,8 @@ void RunStore::CommitTurn(const core::TurnRecord& record, const nlohmann::json& 
             .Bind(6, applied.dump())
             .Bind(7, rejected.dump())
             .Bind(8, record.narration)
-            .Bind(9, record.timings.dump())
+            .Bind(9, record.digest)
+            .Bind(10, record.timings.dump())
             .Run();
         _db.Prepare("INSERT INTO state_snapshots (turn, state) VALUES (?1, ?2)")
             .Bind(1, record.number)
@@ -265,8 +267,8 @@ std::optional<core::TurnRecord> RunStore::Turn(int number)
 
 std::vector<core::TurnRecord> RunStore::Turns(int fromTurn, int toTurn)
 {
-    Statement query = _db.Prepare("SELECT number, attempt, input, resolve, checks, applied, rejected, narration, timings "
-                                  "FROM turns WHERE number BETWEEN ?1 AND ?2 ORDER BY number");
+    Statement query = _db.Prepare("SELECT number, attempt, input, resolve, checks, applied, rejected, narration, digest, "
+                                  "timings FROM turns WHERE number BETWEEN ?1 AND ?2 ORDER BY number");
     query.Bind(1, fromTurn).Bind(2, toTurn);
 
     std::vector<core::TurnRecord> records;
@@ -307,7 +309,8 @@ std::vector<core::TurnRecord> RunStore::Turns(int fromTurn, int toTurn)
         convertColumn(5, "applied", core::AppliedChangeFromJson, record.applied);
         convertColumn(6, "rejected", core::RejectedChangeFromJson, record.rejected);
         record.narration = query.ColumnText(7);
-        record.timings = parseColumn(8, "timings");
+        record.digest = query.ColumnText(8);
+        record.timings = parseColumn(9, "timings");
         records.push_back(std::move(record));
     }
 

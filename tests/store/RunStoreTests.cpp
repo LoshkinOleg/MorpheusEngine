@@ -497,3 +497,39 @@ TEST_CASE("Turn and note embeddings come back in numeric order and go with their
     CHECK(noteRefs == std::vector<std::string>{"2.0", "2.1"});
     CHECK(store.Embeddings(EmbeddingKind::Turn, "embed-a").size() == 1);
 }
+
+TEST_CASE("A turn's digest round-trips", "[store]")
+{
+    RunStore store = RunStore::Create(FreshDbPath("store_digest"), TestMeta(), TestInitialState());
+    morpheus::core::TurnRecord record;
+    record.number = 1;
+    record.input = "I wait.";
+    record.narration = "Time passes.";
+    record.digest = "The player waited.";
+    store.CommitTurn(record, TestInitialState());
+    CHECK(store.Turn(1)->digest == "The player waited.");
+    CHECK(store.Turns(1, 1).at(0).digest == "The player waited.");
+
+    // A turn without a review stores an empty digest.
+    morpheus::core::TurnRecord quiet;
+    quiet.number = 2;
+    quiet.input = "I wait again.";
+    store.CommitTurn(quiet, TestInitialState());
+    CHECK(store.Turn(2)->digest.empty());
+}
+
+TEST_CASE("RunStore refuses a version-1 run, naming the file and both versions", "[store]")
+{
+    CHECK(RunStore::SCHEMA_VERSION == 2);
+    const std::filesystem::path file = FreshDbPath("store_version_1");
+    {
+        RunStore store = RunStore::Create(file, TestMeta(), TestInitialState());
+    }
+    {
+        Database db = Database::Open(file, false);
+        db.Exec("UPDATE run_meta SET value = '1' WHERE key = 'schema_version'");
+    }
+    CHECK_THROWS_AS(RunStore::Open(file), StoreError);
+    CHECK_THROWS_WITH(RunStore::Open(file), ContainsSubstring("schema version 1 is not the supported version 2"));
+    CHECK_THROWS_WITH(RunStore::Open(file), ContainsSubstring("run.db"));
+}

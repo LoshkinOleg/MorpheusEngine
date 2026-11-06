@@ -39,7 +39,8 @@ struct EmbeddingRow {
 // Tables: run_meta, turns, state_snapshots, summaries, notes, embeddings.
 class RunStore {
 public:
-    static constexpr int SCHEMA_VERSION = 1;
+    // 2: turns.digest. It also covers turns.attempt, which M3 added without a bump. Older runs are refused.
+    static constexpr int SCHEMA_VERSION = 2;
 
 private:
     Database _db;
@@ -51,8 +52,8 @@ public:
     // If creation fails part way, the partial file is removed.
     static RunStore Create(const std::filesystem::path& file, RunMeta meta, const nlohmann::json& initialState);
 
-    // Opens an existing run. Throws StoreError if it is missing or was written with another
-    // schema version, or its meta (rng_seed, settings) is damaged.
+    // Opens an existing run. Throws StoreError if it is missing or was written with another schema version (there
+    // is no migration), or its meta (rng_seed, settings) is damaged.
     static RunStore Open(const std::filesystem::path& file);
 
     const RunMeta& Meta() const;
