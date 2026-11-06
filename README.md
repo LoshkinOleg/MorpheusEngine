@@ -42,7 +42,7 @@ Then copy `settings.example.json` (the template) to `settings.json` at the repos
 - `budget.retrieval_cap` caps the retrieved memory (lore, past turns, notes) placed in the prompt, in tokens, including what `assisted`-mode lookups add. It is part of `budget.tail_allowance`.
 - The optional top-level `"memory_mode": "engine" | "assisted"` overrides the world's default memory mode.
 - `budget.resolve_thinking_tokens` and `budget.narrate_thinking_tokens` let a thinking model (one whose chat template has `enable_thinking`, such as Qwen3.5 and later) reason before the resolve and narrate answers, up to that many tokens each; 0 turns a call's thinking off, otherwise the minimum is 64. A block that runs out is closed by the engine and the model answers from what it has. The reasoning never reaches the player or a later prompt; it is kept in the turn's telemetry and shown in the Turn log window. Both budgets are reserved in the context, like `resolve_max_tokens` and `narrate_max_tokens`. With a model that has no thinking mode, set both to 0.
-- `gpu_layers` is how many of the chat model's layers go to the GPU (-1: all). A model larger than the GPU's memory needs a lower number: the rest runs on the CPU, slower. The example's 24 is a starting point for Qwen3.8-27B on a 10 GB GPU; raise it until loading fails for lack of memory, then step back.
+- `gpu_layers` is how many of the chat model's layers go to the GPU (-1: all). A model larger than the GPU's memory needs a lower number: the rest runs on the CPU, slower. llama.cpp puts the last N layers on the GPU. Whatever else uses the GPU (a game, a browser decoding video) lowers the limit; see "Performance with Qwen3.8-27B on a 10 GB GPU" below for measured values.
 - Qwen recommends temperature 1.0, top_k 20 and top_p 0.95 for its models in thinking mode, as in the example.
 
 To check that the models, the Vulkan backend and KV-cache prefix reuse work, run the probe. It prints the prompt size and streams two completions; the second should report almost the whole prompt as reused:
@@ -61,6 +61,37 @@ export MORPHEUS_TEST_EMBED_MODEL="$PWD/models/nomic-embed-text-v1.5.Q8_0.gguf"
 export MORPHEUS_TEST_THINKING_MODEL="$PWD/models/Qwen3.5-0.8B-Q4_K_M.gguf"
 ./build/dev/bin/Debug/morpheus_tests.exe "[llama]"
 ```
+
+### Performance with Qwen3.8-27B on a 10 GB GPU
+
+Measured on 2026-11-05 with the Linux build below: RTX 3080 (10 GB), Ryzen 7 5800X (8 cores, 16 threads), 32 GB RAM, `Qwen3.8-27B-UD-Q4_K_M.gguf`, `context_size` 20576, measured with `morpheus_probe` on the sandcrawler world (a 738-token prompt).
+
+| `gpu_layers` | Peak VRAM (desktop apps included) | Result |
+|---|---|---|
+| 30 | - | Fails: the 530 MB compute buffer does not fit, even with 8.6 GB free |
+| 28 | 9822 of 10240 MiB | Loads, about 400 MB to spare; failed on a later run, so unreliable |
+| 26 | 9415 of 10240 MiB | Loads with nothing else on the GPU; fails while a game holds 1-5 GB |
+
+At 26 layers: loading both models takes 4-8 s (the model file cold or cached), the prompt is read at about 210 tokens/s, and output is written at about 2.5 tokens/s. A turn is two calls, each a thinking block and an answer, so with the example's thinking budgets (2048 resolve, 1536 narrate) a turn that uses both budgets takes about 25 minutes. Qwen3.8 thinks at maximum effort by default and tends to use its whole budget.
+
+Known issue: `LlamaCppBackend` does not set `n_threads`, so llama.cpp computes the CPU-resident layers (about 60% of this model at 26 layers) with its default of 4 threads. Setting it to the machine's core count should speed up output; not measured yet.
+
+Ways to faster turns, not done yet:
+
+- Lower `resolve_thinking_tokens` and `narrate_thinking_tokens` (0 turns a call's thinking off).
+- A mixture-of-experts model such as Qwen3.6-35B-A3B (about 3B parameters per token) with its expert tensors kept in RAM. This needs the backend to set `tensor_buft_overrides`; expected to write several times faster, not measured.
+
+## Build (Linux)
+
+Not the supported setup, but the `dev` targets build and run on Linux with clang and Ninja (tested on Ubuntu 24.04 in a distrobox on a Fedora-based host). Packages: `clang`, `cmake`, `ninja-build`, `pkg-config`, `libvulkan-dev`, `glslc`, `spirv-headers`, `libomp-dev`, `fonts-dejavu-core` (the app's font on Linux), and SDL3's X11 and Wayland development libraries (`libx11-dev`, `libxext-dev`, `libxrandr-dev`, `libxcursor-dev`, `libxi-dev`, `libxss-dev`, `libxfixes-dev`, `libxtst-dev`, `libxkbcommon-dev`, `libwayland-dev`, `wayland-protocols`, `libegl-dev`, `libgl-dev`, `libdrm-dev`, `libgbm-dev`, `libdecor-0-dev`, `libdbus-1-dev`, `libudev-dev`).
+
+```
+cmake -S . -B build/linux -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DMORPHEUS_BUILD_APP=ON -DMORPHEUS_BUILD_LLAMA=ON -DMORPHEUS_VULKAN=ON -DMORPHEUS_BUILD_TESTS=ON
+cmake --build build/linux
+./build/linux/bin/morpheus .
+```
+
+Inside a container, Vulkan sees only the CPU (llvmpipe) unless the host's NVIDIA user-space driver is visible: link the host's `libnvidia-*`, `libGLX_nvidia*`, `libEGL_nvidia*` and `libcuda*` libraries into a folder, put it on `LD_LIBRARY_PATH`, and point `VK_DRIVER_FILES` at an ICD file whose `library_path` is that folder's `libGLX_nvidia.so.0`. `vulkaninfo --summary` should then list the GPU. On Linux, the "SaveSettingsEdit reports a file it cannot replace" test fails: it relies on Windows refusing to replace a file another process holds open.
 
 ## Play in the app
 
