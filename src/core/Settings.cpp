@@ -161,6 +161,13 @@ Settings LoadSettings(const std::filesystem::path& file)
     settings.budget.worldCap = requireInt(budget, "world_cap", "budget", 1, contextSize);
     settings.budget.summaryCap = requireInt(budget, "summary_cap", "budget", 1, contextSize);
     settings.budget.retrievalCap = requireInt(budget, "retrieval_cap", "budget", 1, settings.budget.tailAllowance);
+    // The review call is standalone (its own prompt), but its answer and thinking must leave room for that prompt.
+    if (static_cast<long long>(settings.budget.reviewMaxTokens) + settings.budget.reviewThinkingTokens >= contextSize) {
+        throw DataError(std::format("{}: budget 'review_max_tokens' ({}) plus 'review_thinking_tokens' ({}) must be less "
+                                    "than context_size {}",
+                                    where, settings.budget.reviewMaxTokens, settings.budget.reviewThinkingTokens,
+                                    contextSize));
+    }
     // The review call is standalone (its own short prompt), so its budgets are not reserved here.
     const long long fixed = static_cast<long long>(settings.budget.ResolveGenerationTokens()) +
                             settings.budget.NarrateGenerationTokens() + settings.budget.narrateAllowance + settings.budget.tailAllowance + settings.budget.engineRulesCap + settings.budget.worldCap +

@@ -33,8 +33,8 @@ struct SettingsEdit {
 // JSON, or lacks one of them (core::LoadSettings explains a bad file in full).
 SettingsEdit ReadSettingsEdit(const std::filesystem::path& file);
 
-// Writes `edit` into the settings file, keeping its other keys (the embedding prefixes, the rest of the budget) and their order.
-// The new text is first written beside the file as "<name>.new" and loaded with core::LoadSettings. When anything
+// Writes `edit` into the settings file, keeping its other keys (the embedding prefixes, the rest of the budget) and
+// their order. The new text is first written beside the file as "<name>.new" and loaded with core::LoadSettings. When anything
 // fails, the check file is removed, the settings file is left as it was, and a DataError naming the settings file is
 // thrown: the file cannot be read or has the wrong shape, the loader rejects the new values, or the
 // check file cannot replace the settings file. Otherwise the check file replaces the settings file. Returns the loaded

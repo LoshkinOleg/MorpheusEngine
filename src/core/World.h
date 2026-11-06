@@ -20,7 +20,6 @@ struct LoreEntry {
     bool alwaysOn = false; // Always in the prompt (layer L1) instead of retrieved when relevant.
 };
 
-// Everything in one game_projects/<id>/ folder, validated.
 // world.json's optional "scene": the state values that describe where the player is, for scene retrieval. Each path
 // is "entity.field", a string field of an entity of the initial state; presentAt is one of them: every other entity
 // whose field of that name holds the same value is present (turn::SceneOf).
@@ -29,6 +28,7 @@ struct SceneDecl {
     std::string presentAt = {};
 };
 
+// Everything in one game_projects/<id>/ folder, validated.
 struct World {
     std::string id = {};
     std::string title = {};

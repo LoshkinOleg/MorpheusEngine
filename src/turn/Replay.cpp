@@ -20,7 +20,9 @@ core::CallKind CallKindOf(const inference::Prompt& prompt, const inference::Gene
         }();
         static const std::string REVIEW_ROOT = [] {
             const std::string review = BuildReviewGrammar(true, true);
-            return review.substr(0, review.find('\n') + 1);
+            const std::size_t newline = review.find('\n');
+            MORPHEUS_REQUIRE(newline != std::string::npos, "the review grammar has a first line");
+            return review.substr(0, newline + 1);
         }();
         if (spec.grammar.starts_with(LOOKUP_ROOT)) {
             return core::CallKind::Lookup;

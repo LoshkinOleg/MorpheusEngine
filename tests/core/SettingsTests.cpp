@@ -275,6 +275,14 @@ TEST_CASE("LoadSettings reads the narration review and compact transcript settin
         CHECK_THROWS_WITH(LoadSettings(WriteSettings("settings_review_max_zero", json)),
                           ContainsSubstring("review_max_tokens"));
     }
+    SECTION("the review answer and thinking must leave room in the context")
+    {
+        json["budget"]["review_max_tokens"] = 16384 - MIN_THINKING_TOKENS;
+        json["budget"]["review_thinking_tokens"] = MIN_THINKING_TOKENS;
+        CHECK_THROWS_AS(LoadSettings(WriteSettings("settings_review_fit", json)), DataError);
+        CHECK_THROWS_WITH(LoadSettings(WriteSettings("settings_review_fit", json)),
+                          ContainsSubstring("review_max_tokens") && ContainsSubstring("review_thinking_tokens"));
+    }
     SECTION("the switches are true or false")
     {
         json["narration_check"] = "yes";

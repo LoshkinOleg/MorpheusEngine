@@ -13,6 +13,10 @@
 
 namespace morpheus::turn {
 
+// REVIEW_RULES says "at most three" problems in prose.
+static_assert(REVIEW_MAX_PROBLEMS == 3,
+              "REVIEW_RULES (EngineText.h) names the problem limit in words: change it with REVIEW_MAX_PROBLEMS");
+
 Review ParseReviewOutput(std::string_view text, bool check, bool digest)
 {
     MORPHEUS_REQUIRE(check || digest, "ParseReviewOutput: needs the check, the digest or both");
@@ -71,7 +75,7 @@ Review ParseReviewOutput(std::string_view text, bool check, bool digest)
         }
         review.digest = core::Trim(json.at("digest").get<std::string>());
         if (core::Utf8Length(review.digest) > static_cast<std::size_t>(DIGEST_MAX_CHARS)) {
-            return failed(std::format("'digest' is a digest longer than {} characters", DIGEST_MAX_CHARS));
+            return failed(std::format("'digest' is longer than {} characters", DIGEST_MAX_CHARS));
         }
     }
     return review;

@@ -107,7 +107,7 @@ void TurnLogWindow::Draw(AppController& controller)
                     ImGui::SeparatorText("Review");
                     for (std::size_t i = 0; i < reviews.size(); ++i) {
                         const ReviewRow& review = reviews[i];
-                        const char* verdict = !review.consistent ? "no verdict"
+                        const char* verdict = !review.consistent ? (review.error.empty() ? "digest only" : "no verdict")
                                               : *review.consistent ? "consistent with the outcome"
                                                                    : "contradicts the outcome";
                         const std::string line = std::format("Review {}: {}", i + 1, verdict);
