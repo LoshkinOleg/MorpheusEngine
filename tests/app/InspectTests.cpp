@@ -98,21 +98,24 @@ TEST_CASE("RetrievalRows shows each hit's text", "[inspect]")
     first.number = 1;
     first.input = "I climb the cliff.";
     const std::vector<core::Note> notes = {{1, "The cliff is slick."}, {1, "Gulls nest here."}};
-    const nlohmann::json timings = {{"retrieval",
-                                     {{{"source", "lore"}, {"ref", "keeper"}, {"score", 0.8}},
-                                      {{"source", "history"}, {"ref", "1"}, {"score", 0.6}},
-                                      {{"source", "notes"}, {"ref", "1.1"}, {"score", 0.5}}}}};
+    const nlohmann::json timings = nlohmann::json::parse(R"({"retrieval": [
+        {"source": "lore", "ref": "keeper", "score": 0.8, "reasons": ["name", "scene"]},
+        {"source": "history", "ref": "1", "score": 0.6, "reasons": []},
+        {"source": "notes", "ref": "1.1", "score": 0.5, "reasons": []}]})");
 
     const std::vector<app::RetrievalRow> rows = app::RetrievalRows(timings, {first}, notes);
     REQUIRE(rows.size() == 3);
     CHECK(rows[0].source == "lore");
     CHECK(rows[0].text == "keeper"); // A lore hit's ref is its subject.
     CHECK(rows[0].score == 0.8);
+    CHECK(rows[0].reasons == std::vector<std::string>{"name", "scene"});
+    CHECK(rows[1].reasons.empty());
     CHECK(rows[1].text == "I climb the cliff.");
     CHECK(rows[2].text == "Gulls nest here."); // Turn 1's second note.
 
     CHECK(app::RetrievalRows(nlohmann::json::object(), {}, {}).empty());
-    const nlohmann::json gone = {{"retrieval", {{{"source", "history"}, {"ref", "7"}, {"score", 0.5}}}}};
+    const nlohmann::json gone =
+        nlohmann::json::parse(R"({"retrieval": [{"source": "history", "ref": "7", "score": 0.5, "reasons": []}]})");
     CHECK_THROWS_AS(app::RetrievalRows(gone, {first}, notes), core::DataError);
 }
 
@@ -133,4 +136,55 @@ TEST_CASE("CheckText writes out the roll", "[inspect]")
     check.result.total = 7;
     check.result.success = false;
     CHECK(app::CheckText(check) == "agility vs hard: rolled 2 + 5 = 7 against 16, failure");
+}
+
+TEST_CASE("ReviewRows and ReplacedNarration read a renarrated turn's reviews", "[inspect]")
+{
+    const nlohmann::json timings = nlohmann::json::parse(R"({
+        "review": [
+            {"prompt_tokens": 400, "reused": 0, "evaluated": 400, "generated": 40, "prompt_ms": 5.0,
+             "generate_ms": 300.0, "stopped_at_limit": false,
+             "consistent": false, "problems": ["The climb failed."], "digest": "The player reached the top."},
+            {"prompt_tokens": 410, "reused": 0, "evaluated": 410, "generated": 30, "prompt_ms": 5.0,
+             "generate_ms": 250.0, "stopped_at_limit": false, "consistent": true, "digest": "The player slipped.",
+             "thinking": {"tokens": 70, "ms": 900.0, "stopped_at_limit": false, "text": "Check the roll."}}],
+        "renarrate": {"prompt_tokens": 1200, "reused": 1100, "evaluated": 100, "generated": 90, "prompt_ms": 20.0,
+                      "generate_ms": 1500.0, "stopped_at_limit": false, "replaced": "You reach the top."}})");
+
+    const std::vector<app::ReviewRow> rows = app::ReviewRows(timings);
+    REQUIRE(rows.size() == 2);
+    CHECK(rows[0].call.promptTokens == 400);
+    CHECK(rows[0].consistent == false);
+    CHECK(rows[0].problems == std::vector<std::string>{"The climb failed."});
+    CHECK(rows[0].digest == "The player reached the top.");
+    CHECK_FALSE(rows[0].call.thinking);
+    CHECK(rows[1].consistent == true);
+    CHECK(rows[1].problems.empty());
+    REQUIRE(rows[1].call.thinking);
+    CHECK(rows[1].call.thinking->text == "Check the roll.");
+    CHECK(app::ReplacedNarration(timings) == "You reach the top.");
+    const std::optional<app::CallStats> renarrate = app::CallStatsOf(timings, "renarrate");
+    REQUIRE(renarrate);
+    CHECK(renarrate->generated == 90);
+
+    // An unreadable review keeps only its reason; a turn without reviews has none.
+    const std::vector<app::ReviewRow> failed = app::ReviewRows(nlohmann::json::parse(R"({"review": [
+        {"prompt_tokens": 400, "reused": 0, "evaluated": 400, "generated": 384, "prompt_ms": 5.0,
+         "generate_ms": 3000.0, "stopped_at_limit": true, "error": "the review output is not complete JSON"}]})"));
+    REQUIRE(failed.size() == 1);
+    CHECK_FALSE(failed[0].consistent);
+    CHECK(failed[0].call.stoppedAtLimit);
+    CHECK(failed[0].error == "the review output is not complete JSON");
+    CHECK(app::ReviewRows(nlohmann::json::object()).empty());
+    CHECK_FALSE(app::ReplacedNarration(nlohmann::json::object()));
+    CHECK_THROWS_AS(app::ReviewRows(nlohmann::json::parse(R"({"review": [{"consistent": true}]})")), core::DataError);
+}
+
+TEST_CASE("SceneValues reads the scene a turn's retrieval searched with", "[inspect]")
+{
+    CHECK(app::SceneValues(nlohmann::json::parse(R"({"scene": ["shore", "npc:marta"]})")) ==
+          std::vector<std::string>{"shore", "npc:marta"});
+    CHECK(app::SceneValues(nlohmann::json::parse(R"({"scene": []})")).empty());
+    CHECK(app::SceneValues(nlohmann::json::object()).empty());
+    CHECK_THROWS_AS(app::SceneValues(nlohmann::json::parse(R"({"scene": "shore"})")), core::DataError);
 }

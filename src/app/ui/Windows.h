@@ -65,8 +65,8 @@ public:
     void Draw(AppController& controller);
 };
 
-// Every turn, newest first: input, intent, rolls, applied and rejected changes, notes, lookups, per-call numbers and
-// the raw resolve output.
+// Every turn, newest first: input, intent, rolls, applied and rejected changes, notes, lookups, the narration
+// review (verdicts, problems, digests and a replaced narration), per-call numbers and the raw resolve output.
 class TurnLogWindow {
 public:
     void Draw(AppController& controller);
@@ -80,7 +80,7 @@ public:
     void Draw(AppController& controller);
 };
 
-// The story summaries, the notes, and the latest turn's retrieval hits with their scores.
+// The story summaries, the notes, and the latest turn's retrieval hits with their scores and reasons, and its scene.
 class MemoryWindow {
 public:
     void Draw(AppController& controller);

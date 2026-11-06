@@ -19,10 +19,12 @@ namespace morpheus::app {
 
 namespace {
 
-constexpr std::size_t TITLE_INPUT_CHARS = 60;    // The input shown in a turn's header, in bytes.
-constexpr float RESOLVE_JSON_LINES = 12.0f;      // Height of the raw resolve output, in lines.
-constexpr float THINKING_LINES = 16.0f;          // Height of a call's thinking text, in lines.
-constexpr const char* CALLS[] = {"lookup", "resolve", "narrate"}; // Model calls, in turn order.
+constexpr std::size_t TITLE_INPUT_CHARS = 60; // The input shown in a turn's header, in bytes.
+constexpr float RESOLVE_JSON_LINES = 12.0f;   // Height of the raw resolve output, in lines.
+constexpr float THINKING_LINES = 16.0f;       // Height of a call's thinking text, in lines.
+constexpr float REPLACED_LINES = 8.0f;        // Height of a replaced narration, in lines.
+// Model calls with one telemetry entry each, in turn order. The reviews (a list) follow them.
+constexpr const char* CALLS[] = {"lookup", "resolve", "narrate", "renarrate"};
 
 } // namespace
 
@@ -98,8 +100,81 @@ void TurnLogWindow::Draw(AppController& controller)
                     }
                 }
 
-                // Each model call's numbers.
+                // The narration review: each review's verdict, its problems and digest, and the narration a renarrate
+                // replaced.
+                const std::vector<ReviewRow> reviews = ReviewRows(timings);
+                if (!reviews.empty()) {
+                    ImGui::SeparatorText("Review");
+                    for (std::size_t i = 0; i < reviews.size(); ++i) {
+                        const ReviewRow& review = reviews[i];
+                        const char* verdict = !review.consistent ? "no verdict"
+                                              : *review.consistent ? "consistent with the outcome"
+                                                                   : "contradicts the outcome";
+                        const std::string line = std::format("Review {}: {}", i + 1, verdict);
+                        if (review.consistent == false) {
+                            TextWrappedColored(WARNING_COLOR, line);
+                        } else {
+                            ImGui::TextWrapped("%s", line.c_str());
+                        }
+                        for (const std::string& problem : review.problems) {
+                            ImGui::Bullet();
+                            ImGui::TextWrapped("%s", problem.c_str());
+                        }
+                        if (!review.digest.empty()) {
+                            ImGui::TextWrapped("Digest: %s", review.digest.c_str());
+                        }
+                        if (!review.error.empty()) {
+                            TextWrappedColored(ERROR_COLOR, "Unreadable review output: " + review.error);
+                        }
+                    }
+                    if (const std::optional<std::string> replaced = ReplacedNarration(timings);
+                        replaced && ImGui::TreeNode("Replaced narration")) {
+                        std::string text = *replaced;
+                        ImGui::InputTextMultiline("##replaced", &text,
+                                                  ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * REPLACED_LINES),
+                                                  ImGuiInputTextFlags_ReadOnly);
+                        ImGui::TreePop();
+                    }
+                }
+
+                // Each model call's numbers: one row per call, the reviews numbered.
                 ImGui::SeparatorText("Calls");
+                auto callRow = [](const std::string& label, const CallStats& stats) {
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn();
+                    ImGui::TextUnformatted(label.c_str());
+                    if (stats.stoppedAtLimit) {
+                        ImGui::SameLine();
+                        ImGui::TextColored(WARNING_COLOR, "(hit max tokens)");
+                    }
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%d", stats.promptTokens);
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%d", stats.reused);
+                    // A call that did not think shows dashes, not zeros.
+                    ImGui::TableNextColumn();
+                    if (stats.thinking) {
+                        ImGui::Text("%d", stats.thinking->tokens);
+                        if (stats.thinking->stoppedAtLimit) {
+                            ImGui::SameLine();
+                            ImGui::TextColored(WARNING_COLOR, "(hit budget)");
+                        }
+                    } else {
+                        ImGui::TextDisabled("-");
+                    }
+                    ImGui::TableNextColumn();
+                    if (stats.thinking) {
+                        ImGui::Text("%.0f", stats.thinking->ms);
+                    } else {
+                        ImGui::TextDisabled("-");
+                    }
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%d", stats.generated);
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%.0f", stats.promptMs);
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%.0f", stats.generateMs);
+                };
                 if (ImGui::BeginTable("calls", 8,
                                       ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
                     for (const char* header :
@@ -108,44 +183,12 @@ void TurnLogWindow::Draw(AppController& controller)
                     }
                     ImGui::TableHeadersRow();
                     for (const char* call : CALLS) {
-                        const std::optional<CallStats> stats = CallStatsOf(timings, call);
-                        if (!stats) {
-                            continue;
+                        if (const std::optional<CallStats> stats = CallStatsOf(timings, call)) {
+                            callRow(call, *stats);
                         }
-                        ImGui::TableNextRow();
-                        ImGui::TableNextColumn();
-                        ImGui::TextUnformatted(call);
-                        if (stats->stoppedAtLimit) {
-                            ImGui::SameLine();
-                            ImGui::TextColored(WARNING_COLOR, "(hit max tokens)");
-                        }
-                        ImGui::TableNextColumn();
-                        ImGui::Text("%d", stats->promptTokens);
-                        ImGui::TableNextColumn();
-                        ImGui::Text("%d", stats->reused);
-                        // A call that did not think shows dashes, not zeros.
-                        ImGui::TableNextColumn();
-                        if (stats->thinking) {
-                            ImGui::Text("%d", stats->thinking->tokens);
-                            if (stats->thinking->stoppedAtLimit) {
-                                ImGui::SameLine();
-                                ImGui::TextColored(WARNING_COLOR, "(hit budget)");
-                            }
-                        } else {
-                            ImGui::TextDisabled("-");
-                        }
-                        ImGui::TableNextColumn();
-                        if (stats->thinking) {
-                            ImGui::Text("%.0f", stats->thinking->ms);
-                        } else {
-                            ImGui::TextDisabled("-");
-                        }
-                        ImGui::TableNextColumn();
-                        ImGui::Text("%d", stats->generated);
-                        ImGui::TableNextColumn();
-                        ImGui::Text("%.0f", stats->promptMs);
-                        ImGui::TableNextColumn();
-                        ImGui::Text("%.0f", stats->generateMs);
+                    }
+                    for (std::size_t i = 0; i < reviews.size(); ++i) {
+                        callRow(std::format("review {}", i + 1), reviews[i].call);
                     }
                     ImGui::EndTable();
                 }
@@ -155,18 +198,25 @@ void TurnLogWindow::Draw(AppController& controller)
                 }
 
                 // Each call's reasoning, as the model wrote it in its thinking block.
-                for (const char* call : CALLS) {
-                    const std::optional<CallStats> stats = CallStatsOf(timings, call);
-                    if (!stats || !stats->thinking) {
-                        continue;
+                auto thinkingNode = [](const std::string& label, const CallStats& stats) {
+                    if (!stats.thinking) {
+                        return;
                     }
-                    if (ImGui::TreeNode(call, "%s thinking", call)) {
-                        std::string text = stats->thinking->text;
+                    if (ImGui::TreeNode(label.c_str(), "%s thinking", label.c_str())) {
+                        std::string text = stats.thinking->text;
                         ImGui::InputTextMultiline("##thinking", &text,
                                                   ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * THINKING_LINES),
                                                   ImGuiInputTextFlags_ReadOnly);
                         ImGui::TreePop();
                     }
+                };
+                for (const char* call : CALLS) {
+                    if (const std::optional<CallStats> stats = CallStatsOf(timings, call)) {
+                        thinkingNode(call, *stats);
+                    }
+                }
+                for (std::size_t i = 0; i < reviews.size(); ++i) {
+                    thinkingNode(std::format("review {}", i + 1), reviews[i].call);
                 }
 
                 // The resolve output exactly as the model wrote it.

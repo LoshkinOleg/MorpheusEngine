@@ -1,17 +1,22 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <vector>
 
+#include "SceneWorld.h"
 #include "app/AppTestSupport.h"
 #include "app/HeadlessImGui.h"
 #include "app/model/AppController.h"
+#include "app/model/Inspect.h"
 #include "app/model/SettingsEdit.h"
 #include "app/ui/Ui.h"
 #include "core/MemoryMode.h"
 #include "inference/Llm.h"
+#include "turn/EngineText.h"
 
 using namespace morpheus;
 
@@ -46,6 +51,28 @@ test::ScriptedBackend::Responder AssistedResponder()
                    R"("notes":["The cliff is slick."]})";
         }
         return "You climb.";
+    };
+}
+
+const std::string RENARRATION = "You walk the last steps along the shore to the lighthouse door.";
+
+// Resolve calls get MOVE. Each turn's first review finds a contradiction and its second none (the count is shared
+// by every backend the factory makes). The first narration is NARRATION, the renarrate (its message carries the
+// correction) RENARRATION.
+test::ScriptedBackend::Responder RenarrateResponder()
+{
+    auto pReviews = std::make_shared<int>(0);
+    return [pReviews](const inference::Prompt& prompt, const inference::GenerationSpec& spec) -> std::string {
+        if (spec.grammar.find("intent") != std::string::npos) {
+            return MOVE;
+        }
+        if (prompt.messages.front().content == turn::REVIEW_RULES) {
+            return (*pReviews)++ % 2 == 0
+                       ? R"({"consistent":false,"problems":["The player never reaches the lighthouse."],"digest":"The player set off."})"
+                       : R"({"consistent":true,"problems":[],"digest":"The player walked to the lighthouse."})";
+        }
+        const bool renarrate = prompt.messages.back().content.find(turn::RENARRATE_CORRECTION) != std::string::npos;
+        return renarrate ? RENARRATION : NARRATION;
     };
 }
 
@@ -140,4 +167,37 @@ TEST_CASE("The inspectors draw a run with checks, notes, lookups and retrieval",
     app::ContextWindow context;
     context.showRaw = true;
     imgui.Frame([&] { context.Draw(controller); });
+}
+
+TEST_CASE("The inspectors draw a renarrated turn and scene retrieval", "[ui]")
+{
+    test::HeadlessImGui imgui;
+    // settings.example.json turns the narration check and the compact transcript on. The only world is the mini
+    // world with a scene, whose player starts on the shore.
+    const std::filesystem::path dir = test::SettingsFolder("ui_review");
+    app::AppPaths paths = test::PathsIn(dir);
+    paths.projectsDir = test::SceneWorldDir("ui_review_worlds").parent_path();
+    app::AppController controller(paths, test::ScriptedFactory(RenarrateResponder()));
+    app::Ui ui;
+
+    test::PumpUntil(controller, [&] { return controller.CanPost(); });
+    controller.NewRun(controller.Worlds().at(0), "review", 7);
+    test::PumpUntil(controller, [&] { return controller.Run().Open() && controller.CanPost(); });
+    controller.Submit("I look around.");
+    test::PumpUntil(controller, [&] { return controller.CanPost(); });
+
+    REQUIRE(controller.Run().History().size() == 1);
+    const core::TurnRecord& turn = controller.Run().History().back();
+    CHECK(turn.narration == RENARRATION);
+    CHECK(app::ReplacedNarration(turn.timings) == NARRATION);
+    CHECK(app::ReviewRows(turn.timings).size() == 2);
+    CHECK(app::SceneValues(turn.timings) == std::vector<std::string>{"shore"});
+    const std::vector<app::RetrievalRow> rows =
+        app::RetrievalRows(turn.timings, controller.Run().History(), controller.Run().Memory().notes);
+    const bool sceneHit = std::any_of(rows.begin(), rows.end(), [](const app::RetrievalRow& row) {
+        return row.ref == "shore" && std::find(row.reasons.begin(), row.reasons.end(), "scene") != row.reasons.end();
+    });
+    CHECK(sceneHit);
+    DrawFrames(imgui, controller, ui); // The Turn log with both reviews and the replaced narration; the Memory window
+                                       // with the reasons and the scene; the Settings window with the new keys.
 }

@@ -68,6 +68,8 @@ void SettingsWindow::Draw(AppController& controller)
             ImGui::SetItemTooltip(THINKING_TOOLTIP, core::MIN_THINKING_TOKENS);
             ImGui::InputInt("Narrate thinking tokens", &edit.narrateThinkingTokens, 256, 1024);
             ImGui::SetItemTooltip(THINKING_TOOLTIP, core::MIN_THINKING_TOKENS);
+            ImGui::InputInt("Review thinking tokens", &edit.reviewThinkingTokens, 256, 1024);
+            ImGui::SetItemTooltip(THINKING_TOOLTIP, core::MIN_THINKING_TOKENS);
 
             // One call type's sampling, under its own ID scope (the labels repeat).
             auto samplingFields = [](const char* id, core::SamplingSettings& sampling) {
@@ -91,14 +93,28 @@ void SettingsWindow::Draw(AppController& controller)
                                                                                         : core::MemoryMode::Assisted);
             }
 
+            // The narration review, and the compact transcript built from its digests.
+            ImGui::SeparatorText("Narration review");
+            ImGui::Checkbox("Narration check", &edit.narrationCheck);
+            ImGui::SetItemTooltip("After each narration a review call checks it against the outcome; a narration "
+                                  "that contradicts it is written once more.");
+            ImGui::Checkbox("Compact transcript", &edit.compactTranscript);
+            ImGui::SetItemTooltip("The review also writes a short digest of each turn, and older turns reach the "
+                                  "prompt as their digest.");
+            ImGui::BeginDisabled(!edit.compactTranscript);
+            ImGui::InputInt("Prose turns", &edit.proseTurns);
+            ImGui::SetItemTooltip("The newest turns that keep their full narration in the prompt. At least 1.");
+            ImGui::EndDisabled();
+
             // The budget is shown, not edited here: it is tuned in settings.json.
             ImGui::SeparatorText("Budget (edit settings.json)");
             const core::BudgetSettings& budget = controller.Engine().CurrentSettings().budget;
             const std::pair<const char*, int> rows[] = {
                 {"resolve_max_tokens", budget.resolveMaxTokens}, {"narrate_max_tokens", budget.narrateMaxTokens},
-                {"narrate_allowance", budget.narrateAllowance},  {"tail_allowance", budget.tailAllowance},
-                {"engine_rules_cap", budget.engineRulesCap},     {"world_cap", budget.worldCap},
-                {"summary_cap", budget.summaryCap},              {"retrieval_cap", budget.retrievalCap}};
+                {"review_max_tokens", budget.reviewMaxTokens},   {"narrate_allowance", budget.narrateAllowance},
+                {"tail_allowance", budget.tailAllowance},        {"engine_rules_cap", budget.engineRulesCap},
+                {"world_cap", budget.worldCap},                  {"summary_cap", budget.summaryCap},
+                {"retrieval_cap", budget.retrievalCap}};
             for (const auto& [name, value] : rows) {
                 ImGui::Text("%s: %d", name, value);
             }

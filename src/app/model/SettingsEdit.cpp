@@ -48,8 +48,12 @@ SettingsEdit ReadSettingsEdit(const std::filesystem::path& file)
         edit.gpuLayers = json.at("gpu_layers").get<int>();
         edit.resolveThinkingTokens = json.at("budget").at("resolve_thinking_tokens").get<int>();
         edit.narrateThinkingTokens = json.at("budget").at("narrate_thinking_tokens").get<int>();
+        edit.reviewThinkingTokens = json.at("budget").at("review_thinking_tokens").get<int>();
         edit.resolveSampling = sampling(json.at("sampling").at("resolve"));
         edit.narrateSampling = sampling(json.at("sampling").at("narrate"));
+        edit.narrationCheck = json.at("narration_check").get<bool>();
+        edit.compactTranscript = json.at("compact_transcript").get<bool>();
+        edit.proseTurns = json.at("prose_turns").get<int>();
         if (json.contains("memory_mode")) {
             edit.memoryMode = core::ParseMemoryMode(json.at("memory_mode").get<std::string>());
             if (!edit.memoryMode) {
@@ -79,8 +83,12 @@ core::Settings SaveSettingsEdit(const std::filesystem::path& file, const Setting
         json["gpu_layers"] = edit.gpuLayers;
         json["budget"]["resolve_thinking_tokens"] = edit.resolveThinkingTokens;
         json["budget"]["narrate_thinking_tokens"] = edit.narrateThinkingTokens;
+        json["budget"]["review_thinking_tokens"] = edit.reviewThinkingTokens;
         json["sampling"]["resolve"] = samplingJson(edit.resolveSampling);
         json["sampling"]["narrate"] = samplingJson(edit.narrateSampling);
+        json["narration_check"] = edit.narrationCheck;
+        json["compact_transcript"] = edit.compactTranscript;
+        json["prose_turns"] = edit.proseTurns;
         if (edit.memoryMode) {
             json["memory_mode"] = *edit.memoryMode == core::MemoryMode::Engine ? "engine" : "assisted";
         } else {

@@ -6,10 +6,33 @@
 #include <cstdlib>
 #include <format>
 #include <system_error>
+#include <utility>
 
 #include "core/Errors.h"
 
 namespace morpheus::app {
+
+namespace {
+
+// One call's numbers from its telemetry object, with its thinking block when it had one. Throws nlohmann's
+// exceptions for a malformed object; the callers say which entry it was.
+CallStats ReadCallStats(const nlohmann::json& numbers)
+{
+    CallStats stats{numbers.at("prompt_tokens").get<int>(), numbers.at("reused").get<int>(),
+                    numbers.at("evaluated").get<int>(),     numbers.at("generated").get<int>(),
+                    numbers.at("prompt_ms").get<double>(),  numbers.at("generate_ms").get<double>(),
+                    numbers.at("stopped_at_limit").get<bool>()};
+    // Only calls that were allowed to think carry a thinking block.
+    if (numbers.contains("thinking")) {
+        const nlohmann::json& thinking = numbers.at("thinking");
+        stats.thinking = ThinkingStats{thinking.at("tokens").get<int>(), thinking.at("ms").get<double>(),
+                                       thinking.at("stopped_at_limit").get<bool>(),
+                                       thinking.at("text").get<std::string>()};
+    }
+    return stats;
+}
+
+} // namespace
 
 ChangeMark MarkFor(std::string_view path, const std::vector<core::AppliedChange>& applied)
 {
@@ -58,19 +81,7 @@ std::optional<CallStats> CallStatsOf(const nlohmann::json& timings, std::string_
         return std::nullopt;
     }
     try {
-        const nlohmann::json& numbers = timings.at(key);
-        CallStats stats{numbers.at("prompt_tokens").get<int>(), numbers.at("reused").get<int>(),
-                        numbers.at("evaluated").get<int>(),     numbers.at("generated").get<int>(),
-                        numbers.at("prompt_ms").get<double>(),  numbers.at("generate_ms").get<double>(),
-                        numbers.at("stopped_at_limit").get<bool>()};
-        // Only calls that were allowed to think carry a thinking block.
-        if (numbers.contains("thinking")) {
-            const nlohmann::json& thinking = numbers.at("thinking");
-            stats.thinking = ThinkingStats{thinking.at("tokens").get<int>(), thinking.at("ms").get<double>(),
-                                           thinking.at("stopped_at_limit").get<bool>(),
-                                           thinking.at("text").get<std::string>()};
-        }
-        return stats;
+        return ReadCallStats(timings.at(key));
     } catch (const nlohmann::json::exception& error) {
         throw core::DataError(std::format("turn telemetry '{}': {}", key, error.what()));
     }
@@ -98,6 +109,7 @@ std::vector<RetrievalRow> RetrievalRows(const nlohmann::json& timings, const std
             row.source = hit.at("source").get<std::string>();
             row.ref = hit.at("ref").get<std::string>();
             row.score = hit.at("score").get<double>();
+            row.reasons = hit.at("reasons").get<std::vector<std::string>>();
             const std::string missing =
                 std::format("turn telemetry names {} '{}', which the run does not hold", row.source, row.ref);
             if (row.source == "history") {
@@ -150,6 +162,56 @@ std::string CheckText(const core::CheckOutcome& check)
     const std::string statPart = stat == 0 ? "" : std::format(" {} {}", stat < 0 ? '-' : '+', std::abs(stat));
     return std::format("{} vs {}: rolled {}{} = {} against {}, {}", check.stat, check.difficulty, rolls, statPart,
                        check.result.total, check.result.target, check.result.success ? "success" : "failure");
+}
+
+std::vector<ReviewRow> ReviewRows(const nlohmann::json& timings)
+{
+    std::vector<ReviewRow> rows;
+    if (!timings.is_object() || !timings.contains("review")) {
+        return rows;
+    }
+    try {
+        // Each entry is the call's numbers plus whatever the review said: its verdict and problems with the check on,
+        // its digest with the compact transcript on, or why its output could not be read.
+        for (const nlohmann::json& entry : timings.at("review")) {
+            ReviewRow row;
+            row.call = ReadCallStats(entry);
+            if (entry.contains("consistent")) {
+                row.consistent = entry.at("consistent").get<bool>();
+            }
+            row.problems = entry.value("problems", std::vector<std::string>());
+            row.digest = entry.value("digest", std::string());
+            row.error = entry.value("error", std::string());
+            rows.push_back(std::move(row));
+        }
+    } catch (const nlohmann::json::exception& error) {
+        throw core::DataError(std::format("turn telemetry 'review': {}", error.what()));
+    }
+    return rows;
+}
+
+std::optional<std::string> ReplacedNarration(const nlohmann::json& timings)
+{
+    if (!timings.is_object() || !timings.contains("renarrate")) {
+        return std::nullopt;
+    }
+    const nlohmann::json& renarrate = timings.at("renarrate");
+    if (!renarrate.is_object() || !renarrate.contains("replaced") || !renarrate.at("replaced").is_string()) {
+        throw core::DataError("turn telemetry 'renarrate' has no 'replaced' narration");
+    }
+    return renarrate.at("replaced").get<std::string>();
+}
+
+std::vector<std::string> SceneValues(const nlohmann::json& timings)
+{
+    if (!timings.is_object() || !timings.contains("scene")) {
+        return {};
+    }
+    try {
+        return timings.at("scene").get<std::vector<std::string>>();
+    } catch (const nlohmann::json::exception& error) {
+        throw core::DataError(std::format("turn telemetry 'scene': {}", error.what()));
+    }
 }
 
 } // namespace morpheus::app

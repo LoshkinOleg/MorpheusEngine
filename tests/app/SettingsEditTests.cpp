@@ -26,6 +26,10 @@ TEST_CASE("ReadSettingsEdit reads the edited values as the file writes them", "[
     CHECK(edit.gpuLayers == file.at("gpu_layers").get<int>());
     CHECK(edit.resolveThinkingTokens == file.at("budget").at("resolve_thinking_tokens").get<int>());
     CHECK(edit.narrateThinkingTokens == file.at("budget").at("narrate_thinking_tokens").get<int>());
+    CHECK(edit.reviewThinkingTokens == file.at("budget").at("review_thinking_tokens").get<int>());
+    CHECK(edit.narrationCheck == file.at("narration_check").get<bool>());
+    CHECK(edit.compactTranscript == file.at("compact_transcript").get<bool>());
+    CHECK(edit.proseTurns == file.at("prose_turns").get<int>());
     CHECK(edit.resolveSampling.temperature == file.at("sampling").at("resolve").at("temperature").get<double>());
     CHECK(edit.narrateSampling.topK == file.at("sampling").at("narrate").at("top_k").get<int>());
     CHECK(edit.narrateSampling.topP == file.at("sampling").at("narrate").at("top_p").get<double>());
@@ -120,4 +124,28 @@ TEST_CASE("ReadSettingsEdit names the file when it cannot be read", "[settings_e
     test::WriteFile(dir / "settings.json", "{ not json");
     CHECK_THROWS_WITH(app::ReadSettingsEdit(dir / "settings.json"), ContainsSubstring("settings.json"));
     CHECK_THROWS_AS(app::ReadSettingsEdit(dir / "missing.json"), core::DataError);
+}
+
+TEST_CASE("SaveSettingsEdit writes the review settings and refuses prose_turns 0", "[settings_edit]")
+{
+    const std::filesystem::path dir = test::SettingsFolder("settings_edit_review");
+    const std::filesystem::path file = dir / "settings.json";
+    app::SettingsEdit edit = app::ReadSettingsEdit(file);
+    edit.narrationCheck = false;
+    edit.compactTranscript = false;
+    edit.proseTurns = 3;
+    edit.reviewThinkingTokens = 128;
+
+    const core::Settings saved = app::SaveSettingsEdit(file, edit);
+    CHECK_FALSE(saved.narrationCheck);
+    CHECK_FALSE(saved.compactTranscript);
+    CHECK(saved.proseTurns == 3);
+    CHECK(saved.budget.reviewThinkingTokens == 128);
+    CHECK(saved.budget.reviewMaxTokens == 384); // Not edited: kept.
+
+    // The loader's rule reaches the player, and the file stays as it was.
+    const std::string before = test::ReadFile(file);
+    edit.proseTurns = 0;
+    CHECK_THROWS_WITH(app::SaveSettingsEdit(file, edit), ContainsSubstring("prose_turns"));
+    CHECK(test::ReadFile(file) == before);
 }
