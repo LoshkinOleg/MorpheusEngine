@@ -73,7 +73,7 @@ Assembly AssembleResolvePrompt(const core::World& world, const ContextInputs& in
     // Messages: stable prefix (system, transcript), then the tail.
     inference::Prompt& prompt = assembly.prompt;
     prompt.messages.push_back(std::move(fixed.messages.front()));
-    for (inference::Message& message : RenderTranscript(inputs.transcript)) {
+    for (inference::Message& message : RenderTranscript(inputs.transcript, inputs.proseTurns)) {
         tokens.transcript += backend.CountTokens(message.content);
         prompt.messages.push_back(std::move(message));
     }

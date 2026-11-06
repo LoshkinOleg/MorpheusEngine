@@ -382,3 +382,30 @@ TEST_CASE("An over-cap summary is a flag even when it leaves the transcript no r
     CHECK(assembly.contextOverflow);
     CHECK(assembly.transcriptBudget > 0);
 }
+
+TEST_CASE("Digests shrink the transcript layer", "[context]")
+{
+    const core::World world = MiniWorld();
+    test::FakeBackend backend(8192);
+    context::ContextInputs inputs = Inputs(world);
+    inputs.transcript.clear();
+    for (int number = 5; number <= 7; ++number) {
+        core::TurnRecord turn;
+        turn.number = number;
+        turn.input = "I walk on.";
+        turn.narration = std::string(400, 'n');
+        turn.digest = "The player walked on.";
+        inputs.transcript.push_back(turn);
+    }
+    const context::Assembly full = context::AssembleResolvePrompt(world, inputs, RoomyBudget(), backend);
+    inputs.proseTurns = 1;
+    const context::Assembly compact = context::AssembleResolvePrompt(world, inputs, RoomyBudget(), backend);
+
+    CHECK(compact.tokens.transcript < full.tokens.transcript);
+    CHECK(compact.transcriptCost < full.transcriptCost);
+    REQUIRE(compact.prompt.messages.size() == 1 + 6 + 1);
+    CHECK(compact.prompt.messages[2].content == "The player walked on.");
+    CHECK(compact.prompt.messages[4].content == "The player walked on.");
+    CHECK(compact.prompt.messages[6].content == std::string(400, 'n')); // The newest turn keeps its narration.
+    CHECK(full.prompt.messages[2].content == std::string(400, 'n'));     // The default shows every narration.
+}

@@ -207,3 +207,14 @@ TEST_CASE("The fold and condense prompts and fallbacks are the ones the folding 
     CHECK_THROWS_AS(turn::SummarizeFallback({}, 10), core::ContractError);
     CHECK_THROWS_AS(turn::CondenseFallback({}, 10), core::ContractError);
 }
+
+TEST_CASE("A fold sees the full narration even of turns with a digest", "[folding]")
+{
+    core::TurnRecord walked = Turn(1, "I walk.", "You walk the long shore road.");
+    walked.digest = "The player walked.";
+    const inference::Prompt prompt =
+        turn::SummarizePrompt({inference::Role::System, "story"}, {walked, Turn(2, "I wait.", "Time passes.")});
+    REQUIRE(prompt.messages.size() == 1 + 4 + 1);
+    CHECK(prompt.messages[2].content == "You walk the long shore road.");
+    CHECK(prompt.messages[4].content == "Time passes.");
+}

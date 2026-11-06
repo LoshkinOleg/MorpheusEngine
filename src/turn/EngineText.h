@@ -19,7 +19,7 @@ A change has an "op", a "path", usually a "value", and a "reason". "set" replace
 
 Step 2, narrate. The engine rolls the checks, applies the changes and reports the resolution. Narrate the outcome for the player. The resolution is final: narrate what it says, failures and rejected changes included, and never contradict the state.
 
-In the transcript, the bracketed line after a player's input is the engine's record of that turn: rolls first, then applied changes.)";
+In the transcript, the bracketed line after a player's input is the engine's record of that turn: rolls first, then applied changes. Older turns in the transcript show a short summary of what was narrated rather than the narration itself; narrate in full prose regardless.)";
 
 // Appended to L0 in assisted memory mode.
 inline constexpr std::string_view ASSISTED_RULES = R"(# Memory

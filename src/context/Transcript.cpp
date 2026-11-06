@@ -5,6 +5,8 @@
 #include <utility>
 #include <vector>
 
+#include "core/Errors.h"
+
 namespace morpheus::context {
 
 std::string RenderChangePart(const core::AppliedChange& applied)
@@ -56,14 +58,23 @@ std::string RenderMechanicsLine(const core::TurnRecord& record)
     return line + "]";
 }
 
-std::vector<inference::Message> RenderTranscript(const std::vector<core::TurnRecord>& turns)
+std::vector<inference::Message> RenderTranscript(const std::vector<core::TurnRecord>& turns, int proseTurns)
 {
+    MORPHEUS_REQUIRE(proseTurns >= 1, "RenderTranscript: proseTurns must be at least 1");
+    // Turns from this index on are the newest proseTurns; the ones before it are older.
+    const std::size_t prose = static_cast<std::size_t>(proseTurns);
+    const std::size_t firstProse = turns.size() > prose ? turns.size() - prose : 0;
+
     std::vector<inference::Message> messages;
     messages.reserve(turns.size() * 2);
-    for (const core::TurnRecord& turn : turns) {
+    for (std::size_t i = 0; i < turns.size(); ++i) {
+        const core::TurnRecord& turn = turns[i];
         const std::string mechanics = RenderMechanicsLine(turn);
         messages.push_back({inference::Role::User, mechanics.empty() ? turn.input : turn.input + "\n" + mechanics});
-        messages.push_back({inference::Role::Assistant, turn.narration});
+        // An older turn shows its digest. One without (played with compact_transcript off, or its review failed)
+        // keeps its narration.
+        const bool digested = i < firstProse && !turn.digest.empty();
+        messages.push_back({inference::Role::Assistant, digested ? turn.digest : turn.narration});
     }
     return messages;
 }

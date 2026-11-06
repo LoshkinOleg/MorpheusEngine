@@ -1,5 +1,6 @@
 #pragma once
 
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -18,6 +19,9 @@ struct ContextInputs {
     std::string engineRules = {};                  // L0: engine rules and the output format.
     std::vector<core::Summary> summaries = {};     // L2: folded turns, oldest first.
     std::vector<core::TurnRecord> transcript = {}; // L3: unfolded turns, oldest first.
+    // L3: the newest turns that show their narration; older ones show their digest (context::RenderTranscript).
+    // The default shows every narration.
+    int proseTurns = std::numeric_limits<int>::max();
     nlohmann::json state = nullptr;                // T1: current state (validated).
     std::vector<std::string> retrieved = {};       // T2: formatted lore/history snippets.
     std::string playerInput = {};                  // T3

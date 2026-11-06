@@ -1042,3 +1042,41 @@ TEST_CASE("A cancel during the review or the renarrate commits nothing", "[sessi
         CHECK(session.State() == MiniWorld().initialState);
     }
 }
+
+TEST_CASE("With compact_transcript on, older turns reach the prompt as their digest", "[session][review]")
+{
+    const fs::path file = NewRunFile("session_compact");
+    {
+        core::Settings settings = ReviewSettings(false, true);
+        settings.proseTurns = 1;
+        ReviewScript script{MOVE,
+                            {"Narration one.", "Narration two.", "Narration three."},
+                            {R"({"digest":"Digest one."})", R"({"digest":"Digest two."})", R"({"digest":"Digest three."})"}};
+        test::ScriptedBackend backend(16384, script.Responder());
+        turn::Session session = turn::Session::Start(MiniWorld(), settings, file, 42, backend);
+        for (const char* input : {"I walk.", "I walk on.", "I walk further."}) {
+            REQUIRE(session.RunTurn(input, {}, {}));
+        }
+
+        // The third turn's resolve prompt: turn 1 as its digest, turn 2 (the newest) as its narration.
+        const auto& calls = backend.Calls(); // Per turn: resolve, narrate, review.
+        REQUIRE(calls.size() == 9);
+        const inference::Prompt& third = calls[6].prompt;
+        REQUIRE(third.messages.size() == 1 + 4 + 1);
+        CHECK(third.messages[1].content.starts_with("I walk.")); // The input stays.
+        CHECK(third.messages[2].content == "Digest one.");
+        CHECK(third.messages[4].content == "Narration two.");
+        CHECK_THAT(third.messages[0].content, ContainsSubstring("Older turns in the transcript show a short summary"));
+        // The history keeps the full narration (the Play window shows it).
+        CHECK(session.History().at(0).narration == "Narration one.");
+    }
+
+    // With compact_transcript off, the same run renders every turn in full, its stored digests notwithstanding.
+    test::ScriptedBackend backend(16384, Responder(MOVE));
+    turn::Session session = turn::Session::Load(MiniWorld(), TestSettings(), file, backend);
+    REQUIRE(session.RunTurn("I stop.", {}, {}));
+    const inference::Prompt& fourth = backend.Calls().at(0).prompt;
+    REQUIRE(fourth.messages.size() == 1 + 6 + 1);
+    CHECK(fourth.messages[2].content == "Narration one.");
+    CHECK(fourth.messages[4].content == "Narration two.");
+}

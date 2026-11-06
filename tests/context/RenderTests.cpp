@@ -1,8 +1,14 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstddef>
+#include <format>
+#include <limits>
+#include <vector>
+
 #include <nlohmann/json.hpp>
 
 #include "TestPaths.h"
+#include "core/Errors.h"
 #include "context/StateView.h"
 #include "context/Transcript.h"
 #include "context/WorldReference.h"
@@ -36,6 +42,21 @@ core::TurnRecord TurnWithMechanics()
     return record;
 }
 
+// Turns 1..count, each with an input, a narration and a digest that name its number.
+std::vector<core::TurnRecord> NumberedTurns(int count)
+{
+    std::vector<core::TurnRecord> turns;
+    for (int number = 1; number <= count; ++number) {
+        core::TurnRecord turn;
+        turn.number = number;
+        turn.input = std::format("Input {}.", number);
+        turn.narration = std::format("Narration {}.", number);
+        turn.digest = std::format("Digest {}.", number);
+        turns.push_back(turn);
+    }
+    return turns;
+}
+
 } // namespace
 
 TEST_CASE("RenderStateView prints one compact line per entity", "[context]")
@@ -67,7 +88,8 @@ TEST_CASE("RenderTranscript turns each turn into a user and an assistant message
     quiet.input = "I wait.";
     quiet.narration = "Nothing happens.";
 
-    const std::vector<inference::Message> messages = context::RenderTranscript({TurnWithMechanics(), quiet});
+    const std::vector<inference::Message> messages =
+        context::RenderTranscript({TurnWithMechanics(), quiet}, std::numeric_limits<int>::max());
     REQUIRE(messages.size() == 4);
     CHECK(messages[0].role == inference::Role::User);
     CHECK(messages[0].content == "I climb the hull.\n" + context::RenderMechanicsLine(TurnWithMechanics()));
@@ -114,4 +136,50 @@ TEST_CASE("RenderStateView prints list items and an empty state", "[context]")
     const nlohmann::json state = nlohmann::json::parse(
         R"({"player": {"type": "captain", "fields": {"conditions": ["tired", "hungry"]}}})");
     CHECK(context::RenderStateView(state) == "player (captain): conditions [tired, hungry]\n");
+}
+
+TEST_CASE("RenderTranscript shows older turns as their digest", "[context]")
+{
+    std::vector<core::TurnRecord> turns = NumberedTurns(4);
+    turns[1].digest.clear(); // Turn 2 has no digest: played with compact_transcript off, or its review failed.
+
+    // proseTurns 2: turns 3 and 4 keep their narration; turns 1 and 2 are older.
+    const std::vector<inference::Message> messages = context::RenderTranscript(turns, 2);
+    REQUIRE(messages.size() == 8);
+    CHECK(messages[0].content == "Input 1."); // User messages never change.
+    CHECK(messages[1].content == "Digest 1.");
+    CHECK(messages[3].content == "Narration 2."); // An older turn without a digest keeps its narration.
+    CHECK(messages[4].content == "Input 3.");
+    CHECK(messages[5].content == "Narration 3.");
+    CHECK(messages[7].content == "Narration 4.");
+
+    // Without a limit every turn shows its narration.
+    const std::vector<inference::Message> full = context::RenderTranscript(turns, std::numeric_limits<int>::max());
+    CHECK(full[1].content == "Narration 1.");
+    CHECK_THROWS_AS(context::RenderTranscript(turns, 0), core::ContractError);
+}
+
+TEST_CASE("A compact transcript keeps its prefix from one turn to the next", "[context]")
+{
+    constexpr std::size_t PROSE_TURNS = 2;
+    const std::vector<core::TurnRecord> turns = NumberedTurns(6);
+    for (std::size_t n = 1; n < turns.size(); ++n) {
+        INFO("turns 1.." << n << " and 1.." << n + 1);
+        const std::vector<inference::Message> before = context::RenderTranscript(
+            std::vector<core::TurnRecord>(turns.begin(), turns.begin() + static_cast<std::ptrdiff_t>(n)),
+            static_cast<int>(PROSE_TURNS));
+        const std::vector<inference::Message> after = context::RenderTranscript(
+            std::vector<core::TurnRecord>(turns.begin(), turns.begin() + static_cast<std::ptrdiff_t>(n + 1)),
+            static_cast<int>(PROSE_TURNS));
+        // Every entry of the turns before turn n + 1 - PROSE_TURNS is the same in both...
+        const std::size_t stableTurns = n > PROSE_TURNS ? n - PROSE_TURNS : 0;
+        for (std::size_t i = 0; i < 2 * stableTurns; ++i) {
+            CHECK(before[i].content == after[i].content);
+        }
+        // ...and turn n + 1 - PROSE_TURNS itself changes form: narration before, digest after.
+        if (n >= PROSE_TURNS) {
+            const std::size_t assistant = 2 * (n + 1 - PROSE_TURNS) - 1;
+            CHECK(before[assistant].content != after[assistant].content);
+        }
+    }
 }

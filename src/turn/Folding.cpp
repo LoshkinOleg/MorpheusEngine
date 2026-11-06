@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <format>
+#include <limits>
 #include <string>
 #include <utility>
 
@@ -15,9 +16,10 @@ namespace morpheus::turn {
 inference::Prompt SummarizePrompt(const inference::Message& systemMessage, const std::vector<core::TurnRecord>& turns)
 {
     // The system message, then the turns as the transcript renders them (stable, so cached), then the instruction.
+    // Summaries are written from the full narration, digests or not.
     inference::Prompt prompt;
     prompt.messages.push_back(systemMessage);
-    for (inference::Message& message : context::RenderTranscript(turns)) {
+    for (inference::Message& message : context::RenderTranscript(turns, std::numeric_limits<int>::max())) {
         prompt.messages.push_back(std::move(message));
     }
     prompt.stableCount = prompt.messages.size();

@@ -4,6 +4,7 @@
 #include <array>
 #include <cstddef>
 #include <format>
+#include <limits>
 #include <utility>
 
 #include "core/Dice.h"
@@ -510,6 +511,8 @@ context::ContextInputs Session::Inputs(const nlohmann::json& state, const std::v
         inputs.transcript = _store.Turns(firstUnfolded, latest);
     }
     inputs.state = state;
+    // With the compact transcript on, older turns show their digest; otherwise every turn shows its narration.
+    inputs.proseTurns = _settings.compactTranscript ? _settings.proseTurns : std::numeric_limits<int>::max();
     for (const RetrievalHit& hit : hits) {
         inputs.retrieved.push_back(hit.text);
     }

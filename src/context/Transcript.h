@@ -19,8 +19,10 @@ std::string RenderChangePart(const core::AppliedChange& applied);
 // Returns "" when the turn had no checks and no applied changes.
 std::string RenderMechanicsLine(const core::TurnRecord& record);
 
-// L3: each turn becomes a user message (the input, then the mechanics line on its own line when there is one)
-// and an assistant message (the narration).
-std::vector<inference::Message> RenderTranscript(const std::vector<core::TurnRecord>& turns);
+// L3: each turn becomes a user message (the input, then the mechanics line on its own line when there is one) and
+// an assistant message: the narration for the newest `proseTurns` turns; for an older turn its digest when that is
+// not empty, else its narration. std::numeric_limits<int>::max() shows every narration (fold calls, and the session
+// with compact_transcript off). Throws ContractError for proseTurns < 1.
+std::vector<inference::Message> RenderTranscript(const std::vector<core::TurnRecord>& turns, int proseTurns);
 
 } // namespace morpheus::context
