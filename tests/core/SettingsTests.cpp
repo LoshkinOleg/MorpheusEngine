@@ -28,9 +28,13 @@ nlohmann::json ValidSettingsJson()
         "embedding_document_prefix": "search_document: ",
         "context_size": 16384,
         "gpu_layers": -1,
+        "narration_check": true,
+        "compact_transcript": true,
+        "prose_turns": 2,
         "budget": {
-            "resolve_max_tokens": 512, "narrate_max_tokens": 768, "resolve_thinking_tokens": 0,
-            "narrate_thinking_tokens": 0, "narrate_allowance": 512, "tail_allowance": 2048,
+            "resolve_max_tokens": 512, "narrate_max_tokens": 768, "review_max_tokens": 384,
+            "resolve_thinking_tokens": 0, "narrate_thinking_tokens": 0, "review_thinking_tokens": 0,
+            "narrate_allowance": 512, "tail_allowance": 2048,
             "engine_rules_cap": 1024, "world_cap": 4096, "summary_cap": 2048, "retrieval_cap": 768
         },
         "sampling": {
@@ -224,12 +228,71 @@ TEST_CASE("LoadSettings keeps a margin for chat-template tokens", "[settings]")
                       ContainsSubstring("11008 of 11038 context tokens (plus a 64-token chat-template margin)"));
 }
 
+TEST_CASE("LoadSettings reads the narration review and compact transcript settings", "[settings]")
+{
+    nlohmann::json json = ValidSettingsJson();
+    json["narration_check"] = false;
+    json["prose_turns"] = 3;
+    json["budget"]["review_thinking_tokens"] = MIN_THINKING_TOKENS;
+    const Settings settings = LoadSettings(WriteSettings("settings_review", json));
+    CHECK_FALSE(settings.narrationCheck);
+    CHECK(settings.compactTranscript);
+    CHECK(settings.proseTurns == 3);
+    CHECK(settings.budget.reviewMaxTokens == 384);
+    CHECK(settings.budget.reviewThinkingTokens == MIN_THINKING_TOKENS);
+
+    SECTION("each key is required")
+    {
+        for (const std::string key : {"narration_check", "compact_transcript", "prose_turns"}) {
+            nlohmann::json missing = ValidSettingsJson();
+            missing.erase(key);
+            CHECK_THROWS_WITH(LoadSettings(WriteSettings("settings_review_missing_" + key, missing)),
+                              ContainsSubstring(key));
+        }
+        for (const std::string key : {"review_max_tokens", "review_thinking_tokens"}) {
+            nlohmann::json missing = ValidSettingsJson();
+            missing["budget"].erase(key);
+            CHECK_THROWS_WITH(LoadSettings(WriteSettings("settings_review_missing_" + key, missing)),
+                              ContainsSubstring(key));
+        }
+    }
+    SECTION("prose_turns is at least 1")
+    {
+        json["prose_turns"] = 0;
+        CHECK_THROWS_AS(LoadSettings(WriteSettings("settings_prose_turns_zero", json)), DataError);
+        CHECK_THROWS_WITH(LoadSettings(WriteSettings("settings_prose_turns_zero", json)), ContainsSubstring("prose_turns"));
+    }
+    SECTION("review_thinking_tokens is 0 or at least the minimum")
+    {
+        json["budget"]["review_thinking_tokens"] = 10;
+        CHECK_THROWS_AS(LoadSettings(WriteSettings("settings_review_thinking_small", json)), DataError);
+        CHECK_THROWS_WITH(LoadSettings(WriteSettings("settings_review_thinking_small", json)),
+                          ContainsSubstring("review_thinking_tokens") && ContainsSubstring("at least 64"));
+    }
+    SECTION("review_max_tokens is positive")
+    {
+        json["budget"]["review_max_tokens"] = 0;
+        CHECK_THROWS_WITH(LoadSettings(WriteSettings("settings_review_max_zero", json)),
+                          ContainsSubstring("review_max_tokens"));
+    }
+    SECTION("the switches are true or false")
+    {
+        json["narration_check"] = "yes";
+        CHECK_THROWS_WITH(LoadSettings(WriteSettings("settings_review_switch", json)),
+                          ContainsSubstring("narration_check") && ContainsSubstring("true or false"));
+    }
+}
+
 TEST_CASE("SettingsToJson round-trips through LoadSettings", "[settings]")
 {
     nlohmann::json json = ValidSettingsJson();
     json["memory_mode"] = "assisted";
     json["budget"]["resolve_thinking_tokens"] = 128;
     json["budget"]["narrate_thinking_tokens"] = 256;
+    json["narration_check"] = false;
+    json["prose_turns"] = 5;
+    json["budget"]["review_max_tokens"] = 200;
+    json["budget"]["review_thinking_tokens"] = 64;
     const Settings original = LoadSettings(WriteSettings("settings_to_json_a", json));
     // Model paths in the JSON are absolute, so they still resolve from another folder.
     const Settings copy = LoadSettings(WriteSettings("settings_to_json_b", SettingsToJson(original)));
@@ -242,6 +305,11 @@ TEST_CASE("SettingsToJson round-trips through LoadSettings", "[settings]")
     CHECK(copy.budget.narrateThinkingTokens == original.budget.narrateThinkingTokens);
     CHECK(copy.narrateSampling.topP == original.narrateSampling.topP);
     CHECK(copy.memoryMode == MemoryMode::Assisted);
+    CHECK(copy.narrationCheck == original.narrationCheck);
+    CHECK(copy.compactTranscript == original.compactTranscript);
+    CHECK(copy.proseTurns == 5);
+    CHECK(copy.budget.reviewMaxTokens == 200);
+    CHECK(copy.budget.reviewThinkingTokens == 64);
 }
 
 TEST_CASE("LoadSettings makes model paths absolute for a relative settings path", "[settings]")
@@ -280,5 +348,11 @@ TEST_CASE("settings.example.json loads with the current loader", "[settings]")
         fs::create_directories(model.parent_path());
         morpheus::test::WriteFile(model, "x");
     }
-    CHECK_NOTHROW(LoadSettings(dir / "settings.json"));
+    const Settings settings = LoadSettings(dir / "settings.json");
+    // The example turns the narration review and the compact transcript on.
+    CHECK(settings.narrationCheck);
+    CHECK(settings.compactTranscript);
+    CHECK(settings.proseTurns == 2);
+    CHECK(settings.budget.reviewMaxTokens == 384);
+    CHECK(settings.budget.reviewThinkingTokens == 0);
 }

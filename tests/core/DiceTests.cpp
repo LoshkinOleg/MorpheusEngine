@@ -133,3 +133,28 @@ TEST_CASE("SamplingSeed is stable and separates turns, calls and attempts", "[di
     CHECK_THROWS_AS(SamplingSeed(42, -1, CallKind::Resolve, 0), ContractError);
     CHECK_THROWS_AS(SamplingSeed(42, 1, CallKind::Resolve, -1), ContractError);
 }
+
+TEST_CASE("SamplingSeed gives the review and renarrate calls their own seeds and keeps the others", "[dice]")
+{
+    // Review and Renarrate come after Summarize, so the older kinds keep the values that saved runs and replay
+    // fixtures were sampled with.
+    CHECK(static_cast<int>(CallKind::Lookup) == 0);
+    CHECK(static_cast<int>(CallKind::Resolve) == 1);
+    CHECK(static_cast<int>(CallKind::Narrate) == 2);
+    CHECK(static_cast<int>(CallKind::Summarize) == 3);
+    CHECK(static_cast<int>(CallKind::Review) == 4);
+    CHECK(static_cast<int>(CallKind::Renarrate) == 5);
+
+    std::set<std::uint32_t> seeds;
+    for (const CallKind kind : {CallKind::Lookup, CallKind::Resolve, CallKind::Narrate, CallKind::Summarize,
+                                CallKind::Review, CallKind::Renarrate}) {
+        seeds.insert(SamplingSeed(42, 3, kind, 0));
+    }
+    CHECK(seeds.size() == 6);
+
+    // A turn's second review adds 2^23 to the attempt (turn::REVIEW_RETRY_OFFSET): still a valid attempt, and a
+    // seed apart from the first review's and from a regenerated turn's first review.
+    const std::uint32_t retry = SamplingSeed(42, 3, CallKind::Review, 1 << 23);
+    CHECK(retry != SamplingSeed(42, 3, CallKind::Review, 0));
+    CHECK(retry != SamplingSeed(42, 3, CallKind::Review, 1));
+}

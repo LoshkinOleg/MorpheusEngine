@@ -33,6 +33,9 @@ struct BudgetSettings {
     // Last, so positional initializers of the fields above stay valid.
     int resolveThinkingTokens = 0; // The resolve call's thinking block; 0 turns its thinking off.
     int narrateThinkingTokens = 0; // The narrate call's thinking block; 0 turns its thinking off.
+    // The review call: its prompt is standalone and short, so neither is reserved in the resolve prompt's context.
+    int reviewMaxTokens = 0;      // The review call's answer (its JSON).
+    int reviewThinkingTokens = 0; // The review call's thinking block; 0 turns its thinking off.
 
     // Generation reserved for each call: its thinking block and its answer.
     int ResolveGenerationTokens() const
@@ -57,11 +60,17 @@ struct Settings {
     SamplingSettings resolveSampling = {};
     SamplingSettings narrateSampling = {};
     std::optional<MemoryMode> memoryMode = {}; // Overrides the world's default memory_mode when set.
+    // A review call after each narration checks it against the outcome; a contradiction is narrated once more.
+    bool narrationCheck = false;
+    // The review also writes the turn's digest, and older transcript turns show it instead of their narration.
+    bool compactTranscript = false;
+    int proseTurns = 2; // With compactTranscript: the newest turns that keep their narration in the transcript (>= 1).
 };
 
 // Loads and validates settings.json. Throws DataError naming the file and key at fault. Unknown keys are errors,
 // both model files must exist, and the budget must leave room for the transcript (L3) and SETTINGS_TEMPLATE_MARGIN
-// chat-template tokens. memory_mode is optional.
+// chat-template tokens; the review budgets are not part of that sum. memory_mode is optional; every other key is
+// required.
 Settings LoadSettings(const std::filesystem::path& file);
 
 // The settings as settings.json JSON, with model paths absolute (UTF-8). Stored in a run's meta for reference.
