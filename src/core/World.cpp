@@ -8,6 +8,7 @@
 #include <optional>
 #include <set>
 #include <sstream>
+#include <utility>
 
 #include "core/ContentHash.h"
 #include "core/Csv.h"
@@ -94,6 +95,7 @@ World LoadWorld(const std::filesystem::path& directory)
     // world.json: identity, dice, difficulties, defaults.
     const std::filesystem::path worldFile = dir / "world.json";
     const std::string worldWhere = std::format("'{}'", PathText(worldFile));
+    nlohmann::json sceneJson = nullptr; // world.json's "scene", checked once the schema and the state are loaded.
     {
         const nlohmann::json json = ParseJsonFile(worldFile, texts.at("world.json"));
         if (!json.is_object()) {
@@ -101,7 +103,8 @@ World LoadWorld(const std::filesystem::path& directory)
         }
 
         // Only the documented keys are allowed, so a typo like "memory_mod" fails loudly.
-        const std::set<std::string> allowedKeys = {"id", "title", "dice", "check_entity", "stats", "difficulties", "memory_mode"};
+        const std::set<std::string> allowedKeys = {"id",           "title",       "dice",       "check_entity",
+                                                   "stats",        "difficulties", "memory_mode", "scene"};
         for (auto it = json.begin(); it != json.end(); ++it) {
             if (!allowedKeys.contains(it.key())) {
                 throw DataError(std::format("{}: unknown key '{}'", worldWhere, it.key()));
@@ -166,6 +169,9 @@ World LoadWorld(const std::filesystem::path& directory)
                 throw DataError(std::format("{}: difficulty '{}' must be an integer in int range", worldWhere, name));
             }
             world.difficulties.emplace(name, static_cast<int>(*parsed));
+        }
+        if (json.contains("scene")) {
+            sceneJson = json.at("scene");
         }
     }
 
@@ -259,6 +265,57 @@ World LoadWorld(const std::filesystem::path& directory)
             throw DataError(std::format("{}: stat '{}' must be an int field, but it is {}", worldWhere, stat,
                                         FieldTypeName(fieldIt->second.type)));
         }
+    }
+    // scene: optional. Its paths name string fields of entities that exist from the start, and present_at is one of
+    // them, so SceneOf can read every value each turn.
+    if (!sceneJson.is_null()) {
+        if (!sceneJson.is_object()) {
+            throw DataError(worldWhere + ": 'scene' must be an object");
+        }
+        for (auto it = sceneJson.begin(); it != sceneJson.end(); ++it) {
+            if (it.key() != "paths" && it.key() != "present_at") {
+                throw DataError(std::format("{}: unknown key '{}' in 'scene'", worldWhere, it.key()));
+            }
+        }
+        if (!sceneJson.contains("paths") || !sceneJson.at("paths").is_array() || sceneJson.at("paths").empty()) {
+            throw DataError(worldWhere + ": 'scene' needs a non-empty 'paths' array");
+        }
+        SceneDecl scene;
+        for (const nlohmann::json& entry : sceneJson.at("paths")) {
+            if (!entry.is_string()) {
+                throw DataError(worldWhere + ": 'scene' 'paths' entries must be strings");
+            }
+            const std::string path = entry.get<std::string>();
+            // Exactly "entity.field": one dot, with text on both sides.
+            const std::size_t dot = path.find('.');
+            if (dot == std::string::npos || dot == 0 || dot + 1 == path.size() ||
+                path.find('.', dot + 1) != std::string::npos) {
+                throw DataError(std::format("{}: scene path '{}' must be 'entity.field'", worldWhere, path));
+            }
+            const std::string entity = path.substr(0, dot);
+            const std::string field = path.substr(dot + 1);
+            if (!world.initialState.contains(entity)) {
+                throw DataError(std::format("{}: scene path '{}': entity '{}' is not in initial_state.json", worldWhere,
+                                            path, entity));
+            }
+            const EntityTypeDef* pType =
+                world.schema.FindEntityType(world.initialState.at(entity).at("type").get<std::string>());
+            MORPHEUS_REQUIRE(pType != nullptr, "LoadWorld: scene entity type missing after ValidateState");
+            const auto fieldIt = pType->fields.find(field);
+            if (fieldIt == pType->fields.end() || fieldIt->second.type != FieldType::String) {
+                throw DataError(std::format("{}: scene path '{}': '{}' is not a string field of entity '{}'",
+                                            worldWhere, path, field, entity));
+            }
+            scene.paths.push_back(path);
+        }
+        if (!sceneJson.contains("present_at") || !sceneJson.at("present_at").is_string()) {
+            throw DataError(worldWhere + ": 'scene' needs a string 'present_at'");
+        }
+        scene.presentAt = sceneJson.at("present_at").get<std::string>();
+        if (std::find(scene.paths.begin(), scene.paths.end(), scene.presentAt) == scene.paths.end()) {
+            throw DataError(std::format("{}: scene 'present_at' '{}' is not one of 'paths'", worldWhere, scene.presentAt));
+        }
+        world.scene = std::move(scene);
     }
     return world;
 }

@@ -6,6 +6,7 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "TestPaths.h"
@@ -263,5 +264,44 @@ TEST_CASE("LoadWorld reports the file at fault", "[world]")
         morpheus::test::WriteFile(dir / "initial_state.json",
             R"({"player": {"type": "character", "fields": {"health": 99, "agility": 3, "location": "shore", "inventory": {}}}})");
         CHECK_THROWS_WITH(LoadWorld(dir), ContainsSubstring("health"));
+    }
+}
+
+TEST_CASE("LoadWorld reads an optional scene block", "[world]")
+{
+    CHECK_FALSE(LoadWorld(MiniWorldDir()).scene); // The mini world declares none.
+
+    const fs::path dir = CopyMiniWorld("world_scene");
+    morpheus::test::WriteFile(dir / "world.json", MiniWorldJsonWith("scene", R"({"paths": ["player.location"], "present_at": "player.location"})"));
+    const World world = LoadWorld(dir);
+    REQUIRE(world.scene);
+    CHECK(world.scene->paths == std::vector<std::string>{"player.location"});
+    CHECK(world.scene->presentAt == "player.location");
+}
+
+TEST_CASE("LoadWorld names world.json and the value at fault in a bad scene block", "[world]")
+{
+    // Each case: the scene block, and the part of the message that names what is wrong.
+    const std::vector<std::pair<std::string, std::string>> cases = {
+        {R"("here")", "'scene' must be an object"},
+        {R"({"paths": ["player.location"], "present_at": "player.location", "radius": 3})", "'radius'"},
+        {R"({"paths": [], "present_at": "player.location"})", "'paths'"},
+        {R"({"present_at": "player.location"})", "'paths'"},
+        {R"({"paths": [7], "present_at": "player.location"})", "'paths'"},
+        {R"({"paths": ["location"], "present_at": "location"})", "'location'"},
+        {R"({"paths": ["player.location.x"], "present_at": "player.location.x"})", "'player.location.x'"},
+        {R"({"paths": ["keeper.location"], "present_at": "keeper.location"})", "'keeper'"},
+        {R"({"paths": ["player.health"], "present_at": "player.health"})", "'player.health'"},
+        {R"({"paths": ["player.mood"], "present_at": "player.mood"})", "'player.mood'"},
+        {R"({"paths": ["player.location"], "present_at": "npc.location"})", "'npc.location'"},
+        {R"({"paths": ["player.location"]})", "'present_at'"},
+    };
+    for (std::size_t i = 0; i < cases.size(); ++i) {
+        const auto& [scene, named] = cases[i];
+        INFO("scene " << scene);
+        const fs::path dir = CopyMiniWorld("world_scene_bad_" + std::to_string(i));
+        morpheus::test::WriteFile(dir / "world.json", MiniWorldJsonWith("scene", scene));
+        CHECK_THROWS_AS(LoadWorld(dir), DataError);
+        CHECK_THROWS_WITH(LoadWorld(dir), ContainsSubstring("world.json") && ContainsSubstring(named));
     }
 }

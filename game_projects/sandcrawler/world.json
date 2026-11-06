@@ -5,5 +5,9 @@
   "check_entity": "player",
   "stats": ["grit", "wits", "presence", "agility"],
   "difficulties": { "easy": 8, "medium": 12, "hard": 16, "extreme": 20 },
-  "memory_mode": "engine"
+  "memory_mode": "engine",
+  "scene": {
+    "paths": ["player.location", "crawler.location"],
+    "present_at": "player.location"
+  }
 }

@@ -25,4 +25,9 @@ TEST_CASE("The shipped sandcrawler world loads", "[world][sandcrawler]")
     const EntityTypeDef* pNpc = world.schema.FindEntityType("npc");
     REQUIRE(pNpc != nullptr);
     CHECK(pNpc->creatable);
+
+    // Scene retrieval: where the captain and the crawler are, and who is at the captain's location.
+    REQUIRE(world.scene);
+    CHECK(world.scene->paths == std::vector<std::string>{"player.location", "crawler.location"});
+    CHECK(world.scene->presentAt == "player.location");
 }
