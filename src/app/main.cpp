@@ -167,12 +167,17 @@ int main(int argc, char** argv)
         style.ScaleAllSizes(scale);
         style.FontScaleDpi = scale;
 
-        // Segoe UI covers the punctuation narration uses (dashes, curly quotes), which ImGui's built-in font lacks.
+        // The UI font covers the punctuation narration uses (dashes, curly quotes), which ImGui's built-in font lacks:
+        // Segoe UI on Windows, DejaVu Sans elsewhere (Debian and Ubuntu install it with fonts-dejavu-core).
+#ifdef _WIN32
         const char* pWindowsDir = SDL_getenv("WINDIR");
         if (!pWindowsDir) {
             throw std::runtime_error("WINDIR is not set, so the Windows fonts folder cannot be found");
         }
         const std::filesystem::path fontFile = std::filesystem::path(pWindowsDir) / "Fonts" / "segoeui.ttf";
+#else
+        const std::filesystem::path fontFile = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
+#endif
         if (!std::filesystem::exists(fontFile)) {
             throw std::runtime_error("font file " + core::PathText(fontFile) + " does not exist");
         }
