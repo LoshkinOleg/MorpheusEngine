@@ -16,6 +16,10 @@ struct SettingsEdit {
     std::string embeddingModel = {};
     int contextSize = 0;
     int gpuLayers = 0; // -1 puts every layer on the GPU.
+    // The budget's thinking blocks, edited beside the model because they depend on it: a model without a thinking
+    // mode needs both at 0.
+    int resolveThinkingTokens = 0;
+    int narrateThinkingTokens = 0;
     core::SamplingSettings resolveSampling = {};
     core::SamplingSettings narrateSampling = {};
     std::optional<core::MemoryMode> memoryMode = {}; // nullopt: each world's own default.

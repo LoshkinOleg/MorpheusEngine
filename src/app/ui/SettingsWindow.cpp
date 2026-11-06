@@ -3,17 +3,20 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <imgui.h>
-#include <imgui_stdlib.h>
 
 #include "core/Errors.h"
+#include "core/Settings.h"
 
 namespace morpheus::app {
 
 namespace {
 
 constexpr const char* MEMORY_MODES[] = {"World default", "engine", "assisted"}; // Combo items, in this order.
+constexpr const char* THINKING_TOOLTIP = "0 turns thinking off; otherwise at least %d. A model without a "
+                                        "thinking mode needs 0.";
 
 } // namespace
 
@@ -32,12 +35,39 @@ void SettingsWindow::Draw(AppController& controller)
         if (_edit) {
             SettingsEdit& edit = *_edit;
 
+            // A model is picked from the models folder. The list is read when it opens, so files copied in while the
+            // app runs show up. A path set by hand in settings.json stays as the current value until another is picked.
+            auto modelCombo = [&](const char* label, std::string& model) {
+                if (ImGui::BeginCombo(label, model.c_str())) {
+                    if (ImGui::IsWindowAppearing()) {
+                        _models = ListModels(controller.Paths().settingsFile);
+                    }
+                    if (_models.empty()) {
+                        ImGui::TextDisabled("No .gguf files in %.*s/", static_cast<int>(MODELS_FOLDER.size()),
+                                           MODELS_FOLDER.data());
+                    }
+                    for (const std::string& option : _models) {
+                        const bool selected = option == model;
+                        if (ImGui::Selectable(option.c_str(), selected)) {
+                            model = option;
+                        }
+                        if (selected) {
+                            ImGui::SetItemDefaultFocus();
+                        }
+                    }
+                    ImGui::EndCombo();
+                }
+            };
             ImGui::SeparatorText("Models");
-            ImGui::InputText("Chat model", &edit.chatModel);
-            ImGui::InputText("Embedding model", &edit.embeddingModel);
+            modelCombo("Chat model", edit.chatModel);
+            modelCombo("Embedding model", edit.embeddingModel);
             ImGui::InputInt("Context size", &edit.contextSize, 1024, 4096);
             ImGui::InputInt("GPU layers", &edit.gpuLayers);
             ImGui::SetItemTooltip("-1 puts every layer on the GPU.");
+            ImGui::InputInt("Resolve thinking tokens", &edit.resolveThinkingTokens, 256, 1024);
+            ImGui::SetItemTooltip(THINKING_TOOLTIP, core::MIN_THINKING_TOKENS);
+            ImGui::InputInt("Narrate thinking tokens", &edit.narrateThinkingTokens, 256, 1024);
+            ImGui::SetItemTooltip(THINKING_TOOLTIP, core::MIN_THINKING_TOKENS);
 
             // One call type's sampling, under its own ID scope (the labels repeat).
             auto samplingFields = [](const char* id, core::SamplingSettings& sampling) {
@@ -66,8 +96,6 @@ void SettingsWindow::Draw(AppController& controller)
             const core::BudgetSettings& budget = controller.Engine().CurrentSettings().budget;
             const std::pair<const char*, int> rows[] = {
                 {"resolve_max_tokens", budget.resolveMaxTokens}, {"narrate_max_tokens", budget.narrateMaxTokens},
-                {"resolve_thinking_tokens", budget.resolveThinkingTokens},
-                {"narrate_thinking_tokens", budget.narrateThinkingTokens},
                 {"narrate_allowance", budget.narrateAllowance},  {"tail_allowance", budget.tailAllowance},
                 {"engine_rules_cap", budget.engineRulesCap},     {"world_cap", budget.worldCap},
                 {"summary_cap", budget.summaryCap},              {"retrieval_cap", budget.retrievalCap}};

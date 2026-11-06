@@ -24,6 +24,8 @@ TEST_CASE("ReadSettingsEdit reads the edited values as the file writes them", "[
     CHECK(edit.embeddingModel == file.at("embedding_model").get<std::string>());
     CHECK(edit.contextSize == file.at("context_size").get<int>());
     CHECK(edit.gpuLayers == file.at("gpu_layers").get<int>());
+    CHECK(edit.resolveThinkingTokens == file.at("budget").at("resolve_thinking_tokens").get<int>());
+    CHECK(edit.narrateThinkingTokens == file.at("budget").at("narrate_thinking_tokens").get<int>());
     CHECK(edit.resolveSampling.temperature == file.at("sampling").at("resolve").at("temperature").get<double>());
     CHECK(edit.narrateSampling.topK == file.at("sampling").at("narrate").at("top_k").get<int>());
     CHECK(edit.narrateSampling.topP == file.at("sampling").at("narrate").at("top_p").get<double>());
@@ -38,9 +40,13 @@ TEST_CASE("SaveSettingsEdit writes the edit and keeps everything else", "[settin
     app::SettingsEdit edit = app::ReadSettingsEdit(file);
     edit.narrateSampling.temperature = 1.1;
     edit.memoryMode = core::MemoryMode::Assisted;
+    edit.resolveThinkingTokens = 0; // A model without a thinking mode.
+    edit.narrateThinkingTokens = 0;
 
     const core::Settings saved = app::SaveSettingsEdit(file, edit);
     CHECK(saved.narrateSampling.temperature == 1.1);
+    CHECK(saved.budget.resolveThinkingTokens == 0);
+    CHECK(saved.budget.narrateThinkingTokens == 0);
     CHECK(saved.memoryMode.value_or(core::MemoryMode::Engine) == core::MemoryMode::Assisted);
 
     const core::Settings reloaded = core::LoadSettings(file);

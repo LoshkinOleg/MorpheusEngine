@@ -91,6 +91,7 @@ class SettingsWindow {
 private:
     std::optional<SettingsEdit> _edit = {}; // Read from the file on the first draw and after Revert.
     std::string _problem = {};              // Why the file could not be read, or why Apply refused the edit.
+    std::vector<std::string> _models = {};  // The models folder's files, listed again whenever a model list opens.
 
 public:
     void Draw(AppController& controller);

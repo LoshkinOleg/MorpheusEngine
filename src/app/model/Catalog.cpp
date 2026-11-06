@@ -62,6 +62,23 @@ std::vector<RunEntry> ListRuns(const std::filesystem::path& savesDir, std::strin
     return runs;
 }
 
+std::vector<std::string> ListModels(const std::filesystem::path& settingsFile)
+{
+    std::vector<std::string> models;
+    const std::filesystem::path folder = settingsFile.parent_path() / MODELS_FOLDER;
+    if (!std::filesystem::is_directory(folder)) {
+        return models; // No models on this machine yet.
+    }
+    for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(folder)) {
+        // Written the way settings.json names a model: relative to its folder, with a forward slash.
+        if (entry.is_regular_file() && entry.path().extension() == ".gguf") {
+            models.push_back(std::string(MODELS_FOLDER) + "/" + core::PathText(entry.path().filename()));
+        }
+    }
+    std::sort(models.begin(), models.end());
+    return models;
+}
+
 std::filesystem::path RunFile(const std::filesystem::path& savesDir, std::string_view worldId, std::string_view name)
 {
     return savesDir / std::string(worldId) / (std::string(name) + ".db");

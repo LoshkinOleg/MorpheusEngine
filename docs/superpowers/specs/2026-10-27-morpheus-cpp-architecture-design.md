@@ -157,7 +157,7 @@ World files are read with CRLF normalized to LF. The world content hash covers e
 | Context | Last prompt split by layer: tokens per layer, reused vs. evaluated, raw/formatted toggle |
 | Turn log | Resolve JSON, rolls, applied and rejected changes, timings per turn |
 | Memory | Summaries, notes, and last retrieval hits with scores |
-| Settings | Model paths, context size, sampling, `memory_mode` |
+| Settings | Models (picked from `models/`), context size, thinking budgets, sampling, `memory_mode` |
 
 The windows dock over one SDL3 window (Dear ImGui's docking branch, SDL_Renderer backend). The UI thread draws from `app::AppController`, which applies the worker's events once per frame. The backend loads on a background thread, so the window opens at once. Settings apply by restarting the worker: the loaded models are kept unless the model paths, embedding prefixes, context size or GPU layers changed, and the open run reopens.
 

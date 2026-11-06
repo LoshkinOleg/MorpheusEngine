@@ -46,6 +46,8 @@ SettingsEdit ReadSettingsEdit(const std::filesystem::path& file)
         edit.embeddingModel = json.at("embedding_model").get<std::string>();
         edit.contextSize = json.at("context_size").get<int>();
         edit.gpuLayers = json.at("gpu_layers").get<int>();
+        edit.resolveThinkingTokens = json.at("budget").at("resolve_thinking_tokens").get<int>();
+        edit.narrateThinkingTokens = json.at("budget").at("narrate_thinking_tokens").get<int>();
         edit.resolveSampling = sampling(json.at("sampling").at("resolve"));
         edit.narrateSampling = sampling(json.at("sampling").at("narrate"));
         if (json.contains("memory_mode")) {
@@ -75,6 +77,8 @@ core::Settings SaveSettingsEdit(const std::filesystem::path& file, const Setting
         json["embedding_model"] = edit.embeddingModel;
         json["context_size"] = edit.contextSize;
         json["gpu_layers"] = edit.gpuLayers;
+        json["budget"]["resolve_thinking_tokens"] = edit.resolveThinkingTokens;
+        json["budget"]["narrate_thinking_tokens"] = edit.narrateThinkingTokens;
         json["sampling"]["resolve"] = samplingJson(edit.resolveSampling);
         json["sampling"]["narrate"] = samplingJson(edit.narrateSampling);
         if (edit.memoryMode) {

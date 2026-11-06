@@ -11,7 +11,8 @@
 
 namespace morpheus::app {
 
-constexpr std::size_t RUN_NAME_MAX_CHARS = 64; // A run's name is also its file name.
+constexpr std::size_t RUN_NAME_MAX_CHARS = 64;      // A run's name is also its file name.
+constexpr std::string_view MODELS_FOLDER = "models"; // Beside settings.json: the GGUF files to pick from.
 
 // A world folder under game_projects/.
 struct WorldEntry {
@@ -41,6 +42,10 @@ std::vector<WorldEntry> ListWorlds(const std::filesystem::path& projectsDir);
 
 // The runs of world `worldId` (savesDir/worldId/*.db), most recently played first. Empty when there are none.
 std::vector<RunEntry> ListRuns(const std::filesystem::path& savesDir, std::string_view worldId);
+
+// The .gguf files in the models folder beside `settingsFile`, as settings.json names them ("models/<file>"), sorted.
+// Empty when the folder does not exist.
+std::vector<std::string> ListModels(const std::filesystem::path& settingsFile);
 
 // The file of run `name` of world `worldId`: savesDir/worldId/name.db.
 std::filesystem::path RunFile(const std::filesystem::path& savesDir, std::string_view worldId, std::string_view name);

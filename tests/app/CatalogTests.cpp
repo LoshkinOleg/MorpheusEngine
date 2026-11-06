@@ -84,6 +84,22 @@ TEST_CASE("RunNameProblem accepts plain new names only", "[catalog]")
     CHECK_THAT(app::RunNameProblem(saves, "mini", "taken"), ContainsSubstring("already exists"));
 }
 
+TEST_CASE("ListModels lists the model files beside the settings as settings.json names them", "[catalog]")
+{
+    const std::filesystem::path dir = test::FreshTempDir("catalog_models");
+    const std::filesystem::path settingsFile = dir / "settings.json";
+    CHECK(app::ListModels(settingsFile).empty()); // No models folder yet: nothing to pick.
+
+    std::filesystem::create_directories(dir / "models");
+    test::WriteFile(dir / "models" / "small.gguf", "");
+    test::WriteFile(dir / "models" / "Large.gguf", "");
+    test::WriteFile(dir / "models" / "readme.txt", "not a model");
+    std::filesystem::create_directories(dir / "models" / "folder.gguf"); // A folder, not a model file.
+
+    // Relative to the settings file's folder with forward slashes, as settings.example.json writes them; by name.
+    CHECK(app::ListModels(settingsFile) == std::vector<std::string>{"models/Large.gguf", "models/small.gguf"});
+}
+
 TEST_CASE("DefaultRunName stamps the UTC time to the second", "[catalog]")
 {
     const auto when = std::chrono::sys_days(std::chrono::year(2026) / 10 / 28) + std::chrono::hours(14) +
