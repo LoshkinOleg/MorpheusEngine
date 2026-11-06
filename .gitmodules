@@ -1,0 +1,21 @@
+[submodule "docs/references/NarrativeEngine-P"]
+	path = docs/references/NarrativeEngine-P
+	url = https://github.com/Sagesheep/NarrativeEngine-P.git
+[submodule "docs/references/ai-adventure"]
+	path = docs/references/ai-adventure
+	url = https://github.com/CaoRuiming/ai-adventure.git
+[submodule "docs/references/freytag-forge"]
+	path = docs/references/freytag-forge
+	url = https://github.com/bcorfman/freytag-forge.git
+[submodule "docs/references/Corvus-Story-Core"]
+	path = docs/references/Corvus-Story-Core
+	url = https://github.com/JustLateNightAI/Corvus-Story-Core.git
+[submodule "docs/references/project-lunar"]
+	path = docs/references/project-lunar
+	url = https://github.com/horizonfps/project-lunar.git
+[submodule "docs/references/coderain"]
+	path = docs/references/coderain
+	url = https://github.com/Zwimy/coderain.git
+[submodule "docs/references/Sonder_Engine"]
+	path = docs/references/Sonder_Engine
+	url = https://github.com/N0819/Sonder_Engine.git
