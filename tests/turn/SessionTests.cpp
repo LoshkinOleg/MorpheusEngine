@@ -13,11 +13,14 @@
 #include <nlohmann/json.hpp>
 
 #include "TestPaths.h"
+#include "core/Dice.h"
 #include "core/Errors.h"
 #include "core/Settings.h"
 #include "core/World.h"
 #include "fakes/ScriptedBackend.h"
 #include "turn/EngineText.h"
+#include "turn/ResolveGrammar.h"
+#include "turn/Review.h"
 #include "turn/Session.h"
 
 using namespace morpheus;
@@ -94,6 +97,50 @@ std::string Tail(const inference::Prompt& prompt)
 {
     return prompt.messages.back().content;
 }
+
+// A review that finds nothing wrong, with the turn's digest.
+const std::string CONSISTENT = R"({"consistent":true,"problems":[],"digest":"The player walked to the lighthouse."})";
+
+// TestSettings with the review call on: the narration check and the digest as given, and the review's budget from
+// settings.example.json.
+core::Settings ReviewSettings(bool check, bool digest)
+{
+    core::Settings settings = TestSettings();
+    settings.narrationCheck = check;
+    settings.compactTranscript = digest;
+    settings.budget.reviewMaxTokens = 384;
+    return settings;
+}
+
+// A scripted model for review tests. Resolve calls get `resolve`; review calls (their system message is REVIEW_RULES)
+// get `reviews` in order; summary calls get "Summary."; narrate calls get `narrations` in order. Running out of
+// replies is a test bug. The script must outlive the backends that call it.
+struct ReviewScript {
+    std::string resolve = {};
+    std::vector<std::string> narrations = {};
+    std::vector<std::string> reviews = {};
+    std::size_t narrated = 0;
+    std::size_t reviewed = 0;
+
+    test::ScriptedBackend::Responder Responder()
+    {
+        return [this](const inference::Prompt& prompt, const inference::GenerationSpec& spec) -> std::string {
+            if (spec.grammar.find("intent") != std::string::npos) {
+                return resolve;
+            }
+            if (prompt.messages.front().content == turn::REVIEW_RULES) {
+                MORPHEUS_REQUIRE(reviewed < reviews.size(), "ReviewScript: no review reply left");
+                return reviews[reviewed++];
+            }
+            const std::string& last = prompt.messages.back().content;
+            if (last == turn::SUMMARIZE_INSTRUCTION || last == turn::CONDENSE_INSTRUCTION) {
+                return "Summary.";
+            }
+            MORPHEUS_REQUIRE(narrated < narrations.size(), "ReviewScript: no narration left");
+            return narrations[narrated++];
+        };
+    }
+};
 
 } // namespace
 
@@ -792,4 +839,206 @@ TEST_CASE("Engine mode makes no lookup call and keeps no notes", "[session]")
     REQUIRE(session.RunTurn("I listen.", {}, {}));
     CHECK(backend.Calls().size() == 2);
     CHECK_THAT(backend.Calls().at(0).prompt.messages.front().content, !ContainsSubstring("# Memory"));
+}
+
+TEST_CASE("A consistent review commits the narration and its digest", "[session][review]")
+{
+    ReviewScript script{MOVE, {"You walk to the lighthouse."}, {CONSISTENT}};
+    test::ScriptedBackend backend(16384, script.Responder());
+    turn::Session session = turn::Session::Start(MiniWorld(), ReviewSettings(true, true),
+                                                 NewRunFile("session_review_consistent"), 42, backend);
+    int restarts = 0;
+    turn::TurnCallbacks callbacks;
+    callbacks.onNarrationRestarted = [&](const std::vector<std::string>&) { ++restarts; };
+    const std::optional<core::TurnRecord> record = session.RunTurn("I walk to the lighthouse.", callbacks, {});
+    REQUIRE(record);
+    CHECK(record->narration == "You walk to the lighthouse.");
+    CHECK(record->digest == "The player walked to the lighthouse.");
+    CHECK(session.History().at(0).digest == "The player walked to the lighthouse."); // Stored with the turn.
+    CHECK(restarts == 0);
+
+    // The review is a standalone call: the rules, then the input, the outcome and the narration.
+    const auto& calls = backend.Calls(); // resolve, narrate, review
+    REQUIRE(calls.size() == 3);
+    const inference::Prompt& review = calls[2].prompt;
+    REQUIRE(review.messages.size() == 2);
+    CHECK(review.messages[0].content == std::string(turn::REVIEW_RULES));
+    CHECK_THAT(review.messages[1].content, ContainsSubstring("# Player\nI walk to the lighthouse.\n"));
+    CHECK_THAT(review.messages[1].content, ContainsSubstring("Applied: player.location = \"lighthouse\""));
+    CHECK_THAT(review.messages[1].content, ContainsSubstring("# Narration\nYou walk to the lighthouse.\n"));
+    CHECK(calls[2].spec.grammar == turn::BuildReviewGrammar(true, true));
+    CHECK(calls[2].spec.maxTokens == 384);
+    CHECK(calls[2].spec.thinkingMaxTokens == 0);
+    CHECK(calls[2].spec.sampling.seed == core::SamplingSeed(42, 1, core::CallKind::Review, 0));
+
+    const nlohmann::json& reviews = record->timings.at("review");
+    REQUIRE(reviews.size() == 1);
+    CHECK(reviews[0].at("consistent") == true);
+    CHECK(reviews[0].at("digest") == "The player walked to the lighthouse.");
+    CHECK(reviews[0].contains("prompt_tokens"));
+    CHECK_FALSE(reviews[0].contains("problems"));
+    CHECK_FALSE(record->timings.contains("renarrate"));
+}
+
+TEST_CASE("A narration that contradicts the outcome is narrated once more and replaced", "[session][review]")
+{
+    const std::string contradicts =
+        R"({"consistent":false,"problems":["The climb failed, but the narration has the player reach the top."],)"
+        R"("digest":"The player reached the top."})";
+    const std::string fixed = R"({"consistent":true,"problems":[],"digest":"The player slipped on the cliff."})";
+    ReviewScript script{CLIMB, {"You reach the top with ease.", "You slip on the wet rock."}, {contradicts, fixed}};
+    test::ScriptedBackend backend(16384, script.Responder());
+    turn::Session session = turn::Session::Start(MiniWorld(), ReviewSettings(true, true),
+                                                 NewRunFile("session_renarrate"), 42, backend);
+    std::vector<std::vector<std::string>> restarts;
+    std::string streamed;
+    turn::TurnCallbacks callbacks;
+    callbacks.onNarrationRestarted = [&](const std::vector<std::string>& problems) { restarts.push_back(problems); };
+    callbacks.onNarrationToken = [&](std::string_view piece) { streamed += piece; };
+    const std::optional<core::TurnRecord> record = session.RunTurn("I climb the cliff.", callbacks, {});
+    REQUIRE(record);
+
+    // The second narration and the second review's digest are committed.
+    CHECK(record->narration == "You slip on the wet rock.");
+    CHECK(record->digest == "The player slipped on the cliff.");
+    REQUIRE(restarts.size() == 1);
+    CHECK(restarts[0] == std::vector<std::string>{"The climb failed, but the narration has the player reach the top."});
+    CHECK(streamed == "You reach the top with ease.You slip on the wet rock."); // Both stream; the UI clears on the restart.
+
+    // The renarrate is the narrate prompt with the correction before the instruction, with its own seed.
+    const auto& calls = backend.Calls(); // resolve, narrate, review, renarrate, review
+    REQUIRE(calls.size() == 5);
+    const inference::Prompt& first = calls[1].prompt;
+    const inference::Prompt& again = calls[3].prompt;
+    REQUIRE(again.messages.size() == first.messages.size());
+    for (std::size_t i = 0; i + 1 < first.messages.size(); ++i) {
+        CHECK(again.messages[i].content == first.messages[i].content);
+    }
+    CHECK_THAT(first.messages.back().content, !ContainsSubstring(std::string(turn::RENARRATE_CORRECTION)));
+    CHECK_THAT(again.messages.back().content,
+               ContainsSubstring(std::string(turn::RENARRATE_CORRECTION) +
+                                 "\n- The climb failed, but the narration has the player reach the top.\n\n" +
+                                 std::string(turn::NARRATE_INSTRUCTION)));
+    CHECK(calls[3].spec.grammar.empty());
+    CHECK(calls[3].spec.sampling.seed == core::SamplingSeed(42, 1, core::CallKind::Renarrate, 0));
+    // The second review reads the second narration, seeded apart from any first review.
+    CHECK_THAT(calls[4].prompt.messages[1].content, ContainsSubstring("# Narration\nYou slip on the wet rock.\n"));
+    CHECK(calls[4].spec.sampling.seed ==
+          core::SamplingSeed(42, 1, core::CallKind::Review, turn::REVIEW_RETRY_OFFSET));
+
+    // Both verdicts, the renarrate's call and the replaced text are in the telemetry.
+    const nlohmann::json& reviews = record->timings.at("review");
+    REQUIRE(reviews.size() == 2);
+    CHECK(reviews[0].at("consistent") == false);
+    CHECK(reviews[0].at("problems") ==
+          nlohmann::json::array({"The climb failed, but the narration has the player reach the top."}));
+    CHECK(reviews[1].at("consistent") == true);
+    CHECK(record->timings.at("renarrate").at("replaced") == "You reach the top with ease.");
+    CHECK(record->timings.at("renarrate").contains("generated"));
+    CHECK(record->timings.at("narrate").contains("generated")); // The first narration's call stays.
+}
+
+TEST_CASE("A renarrated turn is committed whatever its second review says", "[session][review]")
+{
+    const std::string first = R"({"consistent":false,"problems":["The player flies."],"digest":"The player flew."})";
+    const std::string second =
+        R"({"consistent":false,"problems":["The player still flies."],"digest":"The player flew again."})";
+    ReviewScript script{MOVE, {"You fly to the lighthouse.", "You float to the lighthouse."}, {first, second}};
+    test::ScriptedBackend backend(16384, script.Responder());
+    turn::Session session = turn::Session::Start(MiniWorld(), ReviewSettings(true, true),
+                                                 NewRunFile("session_renarrate_twice"), 42, backend);
+    int restarts = 0;
+    turn::TurnCallbacks callbacks;
+    callbacks.onNarrationRestarted = [&](const std::vector<std::string>&) { ++restarts; };
+    const std::optional<core::TurnRecord> record = session.RunTurn("I walk to the lighthouse.", callbacks, {});
+    REQUIRE(record);
+    CHECK(record->narration == "You float to the lighthouse.");
+    CHECK(record->digest == "The player flew again.");
+    CHECK(restarts == 1);
+    CHECK(backend.Calls().size() == 5); // No second renarrate.
+    CHECK(record->timings.at("review").at(1).at("consistent") == false);
+}
+
+TEST_CASE("An unreadable review commits the narration with no digest and says why", "[session][review]")
+{
+    ReviewScript script{MOVE, {"You walk to the lighthouse."}, {R"({"consistent":tr)"}}; // Cut off.
+    test::ScriptedBackend backend(16384, script.Responder());
+    turn::Session session = turn::Session::Start(MiniWorld(), ReviewSettings(true, true),
+                                                 NewRunFile("session_review_unreadable"), 42, backend);
+    const std::optional<core::TurnRecord> record = session.RunTurn("I walk to the lighthouse.", {}, {});
+    REQUIRE(record);
+    CHECK(record->narration == "You walk to the lighthouse.");
+    CHECK(record->digest.empty());
+    CHECK(backend.Calls().size() == 3); // As if the review had found nothing: no renarrate.
+    const nlohmann::json& review = record->timings.at("review").at(0);
+    CHECK_THAT(review.at("error").get<std::string>(), ContainsSubstring("not complete JSON"));
+    CHECK_FALSE(review.contains("consistent"));
+    CHECK_FALSE(record->timings.contains("renarrate"));
+}
+
+TEST_CASE("With only the compact transcript on, the review writes the digest and never renarrates", "[session][review]")
+{
+    // The output says the narration contradicts the outcome, but the check is off: only the digest is read.
+    ReviewScript script{MOVE, {"You fly to the lighthouse."},
+                        {R"({"consistent":false,"problems":["The player flies."],"digest":"The player went to the lighthouse."})"}};
+    test::ScriptedBackend backend(16384, script.Responder());
+    turn::Session session = turn::Session::Start(MiniWorld(), ReviewSettings(false, true),
+                                                 NewRunFile("session_review_digest_only"), 42, backend);
+    const std::optional<core::TurnRecord> record = session.RunTurn("I walk to the lighthouse.", {}, {});
+    REQUIRE(record);
+    const auto& calls = backend.Calls(); // resolve, narrate, review
+    REQUIRE(calls.size() == 3);
+    CHECK(calls[2].spec.grammar == turn::BuildReviewGrammar(false, true));
+    CHECK(record->narration == "You fly to the lighthouse.");
+    CHECK(record->digest == "The player went to the lighthouse.");
+    CHECK_FALSE(record->timings.at("review").at(0).contains("consistent"));
+    CHECK_FALSE(record->timings.contains("renarrate"));
+}
+
+TEST_CASE("With both switches off no review call is made", "[session][review]")
+{
+    test::ScriptedBackend backend(16384, Responder(MOVE, "You walk to the lighthouse."));
+    turn::Session session = turn::Session::Start(MiniWorld(), ReviewSettings(false, false),
+                                                 NewRunFile("session_review_off"), 42, backend);
+    const std::optional<core::TurnRecord> record = session.RunTurn("I walk to the lighthouse.", {}, {});
+    REQUIRE(record);
+    CHECK(backend.Calls().size() == 2); // resolve, narrate
+    CHECK_FALSE(record->timings.contains("review"));
+    CHECK(record->digest.empty());
+}
+
+TEST_CASE("A cancel during the review or the renarrate commits nothing", "[session][review]")
+{
+    const std::string contradicts = R"({"consistent":false,"problems":["The player flies."],"digest":"The player flew."})";
+    ReviewScript script{MOVE, {"You fly to the lighthouse.", "You walk to the lighthouse."}, {contradicts, CONSISTENT}};
+    const test::ScriptedBackend::Responder scripted = script.Responder();
+    std::stop_source stop;
+    turn::TurnCallbacks callbacks;
+
+    SECTION("during the review")
+    {
+        // The stop arrives as the review call starts, so its reply never streams.
+        test::ScriptedBackend backend(16384, [&](const inference::Prompt& prompt, const inference::GenerationSpec& spec) {
+            if (prompt.messages.front().content == turn::REVIEW_RULES) {
+                stop.request_stop();
+            }
+            return scripted(prompt, spec);
+        });
+        turn::Session session = turn::Session::Start(MiniWorld(), ReviewSettings(true, true),
+                                                     NewRunFile("session_review_cancel"), 42, backend);
+        CHECK_FALSE(session.RunTurn("I walk to the lighthouse.", callbacks, stop.get_token()));
+        CHECK(session.History().empty());
+        CHECK(session.State() == MiniWorld().initialState);
+    }
+    SECTION("during the renarrate")
+    {
+        test::ScriptedBackend backend(16384, scripted);
+        turn::Session session = turn::Session::Start(MiniWorld(), ReviewSettings(true, true),
+                                                     NewRunFile("session_renarrate_cancel"), 42, backend);
+        callbacks.onNarrationRestarted = [&](const std::vector<std::string>&) { stop.request_stop(); };
+        CHECK_FALSE(session.RunTurn("I walk to the lighthouse.", callbacks, stop.get_token()));
+        CHECK(backend.Calls().size() == 4); // resolve, narrate, review, and the cancelled renarrate.
+        CHECK(session.History().empty());
+        CHECK(session.State() == MiniWorld().initialState);
+    }
 }

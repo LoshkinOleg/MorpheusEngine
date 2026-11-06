@@ -13,6 +13,7 @@
 #include "turn/Folding.h"
 #include "turn/Resolve.h"
 #include "turn/ResolveGrammar.h"
+#include "turn/Review.h"
 
 namespace morpheus::turn {
 
@@ -259,6 +260,9 @@ const context::Assembly& Session::LastAssembly() const
 std::optional<core::TurnRecord> Session::PlayTurn(const std::string& input, int attempt, const TurnCallbacks& callbacks,
                                                   std::stop_token stop)
 {
+    // A second review seeds with attempt + REVIEW_RETRY_OFFSET, which must stay within SamplingSeed's range.
+    MORPHEUS_REQUIRE(attempt >= 0 && attempt < REVIEW_RETRY_OFFSET,
+                     "PlayTurn: attempt must be in 0..REVIEW_RETRY_OFFSET-1");
     const int turn = _store.LatestTurn() + 1;
     const nlohmann::json state = _store.StateAt(turn - 1);
     const std::uint64_t seed = _store.Meta().rngSeed;
@@ -370,30 +374,102 @@ std::optional<core::TurnRecord> Session::PlayTurn(const std::string& input, int 
         callbacks.onResolved(record);
     }
 
-    // 4. Narrate: the resolve prompt plus the resolve output and the resolution record, so all of it stays cached.
-    inference::Prompt narratePrompt = assembly->prompt;
-    context::ExtendForNarrate(narratePrompt, resolved.text,
-                              RenderNarrateMessage(proposal, resolution, {}, _settings.budget.narrateAllowance,
-                                                   *_pBackend));
+    // 4. Narrate: the resolve prompt plus the resolve output and the narrate message, so all of the resolve prompt
+    // stays cached. `problems` is empty for the first narration; a renarrate passes the review's, which the narrate
+    // message shows before its instruction. Both stream through onNarrationToken.
     inference::GenerationSpec narrateSpec;
     narrateSpec.maxTokens = _settings.budget.narrateMaxTokens;
     narrateSpec.thinkingMaxTokens = _settings.budget.narrateThinkingTokens;
-    narrateSpec.sampling =
-        inference::SamplingFrom(_settings.narrateSampling, core::SamplingSeed(seed, turn, core::CallKind::Narrate, attempt));
-    const inference::Completion narrated =
-        _pBackend->Complete(narratePrompt, narrateSpec, callbacks.onNarrationToken, stop);
+    auto narrate = [&](const std::vector<std::string>& problems, core::CallKind kind) {
+        inference::Prompt narratePrompt = assembly->prompt;
+        context::ExtendForNarrate(narratePrompt, resolved.text,
+                                  RenderNarrateMessage(proposal, resolution, problems,
+                                                       _settings.budget.narrateAllowance, *_pBackend));
+        inference::GenerationSpec spec = narrateSpec;
+        spec.sampling =
+            inference::SamplingFrom(_settings.narrateSampling, core::SamplingSeed(seed, turn, kind, attempt));
+        return _pBackend->Complete(narratePrompt, spec, callbacks.onNarrationToken, stop);
+    };
+    const inference::Completion narrated = narrate({}, core::CallKind::Narrate);
     if (narrated.cancelled) {
         return std::nullopt;
     }
     record.narration = core::Trim(narrated.text);
+    telemetry["narrate"] = Telemetry(narrated, narrateSpec);
 
-    // 5. Commit.
+    // 5. Review, when the narration check or the compact transcript is on: one standalone call reads the outcome
+    // and the narration, and says whether they agree (the check), writes the turn's digest (the compact transcript),
+    // or both.
+    const bool check = _settings.narrationCheck;
+    const bool digest = _settings.compactTranscript;
+    if (check || digest) {
+        inference::GenerationSpec reviewSpec;
+        reviewSpec.grammar = BuildReviewGrammar(check, digest);
+        reviewSpec.maxTokens = _settings.budget.reviewMaxTokens;
+        reviewSpec.thinkingMaxTokens = _settings.budget.reviewThinkingTokens;
+        telemetry["review"] = nlohmann::json::array();
+        // Reviews `narration` with the sampling seed of `seedAttempt` and adds the call to timings.review; nullopt
+        // when cancelled. Unreadable output is a model mistake: its Review holds only the error, so it finds nothing.
+        auto review = [&](const std::string& narration, int seedAttempt) -> std::optional<Review> {
+            inference::GenerationSpec spec = reviewSpec;
+            spec.sampling = inference::SamplingFrom(
+                _settings.resolveSampling, core::SamplingSeed(seed, turn, core::CallKind::Review, seedAttempt));
+            const inference::Completion reviewed =
+                _pBackend->Complete(ReviewPrompt(input, proposal, resolution, narration), spec, {}, stop);
+            if (reviewed.cancelled) {
+                return std::nullopt;
+            }
+            Review result = ParseReviewOutput(reviewed.text, check, digest);
+            nlohmann::json entry = Telemetry(reviewed, spec);
+            if (result.consistent) {
+                entry["consistent"] = *result.consistent;
+            }
+            if (!result.problems.empty()) {
+                entry["problems"] = result.problems;
+            }
+            if (!result.digest.empty()) {
+                entry["digest"] = result.digest;
+            }
+            if (!result.error.empty()) {
+                entry["error"] = result.error;
+            }
+            telemetry["review"].push_back(std::move(entry));
+            return result;
+        };
+
+        std::optional<Review> verdict = review(record.narration, attempt);
+        if (!verdict) {
+            return std::nullopt;
+        }
+        if (verdict->consistent == false) {
+            // 6. Renarrate, once: the narration contradicts the outcome. The player sees it start over, the new
+            // narration streams, and its own review decides the digest. Whatever that review says, the second
+            // narration is committed: there is no second renarrate.
+            if (callbacks.onNarrationRestarted) {
+                callbacks.onNarrationRestarted(verdict->problems);
+            }
+            const inference::Completion renarrated = narrate(verdict->problems, core::CallKind::Renarrate);
+            if (renarrated.cancelled) {
+                return std::nullopt;
+            }
+            telemetry["renarrate"] = Telemetry(renarrated, narrateSpec);
+            telemetry["renarrate"]["replaced"] = record.narration;
+            record.narration = core::Trim(renarrated.text);
+            // The offset keeps this seed apart from a regenerated turn's first review (attempt + 1).
+            verdict = review(record.narration, attempt + REVIEW_RETRY_OFFSET);
+            if (!verdict) {
+                return std::nullopt;
+            }
+        }
+        record.digest = verdict->digest;
+    }
+
+    // 7. Commit.
     telemetry["resolve"] = Telemetry(resolved, resolveSpec);
     if (!proposal.error.empty()) {
         // Why nothing was proposed: the record's resolve output alone does not say so for JSON of the wrong shape.
         telemetry["resolve"]["error"] = proposal.error;
     }
-    telemetry["narrate"] = Telemetry(narrated, narrateSpec);
     telemetry["retrieval"] = nlohmann::json::array(); // The hits that made it into the prompt.
     for (const RetrievalHit& hit : hits) {
         telemetry["retrieval"].push_back({{"source", kindText(hit.kind)}, {"ref", hit.refId}, {"score", hit.score}});

@@ -36,11 +36,19 @@ constexpr std::size_t LOOKUP_MAX_HITS = 2;    // Hits each assisted-mode lookup 
 constexpr int LOOKUP_MAX_TOKENS = 192;        // Generation cap for the lookup call.
 constexpr int FOLD_SUMMARY_DIVISOR = 4;       // A fold summary gets summary_cap / 4 tokens: several fit before a condense.
 constexpr int CONDENSE_SUMMARY_DIVISOR = 2;   // A condensed summary gets summary_cap / 2 tokens, so it fits its cap.
+// Added to a turn's attempt for the seed of its second review, so that seed never equals a regenerated turn's first
+// review seed (attempt + 1). PlayTurn requires attempt < REVIEW_RETRY_OFFSET, which keeps the sum within
+// SamplingSeed's limit of 2^24.
+constexpr int REVIEW_RETRY_OFFSET = 1 << 23;
 
 struct TurnCallbacks {
     // After apply, before narrate: the record has its checks and applied and rejected changes, no narration yet.
     std::function<void(const core::TurnRecord&)> onResolved = {};
+    // Every narration's pieces as they are written, the renarrate's included.
     inference::TokenCallback onNarrationToken = {};
+    // The review found that the narration contradicts the outcome (`problems` are its reasons): the narration starts
+    // over, and the new one streams through onNarrationToken. At most once per turn.
+    std::function<void(const std::vector<std::string>& problems)> onNarrationRestarted = {};
 };
 
 // One open run: its world, settings, database and memory index, and the turn loop (architecture spec, "Turn flow").
@@ -67,7 +75,8 @@ public:
     static Session Load(core::World world, core::Settings settings, const std::filesystem::path& file,
                         inference::LlmBackend& backend);
 
-    // Plays one turn: retrieve, (assisted mode: look up), resolve, apply, narrate, commit. Control characters other
+    // Plays one turn: retrieve, (assisted mode: look up), resolve, apply, narrate, (narration_check or
+    // compact_transcript: review, and at most one renarrate with its own review), commit. Control characters other
     // than newline and tab are stripped from `input` and it is trimmed. Returns the committed record, or nullopt
     // when `stop` cancelled the turn. Throws TurnError for an empty input or one that does not fit, DataError when
     // summary_cap is too small for even a condensed summary, and InferenceError from the backend. A cancelled or
