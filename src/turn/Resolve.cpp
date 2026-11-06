@@ -196,11 +196,6 @@ std::string RenderNarrateMessage(const ResolveProposal& proposal, const Resoluti
         }
         return text + std::string(NARRATE_INSTRUCTION);
     };
-    if (!proposal.error.empty()) {
-        // Nothing was resolved, so the record holds nothing to shed.
-        return RenderOutcome(proposal, resolution, {}) + task(true);
-    }
-
     // Render, then shed detail one step at a time until the message fits the narrate allowance: the rejected
     // changes, applied changes from the end, the stakes, the intent's tail, then a renarrate's problems. Each step
     // runs only while over.

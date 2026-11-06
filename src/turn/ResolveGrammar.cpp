@@ -228,7 +228,7 @@ std::string BuildReviewGrammar(bool check, bool digest)
     // A fixed root line, whatever is asked for, so the call is recognised by it (CallKindOf).
     std::string grammar = "root ::= review\nreview ::= " + review + "\n";
     if (check) {
-        grammar += std::format(R"(problem-text ::= "\"" char{{0,{}}} "\"")", REVIEW_PROBLEM_MAX_CHARS) + "\n";
+        grammar += std::format(R"(problem-text ::= "\"" char{{1,{}}} "\"")", REVIEW_PROBLEM_MAX_CHARS) + "\n";
     }
     if (digest) {
         grammar += std::format(R"(digest-text ::= "\"" char{{0,{}}} "\"")", DIGEST_MAX_CHARS) + "\n";

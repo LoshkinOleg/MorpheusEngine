@@ -84,8 +84,8 @@ std::string RenderOutcome(const ResolveProposal& proposal, const Resolution& res
 //   3. every check line's ". Stakes: ..." part;
 //   4. the intent, cut to INTENT_SHORT_CHARS bytes and ended with "...";
 //   5. a renarrate's problem lines (the correction sentence stays).
-// Throws DataError if it still does not fit (narrate_allowance is too small). An unreadable proposal's message has
-// nothing to shed and is returned as it is.
+// Throws DataError if it still does not fit (narrate_allowance is too small). An unreadable proposal's record has
+// no detail, so steps 1-4 change nothing and only a renarrate's problem lines can be shed.
 std::string RenderNarrateMessage(const ResolveProposal& proposal, const Resolution& resolution,
                                  const std::vector<std::string>& problems, int allowance,
                                  inference::LlmBackend& backend);

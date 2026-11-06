@@ -339,7 +339,7 @@ TEST_CASE("The review grammar asks for the verdict, the digest or both", "[gramm
     const std::string both = turn::BuildReviewGrammar(true, true);
     CHECK(both.starts_with("root ::= review\n"));
     CHECK_THAT(both, ContainsSubstring(R"(review ::= "{\"consistent\":true,\"problems\":[]" ",\"digest\":" digest-text "}" | "{\"consistent\":false,\"problems\":[" problem-text ("," problem-text){0,2} "]" ",\"digest\":" digest-text "}")"));
-    CHECK_THAT(both, ContainsSubstring(R"(problem-text ::= "\"" char{0,200} "\"")"));
+    CHECK_THAT(both, ContainsSubstring(R"(problem-text ::= "\"" char{1,200} "\"")"));
     CHECK_THAT(both, ContainsSubstring(R"(digest-text ::= "\"" char{0,300} "\"")"));
     CHECK(GrammarProblem(both).empty());
 

@@ -302,4 +302,34 @@ TEST_CASE("A renarrate's narrate message carries the review's problems, shed las
     CHECK(turn::RenderNarrateMessage(proposal, resolution, problems, allowance, backend) == minimal);
     CHECK_THROWS_AS(turn::RenderNarrateMessage(proposal, resolution, problems, allowance - 1, backend),
                     core::DataError);
+
+    // In between: the record fully shed but the problem lines still fit, so they are kept.
+    const std::string withProblems = turn::RenderOutcome(proposal, resolution, least) + "\n# Task\n" +
+                                     std::string(turn::RENARRATE_CORRECTION) +
+                                     "\n- The narration has the player fly.\n- " + std::string(200, 'p') + "\n\n" +
+                                     std::string(turn::NARRATE_INSTRUCTION);
+    const int middle = backend.CountTokens(withProblems);
+    REQUIRE(middle > allowance);
+    const std::string kept = turn::RenderNarrateMessage(proposal, resolution, problems, middle, backend);
+    CHECK_THAT(kept, ContainsSubstring("- The narration has the player fly.\n"));
+    CHECK_THAT(kept, !ContainsSubstring("Stakes:"));
+    CHECK(kept == withProblems);
+}
+
+TEST_CASE("An unreadable proposal's narrate message is measured too", "[resolve]")
+{
+    const core::World world = MiniWorld();
+    test::FakeBackend backend(16384);
+    const turn::ResolveProposal unreadable = turn::ParseResolveOutput(R"({"intent":"hop")");
+    const turn::Resolution nothing = turn::ApplyProposal(world, world.initialState, unreadable, 42, 1);
+    const std::vector<std::string> problems = {std::string(200, 'p'), std::string(200, 'q')};
+
+    // A tight allowance sheds the problem lines and keeps the correction.
+    const std::string minimal = turn::RenderOutcome(unreadable, nothing, {}) + "\n# Task\n" +
+                                std::string(turn::RENARRATE_CORRECTION) + "\n\n" +
+                                std::string(turn::NARRATE_INSTRUCTION);
+    const int allowance = backend.CountTokens(minimal);
+    CHECK(turn::RenderNarrateMessage(unreadable, nothing, problems, allowance, backend) == minimal);
+    CHECK_THROWS_AS(turn::RenderNarrateMessage(unreadable, nothing, problems, allowance - 1, backend),
+                    core::DataError);
 }

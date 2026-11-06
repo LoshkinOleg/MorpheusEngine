@@ -8,6 +8,7 @@
 #include "core/Errors.h"
 #include "core/Text.h"
 #include "turn/EngineText.h"
+#include "turn/ResolveGrammar.h"
 
 namespace morpheus::turn {
 
@@ -43,8 +44,16 @@ Review ParseReviewOutput(std::string_view text, bool check, bool digest)
             return failed("'problems' must be an array of strings");
         }
         review.consistent = json.at("consistent").get<bool>();
+        // The grammar's bounds: at most REVIEW_MAX_PROBLEMS, each 1 to REVIEW_PROBLEM_MAX_CHARS long once trimmed.
+        if (json.at("problems").size() > static_cast<std::size_t>(REVIEW_MAX_PROBLEMS)) {
+            return failed("'problems' lists more than the allowed number of contradictions");
+        }
         for (const nlohmann::json& problem : json.at("problems")) {
-            review.problems.push_back(problem.get<std::string>());
+            std::string trimmed = core::Trim(problem.get<std::string>());
+            if (trimmed.empty() || trimmed.size() > static_cast<std::size_t>(REVIEW_PROBLEM_MAX_CHARS)) {
+                return failed("'problems' holds an empty or overlong problem");
+            }
+            review.problems.push_back(std::move(trimmed));
         }
         if (*review.consistent != review.problems.empty()) {
             return failed("'problems' must list the contradictions exactly when 'consistent' is false");
@@ -55,6 +64,9 @@ Review ParseReviewOutput(std::string_view text, bool check, bool digest)
             return failed("'digest' must be a string");
         }
         review.digest = core::Trim(json.at("digest").get<std::string>());
+        if (review.digest.size() > static_cast<std::size_t>(DIGEST_MAX_CHARS)) {
+            return failed("'digest' is longer than the allowed length");
+        }
     }
     return review;
 }

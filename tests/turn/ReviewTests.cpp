@@ -43,7 +43,7 @@ TEST_CASE("ParseReviewOutput reports output it cannot read and keeps nothing of 
 {
     // Each case: the output, the parts asked for, and a piece of the reason.
     struct Case {
-        const char* text = "";
+        std::string text = "";
         bool check = false;
         bool digest = false;
         const char* reason = "";
@@ -58,6 +58,11 @@ TEST_CASE("ParseReviewOutput reports output it cannot read and keeps nothing of 
         {R"({"consistent":true,"problems":["odd"],"digest":"x"})", true, true, "'problems'"},
         {R"({"consistent":true,"problems":[]})", true, true, "'digest'"},
         {R"({"digest":7})", false, true, "'digest'"},
+        {R"({"consistent":false,"problems":["a","b","c","d"]})", true, false, "'problems'"}, // Over the bound.
+        {R"({"consistent":false,"problems":[")" + std::string(201, 'p') + R"("]})", true, false, "'problems'"},
+        {R"({"consistent":false,"problems":[""]})", true, false, "'problems'"}, // Empty is not a problem.
+        {R"({"consistent":false,"problems":["  "]})", true, false, "'problems'"},
+        {R"({"digest":")" + std::string(301, 'd') + R"("})", false, true, "'digest'"},
     };
     for (const Case& entry : cases) {
         INFO(entry.text);
