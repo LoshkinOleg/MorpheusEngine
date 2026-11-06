@@ -189,3 +189,20 @@ TEST_CASE("A rejected post leaves the model and its last error as they were", "[
     CHECK(model.LastError() == "input too long");
     CHECK(model.CurrentBusy() == app::RunModel::Busy::None);
 }
+
+TEST_CASE("NarrationRestarted clears the running turn's streamed narration", "[run_model]")
+{
+    app::RunModel model = OpenModel();
+    model.OnPosted(turn::SubmitInput{"I walk."});
+    model.Apply(turn::TurnResolved{Record(1, "I walk.", "")});
+    model.Apply(turn::TokenStreamed{"You fly."});
+    model.Apply(turn::NarrationRestarted{{"The player flies."}});
+    REQUIRE(model.Pending());
+    CHECK(model.Pending()->narration.empty()); // The Play window shows only the new narration.
+    model.Apply(turn::TokenStreamed{"You walk."});
+    CHECK(model.Pending()->narration == "You walk.");
+    CHECK(model.CurrentBusy() == app::RunModel::Busy::Turn); // It closes nothing.
+
+    app::RunModel idle = OpenModel();
+    CHECK_THROWS_AS(idle.Apply(turn::NarrationRestarted{}), core::ContractError);
+}

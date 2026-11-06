@@ -49,6 +49,12 @@ void RunModel::Apply(const turn::Event& event)
         _pending->narration += pPiece->piece;
         return;
     }
+    if (std::holds_alternative<turn::NarrationRestarted>(event)) {
+        // The review found that the narration contradicts the outcome: it is written again from the start.
+        MORPHEUS_REQUIRE(_pending.has_value(), "RunModel: NarrationRestarted with no turn running");
+        _pending->narration.clear();
+        return;
+    }
     // Maintenance reports, between commands.
     if (const auto* pUpdated = std::get_if<turn::MemoryUpdated>(&event)) {
         _memory = pUpdated->memory;

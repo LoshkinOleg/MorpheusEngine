@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <utility>
 
 #include <nlohmann/json.hpp>
 
@@ -35,6 +36,7 @@ core::Settings ReplaySettings()
     settings.embeddingDocumentPrefix = "search_document: ";
     settings.contextSize = 16384;
     settings.budget = {512, 768, 512, 2048, 1024, 4096, 2048, 768}; // As settings.example.json, without thinking.
+    settings.budget.reviewMaxTokens = 384; // As settings.example.json.
     settings.resolveSampling = {0.3, 40, 0.9};
     settings.narrateSampling = {0.8, 40, 0.95};
     return settings;
@@ -91,6 +93,10 @@ TEST_CASE("Recorded sessions replay to the same turns and state", "[replay]")
             REQUIRE(mode.has_value());
             core::Settings settings = ReplaySettings();
             settings.memoryMode = *mode;
+            // The review settings the run was recorded with: they decide which review calls the replay makes.
+            settings.narrationCheck = fixture.at("narration_check").get<bool>();
+            settings.compactTranscript = fixture.at("compact_transcript").get<bool>();
+            settings.proseTurns = fixture.at("prose_turns").get<int>();
             turn::Session session = turn::Session::Start(
                 core::LoadWorld(test::RepoDir() / fixture.at("world").get<std::string>()), settings,
                 test::FreshTempDir("replay_" + entry.path().stem().string()) / "run.db",
@@ -135,7 +141,7 @@ TEST_CASE("Recorded sessions replay to the same turns and state", "[replay]")
     REQUIRE(fixturesRun > 0); // An empty or missing fixture directory must not pass silently.
 }
 
-TEST_CASE("CallKindOf tells the four calls apart and CallKindName spells them", "[replay]")
+TEST_CASE("CallKindOf tells the calls apart and CallKindName spells them", "[replay]")
 {
     const core::World world = core::LoadWorld(test::TestDataDir() / "worlds" / "mini");
     const inference::Prompt narration{{{inference::Role::System, "story"}, {inference::Role::User, "I walk."}}, 1};
@@ -162,6 +168,20 @@ TEST_CASE("CallKindOf tells the four calls apart and CallKindName spells them", 
     CHECK(turn::CallKindName(core::CallKind::Resolve) == "resolve");
     CHECK(turn::CallKindName(core::CallKind::Narrate) == "narrate");
     CHECK(turn::CallKindName(core::CallKind::Summarize) == "summarize");
+
+    // Every review grammar starts with the same root line, whichever parts it asks for.
+    for (const auto& [check, digest] : {std::pair{true, true}, std::pair{true, false}, std::pair{false, true}}) {
+        inference::GenerationSpec reviewSpec;
+        reviewSpec.grammar = turn::BuildReviewGrammar(check, digest);
+        CHECK(turn::CallKindOf(narration, reviewSpec) == core::CallKind::Review);
+    }
+    // A renarrate is a narrate call (no grammar, a narrate message): its reply joins the narrate replies.
+    const inference::Prompt renarrate{{{inference::Role::System, "story"},
+                                       {inference::Role::User, std::string(turn::RENARRATE_CORRECTION)}},
+                                      1};
+    CHECK(turn::CallKindOf(renarrate, plainSpec) == core::CallKind::Narrate);
+    CHECK(turn::CallKindName(core::CallKind::Review) == "review");
+    CHECK(turn::CallKindName(core::CallKind::Renarrate) == "renarrate");
 }
 
 TEST_CASE("A resolve grammar is not taken for a lookup when the world has a field named lookups", "[replay]")
@@ -205,11 +225,15 @@ TEST_CASE("RecordingBackend records each call's text by kind and MakeReplayFixtu
     CHECK(recording.Replies().at(core::CallKind::Narrate) == std::vector<std::string>{"You walk."});
 
     const nlohmann::json fixture = turn::MakeReplayFixture("tests/data/worlds/mini", 9, core::MemoryMode::Engine,
-                                                           {{turn::ReplayStep::Action::Input, "I walk."}}, recording,
-                                                           session.History(), session.State());
+                                                           ReplaySettings(), {{turn::ReplayStep::Action::Input, "I walk."}},
+                                                           recording, session.History(), session.State());
     CHECK(fixture.at("world") == "tests/data/worlds/mini");
     CHECK(fixture.at("seed") == 9);
     CHECK(fixture.at("memory_mode") == "engine");
+    CHECK(fixture.at("narration_check") == false);
+    CHECK(fixture.at("compact_transcript") == false);
+    CHECK(fixture.at("prose_turns") == 2);
+    CHECK(fixture.at("expected").at("turns").at(0).at("digest") == "");
     CHECK(fixture.at("steps") == nlohmann::json::parse(R"([{"input": "I walk."}])"));
     CHECK(fixture.at("replies").at("narrate") == nlohmann::json::array({"You walk."}));
     CHECK(fixture.at("expected").at("turns").at(0).at("narration") == "You walk.");

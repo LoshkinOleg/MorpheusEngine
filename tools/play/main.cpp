@@ -8,6 +8,7 @@
 // A maintenance failure reported before you quit refuses the recording; maintenance still running at /quit is
 // cancelled by shutdown and not recorded.
 // At the prompt: /undo, /regen, /state, /quit, or your action.
+// A narration the review rewrites is announced with "[narration rewritten: <problems>]", and the new one streams below.
 
 #include <algorithm>
 #include <charconv>
@@ -68,6 +69,13 @@ StepOutcome PrintUntilClosing(turn::Worker& worker, RunView& view)
         }
         if (const auto* pPiece = std::get_if<turn::TokenStreamed>(&*event)) {
             std::cout << pPiece->piece << std::flush;
+        } else if (const auto* pRestarted = std::get_if<turn::NarrationRestarted>(&*event)) {
+            // The review found that the narration contradicts the outcome: the rewrite streams below this line.
+            std::string problems;
+            for (const std::string& problem : pRestarted->problems) {
+                problems += (problems.empty() ? "" : "; ") + problem;
+            }
+            std::cout << "\n\n[narration rewritten: " << problems << "]\n\n" << std::flush;
         } else if (const auto* pResolved = std::get_if<turn::TurnResolved>(&*event)) {
             const std::string mechanics = context::RenderMechanicsLine(pResolved->record);
             if (!mechanics.empty()) {
@@ -281,8 +289,8 @@ int main(int argc, char** argv)
             }
             const core::MemoryMode mode = settings.memoryMode.value_or(core::LoadWorld(worldFolder).defaultMemoryMode);
             std::ofstream out(*recordFile, std::ios::binary);
-            out << turn::MakeReplayFixture(core::PathText(worldFolder), runSeed, mode, steps, *recording, view.history,
-                                           view.state)
+            out << turn::MakeReplayFixture(core::PathText(worldFolder), runSeed, mode, settings, steps, *recording,
+                                           view.history, view.state)
                        .dump(2)
                 << '\n';
             if (!out) {

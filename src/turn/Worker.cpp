@@ -194,6 +194,9 @@ TurnCallbacks Worker::Callbacks()
     TurnCallbacks callbacks;
     callbacks.onResolved = [this](const core::TurnRecord& record) { Emit(TurnResolved{record}); };
     callbacks.onNarrationToken = [this](std::string_view piece) { Emit(TokenStreamed{std::string(piece)}); };
+    callbacks.onNarrationRestarted = [this](const std::vector<std::string>& problems) {
+        Emit(NarrationRestarted{problems});
+    };
     return callbacks;
 }
 

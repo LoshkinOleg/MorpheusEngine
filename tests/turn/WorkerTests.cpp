@@ -13,6 +13,7 @@
 #include "TestPaths.h"
 #include "core/Settings.h"
 #include "fakes/ScriptedBackend.h"
+#include "turn/EngineText.h"
 #include "turn/Worker.h"
 
 using namespace morpheus;
@@ -337,4 +338,50 @@ TEST_CASE("Worker events carry the run's memory, and maintenance reports it", "[
     const std::vector<turn::Event> undone = UntilClosing(worker);
     REQUIRE(std::holds_alternative<turn::StateChanged>(undone.back()));
     CHECK(std::get<turn::StateChanged>(undone.back()).memory.notes.empty());
+}
+
+TEST_CASE("A renarrated turn sends NarrationRestarted between the two narrations", "[worker]")
+{
+    // The first review finds a contradiction, the second none; the narrations differ, so the stream shows which is which.
+    int reviews = 0;
+    int narrations = 0;
+    test::ScriptedBackend backend(16384, [&](const inference::Prompt& prompt, const inference::GenerationSpec& spec) -> std::string {
+        if (spec.grammar.find("intent") != std::string::npos) {
+            return MOVE;
+        }
+        if (prompt.messages.front().content == turn::REVIEW_RULES) {
+            return reviews++ == 0
+                       ? R"({"consistent":false,"problems":["The player flies instead of walking."],"digest":"The player flew."})"
+                       : R"({"consistent":true,"problems":[],"digest":"The player walked to the lighthouse."})";
+        }
+        return narrations++ == 0 ? "You fly to the lighthouse." : "You walk to the lighthouse.";
+    });
+    core::Settings settings = TestSettings();
+    settings.narrationCheck = true;
+    settings.compactTranscript = true;
+    settings.budget.reviewMaxTokens = 384;
+    turn::Worker worker(settings, backend);
+    worker.Post(Start("worker_renarrate"));
+    UntilClosing(worker);
+
+    worker.Post(turn::SubmitInput{"I walk to the lighthouse."});
+    const std::vector<turn::Event> events = UntilClosing(worker);
+    // Pieces before the restart are the first narration's, pieces after it the second's.
+    std::string before;
+    std::string after;
+    int restarts = 0;
+    for (const turn::Event& event : events) {
+        if (const auto* pPiece = std::get_if<turn::TokenStreamed>(&event)) {
+            (restarts == 0 ? before : after) += pPiece->piece;
+        } else if (const auto* pRestarted = std::get_if<turn::NarrationRestarted>(&event)) {
+            ++restarts;
+            CHECK(pRestarted->problems == std::vector<std::string>{"The player flies instead of walking."});
+            CHECK_FALSE(turn::IsClosing(event));
+        }
+    }
+    CHECK(restarts == 1);
+    CHECK(before == "You fly to the lighthouse.");
+    CHECK(after == "You walk to the lighthouse.");
+    REQUIRE(std::holds_alternative<turn::TurnCompleted>(events.back()));
+    CHECK(std::get<turn::TurnCompleted>(events.back()).record.narration == "You walk to the lighthouse.");
 }

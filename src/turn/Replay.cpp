@@ -11,15 +11,23 @@ namespace morpheus::turn {
 core::CallKind CallKindOf(const inference::Prompt& prompt, const inference::GenerationSpec& spec)
 {
     // A grammar means a structured call. The lookup grammar is told by its root rule (its first line), which no
-    // resolve grammar shares; searching the whole text would trip on a world with a field named "lookups".
+    // resolve grammar shares; searching the whole text would trip on a world with a field named "lookups". Every
+    // review grammar has the same first line, whatever it asks for.
     if (!spec.grammar.empty()) {
         static const std::string LOOKUP_ROOT = [] {
             const std::string lookup = BuildLookupGrammar();
             return lookup.substr(0, lookup.find('\n'));
         }();
-        return spec.grammar.starts_with(LOOKUP_ROOT) ? core::CallKind::Lookup : core::CallKind::Resolve;
+        static const std::string REVIEW_ROOT = [] {
+            const std::string review = BuildReviewGrammar(true, true);
+            return review.substr(0, review.find('\n') + 1);
+        }();
+        if (spec.grammar.starts_with(LOOKUP_ROOT)) {
+            return core::CallKind::Lookup;
+        }
+        return spec.grammar.starts_with(REVIEW_ROOT) ? core::CallKind::Review : core::CallKind::Resolve;
     }
-    // Without a grammar, the closing instruction tells a summary from narration.
+    // Without a grammar, the closing instruction tells a summary from narration (a renarrate is narration).
     if (!prompt.messages.empty()) {
         const std::string& last = prompt.messages.back().content;
         if (last == SUMMARIZE_INSTRUCTION || last == CONDENSE_INSTRUCTION) {
@@ -40,6 +48,10 @@ std::string CallKindName(core::CallKind kind)
         return "narrate";
     case core::CallKind::Summarize:
         return "summarize";
+    case core::CallKind::Review:
+        return "review";
+    case core::CallKind::Renarrate:
+        return "renarrate";
     }
     throw core::ContractError("CallKindName: unhandled CallKind");
 }
@@ -156,11 +168,12 @@ nlohmann::json TurnResultJson(const core::TurnRecord& record)
     }
     return {{"number", record.number},   {"attempt", record.attempt}, {"input", record.input},
             {"checks", checks},          {"applied", applied},        {"rejected", rejected},
-            {"notes", record.notes},     {"narration", record.narration}};
+            {"notes", record.notes},     {"narration", record.narration}, {"digest", record.digest}};
 }
 
 nlohmann::json MakeReplayFixture(const std::string& worldFolder, std::uint64_t seed, core::MemoryMode mode,
-                                 const std::vector<ReplayStep>& steps, const RecordingBackend& recording,
+                                 const core::Settings& settings, const std::vector<ReplayStep>& steps,
+                                 const RecordingBackend& recording,
                                  const std::vector<core::TurnRecord>& history, const nlohmann::json& finalState)
 {
     nlohmann::json stepsJson = nlohmann::json::array();
@@ -190,6 +203,9 @@ nlohmann::json MakeReplayFixture(const std::string& worldFolder, std::uint64_t s
     return {{"world", worldFolder},
             {"seed", seed},
             {"memory_mode", mode == core::MemoryMode::Engine ? "engine" : "assisted"},
+            {"narration_check", settings.narrationCheck},
+            {"compact_transcript", settings.compactTranscript},
+            {"prose_turns", settings.proseTurns},
             {"steps", stepsJson},
             {"replies", replies},
             {"expected", {{"turns", turns}, {"final_state", finalState}}}};

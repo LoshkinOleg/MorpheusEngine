@@ -22,7 +22,8 @@ public:
     // The command the worker is running for the UI.
     enum class Busy { None, Opening, Turn, Regenerate, Undo };
 
-    // The turn being played: its input, then its resolved record (checks and changes), then the narration so far.
+    // The turn being played: its input, then its resolved record (checks and changes), then the narration so far
+    // (cleared when a review restarts it).
     struct PendingTurn {
         std::string input = {};
         std::optional<core::TurnRecord> resolved = {};

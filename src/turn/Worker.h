@@ -52,7 +52,8 @@ struct MemoryView {
 // - SubmitInput and RegenerateTurn: TurnCompleted, TurnCancelled or Error.
 // - UndoTurn: StateChanged or Error.
 // Any command cancelled before the worker picks it up closes with TurnCancelled without running, StartRun, LoadRun
-// and UndoTurn included. MemoryUpdated and MaintenanceFailed report between-turn upkeep and close nothing.
+// and UndoTurn included. While a turn runs, TurnResolved, TokenStreamed and NarrationRestarted report its progress.
+// MemoryUpdated and MaintenanceFailed report between-turn upkeep. None of these close a command.
 struct RunOpened {
     store::RunMeta meta = {};
     std::vector<core::TurnRecord> history = {};
@@ -62,6 +63,11 @@ struct RunOpened {
 };
 struct TokenStreamed {
     std::string piece = {};
+};
+// A review found that the turn's narration contradicts the outcome (`problems` are its reasons): the narration
+// starts over, and the TokenStreamed events after this one are the new narration. Closes nothing.
+struct NarrationRestarted {
+    std::vector<std::string> problems = {};
 };
 struct TurnResolved {
     core::TurnRecord record = {}; // Checks and changes; narration still empty.
@@ -89,8 +95,8 @@ struct MaintenanceFailed {
 struct Error {
     std::string message = {};
 };
-using Event = std::variant<RunOpened, TokenStreamed, TurnResolved, TurnCompleted, TurnCancelled, StateChanged,
-                           MemoryUpdated, MaintenanceFailed, Error>;
+using Event = std::variant<RunOpened, TokenStreamed, NarrationRestarted, TurnResolved, TurnCompleted, TurnCancelled,
+                           StateChanged, MemoryUpdated, MaintenanceFailed, Error>;
 
 // Whether `event` ends the command it belongs to.
 bool IsClosing(const Event& event);

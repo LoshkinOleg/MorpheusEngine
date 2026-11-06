@@ -14,17 +14,19 @@
 
 #include "core/Dice.h"
 #include "core/MemoryMode.h"
+#include "core/Settings.h"
 #include "core/TurnRecord.h"
 #include "inference/Llm.h"
 
 namespace morpheus::turn {
 
 // Which call a completion answers, told apart the way the session makes them: a grammar that starts with the
-// lookup grammar's root rule is the lookup call's, any other grammar is the resolve call's, and a grammar-free
-// call ending with the summarize or condense instruction is a summary; the rest is narration.
+// lookup grammar's root rule is the lookup call's, one that starts with the review grammar's root line is a review,
+// any other grammar is the resolve call's, and a grammar-free call ending with the summarize or condense instruction
+// is a summary; the rest is narration, renarrates included (their replies join the narrate replies, in call order).
 core::CallKind CallKindOf(const inference::Prompt& prompt, const inference::GenerationSpec& spec);
 
-// Fixture spelling of a call kind: "lookup", "resolve", "narrate" or "summarize".
+// Fixture spelling of a call kind: "lookup", "resolve", "narrate", "summarize", "review" or "renarrate".
 std::string CallKindName(core::CallKind kind);
 
 // One player command in a replay fixture.
@@ -54,7 +56,7 @@ public:
     // How many replies are recorded per kind (kinds with none are absent). Take it before a step that may fail.
     std::map<core::CallKind, std::size_t> Mark() const;
 
-    // Truncates the Lookup, Resolve and Narrate replies to `mark`: each kind keeps its first marked replies, and a
+    // Truncates every kind's replies except Summarize to `mark`: each kind keeps its first marked replies, and a
     // kind absent from the mark keeps none. Drops the replies of a step that did not commit, which a replay would
     // otherwise misalign. Throws ContractError if one of those kinds has fewer replies than the mark says.
     // Summarize replies are left untouched and the mark's summarize count is ignored. A summary recorded after the
@@ -76,13 +78,15 @@ public:
 };
 
 // What a replay checks of one committed turn: {"number", "attempt", "input", "checks", "applied", "rejected",
-// "notes", "narration"}, in the store's JSON forms.
+// "notes", "narration", "digest"}, in the store's JSON forms.
 nlohmann::json TurnResultJson(const core::TurnRecord& record);
 
 // A replay fixture (format in tests/data/replays and the M3 plan): the world folder (relative to the repo root),
-// seed, memory mode, the steps played, every reply by kind, and what the session committed.
+// seed, memory mode, the run's review settings (narration_check, compact_transcript, prose_turns), the steps
+// played, every reply by kind, and what the session committed.
 nlohmann::json MakeReplayFixture(const std::string& worldFolder, std::uint64_t seed, core::MemoryMode mode,
-                                 const std::vector<ReplayStep>& steps, const RecordingBackend& recording,
+                                 const core::Settings& settings, const std::vector<ReplayStep>& steps,
+                                 const RecordingBackend& recording,
                                  const std::vector<core::TurnRecord>& history, const nlohmann::json& finalState);
 
 } // namespace morpheus::turn
