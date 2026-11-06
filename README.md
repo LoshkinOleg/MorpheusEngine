@@ -42,6 +42,9 @@ Then copy `settings.example.json` (the template) to `settings.json` at the repos
 - `budget.retrieval_cap` caps the retrieved memory (lore, past turns, notes) placed in the prompt, in tokens, including what `assisted`-mode lookups add. It is part of `budget.tail_allowance`.
 - The optional top-level `"memory_mode": "engine" | "assisted"` overrides the world's default memory mode.
 - `budget.resolve_thinking_tokens` and `budget.narrate_thinking_tokens` let a thinking model (one whose chat template has `enable_thinking`, such as Qwen3.5 and later) reason before the resolve and narrate answers, up to that many tokens each; 0 turns a call's thinking off, otherwise the minimum is 64. A block that runs out is closed by the engine and the model answers from what it has. The reasoning never reaches the player or a later prompt; it is kept in the turn's telemetry and shown in the Turn log window. Both budgets are reserved in the context, like `resolve_max_tokens` and `narrate_max_tokens`. With a model that has no thinking mode, set both to 0.
+- `narration_check` (true or false): after each narration a short review call checks it against the engine's outcome. A narration that contradicts it (a failed check told as a success, a change left out or reversed, a rejected change told as if it happened) is written once more and replaces the first.
+- `compact_transcript` (true or false) and `prose_turns` (at least 1): the review also writes a one or two sentence digest of each turn, and in the prompt only the newest `prose_turns` turns keep their full narration; older ones show the digest. The model then copies its own prose less, and the transcript grows more slowly. The Play window always shows the full story.
+- `budget.review_max_tokens` and `budget.review_thinking_tokens` are the review call's answer and thinking budgets (0, or at least 64, like the others). The review prompt is short and standalone, so they are not reserved in the turn prompt's context.
 - `gpu_layers` is how many of the chat model's layers go to the GPU (-1: all). A model larger than the GPU's memory needs a lower number: the rest runs on the CPU, slower. llama.cpp puts the last N layers on the GPU. Whatever else uses the GPU (a game, a browser decoding video) lowers the limit; see "Performance with Qwen3.8-27B on a 10 GB GPU" below for measured values.
 - Qwen recommends temperature 1.0, top_k 20 and top_p 0.95 for its models in thinking mode, as in the example.
 
@@ -104,12 +107,12 @@ The `dev` preset builds `morpheus`, the app. In Visual Studio, open `build/dev/M
 The root holds `settings.json`, `game_projects/` and `saves/`. The models load in the background while the window opens. The windows dock and can be rearranged; the layout is saved in `imgui.ini` at the root (gitignored), and deleting it restores the default.
 
 - **Runs:** the worlds in `game_projects/` and each world's runs, saved as `saves/<world id>/<name>.db`. Start a new run (a name, and a seed or blank for a random one) or continue a saved one.
-- **Play:** the story, with each turn's rolls and changes in grey under your input. Enter plays the turn (Ctrl+Enter for a new line); Undo, Regenerate (same dice, new text) and Cancel work on the latest turn.
+- **Play:** the story, with each turn's rolls and changes in grey under your input. Enter plays the turn (Ctrl+Enter for a new line); Undo, Regenerate (same dice, new text) and Cancel work on the latest turn. When the review finds that a narration contradicts the outcome, the text clears and the rewritten narration streams in its place.
 - **State:** the world state, with what the latest turn changed highlighted.
-- **Turn log:** each turn's intent, rolls, applied and rejected changes, notes, lookups and per-call token counts and timings, and the raw resolve output.
+- **Turn log:** each turn's intent, rolls, applied and rejected changes, notes, lookups, the narration review (each review's verdict, problems and digest, and the narration a rewrite replaced), per-call token counts and timings, and the raw resolve output.
 - **Context:** the latest resolve prompt by layer: tokens per layer, KV-cache reuse per call, and the text as sections or raw.
-- **Memory:** the story summaries, the notes, and what retrieval put in the latest turn's prompt, with scores.
-- **Settings:** the chat and embedding models, picked from the `.gguf` files in `models/`; context size, GPU layers, the resolve and narrate thinking budgets (0 for a model without a thinking mode), sampling and memory mode. Apply saves `settings.json` and restarts the engine, reopening the run; changing the models, the embedding prefixes, the context size or GPU layers reloads the models. The rest of the budget is shown and edited in `settings.json`.
+- **Memory:** the story summaries, the notes, and what retrieval put in the latest turn's prompt, with scores and why each hit matched (`name`: named in your input; `scene`: named by the scene), and the scene values it searched with.
+- **Settings:** the chat and embedding models, picked from the `.gguf` files in `models/`; context size, GPU layers, the resolve, narrate and review thinking budgets (0 for a model without a thinking mode), sampling, memory mode, the narration check, the compact transcript and its prose turns. Apply saves `settings.json` and restarts the engine, reopening the run; changing the models, the embedding prefixes, the context size or GPU layers reloads the models. The rest of the budget is shown and edited in `settings.json`.
 
 `--frames N` exits after N frames, a quick check that the app starts on this machine.
 
@@ -128,7 +131,22 @@ An existing run file is continued; otherwise a new run starts, seeded by `--seed
 - `/state`: print the current state
 - `/quit`: leave
 
+When the review finds that a narration contradicts the outcome, the terminal prints `[narration rewritten: <problems>]` and streams the new narration below it.
+
 `--record <file>` needs a new run file. When you quit, it writes a replay fixture of the session for `tests/data/replays`, where the replay test plays it back without a model. Commands that fail are left out of the fixture, together with their replies, except summaries: a summary recorded around a failed step stays in the fixture and never breaks a replay. If maintenance fails during the session no fixture is written. That guard covers maintenance failures reported before you quit: maintenance still running at `/quit` is cancelled by shutdown, and a summary call it cancels is not recorded at all. The fixture stores the world path exactly as you typed it, so run `--record` from the repo root with a repo-relative world path (for example `game_projects/sandcrawler`); a rooted or absolute path, or a world folder that does not exist from the current directory, is refused.
+
+## Worlds
+
+A world is a folder `game_projects/<id>/`: `world.json` (id, title, roll expression, check entity, stats, difficulties, default memory mode), `rules.md`, `lore.csv`, `state_schema.json` and `initial_state.json`. `world.json` may also declare a scene, the state values that say where the player is:
+
+```json
+"scene": {
+  "paths": ["player.location", "crawler.location"],
+  "present_at": "player.location"
+}
+```
+
+Each path is `entity.field`, a string field of an entity in `initial_state.json`, and `present_at` is one of the paths. Every turn, retrieval also searches with those values and with the entities at `present_at`'s value (an NPC standing where the player stands, with its other string fields, such as its role), so lore about the place reaches the prompt even when the input names nothing. A world without a scene searches with the input and the previous turn's digest.
 
 ## Layout
 
