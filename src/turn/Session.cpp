@@ -373,7 +373,8 @@ std::optional<core::TurnRecord> Session::PlayTurn(const std::string& input, int 
     // 4. Narrate: the resolve prompt plus the resolve output and the resolution record, so all of it stays cached.
     inference::Prompt narratePrompt = assembly->prompt;
     context::ExtendForNarrate(narratePrompt, resolved.text,
-                              RenderNarrateMessage(proposal, resolution, _settings.budget.narrateAllowance, *_pBackend));
+                              RenderNarrateMessage(proposal, resolution, {}, _settings.budget.narrateAllowance,
+                                                   *_pBackend));
     inference::GenerationSpec narrateSpec;
     narrateSpec.maxTokens = _settings.budget.narrateMaxTokens;
     narrateSpec.thinkingMaxTokens = _settings.budget.narrateThinkingTokens;

@@ -209,4 +209,31 @@ std::string BuildLookupGrammar()
     return grammar + Terminals();
 }
 
+std::string BuildReviewGrammar(bool check, bool digest)
+{
+    MORPHEUS_REQUIRE(check || digest, "BuildReviewGrammar: needs the check, the digest or both");
+    // The digest closes the object when it is asked for: after the verdict, or alone.
+    const std::string digestPart = digest ? Literal(check ? ",\"digest\":" : "{\"digest\":") + " digest-text " : "";
+    std::string review;
+    if (check) {
+        // Consistent with no problems, or inconsistent with 1 to REVIEW_MAX_PROBLEMS of them.
+        review = Literal("{\"consistent\":true,\"problems\":[]") + " " + digestPart + Literal("}") + " | " +
+                 Literal("{\"consistent\":false,\"problems\":[") +
+                 std::format(" problem-text ({} problem-text){{0,{}}} ", Literal(","), REVIEW_MAX_PROBLEMS - 1) +
+                 Literal("]") + " " + digestPart + Literal("}");
+    } else {
+        review = digestPart + Literal("}");
+    }
+
+    // A fixed root line, whatever is asked for, so the call is recognised by it (CallKindOf).
+    std::string grammar = "root ::= review\nreview ::= " + review + "\n";
+    if (check) {
+        grammar += std::format(R"(problem-text ::= "\"" char{{0,{}}} "\"")", REVIEW_PROBLEM_MAX_CHARS) + "\n";
+    }
+    if (digest) {
+        grammar += std::format(R"(digest-text ::= "\"" char{{0,{}}} "\"")", DIGEST_MAX_CHARS) + "\n";
+    }
+    return grammar + Terminals();
+}
+
 } // namespace morpheus::turn

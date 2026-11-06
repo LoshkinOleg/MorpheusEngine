@@ -34,6 +34,24 @@ inline constexpr std::string_view NARRATE_INSTRUCTION =
     "Step 2: narrate this outcome for the player, following the world's narration rules. Prose only: no JSON, no "
     "lists, no dice or engine terms. End where the player can act.";
 
+// Opens a renarrate's correction, which the narrate message gains before NARRATE_INSTRUCTION; the review's problems
+// follow it, one "- " line each (RenderNarrateMessage).
+inline constexpr std::string_view RENARRATE_CORRECTION =
+    "Your previous narration of this outcome contradicted the resolution above. Narrate the outcome exactly as the "
+    "resolution states it.";
+
+// The review call's system message: the reviewer's job, what counts as a contradiction, and what a digest is. Which
+// fields the output holds is fixed by the call's grammar (BuildReviewGrammar).
+inline constexpr std::string_view REVIEW_RULES = R"(# Review
+You review one turn of a solo text role-playing game. A game engine decided the turn's outcome: it rolled the checks, and it applied or rejected the changes the player's action proposed. A narrator then told the player what happened. Reply with one JSON object and nothing else. It holds some of these fields:
+- "consistent": false when the narration contradicts the outcome, true otherwise. A contradiction is a failed check narrated as a success or a successful one narrated as a failure, an applied change left out or reversed, or a rejected change narrated as if it happened. Tone, style and details the outcome does not decide are not contradictions.
+- "problems": each contradiction in one short sentence, at most three. Empty when the narration is consistent.
+- "digest": the turn in one or two sentences, past tense, third person: who did what and what came of it. No dice, roll numbers or engine terms.)";
+
+// Ends the review call's user message, after the player's input, the outcome and the narration.
+inline constexpr std::string_view REVIEW_INSTRUCTION =
+    "Review the narration above against the resolution. Reply with the JSON object only.";
+
 // T4 of the assisted-mode lookup call.
 inline constexpr std::string_view LOOKUP_INSTRUCTION =
     "Before step 1: list what you need to look up to resolve the player's action, at most three searches. "

@@ -332,3 +332,31 @@ TEST_CASE("The lookup grammar lists sources and queries", "[grammar]")
     CHECK_THAT(grammar, ContainsSubstring(R"(root ::= "{\"lookups\":" lookups "}")"));
     CHECK_THAT(grammar, ContainsSubstring(R"(("\"lore\"" | "\"history\"" | "\"notes\""))"));
 }
+
+TEST_CASE("The review grammar asks for the verdict, the digest or both", "[grammar]")
+{
+    // Both: consistent with no problems, or inconsistent with one to three of them; the digest follows the verdict.
+    const std::string both = turn::BuildReviewGrammar(true, true);
+    CHECK(both.starts_with("root ::= review\n"));
+    CHECK_THAT(both, ContainsSubstring(R"(review ::= "{\"consistent\":true,\"problems\":[]" ",\"digest\":" digest-text "}" | "{\"consistent\":false,\"problems\":[" problem-text ("," problem-text){0,2} "]" ",\"digest\":" digest-text "}")"));
+    CHECK_THAT(both, ContainsSubstring(R"(problem-text ::= "\"" char{0,200} "\"")"));
+    CHECK_THAT(both, ContainsSubstring(R"(digest-text ::= "\"" char{0,300} "\"")"));
+    CHECK(GrammarProblem(both).empty());
+
+    // The check alone: no digest.
+    const std::string check = turn::BuildReviewGrammar(true, false);
+    CHECK(check.starts_with("root ::= review\n"));
+    CHECK_THAT(check, ContainsSubstring(R"(review ::= "{\"consistent\":true,\"problems\":[]" "}" | "{\"consistent\":false,\"problems\":[" problem-text ("," problem-text){0,2} "]" "}")"));
+    CHECK_THAT(check, !ContainsSubstring("digest"));
+    CHECK(GrammarProblem(check).empty());
+
+    // The digest alone: no verdict.
+    const std::string digest = turn::BuildReviewGrammar(false, true);
+    CHECK(digest.starts_with("root ::= review\n"));
+    CHECK_THAT(digest, ContainsSubstring(R"(review ::= "{\"digest\":" digest-text "}")" "\n"));
+    CHECK_THAT(digest, !ContainsSubstring("consistent"));
+    CHECK(GrammarProblem(digest).empty());
+
+    // A review that asks for nothing is an engine bug.
+    CHECK_THROWS_AS(turn::BuildReviewGrammar(false, false), core::ContractError);
+}

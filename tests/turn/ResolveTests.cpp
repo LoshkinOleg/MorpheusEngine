@@ -98,16 +98,16 @@ TEST_CASE("RenderNarrateMessage reports the resolution, then the narrate instruc
         R"({"op":"add","path":"player.inventory.oil","value":-1,"reason":"spills"}]})");
     const turn::Resolution resolution = turn::ApplyProposal(world, world.initialState, proposal, 42, 1);
 
-    const std::string message = turn::RenderNarrateMessage(proposal, resolution, 512, backend);
+    const std::string message = turn::RenderNarrateMessage(proposal, resolution, {}, 512, backend);
     CHECK(message == "# Resolution\nIntent: climb\nApplied: player.health -2\n"
                      "Rejected: add player.inventory.oil (no item 'oil' to decrease)\n\n# Task\n" +
                          std::string(turn::NARRATE_INSTRUCTION));
 
     // Over the allowance, the rejected changes go first.
-    const std::string squeezed = turn::RenderNarrateMessage(proposal, resolution, backend.CountTokens(message) - 1, backend);
+    const std::string squeezed = turn::RenderNarrateMessage(proposal, resolution, {}, backend.CountTokens(message) - 1, backend);
     CHECK_THAT(squeezed, !ContainsSubstring("Rejected:"));
     CHECK_THAT(squeezed, ContainsSubstring("Applied: player.health -2"));
-    CHECK_THROWS_AS(turn::RenderNarrateMessage(proposal, resolution, 5, backend), core::DataError);
+    CHECK_THROWS_AS(turn::RenderNarrateMessage(proposal, resolution, {}, 5, backend), core::DataError);
 }
 
 TEST_CASE("RenderNarrateMessage shows each roll and an unreadable proposal", "[resolve]")
@@ -118,7 +118,7 @@ TEST_CASE("RenderNarrateMessage shows each roll and an unreadable proposal", "[r
         R"({"intent":"hop","checks":[{"stat":"agility","difficulty":"easy","stakes":"a slip","on_success":[],"on_failure":[]}],"changes":[]})");
     const turn::Resolution resolution = turn::ApplyProposal(world, world.initialState, proposal, 42, 1);
     const core::CheckResult roll = core::RollCheck(world.dice, 3, 8, core::CheckSeed(42, 1, 0));
-    CHECK_THAT(turn::RenderNarrateMessage(proposal, resolution, 512, backend),
+    CHECK_THAT(turn::RenderNarrateMessage(proposal, resolution, {}, 512, backend),
                ContainsSubstring(std::format("Check: agility vs easy (8): rolled {} +3 = {}, {}. Stakes: a slip\n"
                                              "Applied: none\n",
                                              roll.rolls.at(0), roll.total, roll.success ? "success" : "failure")));
@@ -127,7 +127,7 @@ TEST_CASE("RenderNarrateMessage shows each roll and an unreadable proposal", "[r
     const turn::Resolution nothing = turn::ApplyProposal(world, world.initialState, unreadable, 42, 1);
     CHECK(nothing.applied.empty());
     CHECK(nothing.state == world.initialState);
-    CHECK_THAT(turn::RenderNarrateMessage(unreadable, nothing, 512, backend),
+    CHECK_THAT(turn::RenderNarrateMessage(unreadable, nothing, {}, 512, backend),
                ContainsSubstring("The action could not be resolved"));
 }
 
@@ -183,7 +183,7 @@ TEST_CASE("A stat value of 0 leaves the +N part out of the check line", "[resolv
     const core::CheckResult roll = core::RollCheck(world.dice, 0, 8, core::CheckSeed(42, 1, 0));
 
     // Rolls only, no " +N" between the rolls and the total.
-    CHECK_THAT(turn::RenderNarrateMessage(proposal, resolution, 512, backend),
+    CHECK_THAT(turn::RenderNarrateMessage(proposal, resolution, {}, 512, backend),
                ContainsSubstring(std::format("rolled {} = {}, {}. Stakes: a slip\n", roll.rolls.at(0), roll.total,
                                              roll.success ? "success" : "failure")));
 }
@@ -204,17 +204,17 @@ TEST_CASE("RenderNarrateMessage sheds applied entries from the end", "[resolve]"
         a, b, c));
     const turn::Resolution resolution = turn::ApplyProposal(world, world.initialState, proposal, 42, 1);
     REQUIRE(resolution.applied.size() == 3);
-    const int fullTokens = backend.CountTokens(turn::RenderNarrateMessage(proposal, resolution, 4096, backend));
+    const int fullTokens = backend.CountTokens(turn::RenderNarrateMessage(proposal, resolution, {}, 4096, backend));
 
     // Slightly over: the last entry goes.
-    const std::string oneShed = turn::RenderNarrateMessage(proposal, resolution, fullTokens - 10, backend);
+    const std::string oneShed = turn::RenderNarrateMessage(proposal, resolution, {}, fullTokens - 10, backend);
     CHECK_THAT(oneShed, ContainsSubstring(a));
     CHECK_THAT(oneShed, ContainsSubstring(b));
     CHECK_THAT(oneShed, !ContainsSubstring(c));
     CHECK_THAT(oneShed, ContainsSubstring("; and 1 more\n"));
 
     // Far over: every entry goes, and the line reads "Applied: and 3 more".
-    const std::string allShed = turn::RenderNarrateMessage(proposal, resolution, fullTokens - 60, backend);
+    const std::string allShed = turn::RenderNarrateMessage(proposal, resolution, {}, fullTokens - 60, backend);
     CHECK_THAT(allShed, !ContainsSubstring(a));
     CHECK_THAT(allShed, ContainsSubstring("Applied: and 3 more\n"));
     CHECK(backend.CountTokens(allShed) <= fullTokens - 60);
@@ -239,8 +239,8 @@ TEST_CASE("RenderNarrateMessage sheds stakes, then cuts the intent, before givin
     // The stakes alone are enough to shed: the intent stays whole.
     const turn::ResolveProposal noStakes = proposalWith(longIntent, "");
     const int withoutStakes = backend.CountTokens(turn::RenderNarrateMessage(
-        noStakes, turn::ApplyProposal(world, world.initialState, noStakes, 42, 1), 4096, backend));
-    const std::string stakesShed = turn::RenderNarrateMessage(proposal, resolution, withoutStakes, backend);
+        noStakes, turn::ApplyProposal(world, world.initialState, noStakes, 42, 1), {}, 4096, backend));
+    const std::string stakesShed = turn::RenderNarrateMessage(proposal, resolution, {}, withoutStakes, backend);
     CHECK_THAT(stakesShed, !ContainsSubstring("Stakes:"));
     CHECK_THAT(stakesShed, ContainsSubstring(longIntent));
     CHECK_THAT(stakesShed, ContainsSubstring("Check: agility vs easy (8)"));
@@ -248,13 +248,58 @@ TEST_CASE("RenderNarrateMessage sheds stakes, then cuts the intent, before givin
     // Tighter: the intent is cut too, and the message fits.
     const turn::ResolveProposal shortIntent = proposalWith(kept + "...", "");
     const int allowance = backend.CountTokens(turn::RenderNarrateMessage(
-        shortIntent, turn::ApplyProposal(world, world.initialState, shortIntent, 42, 1), 4096, backend));
-    const std::string cut = turn::RenderNarrateMessage(proposal, resolution, allowance, backend);
+        shortIntent, turn::ApplyProposal(world, world.initialState, shortIntent, 42, 1), {}, 4096, backend));
+    const std::string cut = turn::RenderNarrateMessage(proposal, resolution, {}, allowance, backend);
     CHECK_THAT(cut, !ContainsSubstring("Stakes:"));
     CHECK_THAT(cut, ContainsSubstring("Intent: " + kept + "...\n"));
     CHECK_THAT(cut, !ContainsSubstring(kept + "i"));
     CHECK(backend.CountTokens(cut) <= allowance);
 
     // Nothing left to shed.
-    CHECK_THROWS_AS(turn::RenderNarrateMessage(proposal, resolution, 5, backend), core::DataError);
+    CHECK_THROWS_AS(turn::RenderNarrateMessage(proposal, resolution, {}, 5, backend), core::DataError);
+}
+
+TEST_CASE("RenderOutcome is the record the narrate message starts with", "[resolve]")
+{
+    const core::World world = MiniWorld();
+    test::FakeBackend backend(16384);
+    const turn::ResolveProposal proposal = turn::ParseResolveOutput(CLIMB);
+    const turn::Resolution resolution = turn::ApplyProposal(world, world.initialState, proposal, 42, 1);
+    const std::string outcome = turn::RenderOutcome(proposal, resolution, {});
+    CHECK(outcome.starts_with("# Resolution\nIntent: climb\nCheck: agility vs hard (16): rolled "));
+    CHECK_THAT(outcome, ContainsSubstring(". Stakes: a fall\n"));
+    CHECK(outcome.ends_with("\n"));
+    CHECK(turn::RenderNarrateMessage(proposal, resolution, {}, 512, backend) ==
+          outcome + "\n# Task\n" + std::string(turn::NARRATE_INSTRUCTION));
+
+    // Less detail: no stakes, no applied entries (two were applied), the intent cut.
+    const turn::OutcomeDetail least = {.rejected = false, .appliedShown = 0, .stakes = false, .cutIntent = true};
+    const std::string shed = turn::RenderOutcome(proposal, resolution, least);
+    CHECK_THAT(shed, !ContainsSubstring("Stakes:"));
+    CHECK_THAT(shed, ContainsSubstring("Applied: and 2 more\n"));
+}
+
+TEST_CASE("A renarrate's narrate message carries the review's problems, shed last", "[resolve]")
+{
+    const core::World world = MiniWorld();
+    test::FakeBackend backend(16384);
+    const turn::ResolveProposal proposal = turn::ParseResolveOutput(CLIMB);
+    const turn::Resolution resolution = turn::ApplyProposal(world, world.initialState, proposal, 42, 1);
+    const std::vector<std::string> problems = {"The narration has the player fly.", std::string(200, 'p')};
+
+    // The correction and the problems sit between the record and the instruction.
+    const std::string message = turn::RenderNarrateMessage(proposal, resolution, problems, 4096, backend);
+    CHECK(message == turn::RenderOutcome(proposal, resolution, {}) + "\n# Task\n" +
+                         std::string(turn::RENARRATE_CORRECTION) + "\n- The narration has the player fly.\n- " +
+                         std::string(200, 'p') + "\n\n" + std::string(turn::NARRATE_INSTRUCTION));
+
+    // Over the allowance, the record's detail goes first and the problem lines last; the correction stays.
+    const turn::OutcomeDetail least = {.rejected = false, .appliedShown = 0, .stakes = false, .cutIntent = true};
+    const std::string minimal = turn::RenderOutcome(proposal, resolution, least) + "\n# Task\n" +
+                                std::string(turn::RENARRATE_CORRECTION) + "\n\n" +
+                                std::string(turn::NARRATE_INSTRUCTION);
+    const int allowance = backend.CountTokens(minimal);
+    CHECK(turn::RenderNarrateMessage(proposal, resolution, problems, allowance, backend) == minimal);
+    CHECK_THROWS_AS(turn::RenderNarrateMessage(proposal, resolution, problems, allowance - 1, backend),
+                    core::DataError);
 }

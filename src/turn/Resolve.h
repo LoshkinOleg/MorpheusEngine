@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -54,23 +55,39 @@ struct Resolution {
 Resolution ApplyProposal(const core::World& world, const nlohmann::json& state, const ResolveProposal& proposal,
                          std::uint64_t runSeed, int turn);
 
-// The user message the narrate call appends: the resolution record, then NARRATE_INSTRUCTION.
+// How much of the outcome RenderOutcome shows. The defaults show everything; RenderNarrateMessage sheds detail
+// from them to fit the narrate allowance.
+struct OutcomeDetail {
+    bool rejected = true;                                               // The Rejected line.
+    std::size_t appliedShown = std::numeric_limits<std::size_t>::max(); // Applied entries shown; the rest are counted.
+    bool stakes = true;                                                 // Each check line's ". Stakes: ..." part.
+    bool cutIntent = false; // The intent cut to INTENT_SHORT_CHARS bytes and ended with "...".
+};
+
+// The resolution record, as the narrate message and the review prompt show it:
 //   # Resolution
 //   Intent: climb
 //   Check: agility vs hard (16): rolled 11 +3 = 14, failure. Stakes: a fall
 //   Applied: player.health -2
 //   Rejected: add player.inventory.oil (no item 'oil' to decrease)
-//
-//   # Task
-//   <NARRATE_INSTRUCTION>
-// An unreadable proposal gets "The action could not be resolved (<error>). Nothing changed." instead. When the text
-// exceeds `allowance` tokens (budget.narrate_allowance), detail is shed one step at a time, only while still over:
+// "Applied: none" when nothing applied, "Applied: a; b; and 2 more" when entries are left out, and no Rejected line
+// when nothing was rejected. An unreadable proposal gets "The action could not be resolved (<error>). Nothing
+// changed." instead. Ends with a newline.
+std::string RenderOutcome(const ResolveProposal& proposal, const Resolution& resolution, const OutcomeDetail& detail);
+
+// The user message the narrate call appends: RenderOutcome, then "\n# Task\n", then for a renarrate (non-empty
+// `problems`, the review's) RENARRATE_CORRECTION and one "- <problem>" line per problem and a blank line, then
+// NARRATE_INSTRUCTION. When the text exceeds `allowance` tokens (budget.narrate_allowance), detail is shed one step
+// at a time, only while still over:
 //   1. the Rejected line;
 //   2. Applied entries from the end ("and N more");
 //   3. every check line's ". Stakes: ..." part;
-//   4. the intent, cut to INTENT_SHORT_CHARS bytes and ended with "...".
-// Throws DataError if it still does not fit (narrate_allowance is too small).
-std::string RenderNarrateMessage(const ResolveProposal& proposal, const Resolution& resolution, int allowance,
+//   4. the intent, cut to INTENT_SHORT_CHARS bytes and ended with "...";
+//   5. a renarrate's problem lines (the correction sentence stays).
+// Throws DataError if it still does not fit (narrate_allowance is too small). An unreadable proposal's message has
+// nothing to shed and is returned as it is.
+std::string RenderNarrateMessage(const ResolveProposal& proposal, const Resolution& resolution,
+                                 const std::vector<std::string>& problems, int allowance,
                                  inference::LlmBackend& backend);
 
 // One assisted-mode lookup: where to search and for what.

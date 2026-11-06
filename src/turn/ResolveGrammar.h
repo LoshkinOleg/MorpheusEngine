@@ -21,10 +21,13 @@ constexpr int SHORT_TEXT_CHARS   = 120; // intent, stakes, reasons, string value
 constexpr int LONG_TEXT_CHARS    = 400; // Notes.
 constexpr int MAX_NEW_ID_CHARS   = 40;
 constexpr int MAX_ITEM_CHARS     = 32;  // New counter items; held items are matched by name.
+constexpr int REVIEW_MAX_PROBLEMS      = 3;   // Contradictions one review may list.
+constexpr int REVIEW_PROBLEM_MAX_CHARS = 200; // Each of them.
+constexpr int DIGEST_MAX_CHARS         = 300; // A turn's digest.
 
 // Every list bound is written as "first element, then up to bound - 1 more", so each needs at least 2.
 static_assert(MAX_CHECKS >= 2 && MAX_CHANGES >= 2 && MAX_BRANCH_CHANGES >= 2 && MAX_NOTES >= 2 && MAX_LOOKUPS >= 2 &&
-                  MAX_LIST_ITEMS >= 2,
+                  MAX_LIST_ITEMS >= 2 && REVIEW_MAX_PROBLEMS >= 2,
               "ResolveGrammar: every list bound must be at least 2");
 
 // GBNF for the resolve call (architecture spec, "Turn flow"). The output is one compact JSON object with its keys
@@ -45,5 +48,13 @@ std::string BuildResolveGrammar(const core::World& world, const nlohmann::json& 
 // GBNF for the assisted-mode lookup call: {"lookups": [{"source": "lore"|"history"|"notes", "query": str}]}, at
 // most MAX_LOOKUPS entries.
 std::string BuildLookupGrammar();
+
+// GBNF for the review call (architecture spec, "Turn flow"). Its first line is always "root ::= review". The output
+// is one compact JSON object:
+//   check:  {"consistent":true,"problems":[]} or {"consistent":false,"problems":[1 to REVIEW_MAX_PROBLEMS strings of
+//           at most REVIEW_PROBLEM_MAX_CHARS]}
+//   digest: "digest": a string of at most DIGEST_MAX_CHARS, after the verdict, or alone: {"digest": str}
+// Throws ContractError unless `check` or `digest` is set.
+std::string BuildReviewGrammar(bool check, bool digest);
 
 } // namespace morpheus::turn

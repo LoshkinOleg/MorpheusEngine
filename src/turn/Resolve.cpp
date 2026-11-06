@@ -111,45 +111,12 @@ Resolution ApplyProposal(const core::World& world, const nlohmann::json& state, 
     return resolution;
 }
 
-std::string RenderNarrateMessage(const ResolveProposal& proposal, const Resolution& resolution, int allowance,
-                                 inference::LlmBackend& backend)
+std::string RenderOutcome(const ResolveProposal& proposal, const Resolution& resolution, const OutcomeDetail& detail)
 {
-    const std::string task = "\n# Task\n" + std::string(NARRATE_INSTRUCTION);
     if (!proposal.error.empty()) {
-        return std::format("# Resolution\nThe action could not be resolved ({}). Nothing changed.\n{}", proposal.error,
-                           task);
+        return std::format("# Resolution\nThe action could not be resolved ({}). Nothing changed.\n", proposal.error);
     }
-
-    // One line per rolled check; the stakes are model-written text and can be shed.
-    auto renderChecks = [&resolution](bool withStakes) {
-        std::string checks;
-        for (const core::CheckOutcome& check : resolution.checks) {
-            std::string rolls;
-            for (const int roll : check.result.rolls) {
-                rolls += (rolls.empty() ? "" : " + ") + std::to_string(roll);
-            }
-            // A stat of 0 adds nothing, so its "+N" is left out.
-            const std::string stat = check.result.statValue != 0 ? std::format(" {:+}", check.result.statValue) : "";
-            checks += std::format("Check: {} vs {} ({}): rolled {}{} = {}, {}", check.stat, check.difficulty,
-                                  check.result.target, rolls, stat, check.result.total,
-                                  check.result.success ? "success" : "failure");
-            checks += withStakes ? std::format(". Stakes: {}\n", check.stakes) : "\n";
-        }
-        return checks;
-    };
-    std::vector<std::string> applied;
-    for (const core::AppliedChange& change : resolution.applied) {
-        applied.push_back(context::RenderChangePart(change));
-    }
-    std::vector<std::string> rejected;
-    for (const core::RejectedChange& change : resolution.rejected) {
-        const nlohmann::json& raw = change.raw;
-        const bool named = raw.is_object() && raw.contains("op") && raw.at("op").is_string() && raw.contains("path") &&
-                           raw.at("path").is_string();
-        rejected.push_back(named ? std::format("{} {} ({})", raw.at("op").get<std::string>(),
-                                               raw.at("path").get<std::string>(), change.reason)
-                                 : change.reason);
-    }
+    // Model-written parts in a "; "-separated list: the first `count` of them.
     auto join = [](const std::vector<std::string>& parts, std::size_t count) {
         std::string text;
         for (std::size_t i = 0; i < count; ++i) {
@@ -158,42 +125,104 @@ std::string RenderNarrateMessage(const ResolveProposal& proposal, const Resoluti
         return text;
     };
 
-    // Render, then shed detail one step at a time until the message fits the narrate allowance: the rejected
-    // changes, applied changes from the end, the stakes, then the intent's tail. Each step runs only while over.
-    bool showRejected = !rejected.empty();
-    std::size_t appliedShown = applied.size();
-    bool showStakes = true;
-    bool cutIntent = false;
-    for (;;) {
-        std::string intent = proposal.intent;
-        if (cutIntent) {
-            intent = core::CutUtf8(intent, INTENT_SHORT_CHARS) + (intent.size() > INTENT_SHORT_CHARS ? "..." : "");
+    // The intent, cut short when asked.
+    std::string intent = proposal.intent;
+    if (detail.cutIntent) {
+        intent = core::CutUtf8(intent, INTENT_SHORT_CHARS) + (intent.size() > INTENT_SHORT_CHARS ? "..." : "");
+    }
+    std::string text = "# Resolution\nIntent: " + intent + "\n";
+
+    // One line per rolled check; the stakes are model-written text and can be left out.
+    for (const core::CheckOutcome& check : resolution.checks) {
+        std::string rolls;
+        for (const int roll : check.result.rolls) {
+            rolls += (rolls.empty() ? "" : " + ") + std::to_string(roll);
         }
-        std::string text = "# Resolution\nIntent: " + intent + "\n" + renderChecks(showStakes);
-        if (applied.empty()) {
-            text += "Applied: none\n";
-        } else {
-            text += "Applied: " + join(applied, appliedShown);
-            if (appliedShown < applied.size()) {
-                text += std::format("{}and {} more", appliedShown == 0 ? "" : "; ", applied.size() - appliedShown);
+        // A stat of 0 adds nothing, so its "+N" is left out.
+        const std::string stat = check.result.statValue != 0 ? std::format(" {:+}", check.result.statValue) : "";
+        text += std::format("Check: {} vs {} ({}): rolled {}{} = {}, {}", check.stat, check.difficulty,
+                            check.result.target, rolls, stat, check.result.total,
+                            check.result.success ? "success" : "failure");
+        text += detail.stakes ? std::format(". Stakes: {}\n", check.stakes) : "\n";
+    }
+
+    // The applied changes: the first appliedShown of them, and how many more there were.
+    std::vector<std::string> applied;
+    for (const core::AppliedChange& change : resolution.applied) {
+        applied.push_back(context::RenderChangePart(change));
+    }
+    if (applied.empty()) {
+        text += "Applied: none\n";
+    } else {
+        const std::size_t shown = std::min(detail.appliedShown, applied.size());
+        text += "Applied: " + join(applied, shown);
+        if (shown < applied.size()) {
+            text += std::format("{}and {} more", shown == 0 ? "" : "; ", applied.size() - shown);
+        }
+        text += "\n";
+    }
+
+    // The rejected changes with their reasons, named by op and path when the raw change has them.
+    if (detail.rejected && !resolution.rejected.empty()) {
+        std::vector<std::string> rejected;
+        for (const core::RejectedChange& change : resolution.rejected) {
+            const nlohmann::json& raw = change.raw;
+            const bool named = raw.is_object() && raw.contains("op") && raw.at("op").is_string() &&
+                               raw.contains("path") && raw.at("path").is_string();
+            rejected.push_back(named ? std::format("{} {} ({})", raw.at("op").get<std::string>(),
+                                                   raw.at("path").get<std::string>(), change.reason)
+                                     : change.reason);
+        }
+        text += "Rejected: " + join(rejected, rejected.size()) + "\n";
+    }
+    return text;
+}
+
+std::string RenderNarrateMessage(const ResolveProposal& proposal, const Resolution& resolution,
+                                 const std::vector<std::string>& problems, int allowance,
+                                 inference::LlmBackend& backend)
+{
+    // The task: for a renarrate the correction and, unless shed, the review's problems; then the instruction.
+    auto task = [&problems](bool showProblems) {
+        std::string text = "\n# Task\n";
+        if (!problems.empty()) {
+            text += std::string(RENARRATE_CORRECTION) + "\n";
+            if (showProblems) {
+                for (const std::string& problem : problems) {
+                    text += "- " + problem + "\n";
+                }
             }
             text += "\n";
         }
-        if (showRejected) {
-            text += "Rejected: " + join(rejected, rejected.size()) + "\n";
-        }
-        text += task;
+        return text + std::string(NARRATE_INSTRUCTION);
+    };
+    if (!proposal.error.empty()) {
+        // Nothing was resolved, so the record holds nothing to shed.
+        return RenderOutcome(proposal, resolution, {}) + task(true);
+    }
+
+    // Render, then shed detail one step at a time until the message fits the narrate allowance: the rejected
+    // changes, applied changes from the end, the stakes, the intent's tail, then a renarrate's problems. Each step
+    // runs only while over.
+    OutcomeDetail detail;
+    detail.rejected = !resolution.rejected.empty();
+    detail.appliedShown = resolution.applied.size();
+    bool showProblems = !problems.empty();
+    for (;;) {
+        const std::string text = RenderOutcome(proposal, resolution, detail) + task(showProblems);
         if (backend.CountTokens(text) <= allowance) {
             return text;
         }
-        if (showRejected) {
-            showRejected = false;
-        } else if (appliedShown > 0) {
-            --appliedShown;
-        } else if (showStakes) {
-            showStakes = false;
-        } else if (!cutIntent) {
-            cutIntent = true;
+        if (detail.rejected) {
+            detail.rejected = false;
+        } else if (detail.appliedShown > 0) {
+            --detail.appliedShown;
+        } else if (detail.stakes) {
+            detail.stakes = false;
+        } else if (!detail.cutIntent) {
+            detail.cutIntent = true;
+        } else if (showProblems) {
+            showProblems = false;
         } else {
             // Everything model-written is shed: the allowance itself is too small.
             throw core::DataError(std::format("narrate_allowance {} is too small for the resolution record ({} tokens)",

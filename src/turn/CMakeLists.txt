@@ -4,6 +4,7 @@ add_library(morpheus_turn STATIC
     Resolve.cpp
     ResolveGrammar.cpp
     Retrieval.cpp
+    Review.cpp
     Session.cpp
     Worker.cpp
 )
