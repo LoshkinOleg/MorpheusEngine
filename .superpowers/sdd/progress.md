@@ -120,3 +120,30 @@ Final review M4 (opus, 6b0b047..31c92a7): With fixes (0 Critical, 2 Important: I
 Fix round 31c92a7..5db94f1 (21cc1b7 model hardening: SaveSettingsEdit DataError-only + real file name, reserved run names, RunModel contract, ctor order, failed-restart reopen test, MemoryView placement, font nullptr; 5db94f1 docs). Re-review (opus): Ready to merge: Yes. tests 241, asan 241, dev morpheus --frames 60 exit 0.
   Deferred to M5: com0/lpt0; headless UI interaction tests; transcript/turn-log clipper; interruptible backend load (closing mid-load freezes); mid-frame exception unwind test; remaining ledger minors per final triage.
 MILESTONE 4 COMPLETE.
+
+## MILESTONE 5 (plan docs/superpowers/plans/2026-11-06-narration-review-and-scene-retrieval.md, 67169d2), on master
+Task 1: complete (commits 67169d2..b52358b, review clean)
+  Minor: review_max_tokens upper bound (context_size) and prose_turns type error untested.
+Task 2: complete (commits b52358b..2e958e3, review clean)
+  Minor: version-1 refusal test only rewrites the meta row (tables stay v2-shaped).
+Task 3: complete (commits 2e958e3..a5dfac4, opus review clean after 2 fix rounds)
+  Owner-approved deviation from plan: unreadable-proposal narrate messages are measured against narrate_allowance (early return removed). Added: parser enforces count/length bounds in code points (core::Utf8Length), empty problems rejected (grammar char{1,200}).
+  Minor: digest error reason wording ('is a digest longer than'); Utf8Length comment lacks 'valid UTF-8'; REVIEW_RULES hard-codes 'at most three'; RenderOutcome least-detail test never observes cutIntent; new constants' alignment.
+Task 4: complete (commits a5dfac4..4cab8b0, opus review clean)
+  Minor: RED not observed separately; cancel during the second review untested; digest-only test doesn't assert problems absent; review-cancel section doesn't pin the call count.
+Task 5: complete (commits 4cab8b0..4584c64, review clean)
+  Minor: MakeReplayFixture test asserts only default review settings (false/false/2) and empty digest; no replay fixture exercises an inconsistent review + renarrate; REVIEW_ROOT built with find('
+')+1 (npos edge, differs from LOOKUP_ROOT); RED not captured (Tasks 3-fix1, 4, 5 skipped RED).
+Task 6: complete (commits 4584c64..41aa81d, review clean; RED captured)
+  Minor: RenderTests include order; ENGINE_RULES sentence only tested via session substring.
+Task 7: complete (commits 41aa81d..ef7e077, review clean; RED captured)
+  Minor (plan-mandated placement): World.h 'Everything in one game_projects/<id>/ folder' comment now sits above SceneDecl, not World; no blank line before the scene block in World.cpp; allowedKeys alignment; non-string present_at untested; duplicate scene paths accepted silently.
+Task 8: complete (commits ef7e077..afab0ac, opus review clean; RED captured)
+  Minor: empty present_at guard untested; whole-input name match (past EMBED_TEXT_CHARS) untested; stringField returns '' for a missing declared scene field (unreachable today); overlong test lines (plan-mandated sed); Similarity dot-product loop repeated inline in two tests.
+Task 9: complete (commits afab0ac..fbf10e6, review clean; RED captured; dev morpheus builds)
+  Minor: Turn log prints 'no verdict' for a digest-only review (check off) -- reads like a failure, fix in final round; SaveSettingsEdit comment line ~128 cols; ReplacedNarration missing-'replaced' DataError untested; UI draw tests assert nothing about scene line/Reasons column.
+Task 10: complete (commits fbf10e6..40d22f6, review fix verified: README review budget rules; tests 285, asan 285 no reports)
+ALL 10 TASKS COMPLETE. Final review next (67169d2..40d22f6).
+Final review M5 (opus, 67169d2..40d22f6): With fixes (0 Critical, 0 Important; 4 must-fix minors). Fix round 40d22f6..1a0f60b (Turn log 'digest only', World.h comment, digest reason wording, SettingsEdit.h wrap, static_assert REVIEW_MAX_PROBLEMS==3, REVIEW_ROOT newline REQUIRE, load-time DataError when review_max_tokens + review_thinking_tokens >= context_size). Re-review (opus): Ready to merge: Yes. tests 285, asan 285 (at 40d22f6), dev morpheus builds. README clause for the review budget sum added by the controller.
+  Deferred: SettingsEdit.h:37 still 127 cols; Replay.cpp REQUIRE message lacks 'CallKindOf: ' prefix; no replay fixture with a renarrate (record one with --record when a playtest triggers it); ENGINE_RULES compact-transcript sentence unconditional (plan choice); remaining coverage/cosmetic ledger minors above.
+MILESTONE 5 COMPLETE.
