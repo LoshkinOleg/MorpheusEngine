@@ -23,6 +23,9 @@ std::string ShortJson(const nlohmann::json& value);
 // The longest prefix of `text` of at most maxBytes bytes that ends on a UTF-8 character boundary.
 std::string CutUtf8(std::string_view text, std::size_t maxBytes);
 
+// The number of characters (code points) in the UTF-8 `text`: the bytes that are not continuation bytes.
+std::size_t Utf8Length(std::string_view text);
+
 // `text` without leading and trailing spaces, tabs, carriage returns and newlines.
 std::string Trim(std::string_view text);
 

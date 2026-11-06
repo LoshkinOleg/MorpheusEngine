@@ -98,3 +98,35 @@ TEST_CASE("ReviewPrompt shows the input, the whole outcome and the narration und
     CHECK_THAT(prompt.messages[1].content,
                ContainsSubstring("Rejected: add player.inventory.oil (no item 'oil' to decrease)"));
 }
+
+TEST_CASE("ParseReviewOutput bounds problems and the digest in characters, not bytes", "[review]")
+{
+    // Two-byte characters: U+0434 (Cyrillic de), so N of them are N characters but 2N bytes.
+    auto cyrillic = [](int count) {
+        std::string text;
+        for (int i = 0; i < count; ++i) {
+            text += "\xD0\xB4";
+        }
+        return text;
+    };
+
+    // 150 characters (300 bytes) in a problem and 300 characters (600 bytes) in a digest are within the grammar.
+    const turn::Review fits = turn::ParseReviewOutput(
+        R"({"consistent":false,"problems":[")" + cyrillic(150) + R"("],"digest":")" + cyrillic(300) + R"("})", true,
+        true);
+    CHECK(fits.error.empty());
+    CHECK(fits.problems == std::vector<std::string>{cyrillic(150)});
+    CHECK(fits.digest == cyrillic(300));
+
+    // One over the bound is unreadable, and the reason names the bound.
+    const turn::Review longProblem =
+        turn::ParseReviewOutput(R"({"consistent":false,"problems":[")" + cyrillic(201) + R"("]})", true, false);
+    CHECK_THAT(longProblem.error, ContainsSubstring("longer than 200 characters"));
+    CHECK(longProblem.problems.empty());
+    const turn::Review longDigest = turn::ParseReviewOutput(R"({"digest":")" + cyrillic(301) + R"("})", false, true);
+    CHECK_THAT(longDigest.error, ContainsSubstring("longer than 300 characters"));
+    CHECK(longDigest.digest.empty());
+    const turn::Review many =
+        turn::ParseReviewOutput(R"({"consistent":false,"problems":["a","b","c","d"]})", true, false);
+    CHECK_THAT(many.error, ContainsSubstring("more than 3 contradictions"));
+}

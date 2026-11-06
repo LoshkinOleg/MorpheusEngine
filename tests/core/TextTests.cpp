@@ -37,3 +37,12 @@ TEST_CASE("Trim removes surrounding ASCII whitespace", "[text]")
     CHECK(core::Trim("  a b \r\n\t") == "a b");
     CHECK(core::Trim(" \n ").empty());
 }
+
+TEST_CASE("Utf8Length counts characters, not bytes", "[text]")
+{
+    CHECK(core::Utf8Length("") == 0);
+    CHECK(core::Utf8Length("abc") == 3);
+    CHECK(core::Utf8Length("\xD0\xB4\xD0\xB4") == 2);         // Two-byte characters.
+    CHECK(core::Utf8Length("a\xE2\x80\x99s") == 3);           // A three-byte curly quote between two letters.
+    CHECK(core::Utf8Length("\xF0\x9F\x98\x80") == 1);         // One four-byte character.
+}

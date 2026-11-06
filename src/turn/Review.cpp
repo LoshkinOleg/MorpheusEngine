@@ -1,6 +1,7 @@
 #include "turn/Review.h"
 
 #include <algorithm>
+#include <format>
 #include <utility>
 
 #include <nlohmann/json.hpp>
@@ -46,12 +47,17 @@ Review ParseReviewOutput(std::string_view text, bool check, bool digest)
         review.consistent = json.at("consistent").get<bool>();
         // The grammar's bounds: at most REVIEW_MAX_PROBLEMS, each 1 to REVIEW_PROBLEM_MAX_CHARS long once trimmed.
         if (json.at("problems").size() > static_cast<std::size_t>(REVIEW_MAX_PROBLEMS)) {
-            return failed("'problems' lists more than the allowed number of contradictions");
+            return failed(std::format("'problems' lists more than {} contradictions", REVIEW_MAX_PROBLEMS));
         }
         for (const nlohmann::json& problem : json.at("problems")) {
             std::string trimmed = core::Trim(problem.get<std::string>());
-            if (trimmed.empty() || trimmed.size() > static_cast<std::size_t>(REVIEW_PROBLEM_MAX_CHARS)) {
-                return failed("'problems' holds an empty or overlong problem");
+            if (trimmed.empty()) {
+                return failed("'problems' holds an empty contradiction");
+            }
+            // Characters, as the grammar counts them, not bytes.
+            if (core::Utf8Length(trimmed) > static_cast<std::size_t>(REVIEW_PROBLEM_MAX_CHARS)) {
+                return failed(std::format("'problems' holds a contradiction longer than {} characters",
+                                          REVIEW_PROBLEM_MAX_CHARS));
             }
             review.problems.push_back(std::move(trimmed));
         }
@@ -64,8 +70,8 @@ Review ParseReviewOutput(std::string_view text, bool check, bool digest)
             return failed("'digest' must be a string");
         }
         review.digest = core::Trim(json.at("digest").get<std::string>());
-        if (review.digest.size() > static_cast<std::size_t>(DIGEST_MAX_CHARS)) {
-            return failed("'digest' is longer than the allowed length");
+        if (core::Utf8Length(review.digest) > static_cast<std::size_t>(DIGEST_MAX_CHARS)) {
+            return failed(std::format("'digest' is a digest longer than {} characters", DIGEST_MAX_CHARS));
         }
     }
     return review;

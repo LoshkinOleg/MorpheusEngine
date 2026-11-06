@@ -31,6 +31,18 @@ std::string CutUtf8(std::string_view text, std::size_t maxBytes)
     return std::string(text.substr(0, length));
 }
 
+std::size_t Utf8Length(std::string_view text)
+{
+    // Every character has exactly one byte that is not a continuation byte (10xxxxxx).
+    std::size_t count = 0;
+    for (const char c : text) {
+        if ((static_cast<unsigned char>(c) & 0xC0) != 0x80) {
+            ++count;
+        }
+    }
+    return count;
+}
+
 std::string Trim(std::string_view text)
 {
     constexpr std::string_view WHITESPACE = " \t\r\n";
