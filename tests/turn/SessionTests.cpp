@@ -1,3 +1,4 @@
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
@@ -12,6 +13,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "SceneWorld.h"
 #include "TestPaths.h"
 #include "core/Dice.h"
 #include "core/Errors.h"
@@ -1079,4 +1081,69 @@ TEST_CASE("With compact_transcript on, older turns reach the prompt as their dig
     REQUIRE(fourth.messages.size() == 1 + 6 + 1);
     CHECK(fourth.messages[2].content == "Narration one.");
     CHECK(fourth.messages[4].content == "Narration two.");
+}
+
+TEST_CASE("Retrieval searches with the scene: moving the player changes the lore in the prompt", "[session][scene]")
+{
+    const std::string climb =
+        R"({"intent":"climb","checks":[],"changes":[{"op":"set","path":"player.location","value":"cliff top","reason":"climbs"}]})";
+    test::ScriptedBackend backend(16384, Responder(climb, "You look around."));
+    turn::Session session = turn::Session::Start(core::LoadWorld(test::SceneWorldDir("session_scene_world")),
+                                                 TestSettings(), NewRunFile("session_scene"), 42, backend);
+    // A lore hit's reasons in a turn's telemetry; null when it did not reach the prompt.
+    auto reasonsOf = [](const core::TurnRecord& record, const std::string& subject) {
+        for (const nlohmann::json& hit : record.timings.at("retrieval")) {
+            if (hit.at("source") == "lore" && hit.at("ref") == subject) {
+                return hit.at("reasons");
+            }
+        }
+        return nlohmann::json();
+    };
+
+    // On the shore the input names nothing, but the scene names the shore.
+    const std::optional<core::TurnRecord> first = session.RunTurn("I look around.", {}, {});
+    REQUIRE(first);
+    CHECK(first->timings.at("scene") == nlohmann::json::array({"shore"}));
+    CHECK(reasonsOf(*first, "shore") == nlohmann::json::array({"scene"}));
+    CHECK_THAT(Tail(backend.Calls().at(0).prompt), ContainsSubstring("- shore: Grey pebbles"));
+
+    // The first turn moved the player to the cliff top: the same input now brings the cliff top's lore.
+    const std::optional<core::TurnRecord> second = session.RunTurn("I look around.", {}, {});
+    REQUIRE(second);
+    CHECK(second->timings.at("scene") == nlohmann::json::array({"cliff top"}));
+    CHECK(reasonsOf(*second, "cliff top") == nlohmann::json::array({"scene"}));
+    const nlohmann::json shore = reasonsOf(*second, "shore");
+    CHECK((shore.is_null() || shore.empty())); // No longer named by the scene.
+    CHECK_THAT(Tail(backend.Calls().at(2).prompt), ContainsSubstring("- cliff top: Wind howls"));
+}
+
+TEST_CASE("Retrieval searches with the previous turn's digest, without a boost", "[session][scene]")
+{
+    ReviewScript script{MOVE, {"You wait.", "You wait some more."},
+                        {R"({"digest":"Storms arrive at dusk."})", R"({"digest":"The player waited."})"}};
+    test::ScriptedBackend backend(16384, script.Responder());
+    turn::Session session = turn::Session::Start(MiniWorld(), ReviewSettings(false, true),
+                                                 NewRunFile("session_digest_query"), 42, backend);
+    REQUIRE(session.RunTurn("I wait.", {}, {}));
+    const std::optional<core::TurnRecord> second = session.RunTurn("I wait.", {}, {});
+    REQUIRE(second);
+
+    // The second query is the input, then the first turn's digest (the mini world declares no scene). The digest
+    // names the storm, but only the input and the scene boost.
+    const std::vector<std::vector<float>> vectors =
+        backend.Embed({"I wait.\nStorms arrive at dusk.", "storm: Storms arrive at dusk."}, inference::EmbedPurpose::Query);
+    float similarity = 0.0f;
+    for (std::size_t i = 0; i < vectors[0].size(); ++i) {
+        similarity += vectors[0][i] * vectors[1][i];
+    }
+    const nlohmann::json* pStorm = nullptr;
+    for (const nlohmann::json& hit : second->timings.at("retrieval")) {
+        if (hit.at("ref") == "storm") {
+            pStorm = &hit;
+        }
+    }
+    REQUIRE(pStorm != nullptr);
+    CHECK(pStorm->at("score").get<double>() == Catch::Approx(similarity));
+    CHECK(pStorm->at("reasons").empty());
+    CHECK(second->timings.at("scene") == nlohmann::json::array());
 }

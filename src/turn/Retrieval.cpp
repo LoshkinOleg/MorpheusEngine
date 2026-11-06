@@ -28,6 +28,79 @@ std::string Lowered(std::string_view text)
 
 } // namespace
 
+std::string RetrievalQuery::Text() const
+{
+    // One part per line, in this order; empty parts are left out.
+    std::string sceneText;
+    for (const std::string& value : scene) {
+        sceneText += (sceneText.empty() ? "" : "; ") + value;
+    }
+    const std::string* parts[] = {&input, &sceneText, &digest};
+    std::string text;
+    for (const std::string* pPart : parts) {
+        if (!pPart->empty()) {
+            text += (text.empty() ? "" : "\n") + *pPart;
+        }
+    }
+    return core::CutUtf8(text, EMBED_TEXT_CHARS);
+}
+
+std::vector<std::string> SceneOf(const core::World& world, const nlohmann::json& state)
+{
+    if (!world.scene) {
+        return {};
+    }
+    std::vector<std::string> values;
+    std::set<std::string> seen; // Trimmed, lower-cased values kept so far.
+    auto add = [&](const std::string& value) {
+        const std::string key = Lowered(core::Trim(value));
+        if (!key.empty() && seen.insert(key).second) {
+            values.push_back(value);
+        }
+    };
+    // A declared path's entity and field: "player.location" -> "player", "location". World loading checked the shape.
+    auto split = [](const std::string& path) {
+        const std::size_t dot = path.find('.');
+        return std::pair<std::string, std::string>(path.substr(0, dot), path.substr(dot + 1));
+    };
+    // The string at `field` of an entity's fields, or "" when it has none.
+    auto stringField = [](const nlohmann::json& entity, const std::string& field) {
+        const nlohmann::json& fields = entity.at("fields");
+        return fields.contains(field) && fields.at(field).is_string() ? fields.at(field).get<std::string>()
+                                                                      : std::string();
+    };
+
+    // 1. The value at each declared path. Entities are never removed, so a scene entity is always in the state.
+    for (const std::string& path : world.scene->paths) {
+        const auto [entity, field] = split(path);
+        MORPHEUS_REQUIRE(state.contains(entity), "SceneOf: a scene entity is missing from the state");
+        add(stringField(state.at(entity), field));
+    }
+
+    // 2. Every other entity at present_at's value, by id (JSON objects iterate in key order): its id and its other
+    // string fields. Nobody is present at an empty location.
+    const auto [anchorEntity, anchorField] = split(world.scene->presentAt);
+    MORPHEUS_REQUIRE(state.contains(anchorEntity), "SceneOf: the present_at entity is missing from the state");
+    const std::string anchor = Lowered(core::Trim(stringField(state.at(anchorEntity), anchorField)));
+    if (anchor.empty()) {
+        return values;
+    }
+    for (auto it = state.begin(); it != state.end(); ++it) {
+        if (it.key() == anchorEntity || Lowered(core::Trim(stringField(it.value(), anchorField))) != anchor) {
+            continue;
+        }
+        add(it.key());
+        const core::EntityTypeDef* pType = world.schema.FindEntityType(it.value().at("type").get<std::string>());
+        MORPHEUS_REQUIRE(pType != nullptr, "SceneOf: the state has an unknown entity type");
+        for (const auto& [name, def] : pType->fields) {
+            if (def.type == core::FieldType::String && name != anchorField) {
+                add(stringField(it.value(), name));
+            }
+        }
+    }
+    return values;
+}
+
 MemoryIndex::MemoryIndex(std::string documentPrefix)
     : _documentPrefix(std::move(documentPrefix))
 {
@@ -97,21 +170,26 @@ void MemoryIndex::SyncHistory(store::RunStore& store, int foldedThrough, inferen
     Replace(store::EmbeddingKind::Note, std::move(noteEntries));
 }
 
-std::vector<RetrievalHit> MemoryIndex::Retrieve(std::string_view query, std::span<const store::EmbeddingKind> sources,
-                                                int capTokens, std::size_t maxHits,
-                                                inference::LlmBackend& backend) const
+std::vector<RetrievalHit> MemoryIndex::Retrieve(const RetrievalQuery& query,
+                                                std::span<const store::EmbeddingKind> sources, int capTokens,
+                                                std::size_t maxHits, inference::LlmBackend& backend) const
 {
     auto searched = [&sources](store::EmbeddingKind kind) {
         return std::find(sources.begin(), sources.end(), kind) != sources.end();
     };
+    const std::string text = query.Text();
     const bool anything = std::any_of(_entries.begin(), _entries.end(), [&](const Entry& e) { return searched(e.kind); });
-    if (!anything || capTokens <= 0 || maxHits == 0 || query.empty()) {
+    if (!anything || capTokens <= 0 || maxHits == 0 || text.empty()) {
         return {};
     }
 
-    const std::vector<float> queryVector =
-        backend.Embed({std::string(query)}, inference::EmbedPurpose::Query).at(0);
-    const std::string loweredQuery = Lowered(query);
+    // The whole query is embedded; the input and the scene values are also matched against lore subjects.
+    const std::vector<float> queryVector = backend.Embed({text}, inference::EmbedPurpose::Query).at(0);
+    const std::string loweredInput = Lowered(query.input);
+    std::vector<std::string> loweredScene;
+    for (const std::string& value : query.scene) {
+        loweredScene.push_back(Lowered(value));
+    }
     std::vector<RetrievalHit> hits;
     for (const Entry& entry : _entries) {
         if (!searched(entry.kind)) {
@@ -122,11 +200,24 @@ std::vector<RetrievalHit> MemoryIndex::Retrieve(std::string_view query, std::spa
         for (std::size_t i = 0; i < queryVector.size(); ++i) {
             score += queryVector[i] * entry.vector[i]; // Both are L2-normalized: the dot product is the cosine.
         }
-        if (!entry.name.empty() && loweredQuery.find(entry.name) != std::string::npos) {
+        // A lore subject named in the input, in a scene value or in both is boosted once.
+        std::vector<std::string> reasons;
+        if (!entry.name.empty()) {
+            if (loweredInput.find(entry.name) != std::string::npos) {
+                reasons.push_back("name");
+            }
+            const bool inScene = std::any_of(loweredScene.begin(), loweredScene.end(), [&entry](const std::string& value) {
+                return value.find(entry.name) != std::string::npos;
+            });
+            if (inScene) {
+                reasons.push_back("scene");
+            }
+        }
+        if (!reasons.empty()) {
             score += NAME_BOOST;
         }
         if (score >= RETRIEVAL_MIN_SCORE) {
-            hits.push_back({entry.kind, entry.refId, entry.text, score});
+            hits.push_back({entry.kind, entry.refId, entry.text, score, 0, std::move(reasons)});
         }
     }
     std::sort(hits.begin(), hits.end(), [](const RetrievalHit& a, const RetrievalHit& b) {

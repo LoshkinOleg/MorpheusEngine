@@ -281,9 +281,18 @@ std::optional<core::TurnRecord> Session::PlayTurn(const std::string& input, int 
         throw core::ContractError("PlayTurn: unhandled EmbeddingKind");
     };
 
-    // 1. Retrieve. The query is cut like embedded documents, so a very long input still fits the embedding context.
-    std::vector<RetrievalHit> hits = _index.Retrieve(core::CutUtf8(input, EMBED_TEXT_CHARS), ALL_SOURCES,
-                                                     _settings.budget.retrievalCap, RETRIEVAL_MAX_HITS, *_pBackend);
+    // 1. Retrieve, with the input, the scene and the previous turn's digest. RetrievalQuery::Text cuts the query like
+    // embedded documents, input first, so a very long input still fits the embedding context.
+    RetrievalQuery query;
+    query.input = input;
+    query.scene = SceneOf(_world, state);
+    if (turn > 1) {
+        const std::optional<core::TurnRecord> previous = _store.Turn(turn - 1);
+        MORPHEUS_REQUIRE(previous.has_value(), "PlayTurn: the previous turn is not in the store");
+        query.digest = previous->digest;
+    }
+    std::vector<RetrievalHit> hits =
+        _index.Retrieve(query, ALL_SOURCES, _settings.budget.retrievalCap, RETRIEVAL_MAX_HITS, *_pBackend);
 
     // Assisted mode: the model may ask for lookups first. Their hits join the tail after the automatic ones, so
     // the fit loop sheds them first. lookupSources[i] is the i-th request's source, for the telemetry at commit.
@@ -316,9 +325,9 @@ std::optional<core::TurnRecord> Session::PlayTurn(const std::string& input, int 
         for (const Lookup& lookup : ParseLookupOutput(looked.text, lookupError)) {
             const std::array<store::EmbeddingKind, 1> source = {lookup.source};
             nlohmann::json added = nlohmann::json::array();
-            // The query is cut like the automatic one above.
-            for (RetrievalHit& hit : _index.Retrieve(core::CutUtf8(lookup.query, EMBED_TEXT_CHARS), source, capLeft,
-                                                     LOOKUP_MAX_HITS, *_pBackend)) {
+            // A lookup searches with its own query only (RetrievalQuery::Text cuts it like the automatic one).
+            for (RetrievalHit& hit :
+                 _index.Retrieve(RetrievalQuery{lookup.query}, source, capLeft, LOOKUP_MAX_HITS, *_pBackend)) {
                 const bool known = std::any_of(hits.begin(), hits.end(), [&hit](const RetrievalHit& other) {
                     return other.kind == hit.kind && other.refId == hit.refId;
                 });
@@ -471,10 +480,12 @@ std::optional<core::TurnRecord> Session::PlayTurn(const std::string& input, int 
         // Why nothing was proposed: the record's resolve output alone does not say so for JSON of the wrong shape.
         telemetry["resolve"]["error"] = proposal.error;
     }
-    telemetry["retrieval"] = nlohmann::json::array(); // The hits that made it into the prompt.
+    telemetry["retrieval"] = nlohmann::json::array(); // The hits that made it into the prompt, and why they matched.
     for (const RetrievalHit& hit : hits) {
-        telemetry["retrieval"].push_back({{"source", kindText(hit.kind)}, {"ref", hit.refId}, {"score", hit.score}});
+        telemetry["retrieval"].push_back(
+            {{"source", kindText(hit.kind)}, {"ref", hit.refId}, {"score", hit.score}, {"reasons", hit.reasons}});
     }
+    telemetry["scene"] = query.scene; // The scene values the automatic query searched with.
     if (telemetry.contains("lookup")) {
         // Which of each lookup's added hits the fit loops kept, so they reached the resolve prompt.
         nlohmann::json& requests = telemetry["lookup"]["requests"];
