@@ -182,3 +182,36 @@ Task 4 implemented (d80e96e..10ba5e4; tests 315, asan 315 no reports, dev 342, -
 Final review (opus, 20bb128..10ba5e4): With fixes (0 Critical, 2 Important: header warnings in host files -> SYSTEM in README/consumer check; CMAKE_COMPILE_WARNING_AS_ERROR overriding ours -> COMPILE_WARNING_AS_ERROR property). Fix round 10ba5e4..9858910 (property, morpheus_sqlite fetch name, README host guidance, Linux status/git/CUDA arch note, dev-preset mentions, probe wording, C# line). Re-review: Ready to merge: Yes. Controller fixed the comment's command and the C# sentence. tests 315, consumer check ok, dev --frames 120 exit 0. Linux NOT run (owner's acceptance list in the plan's Task 4).
   Deferred (sub-projects C/D/G): host SQLite::SQLite3 reuse (two SQLite copies); FetchContent name llama shared with hosts; vendoring with MORPHEUS_BUILD_LLAMA drags in tools, BUILD_SHARED_LIBS and forced GGML_*; generic include roots; no Threads::Threads; repeated preset conditions.
 CONSUMABLE BUILD COMPLETE.
+
+## GRAMMAR LIBRARY (sub-project B; plan docs/superpowers/plans/2026-11-14-grammar-library.md, ae723bc), on master
+Task 1: complete (commits ae723bc..9b3899d, opus review clean; RED captured; 318 tests)
+  Minor: repetition counts not validated ({1,2x}, {3,2}, logic_error vs runtime_error); llama.cpp load-time refusals not modelled (MAX_REPETITION_THRESHOLD 2000, static left recursion, '_' in names, [] / [^]); overlong UTF-8 decoded; thin tests for group repetition / empty-matching repeat / right recursion / the U, r and t escapes; no memoization.
+  Carry to Task 6: llama.cpp refuses repetitions > 2000 (MAX_REPETITION_THRESHOLD): FromSchema must reject maxLength/maxItems above it with a DataError.
+Task 2: complete (commits 9b3899d..8fb8018, review clean after 2 fix rounds; 331 tests)
+  Fix rounds added cases for: enum change on an existing entity, nonzero/pos int edges, counter item bounds, held-name prefix/suffix and empty/nothing-changeable worlds, short-text and escape boundaries in every context, review variants. Cause of round 2: the implementer's edit tool decoded backslash-u sequences into raw UTF-8; implementer instructions now require an ASCII byte check after every write.
+  Minor: BACKSLASH/escape constants declared twice; no mixed raw+escape boundary case.
+Task 3: complete (commits 8fb8018..55fd919, opus review clean; RED captured; 339 tests; bytes verified)
+  Minor: Object/ListOf accept an empty value/element expression; Literal doesn't refuse NUL; 'control characters' comment means C0 only; no matcher test of a backslash Literal, JsonString(0,n) on "", or Text's unclosed-literal path.
+Task 4: complete (commits 55fd919..7219067, opus review clean incl. an independent exhaustive Python port check; RED captured; 342 tests)
+  Minor: inner band joints (9/10, 99/100) not probed by the brute force; SameLengthAlternatives has no REQUIRE on its precondition; adjacent literals like "2" "0" not merged; test helper's -value would overflow at LLONG_MIN if reused.
+Task 5: complete (commits 7219067..803349c, opus review clean: rule-by-rule same language, characterization tests untouched, CallKindOf first lines byte-identical; 342 tests)
+  Minor: ResolveGrammar.cpp:160 is 125 cols; free-standing header comment in ResolveGrammar.h:29.
+Task 6: complete (commits 803349c..8ee1976, opus review clean after 1 fix round; 358 tests; [llama] loads FromSchema grammars at the limits)
+  Fix round (controller + review): llama.cpp's product check (n_prev_rules * max >= 2000) made inline list elements unloadable; ListOf's element must now be a rule reference or one literal, FromSchema names array items items-N, limits GBNF_MAX_STRING_CHARS = 1999 and GBNF_MAX_LIST_ITEMS = 1000 (ContractError in the builder, DataError in FromSchema).
+  Final round: update the spec (ListOf element shape, the 1999/1000 limits in the FromSchema table); GBNF_MAX_LIST_ITEMS comment's factor 2 is a margin, not reachable.
+  Minor: invalid UTF-8 in a code-built schema throws nlohmann::type_error; [schema] tag shared with StateSchema tests.
+Task 7: complete (commits 8ee1976..160fe20, opus review clean after 1 fix round; 365 tests)
+  Fix round: nlohmann == equated -1 with 18446744073709551615 (uint64 cast), so Validate accepted values the grammar rejects; SameValue now compares integers by dump() text (what Literal writes), in Validate and the enum duplicate check.
+  Minor: same lambda is a pass-through; no fail-fast after CheckValue's switch (cases break; would need returns); shown repeats ShortJson + replace handler; RED of the fix not captured.
+Task 8: complete (commits 160fe20..28980ba, review clean; fix verified by the controller: specials built from chars, RandomBelow rejection sampling on raw mt19937_64 output instead of uniform_int_distribution, so draws are identical on libstdc++; 368 tests)
+  Minor: catalog coverage doesn't assert the empty-array size; every-keyword string ends beyond name lengths unasserted.
+Task 9: complete (commits 28980ba..7b23cfb, review clean; [llama] 27 passed 5 skipped unrelated; llama.cpp accepted all 2000 values and agreed with the matcher on IntRange)
+  Minor: interior digit boundaries (99/100) not probed in the llama IntRange agreement; review/invalid-action negatives accept any rejection reason; small loop/matcher duplication; one line >120 cols.
+Task 10 implemented (7b23cfb..5bb1fb2; tests 368, asan 368 no reports, [llama] 27 passed incl. 44 grammar, --frames 120 exit 0, consumer check ok). Docs review + final review dispatched.
+Task 10: complete (commits 7b23cfb..5bb1fb2, docs review clean; morpheus_play and morpheus_probe also build)
+  Minor: design spec line ~46 still says Text appends 'integer helper rules' (IntRange is inline; char is the only shared terminal) -> final round.
+ALL 10 TASKS COMPLETE. Final review running (ae723bc..5bb1fb2).
+Final review (opus, ae723bc..5bb1fb2): With fixes (0 Critical, 0 Important). It ran the host flow end to end against Qwen3-4B: 21/21 catalog completions parsed, validated and passed CheckGrammar; a 46-action catalog grammar is 52 KB, FromSchema 3.9 ms, Validate 2.2 ms per call. Fix round 5bb1fb2..6f564e7 (spec line 46; Object refuses empty values; Validate docs on lone surrogates and key order; dangling comment; GBNF_MAX_LIST_ITEMS margin comment; consumer check asserts Morpheus::grammar). Re-review: Ready to merge: Yes. tests 368, asan 368 (at 5bb1fb2), [llama] grammar tests pass, morpheus/morpheus_play/morpheus_probe build, consumer check ok.
+  For sub-project D: FromSchema refuses an empty or duplicated enum, so the host must drop attack when no non-player actor is present and dedupe actor ids; grammar size grows with actions x actors (share identical sub-expressions as rules if catalogs grow); an optional [llama] generate-then-validate test would pin the host flow.
+  Deferred: ledger minors above; Schema.h spells the surrogate example with two backslashes.
+GRAMMAR LIBRARY COMPLETE.
