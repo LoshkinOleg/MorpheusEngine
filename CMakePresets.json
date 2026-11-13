@@ -11,7 +11,7 @@
         "MORPHEUS_BUILD_APP": "ON",
         "MORPHEUS_BUILD_TESTS": "ON",
         "MORPHEUS_BUILD_LLAMA": "ON",
-        "MORPHEUS_VULKAN": "ON"
+        "MORPHEUS_GPU_BACKEND": "Vulkan"
       }
     },
     {
@@ -40,7 +40,7 @@
       "binaryDir": "${sourceDir}/build/dev-asan",
       "cacheVariables": {
         "MORPHEUS_BUILD_APP": "OFF",
-        "MORPHEUS_VULKAN": "OFF",
+        "MORPHEUS_GPU_BACKEND": "CPU",
         "MORPHEUS_ASAN": "ON",
         "GGML_OPENMP": "OFF"
       }

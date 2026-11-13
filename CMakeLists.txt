@@ -8,17 +8,34 @@ project(MorpheusEngine
 # ---- Global settings ----------------------------------------------------
 set(CMAKE_CXX_EXTENSIONS OFF) # Enforce strict standard syntax, no compiler specific lingo.
 
-# Put all binaries in one place - handy on Windows for DLL discovery
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin) # For executables: .exe, .dll
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin) # For shared libs: .so on linux
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib) # For static libs: .a on linux, .lib on win
+# Put all binaries in one place - handy on Windows for DLL discovery. Only when Morpheus is the top-level project:
+# a host project that includes Morpheus decides where binaries go.
+if(PROJECT_IS_TOP_LEVEL)
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin) # For executables: .exe, .dll
+    set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin) # For shared libs: .so on linux
+    set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib) # For static libs: .a on linux, .lib on win
+endif()
 
 # ---- Options ------------------------------------------------------------
-option(MORPHEUS_BUILD_APP "Build the morpheus app (needs MORPHEUS_BUILD_LLAMA; fetches SDL3)" ON)
-option(MORPHEUS_BUILD_TESTS "Build morpheus_tests (fetches Catch2)" ON)
+# The app, the tests, llama.cpp and warnings as errors default to on only when Morpheus is the top-level project. A
+# host project that includes Morpheus (FetchContent, add_subdirectory) gets the engine libraries alone, and a warning
+# from the host's compiler in Morpheus's code does not fail the host's build.
+option(MORPHEUS_BUILD_APP "Build the morpheus app (needs MORPHEUS_BUILD_LLAMA; fetches SDL3)" ${PROJECT_IS_TOP_LEVEL})
+option(MORPHEUS_BUILD_TESTS "Build morpheus_tests (fetches Catch2, and ImGui's core for the headless UI tests)" ${PROJECT_IS_TOP_LEVEL})
+option(MORPHEUS_BUILD_LLAMA "Build the llama.cpp backend, morpheus_probe and morpheus_play (fetches and builds llama.cpp)" ${PROJECT_IS_TOP_LEVEL})
+option(MORPHEUS_WARNINGS_AS_ERRORS "Treat warnings as errors on MorpheusEngine's own targets (/WX or -Werror)" ${PROJECT_IS_TOP_LEVEL})
 option(MORPHEUS_ASAN "Instrument every target with AddressSanitizer (MSVC only)" OFF)
-option(MORPHEUS_BUILD_LLAMA "Build the llama.cpp backend (fetches and builds llama.cpp)" ON)
-option(MORPHEUS_VULKAN "Build llama.cpp with the Vulkan GPU backend (needs the Vulkan SDK)" ON)
+
+# llama.cpp's GPU backend. Checked on every configure, with or without MORPHEUS_BUILD_LLAMA, so that a misspelt value
+# never passes silently.
+set(MORPHEUS_GPU_BACKENDS Vulkan CUDA CPU)
+set(MORPHEUS_GPU_BACKEND "Vulkan" CACHE STRING
+    "llama.cpp's GPU backend: Vulkan (needs the Vulkan SDK), CUDA (needs the CUDA toolkit) or CPU")
+set_property(CACHE MORPHEUS_GPU_BACKEND PROPERTY STRINGS ${MORPHEUS_GPU_BACKENDS})
+if(NOT MORPHEUS_GPU_BACKEND IN_LIST MORPHEUS_GPU_BACKENDS)
+    list(JOIN MORPHEUS_GPU_BACKENDS ", " MORPHEUS_GPU_BACKEND_NAMES)
+    message(FATAL_ERROR "MORPHEUS_GPU_BACKEND is '${MORPHEUS_GPU_BACKEND}'; it must be one of: ${MORPHEUS_GPU_BACKEND_NAMES}.")
+endif()
 
 if(MORPHEUS_BUILD_APP AND NOT MORPHEUS_BUILD_LLAMA)
     message(FATAL_ERROR "MORPHEUS_BUILD_APP needs MORPHEUS_BUILD_LLAMA.")
@@ -37,15 +54,22 @@ if(MORPHEUS_ASAN)
     string(REPLACE "/RTC1" "" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
 endif()
 
-# Strict settings for MorpheusEngine's own targets. Never applied to fetched dependencies.
+# Strict settings for MorpheusEngine's own targets. Never applied to fetched dependencies. The warnings are always on;
+# they fail the build only with MORPHEUS_WARNINGS_AS_ERRORS (on by default at top level, off when vendored).
 function(morpheus_target_defaults target)
     target_compile_features(${target} PUBLIC cxx_std_20)
     if(MSVC)
-        # /W4 warning level, /WX warnings are errors, /permissive- standard compliance,
-        # /Zc:preprocessor standard preprocessor, /utf-8 source and execution character sets.
-        target_compile_options(${target} PRIVATE /W4 /WX /permissive- /Zc:preprocessor /utf-8)
+        # /W4 warning level, /permissive- standard compliance, /Zc:preprocessor standard preprocessor,
+        # /utf-8 source and execution character sets; /WX makes warnings errors.
+        target_compile_options(${target} PRIVATE /W4 /permissive- /Zc:preprocessor /utf-8)
+        if(MORPHEUS_WARNINGS_AS_ERRORS)
+            target_compile_options(${target} PRIVATE /WX)
+        endif()
     else()
-        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror)
+        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
+        if(MORPHEUS_WARNINGS_AS_ERRORS)
+            target_compile_options(${target} PRIVATE -Werror)
+        endif()
     endif()
 endfunction()
 
@@ -75,13 +99,22 @@ target_include_directories(sqlite3 SYSTEM PUBLIC ${sqlite_SOURCE_DIR})
 target_compile_definitions(sqlite3 PRIVATE SQLITE_OMIT_LOAD_EXTENSION SQLITE_DQS=0)
 
 if(MORPHEUS_BUILD_LLAMA)
-    # GPU backend for llama.cpp. FORCE so that toggling MORPHEUS_VULKAN reconfigures the fetched llama.cpp.
-    set(GGML_VULKAN ${MORPHEUS_VULKAN} CACHE BOOL "" FORCE)
+    # llama.cpp's own backend switches follow MORPHEUS_GPU_BACKEND: GGML_VULKAN only for Vulkan, GGML_CUDA only for
+    # CUDA, neither for CPU. FORCE so that changing the choice reconfigures the fetched llama.cpp.
+    set(MORPHEUS_GGML_VULKAN OFF)
+    set(MORPHEUS_GGML_CUDA OFF)
+    if(MORPHEUS_GPU_BACKEND STREQUAL "Vulkan")
+        set(MORPHEUS_GGML_VULKAN ON)
+    elseif(MORPHEUS_GPU_BACKEND STREQUAL "CUDA")
+        set(MORPHEUS_GGML_CUDA ON)
+    endif()
+    set(GGML_VULKAN ${MORPHEUS_GGML_VULKAN} CACHE BOOL "" FORCE)
+    set(GGML_CUDA ${MORPHEUS_GGML_CUDA} CACHE BOOL "" FORCE)
 
     # llama
     FetchContent_Declare(
         llama                                                         # prefix for CMake variables
-        GIT_REPOSITORY https://github.com/ggerganov/llama.cpp.git     # repo TODO: redirect to the new repo: ggml-org/llama.cpp , probably update the targeted commit?
+        GIT_REPOSITORY https://github.com/ggml-org/llama.cpp.git      # repo
         GIT_TAG        960d628f46d17ea9c10aa944b061b2341afeb3b5       # commit SHA to get, version b9804
         GIT_SHALLOW    FALSE                                          # Has to be FALSE to be able to use a commit SHA
         SYSTEM                                                        # Its headers are external: no /W4 /WX
@@ -175,8 +208,8 @@ if(MORPHEUS_BUILD_APP OR MORPHEUS_BUILD_TESTS)
     add_subdirectory(src/app)
 endif()
 
-if(MORPHEUS_BUILD_APP)
-    # Visual Studio opens the solution with the app as the startup project.
+if(MORPHEUS_BUILD_APP AND PROJECT_IS_TOP_LEVEL)
+    # Visual Studio opens the solution with the app as the startup project. A host's solution keeps its own.
     set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT morpheus)
 endif()
 
