@@ -26,8 +26,6 @@ constexpr int REVIEW_PROBLEM_MAX_CHARS = 200; // Each of them.
 constexpr int DIGEST_MAX_CHARS         = 300; // A turn's digest.
 constexpr long long MAX_INT_MAGNITUDE  = 999999999; // Integers have at most 9 digits, so they always fit an int.
 
-// The three grammars are built with grammar::GrammarBuilder, so each starts with its root line.
-
 // GBNF for the resolve call (architecture spec, "Turn flow"). The output is one compact JSON object with its keys
 // in this order:
 //   {"intent": str, "checks": [check], "changes": [change]}, plus "notes": [str] in assisted mode

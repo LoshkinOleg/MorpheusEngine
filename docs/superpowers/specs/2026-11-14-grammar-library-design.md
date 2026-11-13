@@ -43,7 +43,7 @@ A broken contract (for example `min > max`) is a `ContractError`.
 `GrammarBuilder` collects named rules:
 
 - `std::string Rule(std::string_view name, std::string body)` adds the rule `name ::= body` and returns the name, so it can be used in other expressions. A duplicate name is a `ContractError`. Names follow GBNF: `[a-z0-9-]+`.
-- `std::string Text(std::string_view rootBody) const` returns the full grammar: the line `root ::= rootBody` first, then the rules in the order they were added, then the shared terminals the expressions used (`char` and the integer helper rules).
+- `std::string Text(std::string_view rootBody) const` returns the full grammar: the line `root ::= rootBody` first, then the rules in the order they were added, then the shared terminals the expressions used (`char`).
 
 The root line comes first because `turn::CallKindOf` recognises a review and a lookup call by their grammar's first line, and that must not change.
 
@@ -104,6 +104,7 @@ std::vector<ValidationError> Validate(const nlohmann::json& value, const nlohman
   - array sizes and each item.
 - **`oneOf`:** the branch is chosen by the discriminator's value. A missing discriminator, or a value naming no branch, is one error at the discriminator's path. Otherwise the errors are those of the chosen branch, with full paths.
 - It reports every error it finds, not only the first, in document order.
+- Two limits of a parsed value: the shared `char` rule admits a lone surrogate escape (such as \ud800, written with a backslash and "u") that strict JSON parsers such as nlohmann's refuse, so a host must treat a parse failure of the model's text as a model mistake before it calls `Validate`; and key order is enforced by the grammar, not by `Validate`, because a parsed value has lost it.
 - **Never throws on the value:** a mistake in the value is data, as in `turn::ParseReviewOutput`. A schema outside the subset throws the same `DataError` as `FromSchema`.
 - **Messages name the expected shape,** for example `'Saadia' is not one of: "0001A6A4", "00000007"`, `missing key 'target'`, `longer than 48 characters`, `unknown action 'dance'`.
 

@@ -134,6 +134,7 @@ TEST_CASE("Object matches a compact JSON object with fixed keys in a fixed order
     CHECK(grammar::Object({{"say \"hi\"", "x"}}) == R"gbnf("{\"say \\\"hi\\\"\":" x "}")gbnf");
     CHECK_THROWS_AS(grammar::Object({}), core::ContractError);
     CHECK_THROWS_AS(grammar::Object({{"a", "x"}, {"a", "y"}}), core::ContractError);
+    CHECK_THROWS_AS(grammar::Object({{"a", ""}}), core::ContractError);
 
     const test::GbnfMatcher object =
         MatcherFor(grammar::Object({{"a", grammar::Enum({"x", "y"})}, {"b", grammar::Literal("1")}}));

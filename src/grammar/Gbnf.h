@@ -18,8 +18,8 @@ namespace morpheus::grammar {
 // first seen inside it. The limits below keep every grammar this library writes within both checks.
 // JsonString repeats the one reference `char` up to maxChars times: maxChars * 1 < 2000.
 constexpr int GBNF_MAX_STRING_CHARS = 1999;
-// ListOf repeats the group ("," element) up to maxItems - 1 times; with the element a rule reference or a literal, the
-// group creates at most two symbols (itself and the element's first sight): (maxItems - 1) * 2 < 2000.
+// ListOf repeats the group ("," element) up to maxItems - 1 times. It always writes the element before the repeated
+// group, so the group is one symbol; the factor 2 in (maxItems - 1) * 2 < 2000 is a deliberate safety margin.
 constexpr int GBNF_MAX_LIST_ITEMS = 1000;
 
 // One key of an Object and the expression for its value.

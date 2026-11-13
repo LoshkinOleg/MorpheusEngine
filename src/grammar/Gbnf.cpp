@@ -229,6 +229,7 @@ std::string Object(const std::vector<ObjectField>& fields)
     std::string result;
     for (const ObjectField& field : fields) {
         MORPHEUS_REQUIRE(keys.insert(field.key).second, "Object: the key '" + field.key + "' is given twice");
+        MORPHEUS_REQUIRE(!field.value.empty(), "Object: the key '" + field.key + "' has an empty value expression");
         // The opening brace or the comma before it, the key as a JSON string and its colon: one literal.
         result += Literal((result.empty() ? "{" : ",") + nlohmann::json(field.key).dump() + ":") + " " + field.value + " ";
     }

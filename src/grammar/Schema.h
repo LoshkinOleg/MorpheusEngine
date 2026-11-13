@@ -43,6 +43,10 @@ struct ValidationError {
 // order (the order the grammar writes them), each with its nested errors, then the keys the schema does not allow.
 // An empty result means the value is valid. Never throws on the value: a mistake in the value is data. A schema
 // outside the subset throws the same DataError as FromSchema.
+// Two limits of a parsed value: the grammar's shared `char` rule admits a lone surrogate escape (such as \\ud800 in
+// the model's text), which strict JSON parsers such as nlohmann's refuse, so a host must treat a parse failure of the
+// model's text as a model mistake before it calls Validate; and key order is enforced by the grammar, not by Validate,
+// because a parsed value has lost it.
 std::vector<ValidationError> Validate(const nlohmann::json& value, const nlohmann::json& schema);
 
 } // namespace morpheus::grammar

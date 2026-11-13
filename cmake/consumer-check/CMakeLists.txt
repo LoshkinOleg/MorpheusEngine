@@ -28,6 +28,9 @@ endforeach()
 if(NOT TARGET Morpheus::turn)
     message(FATAL_ERROR "The vendored Morpheus build does not define Morpheus::turn.")
 endif()
+if(NOT TARGET Morpheus::grammar)
+    message(FATAL_ERROR "The vendored Morpheus build does not define Morpheus::grammar.")
+endif()
 
 # The host's own program, with ordinary warnings and no warnings as errors.
 add_executable(consumer_check main.cpp)
