@@ -69,7 +69,7 @@ virtual std::string CheckGrammar(const std::string& grammar, std::string_view te
 - **`enabled`:** the window's "Answer as the model" toggle. False at start.
 - **`modes`:** one `SeatMode` per `SeatLabel`, all Human at start.
 - **The pending request,** at most one, as a `SeatRequest`:
-  - `label`;
+  - `id` (`std::uint64_t`): 1 for the seat's first request, one more for each. The UI names the request it acts on by this id;
   - `prompt` (`inference::Prompt`);
   - `spec` (`inference::GenerationSpec`: `maxTokens`, `thinkingMaxTokens`, `grammar`);
   - `draft` (`std::optional<inference::Completion>`, the model's answer in Draft mode).
@@ -77,16 +77,19 @@ virtual std::string CheckGrammar(const std::string& grammar, std::string_view te
 
 The worker runs one job at a time, so at most one request is ever pending.
 
-The worker waits on a `std::condition_variable_any` with the call's `std::stop_token`, so a Cancel, or a new command preempting maintenance, wakes it. A cancelled wait clears the pending request and returns a completion with `cancelled` set, exactly as a cancelled model call does.
+The worker waits on a `std::condition_variable_any` with the call's `std::stop_token`, so a Cancel, or a new command preempting maintenance, wakes it; `Submit` and `Withdraw` wake it too. A cancelled or withdrawn wait clears the pending request and returns a completion with `cancelled` set, exactly as a cancelled model call does.
 
 Methods for the UI thread:
 
 - `Enabled()`, `SetEnabled(bool)`, `ModeOf(SeatLabel)`, `SetMode(SeatLabel, SeatMode)`;
 - `Pending()`: a copy of the pending request, or nullopt;
-- `Submit(text, thinking)`: requires a pending request (ContractError otherwise);
-- `Check(text)`: requires a pending request with a grammar. It returns the backend's `CheckGrammar` result and the reply's token count. The engine thread is blocked in the wait whenever a request is pending, so calling the backend from the UI thread at that moment does not race with the worker. That is why Check is allowed only then.
+- `bool Submit(id, text, thinking)`: answers request `id`. It returns true when that request was pending, and false, doing nothing, when it is no longer pending;
+- `std::optional<SeatCheck> Check(id, text)`: for request `id`, which must have a grammar (ContractError otherwise). It returns the backend's `CheckGrammar` result and the reply's token count, or nullopt, doing nothing, when the request is no longer pending. The engine thread is blocked in the wait whenever a request is pending, so calling the backend from the UI thread at that moment does not race with the worker. That is why Check acts only on the pending request;
+- `bool Withdraw(id)`: releases request `id` without a reply. The wait returns as it does for the stop token, so the call ends cancelled. It returns false, doing nothing, when the request is no longer pending.
 
-Turning the seat off while a request is pending does not abandon it: the request stays until it is submitted or the command is cancelled. Turning it off only affects later calls.
+**Request ids.** A request can end between the window's `Pending()` and its click: a Cancel wakes the worker on its own thread, and the worker clears the request. An id that was issued but is no longer pending (submitted, withdrawn or cancelled) is stale: Submit, Check and Withdraw do nothing and say so, instead of throwing. An id the seat never issued (0, or greater than the last id issued) is an engine bug: ContractError.
+
+Turning the seat off while a request is pending does not abandon it: the request stays until it is submitted, withdrawn or the command is cancelled. Turning it off only affects later calls.
 
 ### ModelSeatBackend: the wrapper
 
@@ -96,7 +99,7 @@ Turning the seat off while a request is pending does not abandon it: the request
 - `Complete`:
   1. When the seat is off, or the call's label is in Model mode, it forwards to the real backend.
   2. In Draft mode, it first runs the real `Complete` with no token callback, so nothing streams to the Play window yet. It returns early if that call is cancelled. The result becomes the request's draft.
-  3. It publishes the request and waits for Submit or the stop token.
+  3. It publishes the request and waits for Submit, Withdraw or the stop token. After a Withdraw or a stop it returns a completion with only `cancelled` set.
   4. It builds the completion from the reply:
      - **Draft submitted unchanged:** the text and thinking equal the draft's. The completion is the model's own completion, with its token counts and timings.
      - **Otherwise, the reply:**
@@ -135,16 +138,20 @@ A dockable window in `src/app/ui` (`ModelSeatWindow.cpp`), declared in `Windows.
   - a thinking box (multi-line) when `thinkingMaxTokens > 0`, pre-filled with the draft's thinking in Draft mode;
   - **Check:** enabled only when the call has a grammar. It shows the reply's token count against `maxTokens`, then "Fits the grammar" or the reason it does not.
   - **Submit:** sends the reply whether or not it fits.
-  - **Cancel turn:** cancels the running command through the controller, as the Play window's Cancel does.
+  - **Withdraw:** releases the pending request without a reply. It is enabled whenever a request is pending, whatever its label, and replaces a separate Cancel turn button:
+    - while a turn or regenerate runs, it cancels the running command through the controller, as the Play window's Cancel does, so the turn closes with `TurnCancelled` exactly as today. This covers a fold made by the turn's own fit loop, and one made by the maintenance that runs before a queued turn;
+    - with no command running (a summarize or condense of between-turn maintenance), it calls `ModelSeat::Withdraw(id)`. The fold or condense returns nothing and stores nothing, `Session::Maintain` stops with the folds it finished kept, and the worker treats it as a maintenance stopped with nothing queued: no event, and maintenance is not due again until the next commit. The next turn's own fit loop folds the transcript when it is over budget, so the withdrawn fold is attempted again there.
+  - Submit, Check and Withdraw act on the request the window shows, by its id.
 - **Edits survive frames:** the reply and thinking texts stay in the window's own state until Submit, and are reset when a new request arrives.
 
 ## Error handling
 
 - **Engine contract breaks** throw `ContractError`:
-  - `Submit` or `Check` with no pending request;
+  - `Submit`, `Check` or `Withdraw` with an id the seat never issued;
   - `Check` on a call without a grammar;
   - a second request published while one is pending;
   - an unrecognised summary call.
+- **A stale id is not an error:** `Submit` or `Withdraw` for a request no longer pending returns false, and `Check` returns nullopt; nothing happens.
 - **Your reply is never an exception:** it goes to the engine like a model's, and the engine's existing rejection paths apply.
 - **Real backend errors propagate as today:** an `InferenceError` from the real model in Draft or Model mode, or from the tokenizer.
 
@@ -157,13 +164,14 @@ A dockable window in `src/app/ui` (`ModelSeatWindow.cpp`), declared in `Windows.
   - Human mode: `Complete` on a worker thread publishes a request with the right label, prompt and spec, waits, and returns the submitted text with real token counts, `tokensReused` 0 and `onToken` called once with the whole text;
   - Draft mode: the inner reply is the draft, nothing streams before Submit, and an unchanged submit returns the inner completion itself; an edited one returns the edit;
   - a reply over `maxTokens` is cut with `stoppedAtLimit` set; thinking over `thinkingMaxTokens` is cut with `thinkingStoppedAtLimit` set;
-  - a pending request wakes on the stop token, returns `cancelled` and clears the request;
+  - a pending request wakes on the stop token, or on Withdraw, returns `cancelled` and clears the request;
   - turning the seat off while a request is pending leaves the request pending.
-- `ModelSeat`: Submit and Check without a request are ContractErrors; Check returns the backend's grammar verdict and the token count.
+- `ModelSeat`: Submit, Check and Withdraw with an id never issued are ContractErrors; a stale Submit after the worker was cancelled returns false and does not throw; Withdraw wakes the waiter as the stop token does; Check returns the backend's grammar verdict and the token count.
+- Withdraw on a maintenance request (a `turn::Worker` over the seat backend, with budgets that make the maintenance fold) ends that maintenance cleanly, and the next turn proceeds and folds again.
 - `LlamaCppBackend::CheckGrammar` (`[llama]`, model-backed): text matching a small grammar returns ""; text that breaks it or ends early returns a reason.
 - Engine reaction, through `AppController` with a scripted factory: a resolve reply typed in Human mode that is not JSON gives a turn with nothing proposed, as for a model mistake; a cancel while the seat waits closes the command with `TurnCancelled`.
 - Restart: applying settings that rebuild the backend keeps the toggle and the modes.
-- UI, headless: the window draws with no request, and with a pending request in Human and Draft modes; Submit through the window answers the request.
+- UI, headless: the window draws with no request, and with a pending request in Human and Draft modes; Submit through the window answers the request; Withdraw through the window on a turn's call closes the turn with `TurnCancelled`.
 
 ## Documentation
 
