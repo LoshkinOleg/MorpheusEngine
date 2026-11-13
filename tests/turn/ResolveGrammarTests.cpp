@@ -193,7 +193,8 @@ TEST_CASE("The resolve grammar names the world's stats, difficulties and field s
 
     CHECK_THAT(grammar, ContainsSubstring(R"(root ::= "{\"intent\":" short-text ",\"checks\":" checks ",\"changes\":" changes "}")"));
     CHECK_THAT(grammar, ContainsSubstring(R"(stat ::= "\"agility\"")"));
-    CHECK_THAT(grammar, ContainsSubstring(R"(difficulty ::= "\"easy\"" | "\"hard\"")"));
+    // Exact text from the grammar builder: an enum's alternatives come in parentheses.
+    CHECK_THAT(grammar, ContainsSubstring(R"(difficulty ::= ("\"easy\"" | "\"hard\""))"));
     // An int field: set or add an integer.
     CHECK_THAT(grammar, ContainsSubstring(
         R"("{\"op\":" ("\"set\"" | "\"add\"") ",\"path\":\"player.health\",\"value\":" int reason)"));
@@ -201,13 +202,13 @@ TEST_CASE("The resolve grammar names the world's stats, difficulties and field s
     CHECK_THAT(grammar, ContainsSubstring(R"("{\"op\":\"set\"" ",\"path\":\"player.location\",\"value\":" short-text reason)"));
     // A counter field: add a non-zero count to an item, or remove the item. The player holds a lantern, so the item
     // part is a per-field rule that matches it by name or any new item.
-    const std::string items = FindRuleName(grammar, "items", R"("lantern" | item)");
+    const std::string items = FindRuleName(grammar, "items", R"(("lantern" | item))"); // The builder's parentheses.
     REQUIRE_FALSE(items.empty());
     CHECK_THAT(grammar, ContainsSubstring(
         R"("{\"op\":\"add\",\"path\":\"player.inventory." )" + items + R"( "\",\"value\":" nonzero-int)"));
     CHECK_THAT(grammar, ContainsSubstring(R"("{\"op\":\"remove\",\"path\":\"player.inventory." )" + items + R"( "\"")"));
     // Create: a new id and every field of the creatable type.
-    const std::string disposition = FindRuleName(grammar, "enum", R"("\"wary\"" | "\"friendly\"")");
+    const std::string disposition = FindRuleName(grammar, "enum", R"(("\"wary\"" | "\"friendly\""))"); // Builder text.
     REQUIRE_FALSE(disposition.empty());
     CHECK_THAT(grammar, ContainsSubstring(
         R"(",\"value\":{\"type\":\"npc\",\"fields\":{" "\"disposition\":" )" + disposition + R"( "}}" reason)"));
@@ -228,12 +229,12 @@ TEST_CASE("The resolve grammar follows the live state and the memory mode", "[gr
     CHECK(GrammarProblem(grammar).empty());
 
     // The live npc's enum field and a create of the same type share one enum rule.
-    const std::string disposition = FindRuleName(grammar, "enum", R"("\"wary\"" | "\"friendly\"")");
+    const std::string disposition = FindRuleName(grammar, "enum", R"(("\"wary\"" | "\"friendly\""))"); // Builder text.
     REQUIRE_FALSE(disposition.empty());
     CHECK_THAT(grammar, ContainsSubstring(
         R"("{\"op\":\"set\"" ",\"path\":\"npc:marta.disposition\",\"value\":" )" + disposition + " reason"));
     CHECK_THAT(grammar, ContainsSubstring(R"("\"disposition\":" )" + disposition + R"( "}}" reason)"));
-    CHECK(CountOccurrences(grammar, R"(::= "\"wary\"")") == 1);
+    CHECK(CountOccurrences(grammar, R"(::= ("\"wary\"")") == 1); // The builder's parentheses.
 }
 
 TEST_CASE("The resolve grammar bounds every list", "[grammar]")
@@ -241,11 +242,12 @@ TEST_CASE("The resolve grammar bounds every list", "[grammar]")
     const core::World world = MiniWorld();
     const std::string grammar = turn::BuildResolveGrammar(world, world.initialState, core::MemoryMode::Assisted);
     // Each bound is one less than the maximum: the first element is written out, the repetition adds the rest.
-    CHECK_THAT(grammar, ContainsSubstring(R"(checks ::= "[]" | "[" check ("," check){0,2} "]")"));
-    CHECK_THAT(grammar, ContainsSubstring(R"(changes ::= "[]" | "[" change ("," change){0,5} "]")"));
-    CHECK_THAT(grammar, ContainsSubstring(R"(branch ::= "[]" | "[" change ("," change){0,3} "]")"));
-    CHECK_THAT(grammar, ContainsSubstring(R"(notes ::= "[]" | "[" long-text ("," long-text){0,1} "]")"));
-    CHECK_THAT(turn::BuildLookupGrammar(), ContainsSubstring(R"(lookups ::= "[]" | "[" lookup ("," lookup){0,2} "]")"));
+    // Exact text from the grammar builder: a list that may be empty is a group of two alternatives.
+    CHECK_THAT(grammar, ContainsSubstring(R"(checks ::= ("[]" | "[" check ("," check){0,2} "]"))"));
+    CHECK_THAT(grammar, ContainsSubstring(R"(changes ::= ("[]" | "[" change ("," change){0,5} "]"))"));
+    CHECK_THAT(grammar, ContainsSubstring(R"(branch ::= ("[]" | "[" change ("," change){0,3} "]"))"));
+    CHECK_THAT(grammar, ContainsSubstring(R"(notes ::= ("[]" | "[" long-text ("," long-text){0,1} "]"))"));
+    CHECK_THAT(turn::BuildLookupGrammar(), ContainsSubstring(R"(lookups ::= ("[]" | "[" lookup ("," lookup){0,2} "]"))"));
 }
 
 TEST_CASE("The resolve grammar covers list fields and enum sets on existing entities", "[grammar]")
@@ -259,7 +261,7 @@ TEST_CASE("The resolve grammar covers list fields and enum sets on existing enti
     CHECK_THAT(grammar, ContainsSubstring(
         R"("{\"op\":" ("\"add\"" | "\"remove\"") ",\"path\":\"player.conditions\",\"value\":" short-text reason)"));
     // An enum field of an existing entity: set one of its values.
-    const std::string disposition = FindRuleName(grammar, "enum", R"("\"wary\"" | "\"friendly\"")");
+    const std::string disposition = FindRuleName(grammar, "enum", R"(("\"wary\"" | "\"friendly\""))"); // Builder text.
     REQUIRE_FALSE(disposition.empty());
     CHECK_THAT(grammar, ContainsSubstring(
         R"("{\"op\":\"set\"" ",\"path\":\"npc:marta.disposition\",\"value\":" )" + disposition + " reason"));
@@ -276,7 +278,7 @@ TEST_CASE("The resolve grammar escapes enum values", "[grammar]")
     const core::World world = WorldWith(schema, state);
     const std::string grammar = turn::BuildResolveGrammar(world, state, core::MemoryMode::Engine);
 
-    CHECK_THAT(grammar, ContainsSubstring(R"(::= "\"a\\\"b\\\\c\"" | "\"plain\"")"));
+    CHECK_THAT(grammar, ContainsSubstring(R"(::= ("\"a\\\"b\\\\c\"" | "\"plain\""))")); // The builder's parentheses.
     CHECK(GrammarProblem(grammar).empty());
 }
 
@@ -288,8 +290,9 @@ TEST_CASE("Held counter items are matched by name next to the generic item rule"
     const std::string grammar = turn::BuildResolveGrammar(world, state, core::MemoryMode::Engine);
 
     // The rule lists the held names (a std::map order: capital letters first) and still allows a new item.
+    // Exact text from the grammar builder: the alternatives come in parentheses.
     const std::string items =
-        FindRuleName(grammar, "items", R"("Rusty Knife" | "say \\\"hi\\\"" | "water-flask" | item)");
+        FindRuleName(grammar, "items", R"(("Rusty Knife" | "say \\\"hi\\\"" | "water-flask" | item))");
     REQUIRE_FALSE(items.empty());
     CHECK_THAT(grammar, ContainsSubstring(
         R"("{\"op\":\"add\",\"path\":\"player.inventory." )" + items + R"( "\",\"value\":" nonzero-int)"));
@@ -352,7 +355,8 @@ TEST_CASE("The review grammar asks for the verdict, the digest or both", "[gramm
     // Both: consistent with no problems, or inconsistent with one to three of them; the digest follows the verdict.
     const std::string both = turn::BuildReviewGrammar(true, true);
     CHECK(both.starts_with("root ::= review\n"));
-    CHECK_THAT(both, ContainsSubstring(R"(review ::= "{\"consistent\":true,\"problems\":[]" ",\"digest\":" digest-text "}" | "{\"consistent\":false,\"problems\":[" problem-text ("," problem-text){0,2} "]" ",\"digest\":" digest-text "}")"));
+    // Exact text from the grammar builder: two objects as alternatives, each key and value its own fragment.
+    CHECK_THAT(both, ContainsSubstring(R"(review ::= ("{\"consistent\":" "true" ",\"problems\":" "[]" ",\"digest\":" digest-text "}" | "{\"consistent\":" "false" ",\"problems\":" "[" problem-text ("," problem-text){0,2} "]" ",\"digest\":" digest-text "}"))"));
     CHECK_THAT(both, ContainsSubstring(R"(problem-text ::= "\"" char{1,200} "\"")"));
     CHECK_THAT(both, ContainsSubstring(R"(digest-text ::= "\"" char{0,300} "\"")"));
     CHECK(GrammarProblem(both).empty());
@@ -360,7 +364,7 @@ TEST_CASE("The review grammar asks for the verdict, the digest or both", "[gramm
     // The check alone: no digest.
     const std::string check = turn::BuildReviewGrammar(true, false);
     CHECK(check.starts_with("root ::= review\n"));
-    CHECK_THAT(check, ContainsSubstring(R"(review ::= "{\"consistent\":true,\"problems\":[]" "}" | "{\"consistent\":false,\"problems\":[" problem-text ("," problem-text){0,2} "]" "}")"));
+    CHECK_THAT(check, ContainsSubstring(R"(review ::= ("{\"consistent\":" "true" ",\"problems\":" "[]" "}" | "{\"consistent\":" "false" ",\"problems\":" "[" problem-text ("," problem-text){0,2} "]" "}"))"));
     CHECK_THAT(check, !ContainsSubstring("digest"));
     CHECK(GrammarProblem(check).empty());
 

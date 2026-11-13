@@ -24,11 +24,9 @@ constexpr int MAX_ITEM_CHARS     = 32;  // New counter items; held items are mat
 constexpr int REVIEW_MAX_PROBLEMS      = 3;   // Contradictions one review may list.
 constexpr int REVIEW_PROBLEM_MAX_CHARS = 200; // Each of them.
 constexpr int DIGEST_MAX_CHARS         = 300; // A turn's digest.
+constexpr long long MAX_INT_MAGNITUDE  = 999999999; // Integers have at most 9 digits, so they always fit an int.
 
-// Every list bound is written as "first element, then up to bound - 1 more", so each needs at least 2.
-static_assert(MAX_CHECKS >= 2 && MAX_CHANGES >= 2 && MAX_BRANCH_CHANGES >= 2 && MAX_NOTES >= 2 && MAX_LOOKUPS >= 2 &&
-                  MAX_LIST_ITEMS >= 2 && REVIEW_MAX_PROBLEMS >= 2,
-              "ResolveGrammar: every list bound must be at least 2");
+// The three grammars are built with grammar::GrammarBuilder, so each starts with its root line.
 
 // GBNF for the resolve call (architecture spec, "Turn flow"). The output is one compact JSON object with its keys
 // in this order:
@@ -37,7 +35,8 @@ static_assert(MAX_CHECKS >= 2 && MAX_CHANGES >= 2 && MAX_BRANCH_CHANGES >= 2 && 
 //   change: {"op", "path", "value" (absent for a counter item remove), "reason": str}
 // Only shapes the schema allows can be written: for every field of every entity in `state`, int set/add, enum
 // set (its values), string set, list add/remove, counter item add (non-zero) and remove; and create of a
-// creatable type with a new id and every field of that type in name order. Counter item names: a new item is
+// creatable type with a new id and every field of that type in name order. Integers are exact: from
+// -MAX_INT_MAGNITUDE to MAX_INT_MAGNITUDE, without leading zeros or "-0". Counter item names: a new item is
 // written as [a-z0-9_]{1,MAX_ITEM_CHARS}; an item the entity holds now is also matched by its own name, verbatim,
 // so names such as "Rusty Knife" can be added to and removed. Stats and difficulties are the world's. Applying
 // still validates values (ranges, existing ids). `state` must be validated state.
@@ -46,7 +45,7 @@ static_assert(MAX_CHECKS >= 2 && MAX_CHANGES >= 2 && MAX_BRANCH_CHANGES >= 2 && 
 std::string BuildResolveGrammar(const core::World& world, const nlohmann::json& state, core::MemoryMode mode);
 
 // GBNF for the assisted-mode lookup call: {"lookups": [{"source": "lore"|"history"|"notes", "query": str}]}, at
-// most MAX_LOOKUPS entries.
+// most MAX_LOOKUPS entries. Its first line, the root, is how turn::CallKindOf tells a lookup call.
 std::string BuildLookupGrammar();
 
 // GBNF for the review call (architecture spec, "Turn flow"). Its first line is always "root ::= review". The output
