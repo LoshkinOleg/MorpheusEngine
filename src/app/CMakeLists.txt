@@ -4,6 +4,7 @@ add_library(morpheus_app_model STATIC
     model/Catalog.cpp
     model/EngineHost.cpp
     model/Inspect.cpp
+    model/ModelSeat.cpp
     model/RunModel.cpp
     model/SettingsEdit.cpp
 )
