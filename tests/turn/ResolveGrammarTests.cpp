@@ -758,7 +758,10 @@ TEST_CASE("The resolve grammar bounds every short text and escapes exactly", "[g
     };
 
     const std::string multibyte = "\xC3\xA9";
-    const std::string escape = R"(é)";
+    // Escapes built from a backslash so no tool can decode them into the character.
+    const std::string BACKSLASH = "\\";
+    const std::string escape = BACKSLASH + "u00e9";
+    const std::string upperEscape = BACKSLASH + "u00C9";
     for (const auto& [name, wrap] : contexts) {
         auto accepts = [&](const std::string& inner) { return engine.Accepts(wrap(inner)); };
         INFO(name);
@@ -767,8 +770,10 @@ TEST_CASE("The resolve grammar bounds every short text and escapes exactly", "[g
         CHECK(accepts(Repeat(multibyte, limit)));
         CHECK_FALSE(accepts(Repeat(multibyte, limit + 1)));
         CHECK(accepts(Repeat(escape, limit)));
+        CHECK(accepts(Repeat(upperEscape, limit)));
+        CHECK_FALSE(accepts(Repeat(upperEscape, limit + 1)));
         CHECK_FALSE(accepts(Repeat(escape, limit + 1)));
-        CHECK(accepts(R"(é¯ꯍ)"));
+        CHECK(accepts(upperEscape + BACKSLASH + "u00aF" + BACKSLASH + "uABCD"));
         for (const std::string& bad : {R"(\x41)", R"(\u12)", R"(\u00G0)", R"(\a)"}) {
             INFO(wrap(bad));
             CHECK_FALSE(accepts(bad));
@@ -788,7 +793,8 @@ TEST_CASE("The resolve grammar bounds every short text and escapes exactly", "[g
     CHECK_FALSE(lists.Accepts(listItem(Repeat(multibyte, limit + 1))));
     CHECK(lists.Accepts(listItem(Repeat(escape, limit))));
     CHECK_FALSE(lists.Accepts(listItem(Repeat(escape, limit + 1))));
-    CHECK(lists.Accepts(listItem(R"(é)")));
+    CHECK(lists.Accepts(listItem(Repeat(upperEscape, limit))));
+    CHECK_FALSE(lists.Accepts(listItem(Repeat(upperEscape, limit + 1))));
     CHECK_FALSE(lists.Accepts(listItem(R"(\u12)")));
 
     // A lookup query, in the same terms.
@@ -799,7 +805,8 @@ TEST_CASE("The resolve grammar bounds every short text and escapes exactly", "[g
     CHECK_FALSE(lookup.Accepts(query(Repeat(multibyte, limit + 1))));
     CHECK(lookup.Accepts(query(Repeat(escape, limit))));
     CHECK_FALSE(lookup.Accepts(query(Repeat(escape, limit + 1))));
-    CHECK(lookup.Accepts(query(R"(é)")));
+    CHECK(lookup.Accepts(query(Repeat(upperEscape, limit))));
+    CHECK_FALSE(lookup.Accepts(query(Repeat(upperEscape, limit + 1))));
     for (const std::string& bad : {R"(\x41)", R"(\u12)", R"(\u00G0)"}) {
         INFO(query(bad));
         CHECK_FALSE(lookup.Accepts(query(bad)));
@@ -814,6 +821,8 @@ TEST_CASE("The resolve grammar bounds every short text and escapes exactly", "[g
     CHECK_FALSE(assisted.Accepts(note(std::string(static_cast<std::size_t>(longLimit) + 1, 'a'))));
     CHECK(assisted.Accepts(note(Repeat(escape, longLimit))));
     CHECK_FALSE(assisted.Accepts(note(Repeat(escape, longLimit + 1))));
+    CHECK(assisted.Accepts(note(Repeat(upperEscape, longLimit))));
+    CHECK_FALSE(assisted.Accepts(note(Repeat(upperEscape, longLimit + 1))));
     CHECK(assisted.Accepts(note(Repeat(multibyte, longLimit))));
     CHECK_FALSE(assisted.Accepts(note(Repeat(multibyte, longLimit + 1))));
     CHECK_FALSE(assisted.Accepts(note(R"(\u12)")));
@@ -823,6 +832,9 @@ TEST_CASE("The review grammars' variants bound problems and digests exactly", "[
 {
     const std::string problem200(static_cast<std::size_t>(turn::REVIEW_PROBLEM_MAX_CHARS), 'p');
     const std::string digest300(static_cast<std::size_t>(turn::DIGEST_MAX_CHARS), 'd');
+    const std::string BACKSLASH = "\\";
+    const std::string escape = BACKSLASH + "u00e9";
+    const std::string upperEscape = BACKSLASH + "u00C9";
 
     const test::GbnfMatcher check(turn::BuildReviewGrammar(true, false));
     auto verdict = [](const std::string& consistent, const std::string& problems) {
@@ -830,7 +842,9 @@ TEST_CASE("The review grammars' variants bound problems and digests exactly", "[
     };
     const std::vector<std::string> checkAccepted = {
         verdict("true", ""), verdict("false", R"("p")"), verdict("false", R"("p","q","r")"),
-        verdict("false", "\"" + problem200 + "\""), verdict("false", R"("café \"x\"\n")")};
+        verdict("false", "\"" + problem200 + "\""), verdict("false", "\"caf" + escape + " \\\"x\\\"\\n\""),
+        verdict("false", "\"" + Repeat(escape, turn::REVIEW_PROBLEM_MAX_CHARS) + "\""),
+        verdict("false", "\"" + Repeat(upperEscape, turn::REVIEW_PROBLEM_MAX_CHARS) + "\"")};
     for (const std::string& text : checkAccepted) {
         INFO(text);
         CHECK(check.Accepts(text));
@@ -838,6 +852,8 @@ TEST_CASE("The review grammars' variants bound problems and digests exactly", "[
     const std::vector<std::string> checkRejected = {
         verdict("true", R"("p")"), verdict("false", ""), verdict("false", R"("p","q","r","s")"),
         verdict("false", "\"" + problem200 + "p\""), verdict("false", R"("")"), verdict("false", R"("p",)"),
+        verdict("false", "\"" + Repeat(escape, turn::REVIEW_PROBLEM_MAX_CHARS + 1) + "\""),
+        verdict("false", "\"" + Repeat(upperEscape, turn::REVIEW_PROBLEM_MAX_CHARS + 1) + "\""),
         verdict("false", R"("\u12")"), verdict("maybe", R"("p")")};
     for (const std::string& text : checkRejected) {
         INFO(text);
@@ -847,13 +863,16 @@ TEST_CASE("The review grammars' variants bound problems and digests exactly", "[
     const test::GbnfMatcher digest(turn::BuildReviewGrammar(false, true));
     auto digestOf = [](const std::string& text) { return R"({"digest":")" + text + R"("})"; };
     const std::vector<std::string> digestAccepted = {digestOf("d"), digestOf(""), digestOf(digest300),
-                                                     digestOf(R"(café \"x\"\n)")};
+                                                     digestOf("caf" + escape + " \\\"x\\\"\\n"),
+                                                     digestOf(Repeat(escape, turn::DIGEST_MAX_CHARS)),
+                                                     digestOf(Repeat(upperEscape, turn::DIGEST_MAX_CHARS))};
     for (const std::string& text : digestAccepted) {
         INFO(text);
         CHECK(digest.Accepts(text));
     }
     const std::vector<std::string> digestRejected = {
-        digestOf(digest300 + "d"), digestOf(R"(\u12)"), R"({"consistent":true,"digest":"d"})",
+        digestOf(digest300 + "d"), digestOf(Repeat(escape, turn::DIGEST_MAX_CHARS + 1)),
+        digestOf(Repeat(upperEscape, turn::DIGEST_MAX_CHARS + 1)), digestOf(R"(\u12)"), R"({"consistent":true,"digest":"d"})",
         R"({"digest":"d","consistent":true})", R"({"consistent":true,"problems":[]})", R"({})"};
     for (const std::string& text : digestRejected) {
         INFO(text);
