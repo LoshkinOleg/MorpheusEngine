@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -27,5 +28,21 @@ namespace morpheus::grammar {
 // (items-0, items-1, ...). Anything else is a core::DataError (schemas are host data) whose message names the JSON
 // pointer inside the schema and the problem: "schema at <pointer>: <problem>".
 std::string FromSchema(const nlohmann::json& schema);
+
+// One mistake Validate found in a value.
+struct ValidationError {
+    std::string path = {};    // JSON pointer into the value, "" for the value itself.
+    std::string message = {}; // What is wrong, naming the expected shape.
+};
+
+// Checks `value` against `schema`: exactly what FromSchema's grammar allows. Types (an integer is a JSON integer, not
+// a float), enum and const, integer ranges, string lengths in characters (core::Utf8Length), required keys present
+// and no extra keys, array sizes and each item. For a oneOf the discriminator's value picks the branch: a missing
+// discriminator, or a value naming no branch, is one error at the discriminator's path; otherwise the errors are the
+// chosen branch's, with full paths. Every error is reported, in document order: an object's keys in the schema's
+// order (the order the grammar writes them), each with its nested errors, then the keys the schema does not allow.
+// An empty result means the value is valid. Never throws on the value: a mistake in the value is data. A schema
+// outside the subset throws the same DataError as FromSchema.
+std::vector<ValidationError> Validate(const nlohmann::json& value, const nlohmann::json& schema);
 
 } // namespace morpheus::grammar

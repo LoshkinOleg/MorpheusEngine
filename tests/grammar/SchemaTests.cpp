@@ -33,19 +33,38 @@ std::string ArrayGrammarOf(const std::string& itemBody, int minItems, int maxIte
     return builder.Text(grammar::ListOf(items, minItems, maxItems));
 }
 
-// The message of the DataError FromSchema throws for the schema `text`.
+// The message of the DataError FromSchema throws for the schema `text`, after checking that Validate throws the same.
 std::string SchemaError(const std::string& text)
 {
     const nlohmann::json schema = nlohmann::json::parse(text);
-    std::optional<std::string> message;
+    std::string fromSchema;
     try {
         grammar::FromSchema(schema);
     } catch (const core::DataError& error) {
-        message = error.what();
+        fromSchema = error.what();
     }
-    INFO("FromSchema accepted the schema " << text);
-    REQUIRE(message.has_value());
-    return *message;
+    std::string validate;
+    try {
+        grammar::Validate(nlohmann::json::object(), schema);
+    } catch (const core::DataError& error) {
+        validate = error.what();
+    }
+    INFO("schema: " << text);
+    REQUIRE_FALSE(fromSchema.empty());
+    CHECK(validate == fromSchema);
+    return fromSchema;
+}
+
+// The one error Validate finds in `value` against `schema`.
+grammar::ValidationError OnlyError(const nlohmann::json& value, const nlohmann::json& schema)
+{
+    const std::vector<grammar::ValidationError> errors = grammar::Validate(value, schema);
+    INFO("value: " << value.dump());
+    for (const grammar::ValidationError& error : errors) {
+        UNSCOPED_INFO(error.path << ": " << error.message);
+    }
+    REQUIRE(errors.size() == 1);
+    return errors[0];
 }
 
 // A oneOf branch with the one key `key`, whose schema is the JSON text `tag`.
@@ -353,4 +372,168 @@ TEST_CASE("FromSchema names the pointer of a mistake deep inside the schema", "[
     schema["oneOf"][3]["properties"]["params"]["properties"]["target"] = nlohmann::json::parse(R"({"type": "string"})");
     CHECK(SchemaError(schema.dump()) ==
           "schema at /oneOf/3/properties/params/properties/target: a string needs 'maxLength'");
+}
+
+TEST_CASE("Validate accepts every action the catalog allows", "[schema]")
+{
+    const nlohmann::json schema = test::CatalogSchema();
+    const std::vector<std::string> valid = {
+        R"({"action":"none","params":{}})",
+        R"({"action":"follow","params":{}})",
+        R"({"action":"wait","params":{}})",
+        R"({"action":"attack","params":{"target":"0001A6A4"}})",
+        R"({"action":"give_item","params":{"item":"Iron Sword"}})",
+        R"({"action":"give_item","params":{"item":")" + LongestItem() + R"("}})",
+        R"({"action":"end_conversation","params":{}})",
+    };
+    for (const std::string& text : valid) {
+        INFO(text);
+        CHECK(grammar::Validate(nlohmann::json::parse(text), schema).empty());
+    }
+}
+
+TEST_CASE("Validate reports each mistake in a catalog action at its path", "[schema]")
+{
+    const nlohmann::json schema = test::CatalogSchema();
+    const std::string actions = R"("none", "follow", "wait", "attack", "give_item", "end_conversation")";
+
+    // An unknown action: one error, at the discriminator.
+    const grammar::ValidationError dance = OnlyError(R"({"action":"dance","params":{}})"_json, schema);
+    CHECK(dance.path == "/action");
+    CHECK(dance.message == "unknown action 'dance'; expected one of: " + actions);
+
+    // An actor who is not present, and a name where an id belongs.
+    const grammar::ValidationError absent = OnlyError(R"({"action":"attack","params":{"target":"0001C3D2"}})"_json, schema);
+    CHECK(absent.path == "/params/target");
+    CHECK(absent.message == R"('0001C3D2' is not one of: "0001A6A4", "0001B07C")");
+    CHECK(OnlyError(R"({"action":"attack","params":{"target":"Saadia"}})"_json, schema).message ==
+          R"('Saadia' is not one of: "0001A6A4", "0001B07C")");
+
+    // A missing argument.
+    const grammar::ValidationError missing = OnlyError(R"({"action":"attack","params":{}})"_json, schema);
+    CHECK(missing.path == "/params/target");
+    CHECK(missing.message == "missing key 'target'");
+
+    // An item over 48 characters.
+    const grammar::ValidationError item = OnlyError(
+        nlohmann::json::parse(R"({"action":"give_item","params":{"item":")" + LongestItem() + R"(a"}})"), schema);
+    CHECK(item.path == "/params/item");
+    CHECK(item.message == "longer than 48 characters");
+
+    // An extra key, the host's measured Qwen failure: "intent" added to wait, at the top or among the arguments.
+    const grammar::ValidationError intent = OnlyError(R"({"action":"wait","intent":"rest","params":{}})"_json, schema);
+    CHECK(intent.path == "/intent");
+    CHECK(intent.message == "unexpected key 'intent'; the keys are 'action', 'params'");
+    const grammar::ValidationError argument = OnlyError(R"({"action":"wait","params":{"intent":"rest"}})"_json, schema);
+    CHECK(argument.path == "/params/intent");
+    CHECK(argument.message == "unexpected key 'intent'; the object must be empty");
+
+    // No discriminator, or no object at all.
+    const grammar::ValidationError noAction = OnlyError(R"({"params":{}})"_json, schema);
+    CHECK(noAction.path == "/action");
+    CHECK(noAction.message == "missing key 'action'");
+    const grammar::ValidationError notObject = OnlyError(R"("wait")"_json, schema);
+    CHECK(notObject.path == "");
+    CHECK(notObject.message == "expected an object whose 'action' is one of: " + actions);
+}
+
+TEST_CASE("Validate wants a JSON integer where the schema says integer", "[schema]")
+{
+    const nlohmann::json schema =
+        R"({"type": "object", "properties": {"count": {"type": "integer", "minimum": 1, "maximum": 5}}, "required": ["count"]})"_json;
+    CHECK(grammar::Validate(R"({"count": 5})"_json, schema).empty());
+    const grammar::ValidationError fraction = OnlyError(R"({"count": 2.5})"_json, schema);
+    CHECK(fraction.path == "/count");
+    CHECK(fraction.message == "expected an integer from 1 to 5, got 2.5");
+    // A float with an integral value is still a float.
+    CHECK(OnlyError(R"({"count": 2.0})"_json, schema).message == "expected an integer from 1 to 5, got 2.0");
+    CHECK(OnlyError(R"({"count": "2"})"_json, schema).message == "expected an integer from 1 to 5, got '2'");
+    CHECK(OnlyError(R"({"count": true})"_json, schema).message == "expected an integer from 1 to 5, got true");
+    CHECK(OnlyError(R"({"count": 6})"_json, schema).message == "expected an integer from 1 to 5, got 6");
+}
+
+TEST_CASE("Validate reports every error, in document order", "[schema]")
+{
+    const nlohmann::json schema = R"({
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "maxLength": 3},
+            "tags": {"type": "array", "items": {"enum": ["a", "b"]}, "maxItems": 2},
+            "level": {"type": "integer", "minimum": 0, "maximum": 3}
+        },
+        "required": ["name", "tags", "level"]
+    })"_json;
+    const nlohmann::json value = R"({"level": 7, "zz": true, "tags": ["a", "c", "d"], "extra": 1, "name": "long name"})"_json;
+    const std::vector<grammar::ValidationError> errors = grammar::Validate(value, schema);
+    // The schema's keys in its order (the order the grammar writes them), then the keys it does not allow.
+    REQUIRE(errors.size() == 7);
+    CHECK(errors[0].path == "/name");
+    CHECK(errors[0].message == "longer than 3 characters");
+    CHECK(errors[1].path == "/tags");
+    CHECK(errors[1].message == "has 3 items; expected 0 to 2");
+    CHECK(errors[2].path == "/tags/1");
+    CHECK(errors[2].message == R"('c' is not one of: "a", "b")");
+    CHECK(errors[3].path == "/tags/2");
+    CHECK(errors[3].message == R"('d' is not one of: "a", "b")");
+    CHECK(errors[4].path == "/level");
+    CHECK(errors[4].message == "expected an integer from 0 to 3, got 7");
+    CHECK(errors[5].path == "/extra");
+    CHECK(errors[5].message == "unexpected key 'extra'; the keys are 'name', 'tags', 'level'");
+    CHECK(errors[6].path == "/zz");
+    CHECK(errors[6].message == "unexpected key 'zz'; the keys are 'name', 'tags', 'level'");
+}
+
+TEST_CASE("Validate checks every keyword of the subset", "[schema]")
+{
+    const nlohmann::json schema = test::EveryKeywordSchema();
+    const nlohmann::json base =
+        R"({"name":"ab","count":0,"big":5,"tags":["red"],"codes":[],"version":2,"pair":[{"x":1,"label":"point"},{"x":2,"label":"point"}],"empty":{},"mode":{"state":"off"}})"_json;
+    CHECK(grammar::Validate(base, schema).empty());
+    // `base` with `key` set to `replacement` gives exactly one error, at `path`, saying `message`.
+    auto expectOne = [&](const char* key, const nlohmann::json& replacement, const std::string& path,
+                         const std::string& message) {
+        nlohmann::json value = base;
+        value[key] = replacement;
+        INFO(key << " = " << replacement.dump());
+        const grammar::ValidationError found = OnlyError(value, schema);
+        CHECK(found.path == path);
+        CHECK(found.message == message);
+    };
+    expectOne("version", 3, "/version", "expected 2, got 3");
+    expectOne("count", 121, "/count", "expected an integer from -20 to 120, got 121");
+    expectOne("big", 1.5, "/big", "expected an integer from -9223372036854775808 to 9223372036854775807, got 1.5");
+    expectOne("name", "a", "/name", "shorter than 2 characters");
+    expectOne("name", "abcdefg", "/name", "longer than 6 characters");
+    expectOne("name", 5, "/name", "expected a string of 2 to 6 characters, got 5");
+    expectOne("tags", nlohmann::json::array(), "/tags", "has 0 items; expected 1 to 3");
+    expectOne("tags", R"(["pink"])"_json, "/tags/0", R"('pink' is not one of: "red", "green", "blue")");
+    expectOne("codes", R"([3.0])"_json, "/codes/0", "3.0 is not one of: 3, -7, 120");
+    expectOne("codes", "3", "/codes", "expected an array of 0 to 2 items, got '3'");
+    expectOne("pair", R"([{"x":1,"label":"point"},{"x":10,"label":"point"}])"_json, "/pair/1/x",
+              "expected an integer from 0 to 9, got 10");
+    expectOne("empty", R"({"a":1})"_json, "/empty/a", "unexpected key 'a'; the object must be empty");
+    expectOne("empty", nlohmann::json::array(), "/empty", "expected an empty object");
+    expectOne("mode", R"({"state":"on"})"_json, "/mode/level", "missing key 'level'");
+    expectOne("mode", R"({"state":"dim"})"_json, "/mode/state", R"(unknown state 'dim'; expected one of: "on", "off")");
+
+    // A key with "/" and "~" is escaped in the path as RFC 6901 says.
+    const nlohmann::json escaped = R"({"type": "object", "properties": {"a/b~c": {"const": 1}}, "required": ["a/b~c"]})"_json;
+    const grammar::ValidationError odd = OnlyError(R"({"a/b~c": 2})"_json, escaped);
+    CHECK(odd.path == "/a~1b~0c");
+    CHECK(odd.message == "expected 1, got 2");
+}
+
+TEST_CASE("Validate throws the schema's DataError and never one for the value", "[schema]")
+{
+    CHECK_THROWS_AS(grammar::Validate(nlohmann::json::object(), R"({"type": "boolean"})"_json), core::DataError);
+    // A value of any shape is data: errors, not exceptions.
+    const nlohmann::json schema = test::CatalogSchema();
+    const std::vector<nlohmann::json> values = {nlohmann::json(), nlohmann::json(1.5), nlohmann::json::array({1, 2}),
+                                                R"({"action": null})"_json, R"({"action": "attack", "params": []})"_json};
+    for (const nlohmann::json& value : values) {
+        INFO(value.dump());
+        std::vector<grammar::ValidationError> errors;
+        CHECK_NOTHROW(errors = grammar::Validate(value, schema));
+        CHECK_FALSE(errors.empty());
+    }
 }

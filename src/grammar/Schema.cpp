@@ -14,6 +14,7 @@
 
 #include "core/Errors.h"
 #include "core/JsonInt.h"
+#include "core/Text.h"
 #include "grammar/Gbnf.h"
 
 namespace morpheus::grammar {
@@ -370,6 +371,148 @@ std::string Expression(const Node& node, GrammarBuilder& builder, int& itemRules
     throw core::ContractError("FromSchema: unhandled schema kind");
 }
 
+// Adds to `errors` every way `value`, found at `path` inside the whole value, breaks `node`, in document order: an
+// object's keys in the schema's order, then the keys it does not allow. Recursive, like Compile.
+void CheckValue(const Node& node, const nlohmann::json& value, const std::string& path,
+                std::vector<ValidationError>& errors)
+{
+    auto add = [&](const std::string& at, std::string message) { errors.push_back({at, std::move(message)}); };
+    // A value as messages show it: a string in single quotes, anything else as compact JSON, both cut short.
+    auto shown = [](const nlohmann::json& shownValue) {
+        if (shownValue.is_string()) {
+            const std::string& text = shownValue.get_ref<const std::string&>();
+            const std::string cut = core::CutUtf8(text, core::SHORT_JSON_CHARS);
+            return "'" + cut + (cut.size() < text.size() ? "...'" : "'");
+        }
+        // The replace handler keeps a string that is not UTF-8 from throwing: the value is data.
+        std::string text = shownValue.dump(-1, ' ', true, nlohmann::json::error_handler_t::replace);
+        if (text.size() > core::SHORT_JSON_CHARS) {
+            text.resize(core::SHORT_JSON_CHARS);
+            text += "...";
+        }
+        return text;
+    };
+    // The allowed values as messages list them: JSON, comma-separated.
+    auto listed = [](const std::vector<nlohmann::json>& listedValues) {
+        std::string text;
+        for (const nlohmann::json& listedValue : listedValues) {
+            text += (text.empty() ? "" : ", ") + listedValue.dump();
+        }
+        return text;
+    };
+    // Equal as the grammar sees it: a string to a string, an integer to an integer (1.0 is not 1).
+    auto same = [](const nlohmann::json& a, const nlohmann::json& b) {
+        return (a.is_string() && b.is_string() && a == b) || (a.is_number_integer() && b.is_number_integer() && a == b);
+    };
+
+    switch (node.kind) {
+    case Node::Kind::Object: {
+        std::string keyList;
+        for (const std::string& key : node.keys) {
+            keyList += (keyList.empty() ? "'" : ", '") + key + "'";
+        }
+        if (!value.is_object()) {
+            add(path, node.keys.empty() ? "expected an empty object" : "expected an object with the keys " + keyList);
+            break;
+        }
+        // The schema's keys first, in its order; each present one is checked against its schema.
+        for (std::size_t i = 0; i < node.keys.size(); ++i) {
+            const std::string at = path + "/" + PointerToken(node.keys[i]);
+            if (!value.contains(node.keys[i])) {
+                add(at, std::format("missing key '{}'", node.keys[i]));
+            } else {
+                CheckValue(node.children[i], value.at(node.keys[i]), at, errors);
+            }
+        }
+        // Then every key the schema does not allow.
+        for (auto it = value.begin(); it != value.end(); ++it) {
+            if (std::find(node.keys.begin(), node.keys.end(), it.key()) == node.keys.end()) {
+                add(path + "/" + PointerToken(it.key()),
+                    std::format("unexpected key '{}'; {}", it.key(),
+                                node.keys.empty() ? "the object must be empty" : "the keys are " + keyList));
+            }
+        }
+        break;
+    }
+    case Node::Kind::Enum: {
+        const bool allowed = std::any_of(node.values.begin(), node.values.end(),
+                                         [&](const nlohmann::json& allowedValue) { return same(allowedValue, value); });
+        if (!allowed) {
+            add(path, std::format("{} is not one of: {}", shown(value), listed(node.values)));
+        }
+        break;
+    }
+    case Node::Kind::Const:
+        if (!same(node.values[0], value)) {
+            add(path, std::format("expected {}, got {}", node.values[0].dump(), shown(value)));
+        }
+        break;
+    case Node::Kind::Integer:
+        // JsonIntInRange refuses floats and bools, and unsigned values beyond long long.
+        if (!core::JsonIntInRange(value, node.minimum, node.maximum)) {
+            add(path, std::format("expected an integer from {} to {}, got {}", node.minimum, node.maximum, shown(value)));
+        }
+        break;
+    case Node::Kind::String: {
+        if (!value.is_string()) {
+            const std::string lengths = node.minCount == 0 ? std::format("at most {}", node.maxCount)
+                                                           : std::format("{} to {}", node.minCount, node.maxCount);
+            add(path, std::format("expected a string of {} characters, got {}", lengths, shown(value)));
+            break;
+        }
+        // Lengths count characters (code points), as the grammar's `char` does for compact JSON text.
+        const std::size_t length = core::Utf8Length(value.get_ref<const std::string&>());
+        if (length > static_cast<std::size_t>(node.maxCount)) {
+            add(path, std::format("longer than {} characters", node.maxCount));
+        } else if (length < static_cast<std::size_t>(node.minCount)) {
+            add(path, std::format("shorter than {} characters", node.minCount));
+        }
+        break;
+    }
+    case Node::Kind::Array: {
+        if (!value.is_array()) {
+            add(path, std::format("expected an array of {} to {} items, got {}", node.minCount, node.maxCount, shown(value)));
+            break;
+        }
+        if (value.size() < static_cast<std::size_t>(node.minCount) || value.size() > static_cast<std::size_t>(node.maxCount)) {
+            add(path, std::format("has {} items; expected {} to {}", value.size(), node.minCount, node.maxCount));
+        }
+        // Every item is checked, even past the limit.
+        for (std::size_t i = 0; i < value.size(); ++i) {
+            CheckValue(node.children[0], value[i], std::format("{}/{}", path, i), errors);
+        }
+        break;
+    }
+    case Node::Kind::OneOf: {
+        const std::string& key = node.children[0].keys[0];
+        std::vector<nlohmann::json> tags;
+        for (const Node& branch : node.children) {
+            tags.push_back(branch.children[0].values[0]);
+        }
+        if (!value.is_object()) {
+            add(path, std::format("expected an object whose '{}' is one of: {}", key, listed(tags)));
+            break;
+        }
+        const std::string at = path + "/" + PointerToken(key);
+        if (!value.contains(key)) {
+            add(at, std::format("missing key '{}'", key));
+            break;
+        }
+        // The discriminator picks the branch; the value is then checked against that branch alone.
+        const nlohmann::json& tag = value.at(key);
+        const auto chosen = std::find_if(node.children.begin(), node.children.end(), [&](const Node& candidate) {
+            return same(candidate.children[0].values[0], tag);
+        });
+        if (chosen == node.children.end()) {
+            add(at, std::format("unknown {} {}; expected one of: {}", key, shown(tag), listed(tags)));
+            break;
+        }
+        CheckValue(*chosen, value, path, errors);
+        break;
+    }
+    }
+}
+
 } // namespace
 
 std::string FromSchema(const nlohmann::json& schema)
@@ -380,6 +523,15 @@ std::string FromSchema(const nlohmann::json& schema)
     int itemRules = 0; // The item rules named so far.
     const std::string rootBody = Expression(root, builder, itemRules);
     return builder.Text(rootBody);
+}
+
+std::vector<ValidationError> Validate(const nlohmann::json& value, const nlohmann::json& schema)
+{
+    // A schema outside the subset is the host's data error, the same one FromSchema throws.
+    const Node root = Compile(schema, "");
+    std::vector<ValidationError> errors;
+    CheckValue(root, value, "", errors);
+    return errors;
 }
 
 } // namespace morpheus::grammar
