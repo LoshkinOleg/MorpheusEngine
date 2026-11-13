@@ -412,6 +412,7 @@ TEST_CASE("A call that arrives brings the Model seat tab to the front without ta
     DrawFrames(imgui, controller, ui);
     REQUIRE(pSeat->DockNode != nullptr);
     CHECK(pSeat->DockNode->TabBar->SelectedTabId == pSeat->TabId);
+    CHECK(pSeat->DockNode->VisibleWindow == pSeat);
     CHECK(ImGui::GetCurrentContext()->NavWindow == pPlay);
 
     controller.Cancel();
@@ -493,5 +494,89 @@ TEST_CASE("The Model seat window keeps the typed reply when the same call comes 
         const std::optional<app::SeatReply> reply = call.Get();
         REQUIRE(reply);
         CHECK(reply->text.empty());
+    }
+}
+
+TEST_CASE("A new call leaves another window's active input alone", "[ui]")
+{
+    test::HeadlessImGui imgui;
+    const std::filesystem::path dir = test::SettingsFolder("ui_seat_active");
+    app::AppController controller(test::PathsIn(dir), test::ScriptedFactory(Responder()));
+    app::ModelSeatWindow window;
+    test::FakeBackend backend(16384);
+    test::PumpUntil(controller, [&] { return controller.CanPost(); });
+    app::SeatRequest request;
+    request.label = app::SeatLabel::Narrate;
+    request.prompt = {{{inference::Role::User, "I walk."}}, 0};
+
+    // An input in a scratch window, drawn next to the seat window, is active (as the Play input is while typing).
+    char scratch[64] = "";
+    auto frame = [&] {
+        controller.Frame();
+        imgui.Frame([&] {
+            ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
+            ImGui::SetNextWindowSize(ImVec2(1200.0f, 880.0f));
+            window.Draw(controller);
+            ImGui::SetNextWindowPos(ImVec2(1250.0f, 0.0f));
+            ImGui::SetNextWindowSize(ImVec2(300.0f, 100.0f));
+            ImGui::Begin("Scratch");
+            ImGui::InputText("##scratch", scratch, sizeof(scratch));
+            ImGui::End();
+        });
+    };
+    frame();
+    ImGuiWindow* pScratch = ImGui::FindWindowByName("Scratch");
+    REQUIRE(pScratch != nullptr);
+    const ImGuiID scratchId = pScratch->GetID("##scratch");
+    ImGui::ActivateItemByID(scratchId);
+    frame();
+    frame();
+    REQUIRE(ImGui::GetActiveID() == scratchId);
+
+    test::AsyncCall<std::optional<app::SeatReply>> call(
+        [&](std::stop_token stop) { return controller.Seat().Await(request, backend, stop); });
+    test::WaitForRequest(controller.Seat());
+    frame();
+    frame();
+    CHECK(ImGui::GetActiveID() == scratchId);
+}
+
+TEST_CASE("A Draft call that repeats an answered call starts from its draft", "[ui]")
+{
+    test::HeadlessImGui imgui;
+    const std::filesystem::path dir = test::SettingsFolder("ui_seat_answered");
+    app::AppController controller(test::PathsIn(dir), test::ScriptedFactory(Responder()));
+    app::ModelSeatWindow window;
+    test::FakeBackend backend(16384);
+    test::PumpUntil(controller, [&] { return controller.CanPost(); });
+    app::SeatRequest request;
+    request.label = app::SeatLabel::Narrate;
+    request.prompt = {{{inference::Role::User, "I walk."}}, 0};
+    request.draft = inference::Completion{};
+    request.draft->text = "the draft";
+    app::ModelSeat& seat = controller.Seat();
+
+    // Answer the call with its draft unchanged.
+    {
+        test::AsyncCall<std::optional<app::SeatReply>> call(
+            [&](std::stop_token stop) { return seat.Await(request, backend, stop); });
+        test::WaitForRequest(seat);
+        DrawSeatWindow(imgui, controller, window, 2);
+        PressSeatItem("Submit");
+        DrawSeatWindow(imgui, controller, window, 1);
+        REQUIRE(call.Get());
+    }
+
+    // The same call again (a regenerate): the reply box holds the draft, not the emptied box.
+    {
+        test::AsyncCall<std::optional<app::SeatReply>> call(
+            [&](std::stop_token stop) { return seat.Await(request, backend, stop); });
+        test::WaitForRequest(seat);
+        DrawSeatWindow(imgui, controller, window, 2);
+        PressSeatItem("Submit");
+        DrawSeatWindow(imgui, controller, window, 1);
+        const std::optional<app::SeatReply> reply = call.Get();
+        REQUIRE(reply);
+        CHECK(reply->text == "the draft");
     }
 }

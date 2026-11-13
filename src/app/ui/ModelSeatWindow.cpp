@@ -31,6 +31,7 @@ void ModelSeatWindow::Draw(AppController& controller)
 
     // A new call (before Begin: the window draws nothing while its tab is hidden, and a call must be seen then).
     if (request && request->id != _requestId) {
+        ImGuiWindow* pWindow = ImGui::FindWindowByName(MODEL_SEAT_WINDOW); // Null before the first draw.
         // A call the engine published again (a between-turn fold a posted turn preempted comes back under a new id)
         // has the same label and prompt: the owner's typed reply stays. Any other call starts over, with the reply
         // as the model's draft (Draft mode) or empty (Human mode).
@@ -44,7 +45,13 @@ void ModelSeatWindow::Draw(AppController& controller)
         if (!again) {
             _reply = request->draft ? request->draft->text : std::string();
             _thinking = request->draft ? request->draft->thinking : std::string();
-            ImGui::ClearActiveID(); // A box that is being edited must not see its text replaced under it.
+            // An item of this window that is active (the reply box being edited, or a button just pressed) must not
+            // see its text replaced under it. Only this window's: another window's active item (the owner typing in
+            // the Play window) stays active.
+            const ImGuiWindow* pActive = ImGui::GetCurrentContext()->ActiveIdWindow;
+            if (pWindow != nullptr && pActive != nullptr && pActive->RootWindow == pWindow) {
+                ImGui::ClearActiveID();
+            }
         }
         _requestId = request->id;
         _label = request->label;
@@ -54,7 +61,6 @@ void ModelSeatWindow::Draw(AppController& controller)
         // Bring the window's tab to the front when it is docked with others, so the call is seen. The tab bar's
         // SelectedTabId, not NextSelectedTabId nor a window focus: those focus the window, which would take the
         // keyboard from the Play window (a between-turn fold arrives while the owner may be typing there).
-        ImGuiWindow* pWindow = ImGui::FindWindowByName(MODEL_SEAT_WINDOW);
         if (pWindow != nullptr && pWindow->DockNode != nullptr && pWindow->DockNode->TabBar != nullptr) {
             pWindow->DockNode->TabBar->SelectedTabId = pWindow->TabId;
         }
@@ -172,6 +178,7 @@ void ModelSeatWindow::Draw(AppController& controller)
                 }
             } else if (submit) {
                 seat.Submit(request->id, std::exchange(_reply, std::string()), std::exchange(_thinking, std::string()));
+                _prompt = {}; // Answered: forget the call, so an identical later call (a regenerate's) starts over.
                 _check.reset();
             } else if (check) {
                 _check = seat.Check(request->id, _reply);
