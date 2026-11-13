@@ -11,6 +11,7 @@ add_library(morpheus_core STATIC
     Text.cpp
     World.cpp
 )
+add_library(Morpheus::core ALIAS morpheus_core) # The name host projects link.
 target_include_directories(morpheus_core PUBLIC ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(morpheus_core PUBLIC nlohmann_json::nlohmann_json)
 morpheus_target_defaults(morpheus_core)

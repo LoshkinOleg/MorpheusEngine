@@ -76,17 +76,21 @@ endfunction()
 # ---- Dependencies (FetchContent) ---------------------------------------
 include(FetchContent)
 
-# nlohmann (engine libraries and app)
-FetchContent_Declare(
-    nlohmann                                                      # prefix for CMake variables
-    GIT_REPOSITORY https://github.com/nlohmann/json.git           # repo
-    GIT_TAG        55f93686c01528224f448c19128836e7df245f72       # commit SHA to get, 3.12.0
-    GIT_SHALLOW    FALSE                                          # Has to be FALSE to be able to use a commit SHA
-    SYSTEM                                                        # Treat its headers as external (no /W4 /WX)
-)
-FetchContent_MakeAvailable(nlohmann)
+# nlohmann (engine libraries and app). A host project that already provides it (its own FetchContent or find_package)
+# keeps its copy, and Morpheus links the same target.
+if(NOT TARGET nlohmann_json::nlohmann_json)
+    FetchContent_Declare(
+        nlohmann                                                      # prefix for CMake variables
+        GIT_REPOSITORY https://github.com/nlohmann/json.git           # repo
+        GIT_TAG        55f93686c01528224f448c19128836e7df245f72       # commit SHA to get, 3.12.0
+        GIT_SHALLOW    FALSE                                          # Has to be FALSE to be able to use a commit SHA
+        SYSTEM                                                        # Treat its headers as external (no /W4 /WX)
+    )
+    FetchContent_MakeAvailable(nlohmann)
+endif()
 
-# SQLite amalgamation (store). The archive has no CMakeLists.txt, so the library target is defined here.
+# SQLite amalgamation (store). The archive has no CMakeLists.txt, so the library target is defined here, under a name
+# of Morpheus's own so that it never meets a host project's sqlite3 target.
 FetchContent_Declare(
     sqlite
     URL      https://www.sqlite.org/2025/sqlite-amalgamation-3500400.zip   # SQLite 3.50.4
@@ -94,9 +98,9 @@ FetchContent_Declare(
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 FetchContent_MakeAvailable(sqlite)
-add_library(sqlite3 STATIC ${sqlite_SOURCE_DIR}/sqlite3.c)
-target_include_directories(sqlite3 SYSTEM PUBLIC ${sqlite_SOURCE_DIR})
-target_compile_definitions(sqlite3 PRIVATE SQLITE_OMIT_LOAD_EXTENSION SQLITE_DQS=0)
+add_library(morpheus_sqlite3 STATIC ${sqlite_SOURCE_DIR}/sqlite3.c)
+target_include_directories(morpheus_sqlite3 SYSTEM PUBLIC ${sqlite_SOURCE_DIR})
+target_compile_definitions(morpheus_sqlite3 PRIVATE SQLITE_OMIT_LOAD_EXTENSION SQLITE_DQS=0)
 
 if(MORPHEUS_BUILD_LLAMA)
     # llama.cpp's own backend switches follow MORPHEUS_GPU_BACKEND: GGML_VULKAN only for Vulkan, GGML_CUDA only for

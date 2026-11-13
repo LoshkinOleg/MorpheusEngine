@@ -9,6 +9,7 @@ add_library(morpheus_app_model STATIC
     model/RunModel.cpp
     model/SettingsEdit.cpp
 )
+add_library(Morpheus::app_model ALIAS morpheus_app_model) # The name host projects link.
 target_include_directories(morpheus_app_model PUBLIC ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(morpheus_app_model PUBLIC morpheus_turn)
 morpheus_target_defaults(morpheus_app_model)
@@ -25,6 +26,7 @@ add_library(morpheus_app_ui STATIC
     ui/SettingsWindow.cpp
     ui/ModelSeatWindow.cpp
 )
+add_library(Morpheus::app_ui ALIAS morpheus_app_ui) # The name host projects link.
 target_include_directories(morpheus_app_ui PUBLIC ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(morpheus_app_ui PUBLIC morpheus_app_model imgui_core)
 morpheus_target_defaults(morpheus_app_ui)
