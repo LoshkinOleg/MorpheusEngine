@@ -1,10 +1,16 @@
 #include "app/ui/Ui.h"
 
+#include <cfloat>
 #include <format>
+#include <optional>
 #include <string>
 
 #include <imgui.h>
 #include <imgui_internal.h> // DockBuilder (the default layout) and BeginViewportSideBar (the status bar).
+#include <imgui_stdlib.h>
+
+#include "app/model/Inspect.h"
+#include "app/model/ModelSeat.h"
 
 namespace morpheus::app {
 
@@ -15,6 +21,31 @@ void TextWrappedColored(const ImVec4& color, std::string_view text)
     ImGui::TextUnformatted(text.data(), text.data() + text.size());
     ImGui::PopTextWrapPos();
     ImGui::PopStyleColor();
+}
+
+void DrawPrompt(const inference::Prompt& prompt, bool& showRaw)
+{
+    // The view: one section per message, or the whole text to copy.
+    if (ImGui::RadioButton("Sections", !showRaw)) {
+        showRaw = false;
+    }
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Raw", showRaw)) {
+        showRaw = true;
+    }
+    if (showRaw) {
+        std::string text = RawPrompt(prompt);
+        ImGui::InputTextMultiline("##raw", &text, ImVec2(-FLT_MIN, -FLT_MIN), ImGuiInputTextFlags_ReadOnly);
+    } else {
+        if (ImGui::BeginChild("sections")) {
+            for (const PromptSection& section : PromptSections(prompt)) {
+                if (ImGui::CollapsingHeader(section.title.c_str())) {
+                    ImGui::TextWrapped("%s", section.text.c_str());
+                }
+            }
+        }
+        ImGui::EndChild();
+    }
 }
 
 void Ui::Draw(AppController& controller)
@@ -35,6 +66,11 @@ void Ui::Draw(AppController& controller)
         status = "Engine failed: " + controller.Engine().Failure() + " (fix it in Settings and apply)";
         break;
     case EngineHost::Status::Ready:
+        // A call waiting at the model seat holds the engine until it is answered or cancelled.
+        if (const std::optional<SeatRequest> request = controller.Seat().Pending()) {
+            status = std::format("Waiting for the model seat: the {} call", SeatLabelName(request->label));
+            break;
+        }
         switch (controller.Run().CurrentBusy()) {
         case RunModel::Busy::None:
             status = controller.Run().Open() ? std::format("Ready - {}, {} turns", controller.Run().Meta().worldId,
@@ -67,8 +103,8 @@ void Ui::Draw(AppController& controller)
     ImGui::End();
 
     // The dock space. Without a saved layout (first launch, or imgui.ini deleted), the windows are docked into the
-    // default one: runs and settings on the left, the story in the middle, state and memory on the right, and the
-    // turn log and context below the story.
+    // default one: runs and settings on the left, the story in the middle, state, memory and the model seat on the
+    // right, and the turn log and context below the story.
     const ImGuiID dockspaceId = ImGui::GetID("MainDockSpace");
     if (ImGui::DockBuilderGetNode(dockspaceId) == nullptr) {
         ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
@@ -82,6 +118,7 @@ void Ui::Draw(AppController& controller)
         ImGui::DockBuilderDockWindow(PLAY_WINDOW, center);
         ImGui::DockBuilderDockWindow(STATE_WINDOW, right);
         ImGui::DockBuilderDockWindow(MEMORY_WINDOW, right);
+        ImGui::DockBuilderDockWindow(MODEL_SEAT_WINDOW, right);
         ImGui::DockBuilderDockWindow(TURN_LOG_WINDOW, bottom);
         ImGui::DockBuilderDockWindow(CONTEXT_WINDOW, bottom);
         ImGui::DockBuilderFinish(dockspaceId);
@@ -95,6 +132,7 @@ void Ui::Draw(AppController& controller)
     _context.Draw(controller);
     _memory.Draw(controller);
     _settings.Draw(controller);
+    _modelSeat.Draw(controller);
 }
 
 } // namespace morpheus::app

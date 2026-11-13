@@ -1,12 +1,9 @@
 #include "app/ui/Windows.h"
 
-#include <cfloat>
 #include <optional>
-#include <string>
 #include <utility>
 
 #include <imgui.h>
-#include <imgui_stdlib.h>
 
 #include "app/model/Inspect.h"
 
@@ -77,28 +74,9 @@ void ContextWindow::Draw(AppController& controller)
                 ImGui::EndTable();
             }
 
-            // The prompt itself: one section per message, or the whole text to copy.
+            // The prompt itself, sections or raw, in the rest of the window.
             ImGui::SeparatorText("Prompt");
-            if (ImGui::RadioButton("Sections", !showRaw)) {
-                showRaw = false;
-            }
-            ImGui::SameLine();
-            if (ImGui::RadioButton("Raw", showRaw)) {
-                showRaw = true;
-            }
-            if (showRaw) {
-                std::string text = RawPrompt(assembly->prompt);
-                ImGui::InputTextMultiline("##raw", &text, ImVec2(-FLT_MIN, -FLT_MIN), ImGuiInputTextFlags_ReadOnly);
-            } else {
-                if (ImGui::BeginChild("sections")) {
-                    for (const PromptSection& section : PromptSections(assembly->prompt)) {
-                        if (ImGui::CollapsingHeader(section.title.c_str())) {
-                            ImGui::TextWrapped("%s", section.text.c_str());
-                        }
-                    }
-                }
-                ImGui::EndChild();
-            }
+            DrawPrompt(assembly->prompt, showRaw);
         }
     }
     ImGui::End();

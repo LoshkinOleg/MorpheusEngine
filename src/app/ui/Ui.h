@@ -16,6 +16,7 @@ private:
     ContextWindow _context = {};
     MemoryWindow _memory = {};
     SettingsWindow _settings = {};
+    ModelSeatWindow _modelSeat = {};
 
 public:
     void Draw(AppController& controller);
