@@ -26,10 +26,10 @@ Local-first, LLM-driven text RPG engine in C++20. The repository owner acts as p
 - src/context: layered prompt assembly with exact token budgets.
 - src/turn: turn orchestration: grammar, resolve and apply, retrieval, folding, session, worker, replay.
 - src/llama: the llama.cpp backend (`dev` and `linux-release` presets only). Only this module, tools/probe, tools/play and src/app/main.cpp link llama.cpp; only src/llama and the tools include <llama.h>.
-- tools/probe: `morpheus_probe`, a manual check of the models, the Vulkan backend and KV-cache reuse (`dev` and `linux-release` presets only).
+- tools/probe: `morpheus_probe`, a manual check of the models, the GPU backend and KV-cache reuse (`dev` and `linux-release` presets only).
 - tools/play: `morpheus_play`, the terminal player; `--record` writes a replay fixture for tests/data/replays (`dev` and `linux-release` presets only).
 - models/ and settings.json: both gitignored, per machine. settings.example.json is the template.
-- src/app: the app. model/ (morpheus_app_model): its state and actions, no SDL, ImGui or llama.cpp. ui/ (morpheus_app_ui): the ImGui windows, needing only ImGui's core, so tests draw them headless (tests/app/HeadlessImGui.h). main.cpp (`morpheus`, `dev` preset only): the SDL3 window and the llama.cpp backend. ImGui is upstream's docking branch; IM_ASSERT throws (src/app/ui/ImGuiConfig.h).
+- src/app: the app. model/ (morpheus_app_model): its state and actions, no SDL, ImGui or llama.cpp. ui/ (morpheus_app_ui): the ImGui windows, needing only ImGui's core, so tests draw them headless (tests/app/HeadlessImGui.h). main.cpp (`morpheus`, `dev` and `linux-release` presets only): the SDL3 window and the llama.cpp backend. ImGui is upstream's docking branch; IM_ASSERT throws (src/app/ui/ImGuiConfig.h).
 - tests/: Catch2 tests (every tests/**/*.cpp is compiled in), tests/data: test worlds.
 - cmake/consumer-check: a host project that includes Morpheus through FetchContent and links `Morpheus::turn`; it fails to configure if the vendored build defines more than the engine libraries.
 - game_projects/<id>/: worlds as data (world.json, rules.md, lore.csv, state_schema.json, initial_state.json).

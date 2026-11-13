@@ -10,7 +10,8 @@ cmake_path(SET MORPHEUS_DEFAULT_SOURCE_DIR NORMALIZE "${CMAKE_CURRENT_SOURCE_DIR
 set(MORPHEUS_SOURCE_DIR "${MORPHEUS_DEFAULT_SOURCE_DIR}" CACHE PATH "The MorpheusEngine checkout to include")
 
 include(FetchContent)
-FetchContent_Declare(morpheus SOURCE_DIR "${MORPHEUS_SOURCE_DIR}")
+# SYSTEM, as the README documents: Morpheus's headers count as system headers in the host's own files.
+FetchContent_Declare(morpheus SOURCE_DIR "${MORPHEUS_SOURCE_DIR}" SYSTEM)
 FetchContent_MakeAvailable(morpheus)
 
 # With Morpheus's vendored defaults nothing beyond the five engine libraries exists: no app, tests or tools, no

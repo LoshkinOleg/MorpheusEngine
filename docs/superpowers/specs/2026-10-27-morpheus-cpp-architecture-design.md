@@ -28,7 +28,7 @@ Each module is a static library. Dependencies flow downward only.
 | `core` | World definition, schema-typed state, change validation, dice, turn record types, settings. Pure logic; its only I/O is reading world folders and settings.json. | - |
 | `store` | Per-run SQLite: turns, state snapshots, summaries, notes, embeddings | core |
 | `inference` | `LlmBackend` interface and prompt types (no llama.cpp) | core |
-| `llama` | `LlamaCppBackend`: tokenize, KV prefix reuse, grammar sampling, embeddings, state save/restore. The only module linking llama.cpp; built by the `dev` preset only. | inference |
+| `llama` | `LlamaCppBackend`: tokenize, KV prefix reuse, grammar sampling, embeddings, state save/restore. The only module linking llama.cpp; built by the `dev` and `linux-release` presets only. | inference |
 | `context` | Layered prompt assembly, exact token budgets, cache-prefix tracking | core, inference |
 | `turn` | Turn orchestration (grammar, resolve and apply, retrieval, folding, session), the worker thread, replay recording | all above |
 | `app` | SDL3 + Dear ImGui frontend: the Runs and Play windows, the inspectors, Settings, the model seat | turn, llama (`main.cpp`'s backend factory) |

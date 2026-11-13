@@ -2,7 +2,7 @@
 
 A local-first, LLM-driven text RPG engine in C++20. The engine owns the game (structured world state, dice, memory); a local model running in-process through llama.cpp proposes outcomes and narrates them.
 
-The earlier C# implementation lives on the `master` branch. This branch (`cpp`) is the rewrite.
+The C# implementation this engine replaces is gone: `master` is the C++ engine.
 
 ## Design
 
@@ -32,7 +32,7 @@ llama.cpp's GPU backend is `MORPHEUS_GPU_BACKEND`: `Vulkan` (the default, used b
 
 ## Models and settings
 
-The `dev` preset runs models in-process through llama.cpp. Download two GGUF files into `models/` (gitignored):
+The `dev` and `linux-release` presets run models in-process through llama.cpp. Download two GGUF files into `models/` (gitignored):
 
 - `Qwen3.8-27B-UD-Q4_K_M.gguf` (chat, a thinking model, about 16.5 GB) from Hugging Face `unsloth/Qwen3.8-27B-GGUF`
 - `nomic-embed-text-v1.5.Q8_0.gguf` (embeddings, about 140 MB) from Hugging Face `nomic-ai/nomic-embed-text-v1.5-GGUF`
@@ -50,7 +50,7 @@ Then copy `settings.example.json` (the template) to `settings.json` at the repos
 - `gpu_layers` is how many of the chat model's layers go to the GPU (-1: all). A model larger than the GPU's memory needs a lower number: the rest runs on the CPU, slower. llama.cpp puts the last N layers on the GPU. Whatever else uses the GPU (a game, a browser decoding video) lowers the limit; see "Performance with Qwen3.8-27B on a 10 GB GPU" below for measured values.
 - Qwen recommends temperature 1.0, top_k 20 and top_p 0.95 for its models in thinking mode, as in the example.
 
-To check that the models, the Vulkan backend and KV-cache prefix reuse work, run the probe. It prints the prompt size and streams two completions; the second should report almost the whole prompt as reused:
+To check that the models, the GPU backend and KV-cache prefix reuse work, run the probe. It prints the prompt size and streams two completions; the second should report almost the whole prompt as reused:
 
 ```
 ./build/dev/bin/Debug/morpheus_probe.exe settings.json game_projects/sandcrawler "I climb onto the crawler's roof."
@@ -88,14 +88,14 @@ Ways to faster turns, not done yet:
 
 ## Build (Linux)
 
-Tested on Ubuntu 24.04 with clang and Ninja. On Linux, `cmake --list-presets` shows two presets (and on Windows only the Windows ones):
+Status: an earlier Vulkan build of llama.cpp was tested in an Ubuntu 24.04 distrobox; these presets have not been run yet. On Linux, `cmake --list-presets` shows two presets (and on Windows only the Windows ones):
 
 | Preset | Builds |
 |---|---|
 | `linux-tests` | Engine libraries and tests only (no llama.cpp or SDL3), Debug |
 | `linux-release` | Everything, Release: llama.cpp with CUDA for the GPU in the machine (`MORPHEUS_GPU_BACKEND` `CUDA`, `CMAKE_CUDA_ARCHITECTURES` `native`), the `morpheus` app, `morpheus_probe`, `morpheus_play` and the tests |
 
-Packages for `linux-tests`: `clang`, `cmake`, `ninja-build`.
+Packages for `linux-tests`: `clang`, `cmake`, `ninja-build`, `git`.
 
 ```
 cmake --preset linux-tests
@@ -115,6 +115,8 @@ cmake --build --preset linux-release
 ./build/linux-release/bin/morpheus .
 ```
 
+`CMAKE_CUDA_ARCHITECTURES` `native` needs a GPU visible at configure time. Where none is (a distrobox without NVIDIA passthrough, say), name the architecture, here 86 for an RTX 30 series card: `cmake --preset linux-release -DCMAKE_CUDA_ARCHITECTURES=86`.
+
 To run llama.cpp on Vulkan instead, configure with `cmake --preset linux-release -DMORPHEUS_GPU_BACKEND=Vulkan` and install `libvulkan-dev`, `glslc` and `spirv-headers` too. Inside a container, Vulkan sees only the CPU (llvmpipe) unless the host's NVIDIA user-space driver is visible: link the host's `libnvidia-*`, `libGLX_nvidia*`, `libEGL_nvidia*` and `libcuda*` libraries into a folder, put it on `LD_LIBRARY_PATH`, and point `VK_DRIVER_FILES` at an ICD file whose `library_path` is that folder's `libGLX_nvidia.so.0`. `vulkaninfo --summary` should then list the GPU.
 
 ## Using Morpheus from another project
@@ -128,6 +130,7 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/LoshkinOleg/MorpheusEngine.git
     GIT_TAG        <commit SHA>
     GIT_SHALLOW    FALSE
+    SYSTEM
 )
 FetchContent_MakeAvailable(morpheus)
 
@@ -136,8 +139,9 @@ target_link_libraries(my_target PRIVATE Morpheus::turn)
 
 - Included this way (not the top-level project), Morpheus builds only its engine libraries, `Morpheus::core`, `Morpheus::store`, `Morpheus::inference`, `Morpheus::context` and `Morpheus::turn`, with nlohmann/json and SQLite (as `morpheus_sqlite3`, so it never meets a `sqlite3` target of yours). `MORPHEUS_BUILD_APP`, `MORPHEUS_BUILD_TESTS` and `MORPHEUS_BUILD_LLAMA` default to off, so no llama.cpp, SDL3, ImGui or Catch2 is fetched.
 - Link the `Morpheus::` names, not the internal `morpheus_*` ones. For the llama.cpp backend, `Morpheus::llama`, `set(MORPHEUS_BUILD_LLAMA ON)` (and `MORPHEUS_GPU_BACKEND`: `Vulkan`, `CUDA` or `CPU`) before `FetchContent_MakeAvailable`. `Morpheus::app_model` and `Morpheus::app_ui` exist when the app or the tests are built.
-- A project that already provides `nlohmann_json::nlohmann_json` (its own FetchContent or `find_package`) keeps its copy, and Morpheus links the same target.
-- Morpheus's warnings stay on but are not errors (`MORPHEUS_WARNINGS_AS_ERRORS` defaults to off when vendored), so a warning from your compiler does not fail your build. Output directories and the Visual Studio startup project are yours.
+- A project that already provides `nlohmann_json::nlohmann_json` (its own FetchContent or `find_package`) keeps its copy, and Morpheus links the same target. Make yours available BEFORE `FetchContent_MakeAvailable(morpheus)`: Morpheus checks for the target when it is included, so the guard only works in that order.
+- `SYSTEM` makes Morpheus's headers count as system headers in your own files, so your warnings do not fire on them.
+- Morpheus's warnings stay on but are not errors (`MORPHEUS_WARNINGS_AS_ERRORS` defaults to off when vendored), so a warning from your compiler does not fail your build. `MORPHEUS_WARNINGS_AS_ERRORS` uses CMake's `COMPILE_WARNING_AS_ERROR` property, so it holds even when you set `CMAKE_COMPILE_WARNING_AS_ERROR`; a global `add_compile_options(-Werror)` of yours still reaches Morpheus's targets. Output directories and the Visual Studio startup project are yours.
 
 `cmake/consumer-check/` is such a project, built from this checkout (`-DMORPHEUS_SOURCE_DIR=<path>` picks another): it fails to configure if the vendored build defines anything beyond the engine libraries, and its program calls into `core` and `turn`. On Linux:
 
@@ -155,7 +159,7 @@ It prints `consumer_check: ok` and exits with 0.
 
 ## Play in the app
 
-The `dev` preset builds `morpheus`, the app. In Visual Studio, open `build/dev/MorpheusEngine.sln`: `morpheus` is the startup project and runs from the repository root, so F5 (or Ctrl+F5) starts it. Pick the RelWithDebInfo configuration to play: Debug is about 2-4x slower. From a shell, run it from the repository root, or pass the root folder:
+The `dev` preset (on Linux, `linux-release`) builds `morpheus`, the app. In Visual Studio, open `build/dev/MorpheusEngine.sln`: `morpheus` is the startup project and runs from the repository root, so F5 (or Ctrl+F5) starts it. Pick the RelWithDebInfo configuration to play: Debug is about 2-4x slower. From a shell, run it from the repository root, or pass the root folder:
 
 ```
 ./build/dev/bin/RelWithDebInfo/morpheus.exe [root]
@@ -176,7 +180,7 @@ The root holds `settings.json`, `game_projects/` and `saves/`. The models load i
 
 ## Play in the terminal
 
-`morpheus_play` (`dev` preset) plays a world through the engine worker, the same path the app takes:
+`morpheus_play` (`dev` and `linux-release` presets) plays a world through the engine worker, the same path the app takes:
 
 ```
 ./build/dev/bin/Debug/morpheus_play.exe <settings.json> <world folder> <run.db> [--seed N] [--record <fixture.json>]

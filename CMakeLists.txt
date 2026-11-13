@@ -60,17 +60,14 @@ function(morpheus_target_defaults target)
     target_compile_features(${target} PUBLIC cxx_std_20)
     if(MSVC)
         # /W4 warning level, /permissive- standard compliance, /Zc:preprocessor standard preprocessor,
-        # /utf-8 source and execution character sets; /WX makes warnings errors.
+        # /utf-8 source and execution character sets.
         target_compile_options(${target} PRIVATE /W4 /permissive- /Zc:preprocessor /utf-8)
-        if(MORPHEUS_WARNINGS_AS_ERRORS)
-            target_compile_options(${target} PRIVATE /WX)
-        endif()
     else()
         target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
-        if(MORPHEUS_WARNINGS_AS_ERRORS)
-            target_compile_options(${target} PRIVATE -Werror)
-        endif()
     endif()
+    # Warnings as errors through the CMake property (/WX or -Werror), so that the option holds even when a host sets
+    # CMAKE_COMPILE_WARNING_AS_ERROR, and `cmake --build --compile-no-warning-as-error` is respected.
+    set_target_properties(${target} PROPERTIES COMPILE_WARNING_AS_ERROR ${MORPHEUS_WARNINGS_AS_ERRORS})
 endfunction()
 
 # ---- Dependencies (FetchContent) ---------------------------------------
@@ -92,15 +89,17 @@ endif()
 # SQLite amalgamation (store). The archive has no CMakeLists.txt, so the library target is defined here, under a name
 # of Morpheus's own so that it never meets a host project's sqlite3 target.
 FetchContent_Declare(
-    sqlite
+    morpheus_sqlite
     URL      https://www.sqlite.org/2025/sqlite-amalgamation-3500400.zip   # SQLite 3.50.4
     URL_HASH SHA256=1d3049dd0f830a025a53105fc79fd2ab9431aea99e137809d064d8ee8356b032
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
-FetchContent_MakeAvailable(sqlite)
-add_library(morpheus_sqlite3 STATIC ${sqlite_SOURCE_DIR}/sqlite3.c)
-target_include_directories(morpheus_sqlite3 SYSTEM PUBLIC ${sqlite_SOURCE_DIR})
+FetchContent_MakeAvailable(morpheus_sqlite)
+add_library(morpheus_sqlite3 STATIC ${morpheus_sqlite_SOURCE_DIR}/sqlite3.c)
+target_include_directories(morpheus_sqlite3 SYSTEM PUBLIC ${morpheus_sqlite_SOURCE_DIR})
 target_compile_definitions(morpheus_sqlite3 PRIVATE SQLITE_OMIT_LOAD_EXTENSION SQLITE_DQS=0)
+# Third-party code: never warnings as errors, even when a host sets CMAKE_COMPILE_WARNING_AS_ERROR.
+set_target_properties(morpheus_sqlite3 PROPERTIES COMPILE_WARNING_AS_ERROR OFF)
 
 if(MORPHEUS_BUILD_LLAMA)
     # llama.cpp's own backend switches follow MORPHEUS_GPU_BACKEND: GGML_VULKAN only for Vulkan, GGML_CUDA only for
