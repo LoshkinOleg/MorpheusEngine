@@ -147,3 +147,25 @@ ALL 10 TASKS COMPLETE. Final review next (67169d2..40d22f6).
 Final review M5 (opus, 67169d2..40d22f6): With fixes (0 Critical, 0 Important; 4 must-fix minors). Fix round 40d22f6..1a0f60b (Turn log 'digest only', World.h comment, digest reason wording, SettingsEdit.h wrap, static_assert REVIEW_MAX_PROBLEMS==3, REVIEW_ROOT newline REQUIRE, load-time DataError when review_max_tokens + review_thinking_tokens >= context_size). Re-review (opus): Ready to merge: Yes. tests 285, asan 285 (at 40d22f6), dev morpheus builds. README clause for the review budget sum added by the controller.
   Deferred: SettingsEdit.h:37 still 127 cols; Replay.cpp REQUIRE message lacks 'CallKindOf: ' prefix; no replay fixture with a renarrate (record one with --record when a playtest triggers it); ENGINE_RULES compact-transcript sentence unconditional (plan choice); remaining coverage/cosmetic ledger minors above.
 MILESTONE 5 COMPLETE.
+
+## MODEL SEAT (plan docs/superpowers/plans/2026-11-13-model-seat.md, 80a6bc6), on master
+Task 1: complete (commits 80a6bc6..4e5d7a8, opus review clean; RED captured; [llama] CheckGrammar passes)
+  Minor: 'at the start' and >60-byte '...' reasons untested; one-candidate check and piece buffer duplicated from Complete; SentencePiece add_space_prefix assumption uncommented; reason may hold a partial UTF-8 piece; no REQUIRE when the vocab has neither eot nor eos; llama.cpp logs 'failed to parse grammar' in the bad-grammar test.
+Task 2: complete (commits 4e5d7a8..8ec8ed2, opus review clean; RED captured)
+  Minor: Await comment says nullopt after a stop, but a Submit that wins the lock before the worker wakes is returned (coherent; comment imprecise, untested order); no scope guard if the wait throws; 'already pending' test runs Await on the main thread with a default stop_token (would hang on regression); Check on an id stale after Withdraw untested.
+Task 3: complete (commits 8ec8ed2..73bc609, opus review clean; RED captured)
+  Deviation accepted: the plan's worker-level withdraw test raced by construction (Post preempts maintenance and keeps it due); implementer added a 300 ms sleep. Final round: replace with CHECK_FALSE(worker.WaitEvent(300ms)) to also assert the withdrawn maintenance emitted nothing.
+  Minor: seat-path ContractErrors (maxTokens<=0, negative thinking) untested; Draft thinking-only edit and empty Human reply untested; 'longest prefix' comment assumes monotonic token counts.
+  UX note for window/final: while a maintenance fold waits in Human mode, posting a turn preempts it and re-publishes it under a new id, so the window resets the typed summary.
+Task 4: complete (commits 73bc609..2e76b70, review clean; RED captured; dev morpheus builds)
+  Minor: include order in AppControllerTests; Pending()->label without REQUIRE has_value; destroying AppController while the seat waits untested (works: worker stop-callback cancels the job, Await waits on the stop token).
+Task 5: complete (commits 2e76b70..958662b, review clean; RED captured; dev morpheus builds, --frames 120 exit 0)
+  Final round: bring the Model seat window to the front when a new request id arrives (it docks behind State/Memory tabs, so a waiting request is otherwise only visible in the status bar); wrap the grammar text.
+  Minor: window-state behaviour untested (reset on new id, _check cleared on edit, Check disabled w/o grammar, verdict text); two lines >120 cols; Pending() copies the request twice per frame.
+Task 6 implemented (958662b..82df3f2; tests 311, asan 311 no reports, dev targets 0 warnings, --frames 120 exit 0). Docs review + final review dispatched.
+Task 6: complete (commits 958662b..82df3f2, docs review clean)
+  Minor: CheckGrammar doc omits the 'at the start' form and the '...' cut; README doesn't say Check is disabled without a grammar.
+ALL 6 TASKS COMPLETE. Final review running (80a6bc6..82df3f2).
+Final review (opus, 80a6bc6..82df3f2): With fixes (0 Critical, 3 Important: waiting call hidden behind dock tabs, grammar unwrapped, sleep in withdraw test). Fix round 82df3f2..3830693 (tab selected without focus via SelectedTabId, kept reply on re-publish, read-only wrapped grammar, WaitEvent instead of sleep, end-token REQUIRE, docs). Re-review: 2 Important (ClearActiveID context-wide; answered call treated as re-publish). Fix round 2 3830693..15f9267 (clear only the seat window's own active item; forget the call on Submit; VisibleWindow assert; spec wording). Re-review (opus): Ready to merge: Yes. tests 315, asan 315 (at 15f9267), dev morpheus --frames 120 exit 0, [llama] CheckGrammar passes.
+  Deferred: Task 1-5 ledger minors above (untested CheckGrammar reason forms, scope guard in Await, seat-path ContractError tests, window-state edge tests, Pending() copies per frame); a fold interrupted by a cancelled turn returns between turns (documented in README).
+MODEL SEAT COMPLETE.
