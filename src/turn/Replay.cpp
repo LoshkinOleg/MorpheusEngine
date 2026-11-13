@@ -133,6 +133,11 @@ inference::Completion RecordingBackend::Complete(const inference::Prompt& prompt
     return completion;
 }
 
+std::string RecordingBackend::CheckGrammar(const std::string& grammar, std::string_view text)
+{
+    return _pInner->CheckGrammar(grammar, text); // A check is not a completion: nothing is recorded.
+}
+
 std::vector<std::vector<float>> RecordingBackend::Embed(const std::vector<std::string>& texts,
                                                         inference::EmbedPurpose purpose)
 {

@@ -101,6 +101,12 @@ public:
     virtual Completion Complete(const Prompt& prompt, const GenerationSpec& spec, const TokenCallback& onToken,
                                 std::stop_token stop) = 0;
 
+    // Whether `text`, tokenized as an answer, is accepted by `grammar` (GBNF, root rule "root") from start to end.
+    // Returns "" when it is; otherwise a short reason naming where it stops fitting (the first rejected token and the
+    // text before it, or "the text ends before the grammar does"). Throws ContractError for a grammar that does not
+    // parse. An empty grammar is a ContractError too: there is nothing to check against.
+    virtual std::string CheckGrammar(const std::string& grammar, std::string_view text) = 0;
+
     // One L2-normalized vector per text, in order.
     virtual std::vector<std::vector<float>> Embed(const std::vector<std::string>& texts, EmbedPurpose purpose) = 0;
 

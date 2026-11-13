@@ -25,6 +25,9 @@ namespace {
 // Buffer for one token piece (llama_token_to_piece); a longer piece is an error.
 constexpr std::size_t TOKEN_PIECE_BUFFER_BYTES = 256;
 
+// How much of the text before a rejected token CheckGrammar's reason quotes, in bytes.
+constexpr std::size_t GRAMMAR_CONTEXT_BYTES = 60;
+
 // The first candidate for the marker that stands in for message contents while the chat template renders
 // (TokenizePrompt): ASCII record separator, a byte that ordinary text does not use.
 constexpr char CONTENT_MARKER_BYTE = '\x1E';
@@ -456,6 +459,60 @@ inference::Completion LlamaCppBackend::Complete(const inference::Prompt& prompt,
     }
     completion.generateMs = std::chrono::duration<double, std::milli>(Clock::now() - answerStart).count();
     return completion;
+}
+
+std::string LlamaCppBackend::CheckGrammar(const std::string& grammar, std::string_view text)
+{
+    MORPHEUS_REQUIRE(!grammar.empty(), "CheckGrammar: no grammar to check against");
+    const llama_vocab* pVocab = llama_model_get_vocab(_pChatModel.get());
+
+    // The grammar sampler alone, built as Complete builds it. Nothing is decoded, so the KV cache is untouched.
+    std::unique_ptr<llama_sampler, SamplerDeleter> pGrammar(llama_sampler_init_grammar(pVocab, grammar.c_str(), "root"));
+    MORPHEUS_REQUIRE(pGrammar != nullptr, "CheckGrammar: the GBNF grammar does not parse");
+
+    // Whether the grammar, in its current state, allows `token` next: applied to a candidate array holding only that
+    // token, it masks a rejected token's logit to -infinity (as Complete checks a sampled token).
+    auto allows = [&pGrammar](llama_token token) {
+        llama_token_data single = {token, 1.0f, 0.0f};
+        llama_token_data_array singleArray = {&single, 1, -1, false};
+        llama_sampler_apply(pGrammar.get(), &singleArray);
+        return single.logit != -std::numeric_limits<float>::infinity();
+    };
+
+    // The text tokenized as the model would have written it: plain text, no special tokens. Each token must be
+    // allowed where it stands, and is then accepted, advancing the grammar past it. Only allowed tokens are
+    // accepted, so the grammar always has a way to go on.
+    std::string accepted; // The text of the tokens accepted so far.
+    for (const std::int32_t token : Tokenize(pVocab, text, false, false)) {
+        char piece[TOKEN_PIECE_BUFFER_BYTES];
+        const int32_t length = llama_token_to_piece(pVocab, token, piece, static_cast<int32_t>(sizeof(piece)), 0, false);
+        MORPHEUS_REQUIRE(length >= 0,
+                         std::format("CheckGrammar: a token piece is longer than {} bytes", TOKEN_PIECE_BUFFER_BYTES));
+        const std::string_view pieceText(piece, static_cast<std::size_t>(length));
+        if (!allows(token)) {
+            // The first rejected token and the text before it: its last GRAMMAR_CONTEXT_BYTES bytes, starting on a
+            // whole UTF-8 character.
+            if (accepted.empty()) {
+                return std::format("the grammar rejects '{}' at the start", pieceText);
+            }
+            std::size_t start = accepted.size() > GRAMMAR_CONTEXT_BYTES ? accepted.size() - GRAMMAR_CONTEXT_BYTES : 0;
+            while (start < accepted.size() && (static_cast<unsigned char>(accepted[start]) & 0xC0) == 0x80) {
+                ++start; // A continuation byte: start at the next character.
+            }
+            return std::format("the grammar rejects '{}' after '{}{}'", pieceText, start > 0 ? "..." : "",
+                               std::string_view(accepted).substr(start));
+        }
+        llama_sampler_accept(pGrammar.get(), token);
+        accepted += pieceText;
+    }
+
+    // Where the text ends, the grammar must be complete: only then does it allow the end of generation.
+    const llama_token endToken =
+        llama_vocab_eot(pVocab) != LLAMA_TOKEN_NULL ? llama_vocab_eot(pVocab) : llama_vocab_eos(pVocab);
+    if (!allows(endToken)) {
+        return "the text ends before the grammar does";
+    }
+    return {};
 }
 
 std::vector<std::vector<float>> LlamaCppBackend::Embed(const std::vector<std::string>& texts, inference::EmbedPurpose purpose)

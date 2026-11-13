@@ -92,6 +92,8 @@ public:
     int ContextSize() const override;
     inference::Completion Complete(const inference::Prompt& prompt, const inference::GenerationSpec& spec,
                                    const inference::TokenCallback& onToken, std::stop_token stop) override;
+    // The grammar sampler alone over the text's tokens: no decode, so the KV cache is untouched.
+    std::string CheckGrammar(const std::string& grammar, std::string_view text) override;
     std::vector<std::vector<float>> Embed(const std::vector<std::string>& texts, inference::EmbedPurpose purpose) override;
     std::string EmbeddingModelId() const override;
     std::vector<std::uint8_t> SaveState() override;

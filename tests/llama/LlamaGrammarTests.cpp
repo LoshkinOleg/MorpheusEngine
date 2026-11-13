@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <algorithm>
 #include <format>
@@ -11,11 +12,13 @@
 #include "context/StateView.h"
 #include "context/WorldReference.h"
 #include "core/Changes.h"
+#include "core/Errors.h"
 #include "core/World.h"
 #include "inference/Llm.h"
 #include "turn/ResolveGrammar.h"
 
 using namespace morpheus;
+using Catch::Matchers::ContainsSubstring;
 
 TEST_CASE("llama.cpp accepts the generated grammars and they constrain real output", "[llama]")
 {
@@ -79,4 +82,28 @@ TEST_CASE("llama.cpp accepts the generated grammars and they constrain real outp
     for (const core::RejectedChange& rejected : applied.rejected) {
         WARN(std::format("rejected on apply: {} -- {}", rejected.raw.dump(), rejected.reason));
     }
+}
+
+TEST_CASE("LlamaCppBackend::CheckGrammar tells whether a text fits a grammar and where it stops fitting", "[llama]")
+{
+    llama::LlamaCppBackend& backend = test::SharedBackend();
+    const std::string grammar = R"(root ::= "{\"answer\":\"" ("yes" | "no") "\"}")";
+
+    // Texts the grammar accepts from start to end.
+    CHECK(backend.CheckGrammar(grammar, R"({"answer":"yes"})").empty());
+    CHECK(backend.CheckGrammar(grammar, R"({"answer":"no"})").empty());
+
+    // A text that breaks the grammar: the reason names the rejected token and the text before it.
+    const std::string broken = backend.CheckGrammar(grammar, R"({"answer":"maybe"})");
+    CHECK_THAT(broken, ContainsSubstring("the grammar rejects") && ContainsSubstring("answer"));
+    const std::string trailing = backend.CheckGrammar(grammar, R"({"answer":"yes"} and more)");
+    CHECK_THAT(trailing, ContainsSubstring("the grammar rejects") && ContainsSubstring("yes"));
+
+    // A text that ends early.
+    CHECK(backend.CheckGrammar(grammar, R"({"answer":"ye)") == "the text ends before the grammar does");
+    CHECK(backend.CheckGrammar(grammar, "") == "the text ends before the grammar does");
+
+    // A grammar that does not parse, or none at all, is an engine bug.
+    CHECK_THROWS_AS(backend.CheckGrammar("root ::= (", "x"), core::ContractError);
+    CHECK_THROWS_AS(backend.CheckGrammar("", "x"), core::ContractError);
 }
