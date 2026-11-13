@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cctype>
 #include <format>
+#include <functional>
 #include <map>
 #include <sstream>
 #include <string>
@@ -413,6 +414,7 @@ TEST_CASE("The resolve grammar accepts the proposals it describes and refuses th
         R"({"intent":"look","checks":[],"changes":[],"notes":[]})",
         // Only the shapes the schema allows.
         R"({"intent":"x","checks":[],"changes":[{"op":"remove","path":"player.inventory.lantern","value":1,"reason":"r"}]})",
+        // An existing-entity change needs the entity to exist now: npc:marta is only creatable, not in the state.
         R"({"intent":"x","checks":[],"changes":[{"op":"set","path":"npc:marta.disposition","value":"wary","reason":"r"}]})",
         R"({"intent":"x","checks":[],"changes":[{"op":"add","path":"player.inventory.Oil","value":1,"reason":"r"}]})",
         R"({"intent":"x","checks":[],"changes":[{"op":"set","path":"player.location","value":5,"reason":"r"}]})",
@@ -569,4 +571,331 @@ TEST_CASE("The review grammars accept exactly the verdicts and digests asked for
     const test::GbnfMatcher digest(turn::BuildReviewGrammar(false, true));
     CHECK(digest.Accepts(R"({"digest":"d"})"));
     CHECK_FALSE(digest.Accepts(R"({"consistent":true,"problems":[],"digest":"d"})"));
+}
+
+// Fix round: the rules the first characterization left unpinned.
+
+namespace {
+
+// A proposal with no checks and the given changes (JSON texts).
+std::string ProposalOf(const std::string& changes)
+{
+    return R"({"intent":"x","checks":[],"changes":[)" + changes + "]}";
+}
+
+// `count` repetitions of `unit`.
+std::string Repeat(const std::string& unit, int count)
+{
+    std::string result;
+    for (int i = 0; i < count; ++i) {
+        result += unit;
+    }
+    return result;
+}
+
+} // namespace
+
+TEST_CASE("The resolve grammar changes an enum on an existing entity only with set and a listed value", "[grammar]")
+{
+    nlohmann::json state = PlayerState(nlohmann::json::object());
+    state["npc:marta"] = {{"type", "npc"}, {"fields", {{"disposition", "wary"}}}};
+    const core::World world = WorldWith(AllFieldsSchema(), state);
+    const test::GbnfMatcher matcher(turn::BuildResolveGrammar(world, state, core::MemoryMode::Engine));
+    auto change = [](const std::string& op, const std::string& value) {
+        return ProposalOf(R"({"op":")" + op + R"(","path":"npc:marta.disposition")" +
+                          (value.empty() ? "" : R"(,"value":)" + value) + R"(,"reason":"r"})");
+    };
+    for (const std::string& text : {change("set", R"("wary")"), change("set", R"("friendly")")}) {
+        INFO(text);
+        CHECK(matcher.Accepts(text));
+    }
+    for (const std::string& text : {change("set", R"("angry")"), change("set", R"("Wary")"), change("set", "1"),
+                                    change("add", R"("wary")"), change("remove", R"("wary")"), change("remove", ""),
+                                    change("set", "")}) {
+        INFO(text);
+        CHECK_FALSE(matcher.Accepts(text));
+    }
+}
+
+TEST_CASE("The resolve grammar's integers have exact edges", "[grammar]")
+{
+    const core::World world = MiniWorld();
+    const test::GbnfMatcher matcher(turn::BuildResolveGrammar(world, world.initialState, core::MemoryMode::Engine));
+    auto add = [](const std::string& value) {
+        return ProposalOf(R"({"op":"add","path":"player.inventory.oil","value":)" + value + R"(,"reason":"r"})");
+    };
+    for (const std::string& value : {"-999999999", "-1", "1", "999999999"}) {
+        INFO(value);
+        CHECK(matcher.Accepts(add(value)));
+    }
+    for (const std::string& value : {"-1000000000", "1000000000", "0", "-0", "05", "-05", "+1", "1.0", "1e2", ""}) {
+        INFO(value);
+        CHECK_FALSE(matcher.Accepts(add(value)));
+    }
+
+    // A counter value inside a create takes positive integers only.
+    const nlohmann::json schema = nlohmann::json::parse(R"({"entity_types": {"pack": {"creatable": true,
+        "fields": {"contents": {"type": "counter"}}}}})");
+    const nlohmann::json state = nlohmann::json::object();
+    const test::GbnfMatcher creates(
+        turn::BuildResolveGrammar(WorldWith(schema, state), state, core::MemoryMode::Engine));
+    auto create = [](const std::string& contents) {
+        return ProposalOf(R"({"op":"create","path":"pack:1","value":{"type":"pack","fields":{"contents":)" + contents +
+                          R"(}},"reason":"r"})");
+    };
+    for (const std::string& count : {"1", "999999999"}) {
+        INFO(count);
+        CHECK(creates.Accepts(create(R"({"rope":)" + count + "}")));
+    }
+    for (const std::string& count : {"0", "-1", "1000000000", "05"}) {
+        INFO(count);
+        CHECK_FALSE(creates.Accepts(create(R"({"rope":)" + count + "}")));
+    }
+}
+
+TEST_CASE("The resolve grammar's counter items are bounded and lowercase", "[grammar]")
+{
+    const core::World world = MiniWorld();
+    const test::GbnfMatcher matcher(turn::BuildResolveGrammar(world, world.initialState, core::MemoryMode::Engine));
+    auto add = [](const std::string& item) {
+        return ProposalOf(R"({"op":"add","path":"player.inventory.)" + item + R"(","value":1,"reason":"r"})");
+    };
+    const std::size_t maxItem = static_cast<std::size_t>(turn::MAX_ITEM_CHARS);
+    for (const std::string& item : {std::string(maxItem, 'a'), std::string("a_9"), std::string("z")}) {
+        INFO(item);
+        CHECK(matcher.Accepts(add(item)));
+    }
+    for (const std::string& item : {std::string(maxItem + 1, 'a'), std::string(""), std::string("two words"),
+                                    std::string("water-flask"), std::string("Oil"), std::string("oiL")}) {
+        INFO(item);
+        CHECK_FALSE(matcher.Accepts(add(item)));
+    }
+
+    // The same bounds on the new items of a counter value inside a create.
+    const nlohmann::json schema = nlohmann::json::parse(R"({"entity_types": {"pack": {"creatable": true,
+        "fields": {"contents": {"type": "counter"}}}}})");
+    const nlohmann::json state = nlohmann::json::object();
+    const test::GbnfMatcher creates(
+        turn::BuildResolveGrammar(WorldWith(schema, state), state, core::MemoryMode::Engine));
+    auto create = [](const std::string& item) {
+        return ProposalOf(R"({"op":"create","path":"pack:1","value":{"type":"pack","fields":{"contents":{")" + item +
+                          R"(":1}}},"reason":"r"})");
+    };
+    CHECK(creates.Accepts(create(std::string(maxItem, 'a'))));
+    for (const std::string& item : {std::string(maxItem + 1, 'a'), std::string(""), std::string("two words"),
+                                    std::string("water-flask"), std::string("Oil")}) {
+        INFO(item);
+        CHECK_FALSE(creates.Accepts(create(item)));
+    }
+}
+
+TEST_CASE("The resolve grammar matches held names whole and handles worlds with little to change", "[grammar]")
+{
+    const nlohmann::json heldState = PlayerState({{"Rusty Knife", 1}});
+    const test::GbnfMatcher held(turn::BuildResolveGrammar(WorldWith(AllFieldsSchema(), heldState), heldState,
+                                                           core::MemoryMode::Engine));
+    auto remove = [](const std::string& item) {
+        return ProposalOf(R"({"op":"remove","path":"player.inventory.)" + item + R"(","reason":"r"})");
+    };
+    CHECK(held.Accepts(remove("Rusty Knife")));
+    for (const std::string& item : {"Rusty Kni", "Rusty Knife2", "Rusty", "rusty knife", "Rusty Knife "}) {
+        INFO(item);
+        CHECK_FALSE(held.Accepts(remove(item)));
+    }
+
+    // An empty counter has just the generic new-item rule.
+    const nlohmann::json emptyState = PlayerState(nlohmann::json::object());
+    const test::GbnfMatcher empty(turn::BuildResolveGrammar(WorldWith(AllFieldsSchema(), emptyState), emptyState,
+                                                            core::MemoryMode::Engine));
+    CHECK(empty.Accepts(remove("new_item")));
+    CHECK_FALSE(empty.Accepts(remove("Rusty Knife")));
+    CHECK_FALSE(empty.Accepts(remove("")));
+
+    // Nothing changeable: no entity, no creatable type. Every change list is empty.
+    const nlohmann::json schema = nlohmann::json::parse(R"({"entity_types": {"pack": {
+        "fields": {"label": {"type": "string"}}}}})");
+    const nlohmann::json state = nlohmann::json::object();
+    const test::GbnfMatcher none(turn::BuildResolveGrammar(WorldWith(schema, state), state, core::MemoryMode::Engine));
+    const std::string checkText =
+        R"({"stat":"agility","difficulty":"easy","stakes":"s","on_success":[],"on_failure":[]})";
+    CHECK(none.Accepts(R"({"intent":"x","checks":[],"changes":[]})"));
+    CHECK(none.Accepts(R"({"intent":"x","checks":[)" + checkText + R"(],"changes":[]})"));
+    CHECK_FALSE(none.Accepts(ProposalOf(R"({"op":"set","path":"pack:1.label","value":"a","reason":"r"})")));
+    CHECK_FALSE(none.Accepts(
+        R"({"intent":"x","checks":[{"stat":"agility","difficulty":"easy","stakes":"s","on_success":[{"op":"set","path":"a.b","value":"a","reason":"r"}],"on_failure":[]}],"changes":[]})"));
+}
+
+TEST_CASE("The resolve grammar bounds every short text and escapes exactly", "[grammar]")
+{
+    const core::World world = MiniWorld();
+    const nlohmann::json& state = world.initialState;
+    const test::GbnfMatcher engine(turn::BuildResolveGrammar(world, state, core::MemoryMode::Engine));
+    const test::GbnfMatcher assisted(turn::BuildResolveGrammar(world, state, core::MemoryMode::Assisted));
+    const test::GbnfMatcher lookup(turn::BuildLookupGrammar());
+    const int limit = turn::SHORT_TEXT_CHARS;
+
+    // Each context wraps the inner text of one JSON string; the check uses agility and easy, valid in the mini world.
+    const std::vector<std::pair<std::string, std::function<std::string(const std::string&)>>> contexts = {
+        {"intent", [](const std::string& t) { return R"({"intent":")" + t + R"(","checks":[],"changes":[]})"; }},
+        {"stakes",
+         [](const std::string& t) {
+             return R"({"intent":"x","checks":[{"stat":"agility","difficulty":"easy","stakes":")" + t +
+                    R"(","on_success":[],"on_failure":[]}],"changes":[]})";
+         }},
+        {"reason",
+         [](const std::string& t) {
+             return ProposalOf(R"({"op":"set","path":"player.location","value":"v","reason":")" + t + R"("})");
+         }},
+        {"string value",
+         [](const std::string& t) {
+             return ProposalOf(R"({"op":"set","path":"player.location","value":")" + t + R"(","reason":"r"})");
+         }},
+        {"npc create string",
+         [](const std::string& t) {
+             return ProposalOf(R"({"op":"create","path":"npc:1","value":{"type":"npc","fields":{"disposition":"wary"}},"reason":")" +
+                               t + R"("})");
+         }},
+    };
+
+    const std::string multibyte = "\xC3\xA9";
+    const std::string escape = R"(é)";
+    for (const auto& [name, wrap] : contexts) {
+        auto accepts = [&](const std::string& inner) { return engine.Accepts(wrap(inner)); };
+        INFO(name);
+        CHECK(accepts(std::string(static_cast<std::size_t>(limit), 'a')));
+        CHECK_FALSE(accepts(std::string(static_cast<std::size_t>(limit) + 1, 'a')));
+        CHECK(accepts(Repeat(multibyte, limit)));
+        CHECK_FALSE(accepts(Repeat(multibyte, limit + 1)));
+        CHECK(accepts(Repeat(escape, limit)));
+        CHECK_FALSE(accepts(Repeat(escape, limit + 1)));
+        CHECK(accepts(R"(é¯ꯍ)"));
+        for (const std::string& bad : {R"(\x41)", R"(\u12)", R"(\u00G0)", R"(\a)"}) {
+            INFO(wrap(bad));
+            CHECK_FALSE(accepts(bad));
+        }
+    }
+
+    // A list item, which needs a state with a list field.
+    const nlohmann::json listState = PlayerState(nlohmann::json::object());
+    const test::GbnfMatcher lists(
+        turn::BuildResolveGrammar(WorldWith(AllFieldsSchema(), listState), listState, core::MemoryMode::Engine));
+    auto listItem = [](const std::string& t) {
+        return ProposalOf(R"({"op":"add","path":"player.conditions","value":")" + t + R"(","reason":"r"})");
+    };
+    CHECK(lists.Accepts(listItem(std::string(static_cast<std::size_t>(limit), 'a'))));
+    CHECK_FALSE(lists.Accepts(listItem(std::string(static_cast<std::size_t>(limit) + 1, 'a'))));
+    CHECK(lists.Accepts(listItem(Repeat(multibyte, limit))));
+    CHECK_FALSE(lists.Accepts(listItem(Repeat(multibyte, limit + 1))));
+    CHECK(lists.Accepts(listItem(Repeat(escape, limit))));
+    CHECK_FALSE(lists.Accepts(listItem(Repeat(escape, limit + 1))));
+    CHECK(lists.Accepts(listItem(R"(é)")));
+    CHECK_FALSE(lists.Accepts(listItem(R"(\u12)")));
+
+    // A lookup query, in the same terms.
+    auto query = [](const std::string& t) { return R"({"lookups":[{"source":"lore","query":")" + t + R"("}]})"; };
+    CHECK(lookup.Accepts(query(std::string(static_cast<std::size_t>(limit), 'a'))));
+    CHECK_FALSE(lookup.Accepts(query(std::string(static_cast<std::size_t>(limit) + 1, 'a'))));
+    CHECK(lookup.Accepts(query(Repeat(multibyte, limit))));
+    CHECK_FALSE(lookup.Accepts(query(Repeat(multibyte, limit + 1))));
+    CHECK(lookup.Accepts(query(Repeat(escape, limit))));
+    CHECK_FALSE(lookup.Accepts(query(Repeat(escape, limit + 1))));
+    CHECK(lookup.Accepts(query(R"(é)")));
+    for (const std::string& bad : {R"(\x41)", R"(\u12)", R"(\u00G0)"}) {
+        INFO(query(bad));
+        CHECK_FALSE(lookup.Accepts(query(bad)));
+    }
+
+    // Notes, at the long-text bound.
+    const int longLimit = turn::LONG_TEXT_CHARS;
+    auto note = [](const std::string& t) {
+        return R"({"intent":"x","checks":[],"changes":[],"notes":[")" + t + R"("]})";
+    };
+    CHECK(assisted.Accepts(note(std::string(static_cast<std::size_t>(longLimit), 'a'))));
+    CHECK_FALSE(assisted.Accepts(note(std::string(static_cast<std::size_t>(longLimit) + 1, 'a'))));
+    CHECK(assisted.Accepts(note(Repeat(escape, longLimit))));
+    CHECK_FALSE(assisted.Accepts(note(Repeat(escape, longLimit + 1))));
+    CHECK(assisted.Accepts(note(Repeat(multibyte, longLimit))));
+    CHECK_FALSE(assisted.Accepts(note(Repeat(multibyte, longLimit + 1))));
+    CHECK_FALSE(assisted.Accepts(note(R"(\u12)")));
+}
+
+TEST_CASE("The review grammars' variants bound problems and digests exactly", "[grammar]")
+{
+    const std::string problem200(static_cast<std::size_t>(turn::REVIEW_PROBLEM_MAX_CHARS), 'p');
+    const std::string digest300(static_cast<std::size_t>(turn::DIGEST_MAX_CHARS), 'd');
+
+    const test::GbnfMatcher check(turn::BuildReviewGrammar(true, false));
+    auto verdict = [](const std::string& consistent, const std::string& problems) {
+        return R"({"consistent":)" + consistent + R"(,"problems":[)" + problems + "]}";
+    };
+    const std::vector<std::string> checkAccepted = {
+        verdict("true", ""), verdict("false", R"("p")"), verdict("false", R"("p","q","r")"),
+        verdict("false", "\"" + problem200 + "\""), verdict("false", R"("café \"x\"\n")")};
+    for (const std::string& text : checkAccepted) {
+        INFO(text);
+        CHECK(check.Accepts(text));
+    }
+    const std::vector<std::string> checkRejected = {
+        verdict("true", R"("p")"), verdict("false", ""), verdict("false", R"("p","q","r","s")"),
+        verdict("false", "\"" + problem200 + "p\""), verdict("false", R"("")"), verdict("false", R"("p",)"),
+        verdict("false", R"("\u12")"), verdict("maybe", R"("p")")};
+    for (const std::string& text : checkRejected) {
+        INFO(text);
+        CHECK_FALSE(check.Accepts(text));
+    }
+
+    const test::GbnfMatcher digest(turn::BuildReviewGrammar(false, true));
+    auto digestOf = [](const std::string& text) { return R"({"digest":")" + text + R"("})"; };
+    const std::vector<std::string> digestAccepted = {digestOf("d"), digestOf(""), digestOf(digest300),
+                                                     digestOf(R"(café \"x\"\n)")};
+    for (const std::string& text : digestAccepted) {
+        INFO(text);
+        CHECK(digest.Accepts(text));
+    }
+    const std::vector<std::string> digestRejected = {
+        digestOf(digest300 + "d"), digestOf(R"(\u12)"), R"({"consistent":true,"digest":"d"})",
+        R"({"digest":"d","consistent":true})", R"({"consistent":true,"problems":[]})", R"({})"};
+    for (const std::string& text : digestRejected) {
+        INFO(text);
+        CHECK_FALSE(digest.Accepts(text));
+    }
+}
+
+TEST_CASE("The resolve grammar's creates and branches hold their exact shapes", "[grammar]")
+{
+    const nlohmann::json schema = nlohmann::json::parse(R"({"entity_types": {"pack": {"creatable": true,
+        "fields": {"kind": {"type": "enum", "values": ["small", "large"]}, "size": {"type": "int", "min": 0, "max": 9}}}}})");
+    const nlohmann::json state = nlohmann::json::object();
+    const core::World world = WorldWith(schema, state);
+    const test::GbnfMatcher matcher(turn::BuildResolveGrammar(world, state, core::MemoryMode::Engine));
+    auto create = [](const std::string& id, const std::string& fields) {
+        return ProposalOf(R"({"op":"create","path":")" + id + R"(","value":{"type":"pack","fields":)" + fields +
+                          R"(},"reason":"r"})");
+    };
+    CHECK(matcher.Accepts(create("pack:1", R"({"kind":"small","size":1})")));
+    const std::vector<std::string> rejected = {
+        create("pack:1", R"({"size":1,"kind":"small"})"),
+        create("pack:1", R"({"kind":"small","size":1,"extra":1})"),
+        create("", R"({"kind":"small","size":1})"),
+        create("pack:1", R"({"kind":"small","size":1000000000})"),
+        create("pack:1", R"({"kind":"small","size":-1000000000})"),
+        create("pack:1", R"({"kind":"small","size":05})")};
+    for (const std::string& text : rejected) {
+        INFO(text);
+        CHECK_FALSE(matcher.Accepts(text));
+    }
+
+    // on_failure holds up to MAX_BRANCH_CHANGES changes, one more is refused.
+    const std::string change = R"({"op":"set","path":"pack:1.size","value":1,"reason":"r"})";
+    const nlohmann::json heldSchema = nlohmann::json::parse(R"({"entity_types": {"pack": {
+        "fields": {"size": {"type": "int", "min": 0, "max": 9}}}}})");
+    const nlohmann::json heldState = {{"pack:1", {{"type", "pack"}, {"fields", {{"size", 1}}}}}};
+    const core::World heldWorld = WorldWith(heldSchema, heldState);
+    const test::GbnfMatcher branches(turn::BuildResolveGrammar(heldWorld, heldState, core::MemoryMode::Engine));
+    auto failure = [&](int count) {
+        return R"({"intent":"x","checks":[{"stat":"agility","difficulty":"easy","stakes":"s","on_success":[],"on_failure":)" +
+               JsonList(change, count) + R"(}],"changes":[]})";
+    };
+    CHECK(branches.Accepts(failure(turn::MAX_BRANCH_CHANGES)));
+    CHECK_FALSE(branches.Accepts(failure(turn::MAX_BRANCH_CHANGES + 1)));
 }
