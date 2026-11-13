@@ -106,8 +106,10 @@ public:
     bool Withdraw(std::uint64_t id);
 
     // The worker's side (ModelSeatBackend::Complete). Publishes `request` (its id is assigned here) with `backend`
-    // for Check, then waits for Submit, Withdraw or `stop`. Returns the reply, or nullopt after a Withdraw or a stop;
-    // either way no request is pending afterwards. Throws ContractError when a request is already pending.
+    // for Check, then waits for Submit, Withdraw or `stop`. Returns the reply, or nullopt after a Withdraw or a stop
+    // (a reply submitted before the stopped wait wakes is returned as the reply, like a model that finishes as a
+    // cancel arrives); either way no request is pending afterwards. Throws ContractError when a request is already
+    // pending.
     std::optional<SeatReply> Await(SeatRequest request, inference::LlmBackend& backend, std::stop_token stop);
 };
 

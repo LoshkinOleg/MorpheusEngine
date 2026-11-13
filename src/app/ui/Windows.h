@@ -111,10 +111,12 @@ public:
 // (Draft mode) and the grammar, the reply and thinking boxes, Check, Submit and Withdraw, and the prompt as the
 // Context window draws it. Withdraw releases the call: a running turn's or regenerate's by cancelling the command,
 // a between-turn fold's or condense's at the seat. The texts typed stay until Submit and are reset when a new call
-// arrives.
+// arrives, unless it is the same call published again (its label and prompt equal).
 class ModelSeatWindow {
 private:
     std::uint64_t _requestId = 0;         // The request _reply and _thinking belong to (SeatRequest::id); 0: none yet.
+    SeatLabel _label = SeatLabel::Resolve; // That request's label and prompt: a new request equal to both is the
+    inference::Prompt _prompt = {};        // same call published again, and keeps the texts.
     std::string _reply = {};
     std::string _thinking = {};
     std::optional<SeatCheck> _check = {}; // The last Check of the reply as it is now; cleared when it is edited.

@@ -481,7 +481,8 @@ std::string LlamaCppBackend::CheckGrammar(const std::string& grammar, std::strin
 
     // The text tokenized as the model would have written it: plain text, no special tokens. Each token must be
     // allowed where it stands, and is then accepted, advancing the grammar past it. Only allowed tokens are
-    // accepted, so the grammar always has a way to go on.
+    // accepted, so the grammar always has a way to go on. The answer is tokenized without a space prefix, which
+    // assumes a vocabulary without SentencePiece's add_space_prefix (true for Qwen).
     std::string accepted; // The text of the tokens accepted so far.
     for (const std::int32_t token : Tokenize(pVocab, text, false, false)) {
         char piece[TOKEN_PIECE_BUFFER_BYTES];
@@ -509,6 +510,8 @@ std::string LlamaCppBackend::CheckGrammar(const std::string& grammar, std::strin
     // Where the text ends, the grammar must be complete: only then does it allow the end of generation.
     const llama_token endToken =
         llama_vocab_eot(pVocab) != LLAMA_TOKEN_NULL ? llama_vocab_eot(pVocab) : llama_vocab_eos(pVocab);
+    MORPHEUS_REQUIRE(endToken != LLAMA_TOKEN_NULL,
+                     "CheckGrammar: the vocabulary has neither an end-of-turn nor an end-of-sequence token");
     if (!allows(endToken)) {
         return "the text ends before the grammar does";
     }

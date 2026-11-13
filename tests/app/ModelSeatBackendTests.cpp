@@ -353,8 +353,9 @@ TEST_CASE("Withdrawing a maintenance fold ends that maintenance cleanly, and the
     CHECK_FALSE(pSeat->Pending());
     // Let the worker take the withdrawal and leave the maintenance. A command posted before that would find the
     // maintenance still running, which then stays due and reruns ahead of that command (Worker's contract), and
-    // its MemoryUpdated would come with the turn's events.
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    // its MemoryUpdated would come with the turn's events. The wait also asserts that the withdrawn maintenance
+    // emitted no event at all.
+    CHECK_FALSE(worker.WaitEvent(std::chrono::milliseconds(300)));
 
     // The next turn proceeds. The withdrawn maintenance reported nothing (no MemoryUpdated, no MaintenanceFailed)
     // and stored nothing, so the transcript is still over budget and the turn's own fit loop asks for the fold

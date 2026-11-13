@@ -1,5 +1,6 @@
 #include "app/ui/Windows.h"
 
+#include <algorithm>
 #include <cfloat>
 #include <format>
 #include <optional>
@@ -7,6 +8,7 @@
 #include <utility>
 
 #include <imgui.h>
+#include <imgui_internal.h> // FindWindowByName and the dock node's tab bar: bringing the window's tab to the front.
 #include <imgui_stdlib.h>
 
 #include "app/model/ModelSeat.h"
@@ -17,13 +19,48 @@ namespace {
 
 constexpr float REPLY_LINES = 8.0f;    // Height of the reply box, in lines of text.
 constexpr float THINKING_LINES = 4.0f; // Height of the thinking box, in lines of text.
+constexpr float GRAMMAR_LINES = 8.0f;  // Height of the grammar box, in lines of text.
 
 } // namespace
 
 void ModelSeatWindow::Draw(AppController& controller)
 {
+    ModelSeat& seat = controller.Seat();
+    const float padding = ImGui::GetStyle().FramePadding.y * 2.0f; // A multiline box's frame, above its lines of text.
+    const std::optional<SeatRequest> request = seat.Pending();
+
+    // A new call (before Begin: the window draws nothing while its tab is hidden, and a call must be seen then).
+    if (request && request->id != _requestId) {
+        // A call the engine published again (a between-turn fold a posted turn preempted comes back under a new id)
+        // has the same label and prompt: the owner's typed reply stays. Any other call starts over, with the reply
+        // as the model's draft (Draft mode) or empty (Human mode).
+        const auto samePrompt = [](const inference::Prompt& a, const inference::Prompt& b) {
+            return a.stableCount == b.stableCount &&
+                   std::ranges::equal(a.messages, b.messages, [](const auto& x, const auto& y) {
+                       return x.role == y.role && x.content == y.content;
+                   });
+        };
+        const bool again = _requestId != 0 && request->label == _label && samePrompt(request->prompt, _prompt);
+        if (!again) {
+            _reply = request->draft ? request->draft->text : std::string();
+            _thinking = request->draft ? request->draft->thinking : std::string();
+            ImGui::ClearActiveID(); // A box that is being edited must not see its text replaced under it.
+        }
+        _requestId = request->id;
+        _label = request->label;
+        _prompt = request->prompt;
+        _check.reset();
+
+        // Bring the window's tab to the front when it is docked with others, so the call is seen. The tab bar's
+        // SelectedTabId, not NextSelectedTabId nor a window focus: those focus the window, which would take the
+        // keyboard from the Play window (a between-turn fold arrives while the owner may be typing there).
+        ImGuiWindow* pWindow = ImGui::FindWindowByName(MODEL_SEAT_WINDOW);
+        if (pWindow != nullptr && pWindow->DockNode != nullptr && pWindow->DockNode->TabBar != nullptr) {
+            pWindow->DockNode->TabBar->SelectedTabId = pWindow->TabId;
+        }
+    }
+
     if (ImGui::Begin(MODEL_SEAT_WINDOW)) {
-        ModelSeat& seat = controller.Seat();
 
         // The switch: while it is off, the model answers every call as usual.
         bool enabled = seat.Enabled();
@@ -55,17 +92,9 @@ void ModelSeatWindow::Draw(AppController& controller)
             ImGui::EndTable();
         }
 
-        const std::optional<SeatRequest> request = seat.Pending();
         if (!request) {
             ImGui::TextDisabled("%s", seat.Enabled() ? "No call waits for a reply." : "Off: the model answers every call.");
         } else {
-            // A new call: the reply starts as the model's draft (Draft mode) or empty (Human mode).
-            if (request->id != _requestId) {
-                _requestId = request->id;
-                _reply = request->draft ? request->draft->text : std::string();
-                _thinking = request->draft ? request->draft->thinking : std::string();
-                _check.reset();
-            }
             const inference::GenerationSpec& spec = request->spec;
 
             // Which call waits, and the limits the model would be held to.
@@ -86,11 +115,14 @@ void ModelSeatWindow::Draw(AppController& controller)
                 ImGui::TextWrapped("%s", request->draft->thinking.c_str());
             }
             if (!spec.grammar.empty() && ImGui::CollapsingHeader("Grammar")) {
-                ImGui::TextUnformatted(spec.grammar.c_str());
+                // Read-only, so it wraps, scrolls and can be copied.
+                std::string grammar = spec.grammar; // InputTextMultiline wants a mutable string.
+                ImGui::InputTextMultiline("##grammar", &grammar,
+                                          ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * GRAMMAR_LINES + padding),
+                                          ImGuiInputTextFlags_ReadOnly);
             }
 
             // The reply, and the thinking when the call may think. Edits stay in this window until Submit.
-            const float padding = ImGui::GetStyle().FramePadding.y * 2.0f;
             ImGui::TextUnformatted("Reply");
             if (ImGui::InputTextMultiline("##reply", &_reply,
                                           ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * REPLY_LINES + padding))) {

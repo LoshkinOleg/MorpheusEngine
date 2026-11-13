@@ -373,3 +373,125 @@ TEST_CASE("Withdraw in the Model seat window cancels the turn whose call waits",
     CHECK(controller.TakeRestoredInput() == std::optional<std::string>("I walk to the lighthouse."));
     CHECK_FALSE(controller.Seat().Pending());
 }
+
+TEST_CASE("A call that arrives brings the Model seat tab to the front without taking the keyboard focus", "[ui]")
+{
+    test::HeadlessImGui imgui;
+    const std::filesystem::path dir = test::SettingsFolder("ui_seat_tab");
+    app::AppController controller(test::PathsIn(dir), test::ScriptedFactory(Responder()));
+    app::Ui ui;
+    test::PumpUntil(controller, [&] { return controller.CanPost(); });
+    controller.NewRun(controller.Worlds().at(0), "seat", 7);
+    test::PumpUntil(controller, [&] { return controller.Run().Open() && controller.CanPost(); });
+    DrawFrames(imgui, controller, ui);
+
+    // The default layout docks State, Memory and Model seat in one node. Bring another tab of it to the front.
+    ImGuiWindow* pSeat = ImGui::FindWindowByName(app::MODEL_SEAT_WINDOW);
+    ImGuiWindow* pState = ImGui::FindWindowByName(app::STATE_WINDOW);
+    REQUIRE(pSeat != nullptr);
+    REQUIRE(pState != nullptr);
+    REQUIRE(pSeat->DockNode != nullptr);
+    REQUIRE(pSeat->DockNode == pState->DockNode);
+    REQUIRE(pSeat->DockNode->TabBar != nullptr);
+    // The owner is in the Play window (docked in another node), and another tab of the seat's node is at the front.
+    ImGuiWindow* pPlay = ImGui::FindWindowByName(app::PLAY_WINDOW);
+    REQUIRE(pPlay != nullptr);
+    ImGui::FocusWindow(pPlay);
+    DrawFrames(imgui, controller, ui);
+    REQUIRE(ImGui::GetCurrentContext()->NavWindow == pPlay);
+    pSeat->DockNode->TabBar->SelectedTabId = pState->TabId;
+    pSeat->DockNode->SelectedTabId = pState->TabId;
+    DrawFrames(imgui, controller, ui);
+    REQUIRE(pSeat->DockNode->TabBar->SelectedTabId == pState->TabId);
+    REQUIRE(ImGui::GetCurrentContext()->NavWindow == pPlay);
+
+    // A call waits: the seat's tab comes to the front, and the focused window does not change.
+    test::SeatOnlyFor(controller.Seat(), app::SeatLabel::Resolve, app::SeatMode::Human);
+    controller.Submit("I walk to the lighthouse.");
+    test::PumpUntil(controller, [&] { return controller.Seat().Pending().has_value(); });
+    DrawFrames(imgui, controller, ui);
+    REQUIRE(pSeat->DockNode != nullptr);
+    CHECK(pSeat->DockNode->TabBar->SelectedTabId == pSeat->TabId);
+    CHECK(ImGui::GetCurrentContext()->NavWindow == pPlay);
+
+    controller.Cancel();
+    test::PumpUntil(controller, [&] { return controller.CanPost(); });
+}
+
+TEST_CASE("The Model seat window keeps the typed reply when the same call comes back under a new id", "[ui]")
+{
+    test::HeadlessImGui imgui;
+    const std::filesystem::path dir = test::SettingsFolder("ui_seat_keep");
+    app::AppController controller(test::PathsIn(dir), test::ScriptedFactory(Responder()));
+    app::ModelSeatWindow window;
+    test::FakeBackend backend(16384);
+    test::PumpUntil(controller, [&] { return controller.CanPost(); });
+
+    app::SeatRequest request;
+    request.label = app::SeatLabel::Narrate;
+    request.prompt = {{{inference::Role::User, "I walk."}}, 0};
+    app::ModelSeat& seat = controller.Seat();
+
+    // Types `text` into the reply box, as a keyboard would: moves the mouse down the window until it hovers the box,
+    // clicks it, and sends the characters.
+    auto type = [&](const char* text) {
+        ImGuiWindow* pWindow = ImGui::FindWindowByName(app::MODEL_SEAT_WINDOW);
+        REQUIRE(pWindow != nullptr);
+        const ImGuiID replyId = pWindow->GetID("##reply");
+        ImGuiIO& io = ImGui::GetIO();
+        bool found = false;
+        for (float y = 5.0f; y < 800.0f && !found; y += 5.0f) {
+            io.AddMousePosEvent(300.0f, y);
+            DrawSeatWindow(imgui, controller, window, 1);
+            found = ImGui::GetCurrentContext()->HoveredId == replyId;
+        }
+        REQUIRE(found);
+        io.AddMouseButtonEvent(0, true);
+        DrawSeatWindow(imgui, controller, window, 1);
+        io.AddMouseButtonEvent(0, false);
+        DrawSeatWindow(imgui, controller, window, 1);
+        REQUIRE(ImGui::GetCurrentContext()->ActiveId == replyId);
+        io.AddInputCharactersUTF8(text);
+        DrawSeatWindow(imgui, controller, window, 2);
+    };
+
+    // The first call: the owner types a reply, then the call is preempted (withdrawn at the seat).
+    {
+        test::AsyncCall<std::optional<app::SeatReply>> call(
+            [&](std::stop_token stop) { return seat.Await(request, backend, stop); });
+        const app::SeatRequest first = test::WaitForRequest(seat);
+        DrawSeatWindow(imgui, controller, window, 2);
+        type("typed");
+        CHECK(seat.Withdraw(first.id));
+        CHECK_FALSE(call.Get());
+    }
+
+    // The same call comes back under a new id: the typed text stays.
+    {
+        test::AsyncCall<std::optional<app::SeatReply>> call(
+            [&](std::stop_token stop) { return seat.Await(request, backend, stop); });
+        const app::SeatRequest second = test::WaitForRequest(seat);
+        CHECK(second.id > 0);
+        DrawSeatWindow(imgui, controller, window, 2);
+        PressSeatItem("Submit");
+        DrawSeatWindow(imgui, controller, window, 1);
+        const std::optional<app::SeatReply> reply = call.Get();
+        REQUIRE(reply);
+        CHECK(reply->text == "typed");
+    }
+
+    // Another call (other prompt): the boxes start over.
+    {
+        app::SeatRequest other = request;
+        other.prompt.messages[0].content = "I run.";
+        test::AsyncCall<std::optional<app::SeatReply>> call(
+            [&](std::stop_token stop) { return seat.Await(other, backend, stop); });
+        test::WaitForRequest(seat);
+        DrawSeatWindow(imgui, controller, window, 2);
+        PressSeatItem("Submit");
+        DrawSeatWindow(imgui, controller, window, 1);
+        const std::optional<app::SeatReply> reply = call.Get();
+        REQUIRE(reply);
+        CHECK(reply->text.empty());
+    }
+}
