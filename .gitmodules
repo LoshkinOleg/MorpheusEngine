@@ -19,3 +19,6 @@
 [submodule "docs/references/Sonder_Engine"]
 	path = docs/references/Sonder_Engine
 	url = https://github.com/N0819/Sonder_Engine.git
+[submodule "docs/references/Mantella"]
+	path = docs/references/Mantella
+	url = https://github.com/art-from-the-machine/Mantella.git
