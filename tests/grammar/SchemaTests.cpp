@@ -1,7 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstddef>
-#include <optional>
 #include <string>
 #include <vector>
 
@@ -536,4 +535,34 @@ TEST_CASE("Validate throws the schema's DataError and never one for the value", 
         CHECK_NOTHROW(errors = grammar::Validate(value, schema));
         CHECK_FALSE(errors.empty());
     }
+    // One of them in full: a null where the discriminator belongs.
+    const std::vector<grammar::ValidationError> nulled = grammar::Validate(R"({"action": null})"_json, schema);
+    REQUIRE(nulled.size() == 1);
+    CHECK(nulled[0].path == "/action");
+    CHECK(nulled[0].message.starts_with("unknown action null; expected one of: "));
+}
+
+TEST_CASE("Validate tells a negative integer from an unsigned one that nlohmann would equate", "[schema]")
+{
+    // nlohmann's == casts an unsigned to int64 against a signed: -1 == 18446744073709551615. The grammar's Literal
+    // compares text, so Validate must too.
+    const nlohmann::json bigUnsigned = nlohmann::json::parse("18446744073709551615");
+    const nlohmann::json minusOne = nlohmann::json::parse("-1");
+    REQUIRE(minusOne == bigUnsigned);
+    const nlohmann::json inEnum = R"({"enum": [-1, 5]})"_json;
+    CHECK(grammar::Validate(minusOne, inEnum).empty());
+    CHECK(grammar::Validate(nlohmann::json(5), inEnum).empty());
+    CHECK(grammar::Validate(bigUnsigned, inEnum).size() == 1);
+    const nlohmann::json minConst = nlohmann::json::parse(R"({"const": -9223372036854775808})");
+    CHECK(grammar::Validate(nlohmann::json::parse("-9223372036854775808"), minConst).empty());
+    CHECK(grammar::Validate(nlohmann::json::parse("9223372036854775808"), minConst).size() == 1);
+    // A uint64 above the long long range is a legal enum value (Literal writes its text): not a duplicate of -1.
+    const nlohmann::json both = nlohmann::json::parse(R"({"enum": [-1, 18446744073709551615]})");
+    CHECK_NOTHROW(grammar::FromSchema(both));
+    CHECK(grammar::Validate(bigUnsigned, both).empty());
+    CHECK(grammar::Validate(minusOne, both).empty());
+    // An integer node: huge values are errors, not throws.
+    const nlohmann::json range = R"({"type": "integer", "minimum": 0, "maximum": 5})"_json;
+    CHECK(grammar::Validate(bigUnsigned, range).size() == 1);
+    CHECK(grammar::Validate(nlohmann::json::parse("9223372036854775808"), range).size() == 1);
 }

@@ -61,6 +61,16 @@ std::string PointerToken(std::string_view key)
     return token;
 }
 
+// Equal as the grammar sees it: a string to a string, an integer to an integer (1.0 is not 1). Integers are compared by
+// their text, as the grammar's Literal writes them: nlohmann's == would equate -1 with 18446744073709551615.
+bool SameValue(const nlohmann::json& a, const nlohmann::json& b)
+{
+    if (a.is_string() && b.is_string()) {
+        return a == b;
+    }
+    return a.is_number_integer() && b.is_number_integer() && a.dump() == b.dump();
+}
+
 // Reads `schema`, found at `pointer` inside the whole schema, into a Node, checking it against the subset. Throws
 // DataError naming the pointer of the mistake. Recursive: the schemas of an object's properties, an array's items and
 // a oneOf's branches follow the same rules.
@@ -184,7 +194,7 @@ Node Compile(const nlohmann::json& schema, const std::string& pointer)
                 throw error(valueAt, "'enum' values must be all strings or all integers");
             }
             for (std::size_t j = 0; j < i; ++j) {
-                if (values[j] == value) {
+                if (SameValue(values[j], value)) {
                     throw error(valueAt, std::format("{} is listed twice", value.dump()));
                 }
             }
@@ -400,10 +410,7 @@ void CheckValue(const Node& node, const nlohmann::json& value, const std::string
         }
         return text;
     };
-    // Equal as the grammar sees it: a string to a string, an integer to an integer (1.0 is not 1).
-    auto same = [](const nlohmann::json& a, const nlohmann::json& b) {
-        return (a.is_string() && b.is_string() && a == b) || (a.is_number_integer() && b.is_number_integer() && a == b);
-    };
+    auto same = [](const nlohmann::json& a, const nlohmann::json& b) { return SameValue(a, b); };
 
     switch (node.kind) {
     case Node::Kind::Object: {
