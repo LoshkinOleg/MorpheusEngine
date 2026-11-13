@@ -62,9 +62,9 @@ TEST_CASE("JsonString bounds a JSON string by characters", "[gbnf]")
 
 TEST_CASE("JsonString stays within llama.cpp's repetition limit", "[gbnf]")
 {
-    // `char` repeats up to maxChars times, and llama.cpp refuses a count above GBNF_MAX_REPETITION.
-    CHECK(grammar::JsonString(0, grammar::GBNF_MAX_REPETITION) == R"gbnf("\"" char{0,2000} "\"")gbnf");
-    CHECK_THROWS_AS(grammar::JsonString(0, grammar::GBNF_MAX_REPETITION + 1), core::ContractError);
+    // `char` repeats up to maxChars times, and llama.cpp refuses `char{0,2000}` (one symbol times 2000 repetitions).
+    CHECK(grammar::JsonString(0, grammar::GBNF_MAX_STRING_CHARS) == R"gbnf("\"" char{0,1999} "\"")gbnf");
+    CHECK_THROWS_AS(grammar::JsonString(0, grammar::GBNF_MAX_STRING_CHARS + 1), core::ContractError);
 }
 
 TEST_CASE("Enum matches one of its values as a JSON string", "[gbnf]")
@@ -107,10 +107,24 @@ TEST_CASE("ListOf bounds a compact JSON array", "[gbnf]")
 
 TEST_CASE("ListOf stays within llama.cpp's repetition limit", "[gbnf]")
 {
-    // The items after the first repeat up to maxItems - 1 times, and llama.cpp refuses a count above
-    // GBNF_MAX_REPETITION.
-    CHECK(grammar::ListOf("x", 1, grammar::GBNF_MAX_REPETITION + 1) == R"gbnf("[" x ("," x){0,2000} "]")gbnf");
-    CHECK_THROWS_AS(grammar::ListOf("x", 1, grammar::GBNF_MAX_REPETITION + 2), core::ContractError);
+    // The items after the first repeat up to maxItems - 1 times, as a group of at most two symbols.
+    CHECK(grammar::ListOf("x", 1, grammar::GBNF_MAX_LIST_ITEMS) == R"gbnf("[" x ("," x){0,999} "]")gbnf");
+    CHECK_THROWS_AS(grammar::ListOf("x", 1, grammar::GBNF_MAX_LIST_ITEMS + 1), core::ContractError);
+}
+
+TEST_CASE("ListOf takes a rule reference or one string literal as its element", "[gbnf]")
+{
+    // A repeated group with anything larger creates more symbols than llama.cpp's limit is counted for.
+    CHECK(grammar::ListOf("item-2", 0, 2) == R"gbnf(("[]" | "[" item-2 ("," item-2){0,1} "]"))gbnf");
+    CHECK(grammar::ListOf(grammar::Literal(R"(a"b)"), 1, 2) == R"gbnf("[" "a\"b" ("," "a\"b"){0,1} "]")gbnf");
+    CHECK_THROWS_AS(grammar::ListOf("", 0, 2), core::ContractError);
+    CHECK_THROWS_AS(grammar::ListOf("Item", 0, 2), core::ContractError);
+    CHECK_THROWS_AS(grammar::ListOf("x y", 0, 2), core::ContractError);
+    CHECK_THROWS_AS(grammar::ListOf(grammar::JsonString(0, 3), 0, 2), core::ContractError);
+    CHECK_THROWS_AS(grammar::ListOf(grammar::Enum({"a", "b"}), 0, 2), core::ContractError);
+    CHECK_THROWS_AS(grammar::ListOf(R"gbnf("a" "b")gbnf", 0, 2), core::ContractError);
+    CHECK_THROWS_AS(grammar::ListOf(R"gbnf("a)gbnf", 0, 2), core::ContractError);
+    CHECK_THROWS_AS(grammar::ListOf(R"gbnf("a\")gbnf", 0, 2), core::ContractError);
 }
 
 TEST_CASE("Object matches a compact JSON object with fixed keys in a fixed order", "[gbnf]")

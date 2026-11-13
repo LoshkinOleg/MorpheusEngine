@@ -115,11 +115,10 @@ Node Compile(const nlohmann::json& schema, const std::string& pointer)
         }
         return value;
     };
-    // A count keyword above `most`, the largest one llama.cpp's grammar repetition limit allows.
-    auto beyondRepetitionLimit = [&](const char* keyword, long long count, long long most) {
+    // A count keyword above `most`, the largest a grammar llama.cpp loads can hold (see GBNF_MAX_STRING_CHARS).
+    auto beyondLlamaLimit = [&](const char* keyword, long long count, long long most) {
         return error(pointer + "/" + keyword,
-                     std::format("'{}' {} is above {}, the most llama.cpp's grammar repetition limit ({}) allows",
-                                 keyword, count, most, GBNF_MAX_REPETITION));
+                     std::format("'{}' {} is above {}, the most a grammar llama.cpp loads can hold", keyword, count, most));
     };
     constexpr long long LOWEST = std::numeric_limits<long long>::min();
     constexpr long long HIGHEST = std::numeric_limits<long long>::max();
@@ -235,9 +234,8 @@ Node Compile(const nlohmann::json& schema, const std::string& pointer)
         if (!maxLength) {
             throw error(pointer, "a string needs 'maxLength'");
         }
-        // The grammar repeats `char` up to maxLength times.
-        if (*maxLength > GBNF_MAX_REPETITION) {
-            throw beyondRepetitionLimit("maxLength", *maxLength, GBNF_MAX_REPETITION);
+        if (*maxLength > GBNF_MAX_STRING_CHARS) {
+            throw beyondLlamaLimit("maxLength", *maxLength, GBNF_MAX_STRING_CHARS);
         }
         if (minLength.value_or(0) > *maxLength) {
             throw error(pointer, std::format("'minLength' {} is above 'maxLength' {}", *minLength, *maxLength));
@@ -261,9 +259,8 @@ Node Compile(const nlohmann::json& schema, const std::string& pointer)
         if (*maxItems < 1) {
             throw error(pointer + "/maxItems", "'maxItems' must be at least 1");
         }
-        // The grammar writes the first item, then repeats the others up to maxItems - 1 times.
-        if (*maxItems - 1 > GBNF_MAX_REPETITION) {
-            throw beyondRepetitionLimit("maxItems", *maxItems, GBNF_MAX_REPETITION + 1);
+        if (*maxItems > GBNF_MAX_LIST_ITEMS) {
+            throw beyondLlamaLimit("maxItems", *maxItems, GBNF_MAX_LIST_ITEMS);
         }
         if (minItems.value_or(0) > *maxItems) {
             throw error(pointer, std::format("'minItems' {} is above 'maxItems' {}", *minItems, *maxItems));
@@ -319,8 +316,10 @@ Node Compile(const nlohmann::json& schema, const std::string& pointer)
     throw error(pointer + "/type", std::format("the type '{}' is not supported", typeName));
 }
 
-// The grammar expression for the values `node` allows. Recursive, like Compile.
-std::string Expression(const Node& node)
+// The grammar expression for the values `node` allows. Recursive, like Compile. Each array's item expression becomes a
+// rule of `builder`, items-0, items-1 and so on in the order they are added (inner arrays first), so that ListOf repeats
+// a single reference: llama.cpp limits a repetition by the symbols its repeated group creates.
+std::string Expression(const Node& node, GrammarBuilder& builder, int& itemRules)
 {
     switch (node.kind) {
     case Node::Kind::Object: {
@@ -330,7 +329,7 @@ std::string Expression(const Node& node)
         }
         std::vector<ObjectField> fields;
         for (std::size_t i = 0; i < node.keys.size(); ++i) {
-            fields.push_back({node.keys[i], Expression(node.children[i])});
+            fields.push_back({node.keys[i], Expression(node.children[i], builder, itemRules)});
         }
         return Object(fields);
     }
@@ -355,12 +354,15 @@ std::string Expression(const Node& node)
         return IntRange(node.minimum, node.maximum);
     case Node::Kind::String:
         return JsonString(node.minCount, node.maxCount);
-    case Node::Kind::Array:
-        return ListOf(Expression(node.children[0]), node.minCount, node.maxCount);
+    case Node::Kind::Array: {
+        std::string item = Expression(node.children[0], builder, itemRules);
+        const std::string name = builder.Rule(std::format("items-{}", itemRules++), std::move(item));
+        return ListOf(name, node.minCount, node.maxCount);
+    }
     case Node::Kind::OneOf: {
         std::vector<std::string> branches;
         for (const Node& branch : node.children) {
-            branches.push_back(Expression(branch));
+            branches.push_back(Expression(branch, builder, itemRules));
         }
         return Alternatives(branches);
     }
@@ -374,7 +376,10 @@ std::string FromSchema(const nlohmann::json& schema)
 {
     // Check the whole schema first, then write it: a bad schema never yields part of a grammar.
     const Node root = Compile(schema, "");
-    return GrammarBuilder().Text(Expression(root));
+    GrammarBuilder builder;
+    int itemRules = 0; // The item rules named so far.
+    const std::string rootBody = Expression(root, builder, itemRules);
+    return builder.Text(rootBody);
 }
 
 } // namespace morpheus::grammar

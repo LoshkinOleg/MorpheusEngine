@@ -22,9 +22,10 @@ namespace morpheus::grammar {
 //                                                               key in every branch, a const string in each, and
 //                                                               different across branches
 // "title", "description", "$comment", "$schema" and "$id" are allowed anywhere and ignored. Nested schemas follow the
-// same rules at any depth; "$ref" is not supported. "maxLength" may be at most GBNF_MAX_REPETITION and "maxItems" at
-// most GBNF_MAX_REPETITION + 1 (llama.cpp's repetition limit). Anything else is a core::DataError (schemas are host
-// data) whose message names the JSON pointer inside the schema and the problem: "schema at <pointer>: <problem>".
+// same rules at any depth; "$ref" is not supported. So that llama.cpp loads the grammar, "maxLength" may be at most
+// GBNF_MAX_STRING_CHARS and "maxItems" at most GBNF_MAX_LIST_ITEMS, and each array's items are a rule of their own
+// (items-0, items-1, ...). Anything else is a core::DataError (schemas are host data) whose message names the JSON
+// pointer inside the schema and the problem: "schema at <pointer>: <problem>".
 std::string FromSchema(const nlohmann::json& schema);
 
 } // namespace morpheus::grammar

@@ -20,6 +20,14 @@ constexpr std::string_view CHAR_RULE_NAME = "char";
 constexpr std::string_view CHAR_RULE =
     R"gbnf(char ::= [^"\\\x7F\x00-\x1F] | "\\" (["\\/bfnrt] | "u" [0-9a-fA-F]{4}))gbnf";
 
+// Whether `name` is a GBNF rule name: [a-z0-9-]+.
+bool IsRuleName(std::string_view name)
+{
+    return !name.empty() && std::all_of(name.begin(), name.end(), [](char c) {
+        return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-';
+    });
+}
+
 // A repetition count: "{n}" for exactly n, "{m,n}" for a range.
 std::string Count(std::size_t fewest, std::size_t most)
 {
@@ -134,7 +142,8 @@ std::string Literal(std::string_view text)
 std::string JsonString(int minChars, int maxChars)
 {
     MORPHEUS_REQUIRE(0 <= minChars && minChars <= maxChars, "JsonString: needs 0 <= minChars <= maxChars");
-    MORPHEUS_REQUIRE(maxChars <= GBNF_MAX_REPETITION, "JsonString: maxChars is above llama.cpp's repetition limit");
+    MORPHEUS_REQUIRE(maxChars <= GBNF_MAX_STRING_CHARS,
+                     std::format("JsonString: maxChars is above GBNF_MAX_STRING_CHARS ({})", GBNF_MAX_STRING_CHARS));
     // No characters at all: just the two quotes.
     if (maxChars == 0) {
         return Literal("\"\"");
@@ -184,8 +193,23 @@ std::string ListOf(std::string_view element, int minItems, int maxItems)
 {
     MORPHEUS_REQUIRE(0 <= minItems && minItems <= maxItems && maxItems >= 1,
                      "ListOf: needs 0 <= minItems <= maxItems and maxItems >= 1");
-    // The items after the first are one repetition, which llama.cpp caps.
-    MORPHEUS_REQUIRE(maxItems - 1 <= GBNF_MAX_REPETITION, "ListOf: maxItems - 1 is above llama.cpp's repetition limit");
+    MORPHEUS_REQUIRE(maxItems <= GBNF_MAX_LIST_ITEMS,
+                     std::format("ListOf: maxItems is above GBNF_MAX_LIST_ITEMS ({})", GBNF_MAX_LIST_ITEMS));
+    // The element is repeated inside a group, which GBNF_MAX_LIST_ITEMS allows only while the element is a single
+    // symbol: a rule reference, or one string literal (a quote, then characters or backslash escapes, then the
+    // closing quote at the very end).
+    const bool oneLiteral = [&element] {
+        if (element.size() < 2 || element.front() != '"') {
+            return false;
+        }
+        std::size_t i = 1;
+        while (i < element.size() && element[i] != '"') {
+            i += element[i] == '\\' ? 2 : 1;
+        }
+        return i == element.size() - 1;
+    }();
+    MORPHEUS_REQUIRE(IsRuleName(element) || oneLiteral,
+                     "ListOf: the element '" + std::string(element) + "' must be a rule reference or one string literal");
     // The first element is written out; a repetition of "," and an element adds the others.
     const std::size_t fewestMore = static_cast<std::size_t>(std::max(minItems, 1) - 1);
     const std::size_t mostMore = static_cast<std::size_t>(maxItems - 1);
@@ -227,10 +251,7 @@ std::string Alternatives(const std::vector<std::string>& expressions)
 
 std::string GrammarBuilder::Rule(std::string_view name, std::string body)
 {
-    const bool wellFormed = !name.empty() && std::all_of(name.begin(), name.end(), [](char c) {
-        return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-';
-    });
-    MORPHEUS_REQUIRE(wellFormed, "GrammarBuilder::Rule: '" + std::string(name) + "' is not a GBNF rule name ([a-z0-9-]+)");
+    MORPHEUS_REQUIRE(IsRuleName(name), "GrammarBuilder::Rule: '" + std::string(name) + "' is not a GBNF rule name ([a-z0-9-]+)");
     MORPHEUS_REQUIRE(name != "root" && name != CHAR_RULE_NAME,
                      "GrammarBuilder::Rule: '" + std::string(name) + "' is reserved");
     const bool taken = std::any_of(_rules.begin(), _rules.end(), [&](const auto& rule) { return rule.first == name; });

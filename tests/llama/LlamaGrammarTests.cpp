@@ -14,6 +14,9 @@
 #include "core/Changes.h"
 #include "core/Errors.h"
 #include "core/World.h"
+#include "grammar/Gbnf.h"
+#include "grammar/Schema.h"
+#include "grammar/TestSchemas.h"
 #include "inference/Llm.h"
 #include "turn/ResolveGrammar.h"
 
@@ -87,23 +90,64 @@ TEST_CASE("llama.cpp accepts the generated grammars and they constrain real outp
 TEST_CASE("LlamaCppBackend::CheckGrammar tells whether a text fits a grammar and where it stops fitting", "[llama]")
 {
     llama::LlamaCppBackend& backend = test::SharedBackend();
-    const std::string grammar = R"(root ::= "{\"answer\":\"" ("yes" | "no") "\"}")";
+    const std::string yesNo = R"(root ::= "{\"answer\":\"" ("yes" | "no") "\"}")";
 
     // Texts the grammar accepts from start to end.
-    CHECK(backend.CheckGrammar(grammar, R"({"answer":"yes"})").empty());
-    CHECK(backend.CheckGrammar(grammar, R"({"answer":"no"})").empty());
+    CHECK(backend.CheckGrammar(yesNo, R"({"answer":"yes"})").empty());
+    CHECK(backend.CheckGrammar(yesNo, R"({"answer":"no"})").empty());
 
     // A text that breaks the grammar: the reason names the rejected token and the text before it.
-    const std::string broken = backend.CheckGrammar(grammar, R"({"answer":"maybe"})");
+    const std::string broken = backend.CheckGrammar(yesNo, R"({"answer":"maybe"})");
     CHECK_THAT(broken, ContainsSubstring("the grammar rejects") && ContainsSubstring("answer"));
-    const std::string trailing = backend.CheckGrammar(grammar, R"({"answer":"yes"} and more)");
+    const std::string trailing = backend.CheckGrammar(yesNo, R"({"answer":"yes"} and more)");
     CHECK_THAT(trailing, ContainsSubstring("the grammar rejects") && ContainsSubstring("yes"));
 
     // A text that ends early.
-    CHECK(backend.CheckGrammar(grammar, R"({"answer":"ye)") == "the text ends before the grammar does");
-    CHECK(backend.CheckGrammar(grammar, "") == "the text ends before the grammar does");
+    CHECK(backend.CheckGrammar(yesNo, R"({"answer":"ye)") == "the text ends before the grammar does");
+    CHECK(backend.CheckGrammar(yesNo, "") == "the text ends before the grammar does");
 
     // A grammar that does not parse, or none at all, is an engine bug.
     CHECK_THROWS_AS(backend.CheckGrammar("root ::= (", "x"), core::ContractError);
     CHECK_THROWS_AS(backend.CheckGrammar("", "x"), core::ContractError);
+}
+
+TEST_CASE("llama.cpp loads FromSchema grammars at the repetition limits", "[llama]")
+{
+    llama::LlamaCppBackend& backend = test::SharedBackend();
+    // CheckGrammar throws ContractError for a grammar llama.cpp refuses to parse; "" means it parsed and `value` fits.
+    auto loads = [&](const nlohmann::json& schema, const std::string& value) {
+        INFO("schema: " << schema.dump());
+        CHECK(backend.CheckGrammar(grammar::FromSchema(schema), value).empty());
+    };
+
+    // The longest string, full.
+    const nlohmann::json longString = {{"type", "string"}, {"maxLength", grammar::GBNF_MAX_STRING_CHARS}};
+    loads(longString, "\"" + std::string(grammar::GBNF_MAX_STRING_CHARS, 'a') + "\"");
+    // The longest list of the longest strings, full.
+    const nlohmann::json longList = {{"type", "array"}, {"items", longString}, {"maxItems", grammar::GBNF_MAX_LIST_ITEMS}};
+    std::string fullList = "[";
+    for (int i = 0; i < grammar::GBNF_MAX_LIST_ITEMS; ++i) {
+        fullList += i == 0 ? R"("a")" : R"(,"a")";
+    }
+    loads(longList, fullList + "]");
+    // The longest list of objects that each hold the longest list.
+    const nlohmann::json holder = {
+        {"type", "object"}, {"properties", {{"tags", longList}}}, {"required", nlohmann::json::array({"tags"})}};
+    loads({{"type", "array"}, {"items", holder}, {"maxItems", grammar::GBNF_MAX_LIST_ITEMS}},
+          R"([{"tags":["a","b"]},{"tags":[]}])");
+    // The host's catalog, and a list of short strings whose items FromSchema names as a rule.
+    loads(test::CatalogSchema(), R"({"action":"give_item","params":{"item":"Iron Sword"}})");
+    loads(nlohmann::json::parse(R"({"type": "array", "items": {"type": "string", "maxLength": 48}, "maxItems": 50})"),
+          R"(["Iron Sword","Bread"])");
+
+    // What llama.cpp refuses, written by hand: one character more than the limit, and that same list of strings with
+    // the string written inline in the repeated group (49 symbols repeated 49 times), as FromSchema wrote it before.
+    const std::string tooLong =
+        grammar::GrammarBuilder().Text(grammar::Literal("\"") + " char{0,2000} " + grammar::Literal("\""));
+    CHECK_THROWS_AS(backend.CheckGrammar(tooLong, R"("a")"), core::ContractError);
+    const std::string item = grammar::JsonString(0, 48);
+    const std::string inlineList = grammar::GrammarBuilder().Text(grammar::Literal("[") + " " + item + " (" +
+                                                                  grammar::Literal(",") + " " + item + "){0,49} " +
+                                                                  grammar::Literal("]"));
+    CHECK_THROWS_AS(backend.CheckGrammar(inlineList, R"(["Iron Sword"])"), core::ContractError);
 }

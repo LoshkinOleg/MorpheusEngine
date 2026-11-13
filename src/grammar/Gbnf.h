@@ -11,9 +11,16 @@ namespace morpheus::grammar {
 // line. Every function returns an expression that can stand anywhere in a GBNF sequence: one made of alternatives
 // comes in parentheses. A broken contract (for example min > max) is a core::ContractError.
 
-// The largest repetition count ({m,n}) a grammar may hold: llama.cpp refuses a grammar with a larger one when it loads
-// it (MAX_REPETITION_THRESHOLD in llama.cpp's llama-grammar.cpp).
-constexpr int GBNF_MAX_REPETITION = 2000;
+// llama.cpp refuses to load a grammar past either of two checks in llama-grammar.cpp, both against
+// MAX_REPETITION_THRESHOLD (2000): a repetition count {m,n} above 2000 (parse_sequence), and a repetition whose count
+// times the symbols its repeated item creates reaches 2000 (handle_repetitions). A rule reference or a literal is one
+// symbol; a parenthesized group is its own rule, plus every rule a repetition inside it creates, plus every rule name
+// first seen inside it. The limits below keep every grammar this library writes within both checks.
+// JsonString repeats the one reference `char` up to maxChars times: maxChars * 1 < 2000.
+constexpr int GBNF_MAX_STRING_CHARS = 1999;
+// ListOf repeats the group ("," element) up to maxItems - 1 times; with the element a rule reference or a literal, the
+// group creates at most two symbols (itself and the element's first sight): (maxItems - 1) * 2 < 2000.
+constexpr int GBNF_MAX_LIST_ITEMS = 1000;
 
 // One key of an Object and the expression for its value.
 struct ObjectField {
@@ -26,7 +33,8 @@ struct ObjectField {
 std::string Literal(std::string_view text);
 
 // A JSON string of minChars to maxChars characters. Each character is a code point other than `"`, `\`, U+007F and
-// the control characters, or one JSON escape: the shared terminal `char`. Requires 0 <= minChars <= maxChars.
+// the control characters, or one JSON escape: the shared terminal `char`. Requires 0 <= minChars <= maxChars and
+// maxChars <= GBNF_MAX_STRING_CHARS.
 std::string JsonString(int minChars, int maxChars);
 
 // The decimal JSON integers from min to max, both included, exactly: no leading zeros, no "-0", no "+". Any range of
@@ -36,7 +44,10 @@ std::string IntRange(long long min, long long max);
 // One of `values`, each written as a JSON string. Requires at least one value and no duplicates.
 std::string Enum(const std::vector<std::string>& values);
 
-// A JSON array of minItems to maxItems `element`s, compact. Requires 0 <= minItems <= maxItems and maxItems >= 1.
+// A JSON array of minItems to maxItems `element`s, compact. Requires 0 <= minItems <= maxItems, maxItems >= 1 and
+// maxItems <= GBNF_MAX_LIST_ITEMS. `element` must be a rule reference ([a-z0-9-]+) or one string literal (Literal's
+// output): anything larger in the repeated group would break llama.cpp's limit. Name a larger element with
+// GrammarBuilder::Rule.
 std::string ListOf(std::string_view element, int minItems, int maxItems);
 
 // A JSON object with exactly the keys of `fields`, in their order, compact. Requires at least one field and no

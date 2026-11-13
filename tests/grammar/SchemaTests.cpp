@@ -24,6 +24,15 @@ std::string GrammarOf(const std::string& rootBody)
     return grammar::GrammarBuilder().Text(rootBody);
 }
 
+// The grammar FromSchema must give for an array of minItems to maxItems items whose expression is `itemBody`: the
+// item is the rule `items-0`.
+std::string ArrayGrammarOf(const std::string& itemBody, int minItems, int maxItems)
+{
+    grammar::GrammarBuilder builder;
+    const std::string items = builder.Rule("items-0", itemBody);
+    return builder.Text(grammar::ListOf(items, minItems, maxItems));
+}
+
 // The message of the DataError FromSchema throws for the schema `text`.
 std::string SchemaError(const std::string& text)
 {
@@ -70,9 +79,16 @@ TEST_CASE("FromSchema writes each keyword with the builder", "[schema]")
     CHECK(grammar::FromSchema(R"({"type": "string", "minLength": 2, "maxLength": 5})"_json) ==
           GrammarOf(grammar::JsonString(2, 5)));
     CHECK(grammar::FromSchema(R"({"type": "array", "items": {"const": 1}, "maxItems": 2})"_json) ==
-          GrammarOf(grammar::ListOf(grammar::Literal("1"), 0, 2)));
+          ArrayGrammarOf(grammar::Literal("1"), 0, 2));
     CHECK(grammar::FromSchema(R"({"type": "array", "items": {"const": 1}, "minItems": 1, "maxItems": 3})"_json) ==
-          GrammarOf(grammar::ListOf(grammar::Literal("1"), 1, 3)));
+          ArrayGrammarOf(grammar::Literal("1"), 1, 3));
+    // Each array's items are a rule of their own, numbered in the order the rules are written: inner arrays first.
+    CHECK(grammar::FromSchema(
+              R"({"type": "array", "maxItems": 3, "items": {"type": "array", "items": {"const": 1}, "maxItems": 2}})"_json) ==
+          R"gbnf(root ::= ("[]" | "[" items-1 ("," items-1){0,2} "]")
+items-0 ::= "1"
+items-1 ::= ("[]" | "[" items-0 ("," items-0){0,1} "]")
+)gbnf");
     // Keys follow `required`, not the sorted order nlohmann keeps `properties` in; no keys is the empty object.
     CHECK(grammar::FromSchema(
               R"({"type": "object", "properties": {"b": {"const": 1}, "a": {"const": 2}}, "required": ["b", "a"]})"_json) ==
@@ -179,6 +195,8 @@ TEST_CASE("The grammar of every keyword accepts a valid value and refuses each b
         with(R"("codes":[])", R"("codes":[3,3,3])"),
         with(R"("codes":[])", R"("codes":[4])"),
         with(R"("version":2)", R"("version":3)"),
+        with(R"("version":2)", R"("version":"2")"),                       // a string where the const is an integer
+        with(R"("codes":[])", R"("codes":["3"])"),                        // a string where the enum holds integers
         with(R"(,{"x":2,"label":"point"})", ""),                          // pair has exactly two items
         with(R"({"x":1,"label":"point"})", R"({"label":"point","x":1})"), // keys out of order
         with(R"("empty":{})", R"("empty":{"a":1})"),
@@ -279,11 +297,12 @@ TEST_CASE("FromSchema refuses strings outside the subset", "[schema]")
           "schema at /maxLength: 'maxLength' must be an integer from 0 to 2147483647");
     CHECK(SchemaError(R"({"type": "string", "maxLength": "3"})") ==
           "schema at /maxLength: 'maxLength' must be an integer from 0 to 2147483647");
-    // llama.cpp refuses a grammar repetition count above 2000, and a string repeats `char` up to maxLength times.
-    CHECK_NOTHROW(grammar::FromSchema(R"({"type": "string", "maxLength": 2000})"_json));
-    CHECK(SchemaError(R"({"type": "string", "maxLength": 2001})") ==
-          "schema at /maxLength: 'maxLength' 2001 is above 2000, the most llama.cpp's grammar repetition limit (2000) "
-          "allows");
+    CHECK(SchemaError(R"({"type": "string", "maxLength": 3, "items": {"const": 1}})") ==
+          "schema at /items: 'items' does not apply to a string");
+    // A string repeats `char` up to maxLength times, which llama.cpp allows up to 1999.
+    CHECK_NOTHROW(grammar::FromSchema(R"({"type": "string", "maxLength": 1999})"_json));
+    CHECK(SchemaError(R"({"type": "string", "maxLength": 2000})") ==
+          "schema at /maxLength: 'maxLength' 2000 is above 1999, the most a grammar llama.cpp loads can hold");
 }
 
 TEST_CASE("FromSchema refuses arrays outside the subset", "[schema]")
@@ -296,11 +315,12 @@ TEST_CASE("FromSchema refuses arrays outside the subset", "[schema]")
           "schema at the root: 'minItems' 4 is above 'maxItems' 3");
     CHECK(SchemaError(R"({"type": "array", "items": {"type": "string"}, "maxItems": 3})") ==
           "schema at /items: a string needs 'maxLength'");
-    // llama.cpp refuses a grammar repetition count above 2000, and an array repeats the items after its first.
-    CHECK_NOTHROW(grammar::FromSchema(R"({"type": "array", "items": {"const": 1}, "maxItems": 2001})"_json));
-    CHECK(SchemaError(R"({"type": "array", "items": {"const": 1}, "maxItems": 2002})") ==
-          "schema at /maxItems: 'maxItems' 2002 is above 2001, the most llama.cpp's grammar repetition limit (2000) "
-          "allows");
+    CHECK(SchemaError(R"({"type": "array", "items": {"const": 1}, "maxItems": 3, "maxLength": 3})") ==
+          "schema at /maxLength: 'maxLength' does not apply to an array");
+    // An array repeats the items after its first up to maxItems - 1 times, which llama.cpp allows up to 1000 items.
+    CHECK_NOTHROW(grammar::FromSchema(R"({"type": "array", "items": {"const": 1}, "maxItems": 1000})"_json));
+    CHECK(SchemaError(R"({"type": "array", "items": {"const": 1}, "maxItems": 1001})") ==
+          "schema at /maxItems: 'maxItems' 1001 is above 1000, the most a grammar llama.cpp loads can hold");
 }
 
 TEST_CASE("FromSchema refuses oneOfs outside the subset", "[schema]")
@@ -322,6 +342,8 @@ TEST_CASE("FromSchema refuses oneOfs outside the subset", "[schema]")
           "schema at /oneOf/2/properties/action/const: the discriminator value 'x' is repeated: /oneOf/0 has it too");
     CHECK(SchemaError(R"({"type": "object", "oneOf": [)" + x + "]}") ==
           "schema at the root: 'type' and 'oneOf' cannot be combined");
+    CHECK(SchemaError(R"({"oneOf": [)" + x + R"(], "maxItems": 3})") ==
+          "schema at /maxItems: 'maxItems' does not apply to a oneOf");
 }
 
 TEST_CASE("FromSchema names the pointer of a mistake deep inside the schema", "[schema]")
