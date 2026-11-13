@@ -4,6 +4,7 @@
 #include <utility>
 #include <variant>
 
+#include "app/model/ModelSeatBackend.h"
 #include "core/Errors.h"
 
 namespace morpheus::app {
@@ -15,7 +16,11 @@ AppPaths AppController::PathsUnder(const std::filesystem::path& root)
 
 AppController::AppController(AppPaths paths, EngineHost::BackendFactory factory)
     : _paths(std::move(paths))
-    , _engine(std::move(factory))
+    , _engine([pSeat = _pSeat, factory = std::move(factory)](
+                  const core::Settings& settings) -> std::unique_ptr<inference::LlmBackend> {
+        // Every backend answers through the model seat, a rebuilt one too, so the switch and modes survive restarts.
+        return std::make_unique<ModelSeatBackend>(factory(settings), pSeat);
+    })
 {
     // Invalid settings stop the app here, naming the file and key. A missing worlds folder is checked before the
     // engine starts: a throw after Start would leave ~EngineHost waiting for the model load before the error shows.
@@ -74,6 +79,11 @@ const RunModel& AppController::Run() const
 const std::vector<WorldEntry>& AppController::Worlds() const
 {
     return _worlds;
+}
+
+ModelSeat& AppController::Seat()
+{
+    return *_pSeat;
 }
 
 const std::optional<turn::LoadRun>& AppController::OpenRun() const

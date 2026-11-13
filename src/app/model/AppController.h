@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -9,6 +10,7 @@
 
 #include "app/model/Catalog.h"
 #include "app/model/EngineHost.h"
+#include "app/model/ModelSeat.h"
 #include "app/model/RunModel.h"
 #include "app/model/SettingsEdit.h"
 #include "turn/Worker.h"
@@ -22,12 +24,16 @@ struct AppPaths {
     std::filesystem::path savesDir = {};    // Runs: <world id>/<name>.db.
 };
 
-// The app apart from drawing (UI thread only): the worlds and their runs, the settings, the engine and the open run.
+// The app apart from drawing (UI thread only): the worlds and their runs, the settings, the engine, the open run and
+// the model seat.
 // Windows read it and call its actions. An action the UI does not offer at the moment is a ContractError: commands
 // need CanPost(), and ApplySettings needs CanApplySettings().
 class AppController {
 private:
     AppPaths _paths = {};
+    // The model seat, shared with every backend the engine host builds. Declared before _engine, whose factory wraps
+    // each backend around it: it exists first, and the backends' shares keep it alive as long as they live.
+    std::shared_ptr<ModelSeat> _pSeat = std::make_shared<ModelSeat>();
     EngineHost _engine;
     RunModel _run = {};
     std::vector<WorldEntry> _worlds = {};
@@ -40,7 +46,8 @@ public:
     static AppPaths PathsUnder(const std::filesystem::path& root);
 
     // Loads the settings (DataError when they are invalid: the app cannot run without them), lists the worlds
-    // (DataError when the worlds folder is missing) and starts loading the engine.
+    // (DataError when the worlds folder is missing) and starts loading the engine. Every backend `factory` makes is
+    // wrapped in a ModelSeatBackend around the seat; with the seat off, the wrapper only forwards.
     AppController(AppPaths paths, EngineHost::BackendFactory factory);
 
     // Takes a finished engine load, reopens a run after a restart, and applies the worker's events. Call once per
@@ -51,6 +58,8 @@ public:
     const EngineHost& Engine() const;
     const RunModel& Run() const;
     const std::vector<WorldEntry>& Worlds() const;
+    // The model seat: its switch, the modes, and the call waiting for a reply.
+    ModelSeat& Seat();
     // The open run's world folder and run file, when a run is open.
     const std::optional<turn::LoadRun>& OpenRun() const;
 
