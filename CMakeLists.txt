@@ -66,7 +66,7 @@ function(morpheus_target_defaults target)
         target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
     endif()
     # Warnings as errors through the CMake property (/WX or -Werror), so that the option holds even when a host sets
-    # CMAKE_COMPILE_WARNING_AS_ERROR, and `cmake --build --compile-no-warning-as-error` is respected.
+    # CMAKE_COMPILE_WARNING_AS_ERROR, and `cmake --compile-no-warning-as-error` at configure time is respected.
     set_target_properties(${target} PROPERTIES COMPILE_WARNING_AS_ERROR ${MORPHEUS_WARNINGS_AS_ERRORS})
 endfunction()
 

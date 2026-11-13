@@ -2,7 +2,7 @@
 
 A local-first, LLM-driven text RPG engine in C++20. The engine owns the game (structured world state, dice, memory); a local model running in-process through llama.cpp proposes outcomes and narrates them.
 
-The C# implementation this engine replaces is gone: `master` is the C++ engine.
+The C# implementation this engine replaces was removed (it remains in the git history): `master` is the C++ engine.
 
 ## Design
 
