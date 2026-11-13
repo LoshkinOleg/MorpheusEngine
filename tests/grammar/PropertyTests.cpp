@@ -59,6 +59,7 @@ TEST_CASE("RandomValue reaches every action, size and range end the schemas allo
     std::set<std::size_t> itemLengths;
     bool nonAscii = false;
     bool escaped = false;
+    const std::string specials = {'"', '\\', '\n', '\t'}; // quote, backslash, newline, tab
     for (int i = 0; i < test::PROPERTY_DRAWS; ++i) {
         const nlohmann::ordered_json value = test::RandomValue(catalog, random);
         actions.insert(value.at("action").get<std::string>());
@@ -68,7 +69,7 @@ TEST_CASE("RandomValue reaches every action, size and range end the schemas allo
             nonAscii = nonAscii || std::any_of(item.begin(), item.end(), [](char c) {
                            return (static_cast<unsigned char>(c) & 0x80) != 0;
                        });
-            escaped = escaped || item.find_first_of("\"\\n\t") != std::string::npos;
+            escaped = escaped || item.find_first_of(specials) != std::string::npos;
         }
     }
     CHECK(actions == std::set<std::string>{"none", "follow", "wait", "attack", "give_item", "end_conversation"});

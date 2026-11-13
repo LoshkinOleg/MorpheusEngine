@@ -15,16 +15,33 @@ namespace morpheus::test {
 constexpr std::uint64_t PROPERTY_SEED = 20261114;
 constexpr int PROPERTY_DRAWS = 1000;
 
+// A number from 0 to count - 1 (count >= 1), unbiased, from the engine's raw output alone: the standard distributions
+// differ between standard libraries, mt19937_64's sequence does not, so the fixed seed draws the same values everywhere.
+inline std::uint64_t RandomBelow(std::mt19937_64& random, std::uint64_t count)
+{
+    // Rejection sampling: drop the draws below 2^64 mod count, so every remainder is equally likely.
+    const std::uint64_t threshold = (0 - count) % count;
+    std::uint64_t draw = random();
+    while (draw < threshold) {
+        draw = random();
+    }
+    return draw % count;
+}
+
 // A number from low to high: each end a quarter of the time, otherwise uniform.
 inline long long RandomBetween(std::mt19937_64& random, long long low, long long high)
 {
-    switch (std::uniform_int_distribution<int>(0, 3)(random)) {
+    switch (RandomBelow(random, 4)) {
     case 0:
         return low;
     case 1:
         return high;
-    default:
-        return std::uniform_int_distribution<long long>(low, high)(random);
+    default: {
+        // The span as unsigned, so the whole long long range does not overflow; 0 means all 2^64 values.
+        const std::uint64_t span = static_cast<std::uint64_t>(high) - static_cast<std::uint64_t>(low) + 1;
+        const std::uint64_t offset = span == 0 ? random() : RandomBelow(random, span);
+        return static_cast<long long>(static_cast<std::uint64_t>(low) + offset);
+    }
     }
 }
 
@@ -43,7 +60,7 @@ inline nlohmann::ordered_json RandomValue(const nlohmann::json& schema, std::mt1
         "\xF0\x9F\x98\x80",                                       // U+1F600: four bytes
     };
     // An index from 0 to count - 1.
-    auto pick = [&](std::size_t count) { return std::uniform_int_distribution<std::size_t>(0, count - 1)(random); };
+    auto pick = [&](std::size_t count) { return static_cast<std::size_t>(RandomBelow(random, count)); };
 
     if (schema.contains("oneOf")) {
         const nlohmann::json& branches = schema.at("oneOf");
@@ -65,8 +82,8 @@ inline nlohmann::ordered_json RandomValue(const nlohmann::json& schema, std::mt1
         std::string text;
         for (long long i = 0; i < length; ++i) {
             // Half the characters printable ASCII (DEL is not printable), half from the special list.
-            if (std::uniform_int_distribution<int>(0, 1)(random) == 0) {
-                text += static_cast<char>(std::uniform_int_distribution<int>(0x20, 0x7E)(random));
+            if (RandomBelow(random, 2) == 0) {
+                text += static_cast<char>(0x20 + RandomBelow(random, 0x7F - 0x20));
             } else {
                 text += SPECIAL_CHARACTERS[pick(SPECIAL_CHARACTERS.size())];
             }
