@@ -60,6 +60,13 @@ TEST_CASE("JsonString bounds a JSON string by characters", "[gbnf]")
     CHECK_FALSE(text.Accepts("a"));
 }
 
+TEST_CASE("JsonString stays within llama.cpp's repetition limit", "[gbnf]")
+{
+    // `char` repeats up to maxChars times, and llama.cpp refuses a count above GBNF_MAX_REPETITION.
+    CHECK(grammar::JsonString(0, grammar::GBNF_MAX_REPETITION) == R"gbnf("\"" char{0,2000} "\"")gbnf");
+    CHECK_THROWS_AS(grammar::JsonString(0, grammar::GBNF_MAX_REPETITION + 1), core::ContractError);
+}
+
 TEST_CASE("Enum matches one of its values as a JSON string", "[gbnf]")
 {
     CHECK(grammar::Enum({"wary"}) == R"gbnf("\"wary\"")gbnf");
@@ -96,6 +103,14 @@ TEST_CASE("ListOf bounds a compact JSON array", "[gbnf]")
     CHECK_FALSE(list.Accepts("[ 7]"));
     CHECK_FALSE(list.Accepts("[7,]"));
     CHECK_FALSE(list.Accepts("[,]"));
+}
+
+TEST_CASE("ListOf stays within llama.cpp's repetition limit", "[gbnf]")
+{
+    // The items after the first repeat up to maxItems - 1 times, and llama.cpp refuses a count above
+    // GBNF_MAX_REPETITION.
+    CHECK(grammar::ListOf("x", 1, grammar::GBNF_MAX_REPETITION + 1) == R"gbnf("[" x ("," x){0,2000} "]")gbnf");
+    CHECK_THROWS_AS(grammar::ListOf("x", 1, grammar::GBNF_MAX_REPETITION + 2), core::ContractError);
 }
 
 TEST_CASE("Object matches a compact JSON object with fixed keys in a fixed order", "[gbnf]")

@@ -134,6 +134,7 @@ std::string Literal(std::string_view text)
 std::string JsonString(int minChars, int maxChars)
 {
     MORPHEUS_REQUIRE(0 <= minChars && minChars <= maxChars, "JsonString: needs 0 <= minChars <= maxChars");
+    MORPHEUS_REQUIRE(maxChars <= GBNF_MAX_REPETITION, "JsonString: maxChars is above llama.cpp's repetition limit");
     // No characters at all: just the two quotes.
     if (maxChars == 0) {
         return Literal("\"\"");
@@ -183,6 +184,8 @@ std::string ListOf(std::string_view element, int minItems, int maxItems)
 {
     MORPHEUS_REQUIRE(0 <= minItems && minItems <= maxItems && maxItems >= 1,
                      "ListOf: needs 0 <= minItems <= maxItems and maxItems >= 1");
+    // The items after the first are one repetition, which llama.cpp caps.
+    MORPHEUS_REQUIRE(maxItems - 1 <= GBNF_MAX_REPETITION, "ListOf: maxItems - 1 is above llama.cpp's repetition limit");
     // The first element is written out; a repetition of "," and an element adds the others.
     const std::size_t fewestMore = static_cast<std::size_t>(std::max(minItems, 1) - 1);
     const std::size_t mostMore = static_cast<std::size_t>(maxItems - 1);

@@ -1,5 +1,6 @@
 add_library(morpheus_grammar STATIC
     Gbnf.cpp
+    Schema.cpp
 )
 add_library(Morpheus::grammar ALIAS morpheus_grammar) # The name host projects link.
 target_include_directories(morpheus_grammar PUBLIC ${PROJECT_SOURCE_DIR}/src)

@@ -11,6 +11,10 @@ namespace morpheus::grammar {
 // line. Every function returns an expression that can stand anywhere in a GBNF sequence: one made of alternatives
 // comes in parentheses. A broken contract (for example min > max) is a core::ContractError.
 
+// The largest repetition count ({m,n}) a grammar may hold: llama.cpp refuses a grammar with a larger one when it loads
+// it (MAX_REPETITION_THRESHOLD in llama.cpp's llama-grammar.cpp).
+constexpr int GBNF_MAX_REPETITION = 2000;
+
 // One key of an Object and the expression for its value.
 struct ObjectField {
     std::string key = {};   // The key; Object writes it as a JSON string.
