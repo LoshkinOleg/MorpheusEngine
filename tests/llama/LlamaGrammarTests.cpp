@@ -3,7 +3,10 @@
 
 #include <algorithm>
 #include <format>
+#include <random>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -15,6 +18,8 @@
 #include "core/Errors.h"
 #include "core/World.h"
 #include "grammar/Gbnf.h"
+#include "grammar/GbnfMatcher.h"
+#include "grammar/RandomValue.h"
 #include "grammar/Schema.h"
 #include "grammar/TestSchemas.h"
 #include "inference/Llm.h"
@@ -150,4 +155,75 @@ TEST_CASE("llama.cpp loads FromSchema grammars at the repetition limits", "[llam
                                                                   grammar::Literal(",") + " " + item + "){0,49} " +
                                                                   grammar::Literal("]"));
     CHECK_THROWS_AS(backend.CheckGrammar(inlineList, R"(["Iron Sword"])"), core::ContractError);
+}
+
+TEST_CASE("llama.cpp accepts the random values of each test schema against the schema's grammar", "[llama]")
+{
+    llama::LlamaCppBackend& backend = test::SharedBackend();
+    const std::vector<nlohmann::json> schemas = {test::CatalogSchema(), test::EveryKeywordSchema()};
+    for (const nlohmann::json& schema : schemas) {
+        const std::string gbnf = grammar::FromSchema(schema);
+        // The grammar parses (one that does not is a ContractError) and wants a whole value.
+        CHECK(backend.CheckGrammar(gbnf, "") == "the text ends before the grammar does");
+        // The same values as the fast suite's property test: the same seed, the same draws, written compact.
+        std::mt19937_64 random(test::PROPERTY_SEED);
+        for (int i = 0; i < test::PROPERTY_DRAWS; ++i) {
+            const std::string text = test::RandomValue(schema, random).dump();
+            INFO("value " << i << ": " << text);
+            CHECK(backend.CheckGrammar(gbnf, text) == "");
+        }
+    }
+}
+
+TEST_CASE("llama.cpp rejects invalid actions against the catalog grammar", "[llama]")
+{
+    llama::LlamaCppBackend& backend = test::SharedBackend();
+    const std::string gbnf = grammar::FromSchema(test::CatalogSchema());
+    const std::vector<std::string> invalid = {
+        R"({"action":"dance","params":{}})",                                             // an unknown action
+        R"({"action":"attack","params":{"target":"0001C3D2"}})",                         // an actor who is not present
+        R"({"action":"attack","params":{}})",                                            // a missing argument
+        R"({"action":"wait","params":{},"intent":"rest"})",                              // an extra key
+        R"({"action":"give_item","params":{"item":")" + std::string(49, 'a') + R"("}})", // an item over 48 characters
+        R"({"action": "wait","params":{}})",                                             // whitespace
+    };
+    for (const std::string& text : invalid) {
+        INFO(text);
+        CHECK(backend.CheckGrammar(gbnf, text) != "");
+    }
+}
+
+TEST_CASE("llama.cpp parses the review grammars built on the builder", "[llama]")
+{
+    llama::LlamaCppBackend& backend = test::SharedBackend();
+    // A grammar llama.cpp cannot parse is a ContractError, so each check also proves the grammar compiles.
+    CHECK(backend.CheckGrammar(turn::BuildReviewGrammar(true, true),
+                               R"({"consistent":false,"problems":["The roll failed."],"digest":"A climb."})") == "");
+    CHECK(backend.CheckGrammar(turn::BuildReviewGrammar(true, false), R"({"consistent":true,"problems":[]})") == "");
+    CHECK(backend.CheckGrammar(turn::BuildReviewGrammar(false, true), R"({"digest":"A climb."})") == "");
+    CHECK(backend.CheckGrammar(turn::BuildReviewGrammar(true, true), R"({"consistent":true,"problems":["x"],"digest":""})") != "");
+}
+
+TEST_CASE("llama.cpp and the test matcher agree on IntRange grammars", "[llama]")
+{
+    llama::LlamaCppBackend& backend = test::SharedBackend();
+    const std::vector<std::pair<long long, long long>> ranges = {{-15, 123}, {0, 255}, {-1000, -91}, {37, 120}};
+    for (const auto& [low, high] : ranges) {
+        const std::string gbnf = grammar::GrammarBuilder().Text(grammar::IntRange(low, high));
+        const test::GbnfMatcher matcher(gbnf);
+        // Other spellings, then a window around each end.
+        std::vector<std::pair<std::string, bool>> probes = {{"-0", false}, {"00", false}, {"007", false}, {"-01", false},
+                                                            {"+5", false}};
+        for (long long value = low - 12; value <= low + 12; ++value) {
+            probes.emplace_back(std::to_string(value), low <= value && value <= high);
+        }
+        for (long long value = high - 12; value <= high + 12; ++value) {
+            probes.emplace_back(std::to_string(value), low <= value && value <= high);
+        }
+        for (const auto& [text, inRange] : probes) {
+            INFO("IntRange(" << low << ", " << high << ") on '" << text << "'");
+            CHECK(backend.CheckGrammar(gbnf, text).empty() == inRange);
+            CHECK(matcher.Accepts(text) == inRange);
+        }
+    }
 }
