@@ -28,6 +28,8 @@ cmake --build --preset tests
 ctest --preset tests
 ```
 
+llama.cpp's GPU backend is `MORPHEUS_GPU_BACKEND`: `Vulkan` (the default, used by `dev`), `CUDA` (needs the CUDA toolkit) or `CPU` (used by `dev-asan`). Any other value fails the configure.
+
 ## Models and settings
 
 The `dev` preset runs models in-process through llama.cpp. Download two GGUF files into `models/` (gitignored):
@@ -67,7 +69,7 @@ export MORPHEUS_TEST_THINKING_MODEL="$PWD/models/Qwen3.5-0.8B-Q4_K_M.gguf"
 
 ### Performance with Qwen3.8-27B on a 10 GB GPU
 
-Measured on 2026-11-05 with the Linux build below: RTX 3080 (10 GB), Ryzen 7 5800X (8 cores, 16 threads), 32 GB RAM, `Qwen3.8-27B-UD-Q4_K_M.gguf`, `context_size` 20576, measured with `morpheus_probe` on the sandcrawler world (a 738-token prompt).
+Measured on 2026-11-05 with a Linux build, llama.cpp on Vulkan: RTX 3080 (10 GB), Ryzen 7 5800X (8 cores, 16 threads), 32 GB RAM, `Qwen3.8-27B-UD-Q4_K_M.gguf`, `context_size` 20576, measured with `morpheus_probe` on the sandcrawler world (a 738-token prompt).
 
 | `gpu_layers` | Peak VRAM (desktop apps included) | Result |
 |---|---|---|
@@ -86,15 +88,70 @@ Ways to faster turns, not done yet:
 
 ## Build (Linux)
 
-Not the supported setup, but the `dev` targets build and run on Linux with clang and Ninja (tested on Ubuntu 24.04 in a distrobox on a Fedora-based host). Packages: `clang`, `cmake`, `ninja-build`, `pkg-config`, `libvulkan-dev`, `glslc`, `spirv-headers`, `libomp-dev`, `fonts-dejavu-core` (the app's font on Linux), and SDL3's X11 and Wayland development libraries (`libx11-dev`, `libxext-dev`, `libxrandr-dev`, `libxcursor-dev`, `libxi-dev`, `libxss-dev`, `libxfixes-dev`, `libxtst-dev`, `libxkbcommon-dev`, `libwayland-dev`, `wayland-protocols`, `libegl-dev`, `libgl-dev`, `libdrm-dev`, `libgbm-dev`, `libdecor-0-dev`, `libdbus-1-dev`, `libudev-dev`).
+Tested on Ubuntu 24.04 with clang and Ninja. On Linux, `cmake --list-presets` shows two presets (and on Windows only the Windows ones):
+
+| Preset | Builds |
+|---|---|
+| `linux-tests` | Engine libraries and tests only (no llama.cpp or SDL3), Debug |
+| `linux-release` | Everything, Release: llama.cpp with CUDA for the GPU in the machine (`MORPHEUS_GPU_BACKEND` `CUDA`, `CMAKE_CUDA_ARCHITECTURES` `native`), the `morpheus` app, `morpheus_probe`, `morpheus_play` and the tests |
+
+Packages for `linux-tests`: `clang`, `cmake`, `ninja-build`.
 
 ```
-cmake -S . -B build/linux -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DMORPHEUS_BUILD_APP=ON -DMORPHEUS_BUILD_LLAMA=ON -DMORPHEUS_VULKAN=ON -DMORPHEUS_BUILD_TESTS=ON
-cmake --build build/linux
-./build/linux/bin/morpheus .
+cmake --preset linux-tests
+cmake --build --preset linux-tests
+ctest --preset linux-tests
 ```
 
-Inside a container, Vulkan sees only the CPU (llvmpipe) unless the host's NVIDIA user-space driver is visible: link the host's `libnvidia-*`, `libGLX_nvidia*`, `libEGL_nvidia*` and `libcuda*` libraries into a folder, put it on `LD_LIBRARY_PATH`, and point `VK_DRIVER_FILES` at an ICD file whose `library_path` is that folder's `libGLX_nvidia.so.0`. `vulkaninfo --summary` should then list the GPU. On Linux, the "SaveSettingsEdit reports a file it cannot replace" test fails: it relies on Windows refusing to replace a file another process holds open.
+`linux-release` also needs:
+
+- the CUDA toolkit: NVIDIA's `cuda-toolkit` package from its Ubuntu 24.04 repository, with `nvcc` on `PATH` (usually `/usr/local/cuda/bin`), the NVIDIA driver, and `g++` (`nvcc` compiles CUDA host code with it);
+- `pkg-config`, `libomp-dev`, `fonts-dejavu-core` (the app's font on Linux);
+- SDL3's X11 and Wayland development libraries: `libx11-dev`, `libxext-dev`, `libxrandr-dev`, `libxcursor-dev`, `libxi-dev`, `libxss-dev`, `libxfixes-dev`, `libxtst-dev`, `libxkbcommon-dev`, `libwayland-dev`, `wayland-protocols`, `libegl-dev`, `libgl-dev`, `libdrm-dev`, `libgbm-dev`, `libdecor-0-dev`, `libdbus-1-dev`, `libudev-dev`.
+
+```
+cmake --preset linux-release
+cmake --build --preset linux-release
+./build/linux-release/bin/morpheus .
+```
+
+To run llama.cpp on Vulkan instead, configure with `cmake --preset linux-release -DMORPHEUS_GPU_BACKEND=Vulkan` and install `libvulkan-dev`, `glslc` and `spirv-headers` too. Inside a container, Vulkan sees only the CPU (llvmpipe) unless the host's NVIDIA user-space driver is visible: link the host's `libnvidia-*`, `libGLX_nvidia*`, `libEGL_nvidia*` and `libcuda*` libraries into a folder, put it on `LD_LIBRARY_PATH`, and point `VK_DRIVER_FILES` at an ICD file whose `library_path` is that folder's `libGLX_nvidia.so.0`. `vulkaninfo --summary` should then list the GPU.
+
+## Using Morpheus from another project
+
+Another CMake project can build the engine into itself with FetchContent and link the namespaced targets:
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(
+    morpheus
+    GIT_REPOSITORY https://github.com/LoshkinOleg/MorpheusEngine.git
+    GIT_TAG        <commit SHA>
+    GIT_SHALLOW    FALSE
+)
+FetchContent_MakeAvailable(morpheus)
+
+target_link_libraries(my_target PRIVATE Morpheus::turn)
+```
+
+- Included this way (not the top-level project), Morpheus builds only its engine libraries, `Morpheus::core`, `Morpheus::store`, `Morpheus::inference`, `Morpheus::context` and `Morpheus::turn`, with nlohmann/json and SQLite (as `morpheus_sqlite3`, so it never meets a `sqlite3` target of yours). `MORPHEUS_BUILD_APP`, `MORPHEUS_BUILD_TESTS` and `MORPHEUS_BUILD_LLAMA` default to off, so no llama.cpp, SDL3, ImGui or Catch2 is fetched.
+- Link the `Morpheus::` names, not the internal `morpheus_*` ones. For the llama.cpp backend, `Morpheus::llama`, `set(MORPHEUS_BUILD_LLAMA ON)` (and `MORPHEUS_GPU_BACKEND`: `Vulkan`, `CUDA` or `CPU`) before `FetchContent_MakeAvailable`. `Morpheus::app_model` and `Morpheus::app_ui` exist when the app or the tests are built.
+- A project that already provides `nlohmann_json::nlohmann_json` (its own FetchContent or `find_package`) keeps its copy, and Morpheus links the same target.
+- Morpheus's warnings stay on but are not errors (`MORPHEUS_WARNINGS_AS_ERRORS` defaults to off when vendored), so a warning from your compiler does not fail your build. Output directories and the Visual Studio startup project are yours.
+
+`cmake/consumer-check/` is such a project, built from this checkout (`-DMORPHEUS_SOURCE_DIR=<path>` picks another): it fails to configure if the vendored build defines anything beyond the engine libraries, and its program calls into `core` and `turn`. On Linux:
+
+```bash
+cmake -S cmake/consumer-check -B build/consumer-check -G Ninja && cmake --build build/consumer-check && ./build/consumer-check/consumer_check
+```
+
+On Windows (Git Bash), the same with the Visual Studio generator:
+
+```bash
+cmake -S cmake/consumer-check -B build/consumer-check -G "Visual Studio 17 2022" -A x64 && cmake --build build/consumer-check && ./build/consumer-check/Debug/consumer_check.exe
+```
+
+It prints `consumer_check: ok` and exits with 0.
 
 ## Play in the app
 
@@ -156,9 +213,10 @@ Each path is `entity.field`, a string field of an entity in `initial_state.json`
 - `src/inference`: the `LlmBackend` interface (no llama.cpp)
 - `src/context`: layered prompt assembly with exact token budgets
 - `src/turn`: turn orchestration: grammar, resolve and apply, retrieval, folding, session, worker, replay
-- `src/llama`: the llama.cpp backend (`dev` preset only)
-- `tools/probe`: `morpheus_probe`, a manual model check (`dev` preset only)
-- `tools/play`: `morpheus_play`, the terminal player (`dev` preset only)
-- `src/app`: the app. `model/` is its state and actions (no SDL or ImGui), `ui/` its ImGui windows, `main.cpp` the SDL3 window (`dev` preset only)
+- `src/llama`: the llama.cpp backend (`dev` and `linux-release` presets only)
+- `tools/probe`: `morpheus_probe`, a manual model check (`dev` and `linux-release` presets only)
+- `tools/play`: `morpheus_play`, the terminal player (`dev` and `linux-release` presets only)
+- `src/app`: the app. `model/` is its state and actions (no SDL or ImGui), `ui/` its ImGui windows, `main.cpp` the SDL3 window (`dev` and `linux-release` presets only)
 - `tests/`: Catch2 tests and test data
+- `cmake/consumer-check/`: a project that includes Morpheus as another project would (see "Using Morpheus from another project")
 - `game_projects/<id>/`: worlds as data
