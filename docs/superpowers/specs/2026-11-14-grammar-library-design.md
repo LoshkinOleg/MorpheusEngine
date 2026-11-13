@@ -31,10 +31,10 @@ Expressions are GBNF text fragments (`std::string`). The functions:
 | Function | Matches |
 |---|---|
 | `Literal(text)` | `text` exactly (a GBNF string literal, `"` and `\` escaped) |
-| `JsonString(minChars, maxChars)` | a JSON string of `minChars` to `maxChars` characters; each character is a code point or one JSON escape, exactly as the shared `char` terminal counts today. Requires `0 <= minChars <= maxChars` |
+| `JsonString(minChars, maxChars)` | a JSON string of `minChars` to `maxChars` characters; each character is a code point or one JSON escape, exactly as the shared `char` terminal counts today. Requires `0 <= minChars <= maxChars <= 1999` |
 | `IntRange(min, max)` | the decimal JSON integers from `min` to `max`, both included, exactly: no leading zeros, `-0` refused, any range of `long long` with `min <= max` |
 | `Enum(values)` | one of the given strings, each as a JSON string. Requires at least one value and no duplicates |
-| `ListOf(element, minItems, maxItems)` | a JSON array of `minItems` to `maxItems` elements, compact (no whitespace) as today. Requires `0 <= minItems <= maxItems` and `maxItems >= 1` |
+| `ListOf(element, minItems, maxItems)` | a JSON array of `minItems` to `maxItems` elements, compact (no whitespace) as today. Requires `0 <= minItems <= maxItems`, `1 <= maxItems <= 1000`. `element` must be a rule reference or one string literal, nothing larger (name a larger element with `GrammarBuilder::Rule`) |
 | `Object(fields)` | a JSON object with exactly the given keys, in the given order, compact. `fields` is a list of `{key, valueExpression}`; requires at least one field and no duplicate keys |
 | `Alternatives(expressions)` | any one of them. Requires at least one |
 
@@ -74,13 +74,14 @@ The supported subset is exactly this:
 | `{"enum": [...]}` | all strings, or all integers |
 | `{"const": v}` | a string or an integer |
 | `{"type": "integer", "minimum": a, "maximum": b}` | both bounds required, `a <= b`, enforced exactly |
-| `{"type": "string", "maxLength": n}` | `maxLength` required, optional `minLength`; lengths in characters |
-| `{"type": "array", "items": {...}, "maxItems": n}` | `maxItems` required (>= 1), optional `minItems` |
+| `{"type": "string", "maxLength": n}` | `maxLength` required (at most 1999), optional `minLength`; lengths in characters |
+| `{"type": "array", "items": {...}, "maxItems": n}` | `maxItems` required (1 to 1000), optional `minItems`. The element's grammar is a named rule `items-N`, so the list's repeated group stays within llama.cpp's limit |
 | `{"oneOf": [...]}` | every branch an object schema. The discriminator is the first key of each branch's `required`. It must be the same key in every branch, and in each branch it must be a `const` string, different across branches |
 
 - Keywords with no effect on values are allowed and ignored: `title`, `description`, `$comment`, `$schema`, `$id`.
 - Any other keyword, a type outside the table, a missing required bound, or a broken rule (an empty `enum`, `minimum > maximum`, a non-object `oneOf` branch, a discriminator that is missing or repeated) is a `core::DataError`. Its message names the JSON pointer inside the schema (for example `/oneOf/3/properties/params/properties/target`) and the problem.
 - Schemas are host data, so a bad one is a data error, not a contract error.
+- **Two limits come from llama.cpp's grammar loader** (`llama-grammar.cpp`, `MAX_REPETITION_THRESHOLD` = 2000), which refuses a repetition count above 2000 and a repetition whose count times the rules it creates reaches 2000. A string repeats one rule reference, so `maxLength` is at most `GBNF_MAX_STRING_CHARS` = 1999; a list repeats a group of at most two symbols, so `maxItems` is at most `GBNF_MAX_LIST_ITEMS` = 1000. The builder throws `ContractError` above them; `FromSchema` and `Validate` throw `DataError` naming the keyword's pointer for a schema above them.
 - Nested schemas follow the same rules at any depth. `$ref` is not supported.
 
 ## 4. `Validate` (`grammar/Schema.h`)
@@ -95,7 +96,7 @@ std::vector<ValidationError> Validate(const nlohmann::json& value, const nlohman
 
 - An empty result means the value is valid.
 - It checks exactly what `FromSchema`'s grammar allows:
-  - types (an integer is a JSON integer, not a float);
+  - types (an integer is a JSON integer, not a float; integers are compared by their written form, so a huge unsigned never equals a negative);
   - `enum` and `const`;
   - integer ranges;
   - string lengths in characters (`core::Utf8Length`);

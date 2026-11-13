@@ -137,7 +137,7 @@ FetchContent_MakeAvailable(morpheus)
 target_link_libraries(my_target PRIVATE Morpheus::turn)
 ```
 
-- Included this way (not the top-level project), Morpheus builds only its engine libraries, `Morpheus::core`, `Morpheus::store`, `Morpheus::inference`, `Morpheus::context` and `Morpheus::turn`, with nlohmann/json and SQLite (as `morpheus_sqlite3`, so it never meets a `sqlite3` target of yours). `MORPHEUS_BUILD_APP`, `MORPHEUS_BUILD_TESTS` and `MORPHEUS_BUILD_LLAMA` default to off, so no llama.cpp, SDL3, ImGui or Catch2 is fetched.
+- Included this way (not the top-level project), Morpheus builds only its engine libraries, `Morpheus::core`, `Morpheus::store`, `Morpheus::inference`, `Morpheus::context`, `Morpheus::grammar` and `Morpheus::turn`, with nlohmann/json and SQLite (as `morpheus_sqlite3`, so it never meets a `sqlite3` target of yours). `MORPHEUS_BUILD_APP`, `MORPHEUS_BUILD_TESTS` and `MORPHEUS_BUILD_LLAMA` default to off, so no llama.cpp, SDL3, ImGui or Catch2 is fetched.
 - Link the `Morpheus::` names, not the internal `morpheus_*` ones. For the llama.cpp backend, `Morpheus::llama`, `set(MORPHEUS_BUILD_LLAMA ON)` (and `MORPHEUS_GPU_BACKEND`: `Vulkan`, `CUDA` or `CPU`) before `FetchContent_MakeAvailable`. `Morpheus::app_model` and `Morpheus::app_ui` exist when the app or the tests are built.
 - A project that already provides `nlohmann_json::nlohmann_json` (its own FetchContent or `find_package`) keeps its copy, and Morpheus links the same target. Make yours available BEFORE `FetchContent_MakeAvailable(morpheus)`: Morpheus checks for the target when it is included, so the guard only works in that order.
 - `SYSTEM` makes Morpheus's headers count as system headers in your own files, so your warnings do not fire on them.
@@ -216,6 +216,7 @@ Each path is `entity.field`, a string field of an entity in `initial_state.json`
 - `src/store`: one SQLite database per run
 - `src/inference`: the `LlmBackend` interface (no llama.cpp)
 - `src/context`: layered prompt assembly with exact token budgets
+- `src/grammar`: bounded-JSON grammars: the GBNF builder, `FromSchema` and `Validate` (no llama.cpp)
 - `src/turn`: turn orchestration: grammar, resolve and apply, retrieval, folding, session, worker, replay
 - `src/llama`: the llama.cpp backend (`dev` and `linux-release` presets only)
 - `tools/probe`: `morpheus_probe`, a manual model check (`dev` and `linux-release` presets only)

@@ -14,7 +14,7 @@ include(FetchContent)
 FetchContent_Declare(morpheus SOURCE_DIR "${MORPHEUS_SOURCE_DIR}" SYSTEM)
 FetchContent_MakeAvailable(morpheus)
 
-# With Morpheus's vendored defaults nothing beyond the five engine libraries exists: no app, tests or tools, no
+# With Morpheus's vendored defaults nothing beyond the six engine libraries exists: no app, tests or tools, no
 # app-model or app-ui library, and none of llama.cpp, SDL3, ImGui or Catch2.
 set(MORPHEUS_UNWANTED_TARGETS
     morpheus morpheus_tests morpheus_llama imgui_core SDL3::SDL3 Catch2::Catch2
