@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <format>
 #include <set>
+#include <string>
 
 #include <nlohmann/json.hpp>
 
@@ -23,6 +24,94 @@ constexpr std::string_view CHAR_RULE =
 std::string Count(std::size_t fewest, std::size_t most)
 {
     return fewest == most ? std::format("{{{}}}", most) : std::format("{{{},{}}}", fewest, most);
+}
+
+// fewest to most free digits.
+std::string AnyDigits(std::size_t fewest, std::size_t most)
+{
+    return fewest == 1 && most == 1 ? std::string("[0-9]") : "[0-9]" + Count(fewest, most);
+}
+
+// The alternatives matching every digit string as long as `low`, from `low` to `high` (equal lengths, low <= high,
+// which as digit strings of one length compares as numbers). Leading zeros are allowed here: the callers give a first
+// digit of 1 to 9, or a suffix. Recursive: past the shared prefix, the first digit that differs splits the range into
+// its low end, a middle of free digits and its high end.
+std::vector<std::string> SameLengthAlternatives(const std::string& low, const std::string& high)
+{
+    if (low == high) {
+        return {Literal(low)};
+    }
+    // A digit from `from` to `to`: a literal for one digit, a class for several.
+    auto digitsFrom = [](char from, char to) {
+        return from == to ? Literal(std::string(1, from)) : std::format("[{}-{}]", from, to);
+    };
+
+    // The first position where the two differ; the digits before it are shared.
+    std::size_t split = 0;
+    while (low[split] == high[split]) {
+        ++split;
+    }
+    const char a = low[split];
+    const char b = high[split];
+    const std::size_t rest = low.size() - split - 1; // Digits after the split.
+    std::vector<std::string> alternatives;
+    if (rest == 0) {
+        alternatives.push_back(digitsFrom(a, b));
+    } else {
+        const std::string lowRest = low.substr(split + 1);
+        const std::string highRest = high.substr(split + 1);
+        // A low end of `a` then all zeros, or a high end of `b` then all nines, joins the middle's free digits.
+        const bool lowFull = lowRest == std::string(rest, '0');
+        const bool highFull = highRest == std::string(rest, '9');
+        const char first = lowFull ? a : static_cast<char>(a + 1);
+        const char last = highFull ? b : static_cast<char>(b - 1);
+        if (!lowFull) {
+            alternatives.push_back(Literal(std::string(1, a)) + " " +
+                                   Alternatives(SameLengthAlternatives(lowRest, std::string(rest, '9'))));
+        }
+        if (first <= last) {
+            alternatives.push_back(digitsFrom(first, last) + " " + AnyDigits(rest, rest));
+        }
+        if (!highFull) {
+            alternatives.push_back(Literal(std::string(1, b)) + " " +
+                                   Alternatives(SameLengthAlternatives(std::string(rest, '0'), highRest)));
+        }
+    }
+    // The shared prefix is written once, in front of the group.
+    if (split == 0) {
+        return alternatives;
+    }
+    return {Literal(low.substr(0, split)) + " " + Alternatives(alternatives)};
+}
+
+// The alternatives matching the decimal numbers from lo to hi (1 <= lo <= hi), without leading zeros. Each digit
+// count is a band: the shortest and the longest may be partial, every band between them is full, and neighbouring
+// full bands share one alternative, a first digit of 1 to 9 and then free digits.
+std::vector<std::string> MagnitudeAlternatives(unsigned long long lo, unsigned long long hi)
+{
+    const std::string low = std::to_string(lo);
+    const std::string high = std::to_string(hi);
+    if (low.size() == high.size()) {
+        return SameLengthAlternatives(low, high);
+    }
+    std::vector<std::string> alternatives;
+    // The shortest band, from lo up to all nines; it is full when lo is a power of ten.
+    std::size_t firstFull = low.size(); // The digit count of the first full band.
+    if (low != "1" + std::string(low.size() - 1, '0')) {
+        alternatives = SameLengthAlternatives(low, std::string(low.size(), '9'));
+        firstFull = low.size() + 1;
+    }
+    // The longest band, from its power of ten up to hi; it is full when hi is all nines.
+    const bool highFull = high == std::string(high.size(), '9');
+    const std::size_t lastFull = highFull ? high.size() : high.size() - 1;
+    if (firstFull <= lastFull) {
+        alternatives.push_back(lastFull == 1 ? std::string("[1-9]") : "[1-9] " + AnyDigits(firstFull - 1, lastFull - 1));
+    }
+    if (!highFull) {
+        const std::vector<std::string> top = SameLengthAlternatives("1" + std::string(high.size() - 1, '0'), high);
+        alternatives.insert(alternatives.end(), top.begin(), top.end());
+    }
+    return alternatives;
 }
 
 } // namespace
@@ -51,6 +140,30 @@ std::string JsonString(int minChars, int maxChars)
     }
     return Literal("\"") + " char" + Count(static_cast<std::size_t>(minChars), static_cast<std::size_t>(maxChars)) +
            " " + Literal("\"");
+}
+
+std::string IntRange(long long min, long long max)
+{
+    MORPHEUS_REQUIRE(min <= max, "IntRange: min must not exceed max");
+    // Magnitudes are unsigned, so the magnitude of the lowest long long (2^63) fits.
+    auto magnitude = [](long long value) { return 0ULL - static_cast<unsigned long long>(value); };
+    std::vector<std::string> alternatives;
+    // The negative numbers: "-" and a magnitude of 1 or more, so "-0" cannot be written.
+    if (min < 0) {
+        const unsigned long long fewest = max < 0 ? magnitude(max) : 1ULL;
+        alternatives.push_back(Literal("-") + " " + Alternatives(MagnitudeAlternatives(fewest, magnitude(min))));
+    }
+    // Zero is written "0" and nothing else.
+    if (min <= 0 && max >= 0) {
+        alternatives.push_back(Literal("0"));
+    }
+    // The positive numbers.
+    if (max > 0) {
+        const unsigned long long fewest = min > 0 ? static_cast<unsigned long long>(min) : 1ULL;
+        const std::vector<std::string> positive = MagnitudeAlternatives(fewest, static_cast<unsigned long long>(max));
+        alternatives.insert(alternatives.end(), positive.begin(), positive.end());
+    }
+    return Alternatives(alternatives);
 }
 
 std::string Enum(const std::vector<std::string>& values)

@@ -25,6 +25,10 @@ std::string Literal(std::string_view text);
 // the control characters, or one JSON escape: the shared terminal `char`. Requires 0 <= minChars <= maxChars.
 std::string JsonString(int minChars, int maxChars);
 
+// The decimal JSON integers from min to max, both included, exactly: no leading zeros, no "-0", no "+". Any range of
+// long long with min <= max. Its digit classes are written inline: it needs no shared terminal.
+std::string IntRange(long long min, long long max);
+
 // One of `values`, each written as a JSON string. Requires at least one value and no duplicates.
 std::string Enum(const std::vector<std::string>& values);
 
