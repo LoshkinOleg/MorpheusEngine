@@ -7,6 +7,7 @@
       "generator": "Visual Studio 17 2022",
       "architecture": "x64",
       "binaryDir": "${sourceDir}/build/dev",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
       "cacheVariables": {
         "MORPHEUS_BUILD_APP": "ON",
         "MORPHEUS_BUILD_TESTS": "ON",
@@ -19,6 +20,7 @@
       "displayName": "Engine libraries + tests only (no llama.cpp or SDL3)",
       "inherits": "dev",
       "binaryDir": "${sourceDir}/build/tests",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
       "cacheVariables": {
         "MORPHEUS_BUILD_APP": "OFF",
         "MORPHEUS_BUILD_LLAMA": "OFF"
@@ -29,6 +31,7 @@
       "displayName": "Tests under AddressSanitizer",
       "inherits": "tests",
       "binaryDir": "${sourceDir}/build/asan",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
       "cacheVariables": {
         "MORPHEUS_ASAN": "ON"
       }
@@ -38,25 +41,89 @@
       "displayName": "llama.cpp on the CPU + tests under AddressSanitizer",
       "inherits": "dev",
       "binaryDir": "${sourceDir}/build/dev-asan",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
       "cacheVariables": {
         "MORPHEUS_BUILD_APP": "OFF",
         "MORPHEUS_GPU_BACKEND": "CPU",
         "MORPHEUS_ASAN": "ON",
         "GGML_OPENMP": "OFF"
       }
+    },
+    {
+      "name": "linux-tests",
+      "displayName": "Linux: engine libraries + tests only (no llama.cpp or SDL3)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux-tests",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "MORPHEUS_BUILD_APP": "OFF",
+        "MORPHEUS_BUILD_LLAMA": "OFF",
+        "MORPHEUS_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "linux-release",
+      "displayName": "Linux: app + tools + tests, llama.cpp with CUDA (needs the CUDA toolkit)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux-release",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "MORPHEUS_BUILD_APP": "ON",
+        "MORPHEUS_BUILD_LLAMA": "ON",
+        "MORPHEUS_BUILD_TESTS": "ON",
+        "MORPHEUS_GPU_BACKEND": "CUDA",
+        "CMAKE_CUDA_ARCHITECTURES": "native"
+      }
     }
   ],
   "buildPresets": [
-    { "name": "dev", "configurePreset": "dev", "configuration": "Debug" },
-    { "name": "tests", "configurePreset": "tests", "configuration": "Debug" },
-    { "name": "asan", "configurePreset": "asan", "configuration": "Debug" },
-    { "name": "dev-asan", "configurePreset": "dev-asan", "configuration": "RelWithDebInfo" }
+    {
+      "name": "dev",
+      "configurePreset": "dev",
+      "configuration": "Debug",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "tests",
+      "configurePreset": "tests",
+      "configuration": "Debug",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan",
+      "configuration": "Debug",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "dev-asan",
+      "configurePreset": "dev-asan",
+      "configuration": "RelWithDebInfo",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "linux-tests",
+      "configurePreset": "linux-tests",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
+    },
+    {
+      "name": "linux-release",
+      "configurePreset": "linux-release",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
+    }
   ],
   "testPresets": [
     {
       "name": "dev",
       "configurePreset": "dev",
       "configuration": "Debug",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
       "output": { "outputOnFailure": true },
       "execution": { "noTestsAction": "error" }
     },
@@ -64,6 +131,7 @@
       "name": "tests",
       "configurePreset": "tests",
       "configuration": "Debug",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
       "output": { "outputOnFailure": true },
       "execution": { "noTestsAction": "error" }
     },
@@ -71,6 +139,7 @@
       "name": "asan",
       "configurePreset": "asan",
       "configuration": "Debug",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
       "output": { "outputOnFailure": true },
       "execution": { "noTestsAction": "error" }
     },
@@ -78,6 +147,21 @@
       "name": "dev-asan",
       "configurePreset": "dev-asan",
       "configuration": "RelWithDebInfo",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error" }
+    },
+    {
+      "name": "linux-tests",
+      "configurePreset": "linux-tests",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" },
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error" }
+    },
+    {
+      "name": "linux-release",
+      "configurePreset": "linux-release",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" },
       "output": { "outputOnFailure": true },
       "execution": { "noTestsAction": "error" }
     }

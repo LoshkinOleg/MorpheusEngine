@@ -101,6 +101,10 @@ TEST_CASE("SaveSettingsEdit reports a misshapen settings file as a DataError", "
     }
 }
 
+// Windows only: the test needs a replace that fails, and only Windows refuses to replace a file that another handle
+// holds open without delete sharing. On Linux the rename replaces the file regardless, so the save succeeds and there
+// is no failure to report.
+#ifdef _WIN32
 TEST_CASE("SaveSettingsEdit reports a file it cannot replace and leaves no check file", "[settings_edit]")
 {
     const std::filesystem::path dir = test::SettingsFolder("settings_edit_unreplaceable");
@@ -117,6 +121,7 @@ TEST_CASE("SaveSettingsEdit reports a file it cannot replace and leaves no check
     CHECK(test::ReadFile(file) == before);
     CHECK_FALSE(std::filesystem::exists(dir / "settings.json.new"));
 }
+#endif
 
 TEST_CASE("ReadSettingsEdit names the file when it cannot be read", "[settings_edit]")
 {
