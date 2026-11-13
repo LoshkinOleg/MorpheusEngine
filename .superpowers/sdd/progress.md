@@ -169,3 +169,16 @@ ALL 6 TASKS COMPLETE. Final review running (80a6bc6..82df3f2).
 Final review (opus, 80a6bc6..82df3f2): With fixes (0 Critical, 3 Important: waiting call hidden behind dock tabs, grammar unwrapped, sleep in withdraw test). Fix round 82df3f2..3830693 (tab selected without focus via SelectedTabId, kept reply on re-publish, read-only wrapped grammar, WaitEvent instead of sleep, end-token REQUIRE, docs). Re-review: 2 Important (ClearActiveID context-wide; answered call treated as re-publish). Fix round 2 3830693..15f9267 (clear only the seat window's own active item; forget the call on Submit; VisibleWindow assert; spec wording). Re-review (opus): Ready to merge: Yes. tests 315, asan 315 (at 15f9267), dev morpheus --frames 120 exit 0, [llama] CheckGrammar passes.
   Deferred: Task 1-5 ledger minors above (untested CheckGrammar reason forms, scope guard in Await, seat-path ContractError tests, window-state edge tests, Pending() copies per frame); a fold interrupted by a cancelled turn returns between turns (documented in README).
 MODEL SEAT COMPLETE.
+
+## CONSUMABLE BUILD (sub-project A; plan docs/superpowers/plans/2026-11-13-consumable-build.md), on master
+Task 1: complete (commits 20bb128..f662d69, review clean; tests 315, dev morpheus --frames 120 exit 0)
+  Minor: README:92 still passes -DMORPHEUS_VULKAN=ON (Task 4 rewrites it; confirm); two option lines ~150 cols.
+Task 2: complete (commits f662d69..40883a5, review clean; consumer check ok, clash host RED then GREEN, tests 315)
+  Minor: committed consumer check doesn't exercise the nlohmann guard / sqlite rename (throwaway clash host only, by plan); consistent == true redundant in main.cpp.
+Task 3: complete (commits 40883a5..d80e96e, review clean; Windows lists only Windows presets, linux-tests disabled here; Linux presets NOT built on this machine)
+  Minor: condition literal repeated 18x (hidden base presets would dedupe); CMAKE_CUDA_ARCHITECTURES=native needs a visible GPU at configure; nvcc host compiler g++ vs clang project.
+  Note: README records the dev targets built with clang -Werror on Ubuntu 24.04 before, so clang diagnostics are a lower risk than the reviewer assumed.
+Task 4 implemented (d80e96e..10ba5e4; tests 315, asan 315 no reports, dev 342, --frames 120 exit 0, consumer check ok). Docs review + final review dispatched.
+Final review (opus, 20bb128..10ba5e4): With fixes (0 Critical, 2 Important: header warnings in host files -> SYSTEM in README/consumer check; CMAKE_COMPILE_WARNING_AS_ERROR overriding ours -> COMPILE_WARNING_AS_ERROR property). Fix round 10ba5e4..9858910 (property, morpheus_sqlite fetch name, README host guidance, Linux status/git/CUDA arch note, dev-preset mentions, probe wording, C# line). Re-review: Ready to merge: Yes. Controller fixed the comment's command and the C# sentence. tests 315, consumer check ok, dev --frames 120 exit 0. Linux NOT run (owner's acceptance list in the plan's Task 4).
+  Deferred (sub-projects C/D/G): host SQLite::SQLite3 reuse (two SQLite copies); FetchContent name llama shared with hosts; vendoring with MORPHEUS_BUILD_LLAMA drags in tools, BUILD_SHARED_LIBS and forced GGML_*; generic include roots; no Threads::Threads; repeated preset conditions.
+CONSUMABLE BUILD COMPLETE.
