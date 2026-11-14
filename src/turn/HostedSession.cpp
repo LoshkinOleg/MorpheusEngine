@@ -10,6 +10,7 @@
 #include "core/Dice.h"
 #include "core/Errors.h"
 #include "core/Text.h"
+#include "grammar/Schema.h"
 #include "turn/EngineText.h"
 #include "turn/Session.h"
 
@@ -212,20 +213,15 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
     const std::vector<std::string> allowed = request.allowedActions.value_or(_world.ActionIds());
     const nlohmann::json proposalSchema =
         _world.ProposalSchema(observation, conversation.participants, allowed, request.speakerId);
+    // The resolve call's grammar is that schema's (HostedWorld::ProposalGrammar), built once here with the schema.
+    const std::string proposalGrammar = grammar::FromSchema(proposalSchema);
     HostedWorld::CheckEvents(request.events);
 
     // Player text is cleaned as Session cleans input: control characters other than newline and tab go (they have no
     // place in a prompt), and it is trimmed. Nothing left means no player text.
     std::optional<std::string> playerText;
     if (request.playerText) {
-        std::string kept;
-        for (const char c : *request.playerText) {
-            const auto byte = static_cast<unsigned char>(c);
-            if ((byte >= 0x20 && byte != 0x7F) || c == '\n' || c == '\t') {
-                kept += c;
-            }
-        }
-        std::string cleaned = core::Trim(kept);
+        std::string cleaned = CleanInput(*request.playerText);
         if (!cleaned.empty()) {
             playerText = std::move(cleaned);
         }
@@ -281,7 +277,7 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
     }
     _lastAssembly = *assembly;
     inference::GenerationSpec resolveSpec;
-    resolveSpec.grammar = _world.ProposalGrammar(observation, conversation.participants, allowed, request.speakerId);
+    resolveSpec.grammar = proposalGrammar;
     resolveSpec.maxTokens = _settings.budget.resolveMaxTokens;
     resolveSpec.thinkingMaxTokens = _settings.budget.resolveThinkingTokens;
     resolveSpec.sampling =

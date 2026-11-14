@@ -18,6 +18,7 @@
 #include "hosted/HostedTestSupport.h"
 #include "turn/HostedSession.h"
 #include "turn/HostedWorld.h"
+#include "turn/Session.h"
 
 using namespace morpheus;
 using namespace nlohmann::literals;
@@ -126,6 +127,14 @@ TEST_CASE("A refused action is kept with its reasons, and the turn speaks with n
     CHECK(refused->resolveOutput == R"({"action":"wait","params":{},"intent":"rest"})");
     CHECK(refused->line == "As you wish.");
     CHECK(refused->timings.at("resolve").at("refused") == nlohmann::json(refused->adjudication.reasons));
+
+    // The store keeps the refusal and the telemetry as they were committed.
+    const std::vector<core::HostedTurn> stored = session.Turns(id);
+    REQUIRE(stored.size() == 1);
+    CHECK_FALSE(stored[0].adjudication.requested);
+    CHECK(stored[0].adjudication.reasons == refused->adjudication.reasons);
+    CHECK(stored[0].resolveOutput == refused->resolveOutput);
+    CHECK(stored[0].timings == refused->timings);
 
     // In L3 the refused turn shows no bracket.
     REQUIRE(session.RunTurn(test::Request(id, test::HULDA, "Are you there?"), {}, {}));
@@ -309,12 +318,46 @@ TEST_CASE("Each malformed request is a DataError naming its field, before any mo
     turn::HostedTurnRequest unknownAction = test::Request(id, test::HULDA, "Hi.");
     unknownAction.allowedActions = std::vector<std::string>{"follow", "fly"};
     fails(unknownAction, "allowed_actions/1: 'fly' is not an action of the catalog");
+    turn::HostedTurnRequest noTarget = test::Request(id, test::HULDA, "Hi.");
+    nlohmann::json& present = noTarget.observation.at("actors");
+    present.erase(present.begin() + 1); // Saadia is gone: Hulda has no one but the player to attack.
+    REQUIRE(present.at(0).at("id") == test::HULDA);
+    noTarget.allowedActions = std::vector<std::string>{"attack"};
+    fails(noTarget, "allowed_actions: no allowed action can be taken this turn");
     turn::HostedTurnRequest badEvent = test::Request(id, test::HULDA, "Hi.");
     badEvent.events = {R"({"type": "ambient"})"_json};
     fails(badEvent, "events/0/text: an event needs 'text', a string");
 
     CHECK(backend.Calls().empty());
     CHECK(session.Turns(id).empty());
+}
+
+TEST_CASE("A speak instruction over narrate_allowance is a DataError naming the speaker, before any model call",
+          "[hosted][turn]")
+{
+    test::HostedScript script; // No reply: a model call would fail the test.
+    test::ScriptedBackend backend(16384, script.Responder());
+    core::Settings settings = test::HostedSettings();
+    settings.budget.narrateAllowance = 4;
+    turn::HostedSession session = turn::HostedSession::Open(test::HostedRunFile("hosted_speak_allowance"),
+                                                            test::FixtureHostData(), settings, 42, backend);
+    const std::string id = session.StartConversation({test::HULDA, test::AELA}, test::FixtureObservation());
+    CHECK_THROWS_MATCHES(session.RunTurn(test::Request(id, test::HULDA, "Hi."), {}, {}), core::DataError,
+                         MessageMatches(ContainsSubstring("speaker: the speak instruction for 'Hulda' uses") &&
+                                        ContainsSubstring("over narrate_allowance 4")));
+    CHECK(backend.Calls().empty());
+    CHECK(session.Turns(id).empty());
+}
+
+TEST_CASE("CleanInput drops control characters but newline and tab, and trims", "[hosted][turn]")
+{
+    const std::string input = std::string(" \t a") + static_cast<char>(0x01) + "b\tc\nd" + static_cast<char>(0x7F) +
+                              static_cast<char>(0x1B) + "e" + static_cast<char>(0xC3) + static_cast<char>(0xA9) +
+                              " \n";
+    CHECK(turn::CleanInput(input) ==
+          std::string("ab\tc\nde") + static_cast<char>(0xC3) + static_cast<char>(0xA9)); // UTF-8 bytes stay.
+    CHECK(turn::CleanInput(" \t \n").empty());
+    CHECK(turn::CleanInput(std::string(1, static_cast<char>(0x07))).empty());
 }
 
 TEST_CASE("A player text with no room in the tail allowance is a TurnError", "[hosted][turn]")

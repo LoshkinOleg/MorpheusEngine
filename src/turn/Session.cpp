@@ -39,6 +39,19 @@ inference::Sampling SamplingFrom(const core::SamplingSettings& settings, std::ui
     return sampling;
 }
 
+std::string CleanInput(std::string_view input)
+{
+    // Keep every byte from space up, but DEL, plus newline and tab; UTF-8 sequences pass whole. Then trim.
+    std::string kept;
+    for (const char c : input) {
+        const auto byte = static_cast<unsigned char>(c);
+        if ((byte >= 0x20 && byte != 0x7F) || c == '\n' || c == '\t') {
+            kept += c;
+        }
+    }
+    return core::Trim(kept);
+}
+
 nlohmann::json CallTelemetry(const inference::Completion& completion, const inference::GenerationSpec& spec)
 {
     nlohmann::json telemetry = {{"prompt_tokens", completion.promptTokens},  {"reused", completion.tokensReused},
@@ -117,16 +130,8 @@ Session Session::Load(core::World world, core::Settings settings, const std::fil
 std::optional<core::TurnRecord> Session::RunTurn(std::string_view input, const TurnCallbacks& callbacks,
                                                  std::stop_token stop)
 {
-    // Control characters go (newline and tab stay): they have no place in a prompt. This is hygiene only: the
-    // backend tokenizes any content as plain text.
-    std::string kept;
-    for (const char c : input) {
-        const auto byte = static_cast<unsigned char>(c);
-        if ((byte >= 0x20 && byte != 0x7F) || c == '\n' || c == '\t') {
-            kept += c;
-        }
-    }
-    const std::string cleaned = core::Trim(kept);
+    // Control characters go (newline and tab stay): they have no place in a prompt.
+    const std::string cleaned = CleanInput(input);
     if (cleaned.empty()) {
         throw TurnError("the input is empty");
     }

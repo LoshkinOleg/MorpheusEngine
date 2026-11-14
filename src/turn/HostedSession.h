@@ -83,11 +83,14 @@ public:
     // turns, resolves under the proposal grammar (the fit loop folding the conversation's oldest turns when L3 is
     // over its budget), adjudicates and reports the action through onAction, speaks on a prompt that extends the
     // resolve prompt (streamed through onToken), and commits the record. Player text is cleaned as Session cleans
-    // input; nothing left means none. Returns the committed turn, or nullopt when `stop` cancelled it: then no turn is
-    // committed and the request's events are not kept (folds the fit loop finished before the stop are, as in
-    // Session). Throws DataError naming the field for a malformed request (before any model call), TurnError when
-    // the tail does not fit tail_allowance, and InferenceError from the backend. Model mistakes are not exceptions: a
-    // refused action is recorded with its reasons and the turn goes on with no action.
+    // input (CleanInput); nothing left means none. Returns the committed turn, or nullopt when `stop` cancelled it:
+    // then no turn is committed and the request's events are not kept (folds the fit loop finished before the stop
+    // are, as in Session). onAction fires before the line starts, so a turn cancelled during the speak call has
+    // already reported its action through onAction and is still not committed: the host must not take a reported
+    // action as a committed turn until RunTurn returns one. Throws DataError naming the field for a malformed request
+    // (before any model call), TurnError when the tail does not fit tail_allowance, and InferenceError from the
+    // backend. Model mistakes are not exceptions: a refused action is recorded with its reasons and the turn goes on
+    // with no action.
     std::optional<core::HostedTurn> RunTurn(const HostedTurnRequest& request, const HostedCallbacks& callbacks,
                                             std::stop_token stop);
 
