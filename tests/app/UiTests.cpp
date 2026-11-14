@@ -24,6 +24,7 @@
 #include "app/ui/Windows.h"
 #include "fakes/ScriptedBackend.h"
 #include "core/MemoryMode.h"
+#include "core/Settings.h"
 #include "grammar/Check.h"
 #include "inference/Llm.h"
 #include "turn/EngineText.h"
@@ -573,4 +574,27 @@ TEST_CASE("A Draft call that repeats an answered call starts from its draft", "[
         REQUIRE(reply);
         CHECK(reply->text == "the draft");
     }
+}
+
+TEST_CASE("The Settings window draws the llama-server backend's fields", "[ui]")
+{
+    test::HeadlessImGui imgui;
+    const std::filesystem::path dir = test::SettingsFolder("ui_settings_server");
+    // settings.json on llama-server, without the in-process backend's keys: the URLs and the slot replace them.
+    nlohmann::json settings = nlohmann::json::parse(test::ReadFile(dir / "settings.json"));
+    settings.erase("chat_model");
+    settings.erase("embedding_model");
+    settings.erase("gpu_layers");
+    settings["backend"] = "llama-server";
+    settings["server"] = {{"chat_url", "http://127.0.0.1:8080"}, {"embedding_url", "http://127.0.0.1:8081"}, {"slot", 0}};
+    test::WriteFile(dir / "settings.json", settings.dump(2));
+    app::AppController controller(test::PathsIn(dir), test::ScriptedFactory(Responder()));
+    app::SettingsWindow window;
+
+    test::PumpUntil(controller, [&] { return controller.CanPost(); });
+    for (int frame = 0; frame < 2; ++frame) {
+        controller.Frame();
+        imgui.Frame([&] { window.Draw(controller); });
+    }
+    CHECK(controller.Engine().CurrentSettings().backend == core::BackendKind::LlamaServer);
 }

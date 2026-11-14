@@ -12,10 +12,17 @@ namespace morpheus::app {
 // The settings.json values the Settings window edits. Model paths stay as written in the file (often relative to
 // its folder), so saving does not rewrite them as absolute paths.
 struct SettingsEdit {
+    core::BackendKind backend = core::BackendKind::LlamaCpp;
+    // llama-cpp: the models and their GPU layers. Kept as the file has them under llama-server ("" and 0 when absent).
     std::string chatModel = {};
     std::string embeddingModel = {};
-    int contextSize = 0;
     int gpuLayers = 0; // -1 puts every layer on the GPU.
+    // llama-server: server.chat_url, server.embedding_url and server.slot. Kept as the file has them under llama-cpp
+    // ("" and 0 when absent).
+    std::string chatUrl = {};
+    std::string embeddingUrl = {};
+    int serverSlot = 0;
+    int contextSize = 0;
     // The budget's thinking blocks, edited beside the model because they depend on it: a model without a thinking
     // mode needs all three at 0.
     int resolveThinkingTokens = 0;
@@ -29,12 +36,14 @@ struct SettingsEdit {
     int proseTurns = 0;             // prose_turns
 };
 
-// Reads the edited values from a settings file. Throws DataError naming the file when it cannot be read, is not
-// JSON, or lacks one of them (core::LoadSettings explains a bad file in full).
+// Reads the edited values from a settings file: the backend in use needs its keys, the other backend's keys are read
+// when present. Throws DataError naming the file when it cannot be read, is not JSON, or lacks one of the values it
+// needs (core::LoadSettings explains a bad file in full).
 SettingsEdit ReadSettingsEdit(const std::filesystem::path& file);
 
-// Writes `edit` into the settings file, keeping its other keys (the embedding prefixes, the rest of the budget) and
-// their order. The new text is first written beside the file as "<name>.new" and loaded with core::LoadSettings. When anything
+// Writes `edit` into the settings file: `backend` and the keys of the backend it names (the other backend's keys stay
+// as the file has them), keeping the file's other keys (the embedding prefixes, the rest of the budget) and their
+// order. The new text is first written beside the file as "<name>.new" and loaded with core::LoadSettings. When anything
 // fails, the check file is removed, the settings file is left as it was, and a DataError naming the settings file is
 // thrown: the file cannot be read or has the wrong shape, the loader rejects the new values, or the
 // check file cannot replace the settings file. Otherwise the check file replaces the settings file. Returns the loaded

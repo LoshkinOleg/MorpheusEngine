@@ -20,6 +20,8 @@ TEST_CASE("ReadSettingsEdit reads the edited values as the file writes them", "[
     const std::filesystem::path dir = test::SettingsFolder("settings_edit_read");
     const nlohmann::json file = nlohmann::json::parse(test::ReadFile(dir / "settings.json"));
     const app::SettingsEdit edit = app::ReadSettingsEdit(dir / "settings.json");
+    CHECK(edit.backend == core::BackendKind::LlamaCpp); // As settings.example.json sets it.
+    CHECK(edit.chatUrl.empty());                        // The example has no server object.
     CHECK(edit.chatModel == file.at("chat_model").get<std::string>()); // As written, not resolved.
     CHECK(edit.embeddingModel == file.at("embedding_model").get<std::string>());
     CHECK(edit.contextSize == file.at("context_size").get<int>());
@@ -153,4 +155,73 @@ TEST_CASE("SaveSettingsEdit writes the review settings and refuses prose_turns 0
     edit.proseTurns = 0;
     CHECK_THROWS_WITH(app::SaveSettingsEdit(file, edit), ContainsSubstring("prose_turns"));
     CHECK(test::ReadFile(file) == before);
+}
+
+TEST_CASE("SaveSettingsEdit switches the backend to llama-server and back, keeping the other backend's keys",
+          "[settings_edit]")
+{
+    const std::filesystem::path dir = test::SettingsFolder("settings_edit_server");
+    const std::filesystem::path file = dir / "settings.json";
+    app::SettingsEdit edit = app::ReadSettingsEdit(file);
+    const std::string chatModel = edit.chatModel;
+
+    edit.backend = core::BackendKind::LlamaServer;
+    edit.chatUrl = "http://127.0.0.1:8080";
+    edit.embeddingUrl = "http://127.0.0.1:8081";
+    edit.serverSlot = 2;
+    const core::Settings server = app::SaveSettingsEdit(file, edit);
+    CHECK(server.backend == core::BackendKind::LlamaServer);
+    CHECK(server.chatUrl == "http://127.0.0.1:8080");
+    CHECK(server.embeddingUrl == "http://127.0.0.1:8081");
+    CHECK(server.serverSlot == 2);
+    const nlohmann::json written = nlohmann::json::parse(test::ReadFile(file));
+    CHECK(written.at("backend") == "llama-server");
+    CHECK(written.at("server").at("slot") == 2);
+    CHECK(written.at("chat_model") == chatModel); // The in-process backend's keys stay, ignored.
+
+    // Read back, then switched back: the server keys stay in the file for the next switch.
+    app::SettingsEdit reread = app::ReadSettingsEdit(file);
+    CHECK(reread.backend == core::BackendKind::LlamaServer);
+    CHECK(reread.chatUrl == "http://127.0.0.1:8080");
+    CHECK(reread.serverSlot == 2);
+    CHECK(reread.chatModel == chatModel);
+    reread.backend = core::BackendKind::LlamaCpp;
+    const core::Settings local = app::SaveSettingsEdit(file, reread);
+    CHECK(local.backend == core::BackendKind::LlamaCpp);
+    CHECK(nlohmann::json::parse(test::ReadFile(file)).at("server").at("chat_url") == "http://127.0.0.1:8080");
+    CHECK(app::ReadSettingsEdit(file).embeddingUrl == "http://127.0.0.1:8081");
+}
+
+TEST_CASE("SaveSettingsEdit refuses a llama-server edit without its URLs", "[settings_edit]")
+{
+    const std::filesystem::path dir = test::SettingsFolder("settings_edit_server_invalid");
+    const std::filesystem::path file = dir / "settings.json";
+    const std::string before = test::ReadFile(file);
+    app::SettingsEdit edit = app::ReadSettingsEdit(file);
+    edit.backend = core::BackendKind::LlamaServer;
+    edit.embeddingUrl = "http://127.0.0.1:8081"; // chat_url stays empty.
+
+    CHECK_THROWS_WITH(app::SaveSettingsEdit(file, edit), ContainsSubstring("chat_url"));
+    CHECK(test::ReadFile(file) == before);
+}
+
+TEST_CASE("ReadSettingsEdit reads a llama-server file without model keys", "[settings_edit]")
+{
+    const std::filesystem::path dir = test::FreshTempDir("settings_edit_server_only");
+    nlohmann::json json = nlohmann::json::parse(test::ReadFile(test::RepoDir() / "settings.example.json"));
+    json.erase("chat_model");
+    json.erase("embedding_model");
+    json.erase("gpu_layers");
+    json["backend"] = "llama-server";
+    json["server"] = {{"chat_url", "http://127.0.0.1:8080"}, {"embedding_url", "http://127.0.0.1:8081"}, {"slot", 1}};
+    test::WriteFile(dir / "settings.json", json.dump(2));
+
+    const app::SettingsEdit edit = app::ReadSettingsEdit(dir / "settings.json");
+    CHECK(edit.backend == core::BackendKind::LlamaServer);
+    CHECK(edit.chatModel.empty());
+    CHECK(edit.serverSlot == 1);
+    // Saving it writes no model keys.
+    const core::Settings saved = app::SaveSettingsEdit(dir / "settings.json", edit);
+    CHECK(saved.backend == core::BackendKind::LlamaServer);
+    CHECK_FALSE(nlohmann::json::parse(test::ReadFile(dir / "settings.json")).contains("chat_model"));
 }

@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <format>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <system_error>
 
@@ -42,10 +43,38 @@ SettingsEdit ReadSettingsEdit(const std::filesystem::path& file)
                                           block.at("top_p").get<double>()};
         };
         SettingsEdit edit;
-        edit.chatModel = json.at("chat_model").get<std::string>();
-        edit.embeddingModel = json.at("embedding_model").get<std::string>();
+        const std::string backendText = json.at("backend").get<std::string>();
+        const std::optional<core::BackendKind> backend = core::ParseBackendKind(backendText);
+        if (!backend) {
+            throw core::DataError(
+                std::format("{}: 'backend' must be 'llama-cpp' or 'llama-server'", core::PathText(file)));
+        }
+        edit.backend = *backend;
+        // The backend in use needs its keys; the other backend's are read when the file has them, so a switch in the
+        // window starts from them.
+        const bool local = edit.backend == core::BackendKind::LlamaCpp;
+        if (local || json.contains("chat_model")) {
+            edit.chatModel = json.at("chat_model").get<std::string>();
+        }
+        if (local || json.contains("embedding_model")) {
+            edit.embeddingModel = json.at("embedding_model").get<std::string>();
+        }
+        if (local || json.contains("gpu_layers")) {
+            edit.gpuLayers = json.at("gpu_layers").get<int>();
+        }
+        if (!local || json.contains("server")) {
+            const nlohmann::ordered_json& server = json.at("server");
+            if (!local || server.contains("chat_url")) {
+                edit.chatUrl = server.at("chat_url").get<std::string>();
+            }
+            if (!local || server.contains("embedding_url")) {
+                edit.embeddingUrl = server.at("embedding_url").get<std::string>();
+            }
+            if (!local || server.contains("slot")) {
+                edit.serverSlot = server.at("slot").get<int>();
+            }
+        }
         edit.contextSize = json.at("context_size").get<int>();
-        edit.gpuLayers = json.at("gpu_layers").get<int>();
         edit.resolveThinkingTokens = json.at("budget").at("resolve_thinking_tokens").get<int>();
         edit.narrateThinkingTokens = json.at("budget").at("narrate_thinking_tokens").get<int>();
         edit.reviewThinkingTokens = json.at("budget").at("review_thinking_tokens").get<int>();
@@ -77,10 +106,18 @@ core::Settings SaveSettingsEdit(const std::filesystem::path& file, const Setting
             {"temperature", sampling.temperature}, {"top_k", sampling.topK}, {"top_p", sampling.topP}};
     };
     try {
-        json["chat_model"] = edit.chatModel;
-        json["embedding_model"] = edit.embeddingModel;
+        // The backend and its own keys; the other backend's keys stay as the file has them.
+        json["backend"] = core::BackendKindName(edit.backend);
+        if (edit.backend == core::BackendKind::LlamaCpp) {
+            json["chat_model"] = edit.chatModel;
+            json["embedding_model"] = edit.embeddingModel;
+            json["gpu_layers"] = edit.gpuLayers;
+        } else {
+            json["server"]["chat_url"] = edit.chatUrl;
+            json["server"]["embedding_url"] = edit.embeddingUrl;
+            json["server"]["slot"] = edit.serverSlot;
+        }
         json["context_size"] = edit.contextSize;
-        json["gpu_layers"] = edit.gpuLayers;
         json["budget"]["resolve_thinking_tokens"] = edit.resolveThinkingTokens;
         json["budget"]["narrate_thinking_tokens"] = edit.narrateThinkingTokens;
         json["budget"]["review_thinking_tokens"] = edit.reviewThinkingTokens;

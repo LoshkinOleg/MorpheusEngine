@@ -6,6 +6,7 @@
 #include <vector>
 
 #include <imgui.h>
+#include <imgui_stdlib.h>
 
 #include "core/Errors.h"
 #include "core/Settings.h"
@@ -15,6 +16,8 @@ namespace morpheus::app {
 namespace {
 
 constexpr const char* MEMORY_MODES[] = {"World default", "engine", "assisted"}; // Combo items, in this order.
+// Combo items, in core::BackendKind's order.
+constexpr const char* BACKENDS[] = {"llama.cpp, in-process (llama-cpp)", "llama-server over HTTP (llama-server)"};
 constexpr const char* THINKING_TOOLTIP = "0 turns thinking off; otherwise at least %d. A model without a "
                                         "thinking mode needs 0.";
 
@@ -58,12 +61,35 @@ void SettingsWindow::Draw(AppController& controller)
                     ImGui::EndCombo();
                 }
             };
+            // The backend: models in-process, picked from the models folder, or two llama-server URLs and a slot.
+            // Only the fields of the backend chosen show; the other's stay in settings.json.
             ImGui::SeparatorText("Models");
-            modelCombo("Chat model", edit.chatModel);
-            modelCombo("Embedding model", edit.embeddingModel);
+            int backend = edit.backend == core::BackendKind::LlamaCpp ? 0 : 1;
+            if (ImGui::Combo("Backend", &backend, BACKENDS, IM_ARRAYSIZE(BACKENDS))) {
+                edit.backend = backend == 0 ? core::BackendKind::LlamaCpp : core::BackendKind::LlamaServer;
+            }
+            if (edit.backend == core::BackendKind::LlamaCpp) {
+                modelCombo("Chat model", edit.chatModel);
+                modelCombo("Embedding model", edit.embeddingModel);
+            } else {
+                ImGui::InputText("Chat server URL", &edit.chatUrl);
+                ImGui::SetItemTooltip("http://host:port of the chat model's llama-server, e.g. http://127.0.0.1:8080.");
+                ImGui::InputText("Embedding server URL", &edit.embeddingUrl);
+                ImGui::SetItemTooltip("http://host:port of the embedding model's llama-server (started with "
+                                      "--embedding), e.g. http://127.0.0.1:8081.");
+                ImGui::InputInt("Server slot", &edit.serverSlot);
+                ImGui::SetItemTooltip("The chat server's slot for Morpheus's calls (0 or more). Each slot keeps its "
+                                      "own prompt cache.");
+            }
             ImGui::InputInt("Context size", &edit.contextSize, 1024, 4096);
-            ImGui::InputInt("GPU layers", &edit.gpuLayers);
-            ImGui::SetItemTooltip("-1 puts every layer on the GPU.");
+            if (edit.backend == core::BackendKind::LlamaServer) {
+                ImGui::SetItemTooltip("What the budgets plan for. Each of the chat server's slots must hold at least "
+                                      "this many tokens.");
+            }
+            if (edit.backend == core::BackendKind::LlamaCpp) {
+                ImGui::InputInt("GPU layers", &edit.gpuLayers);
+                ImGui::SetItemTooltip("-1 puts every layer on the GPU.");
+            }
             ImGui::InputInt("Resolve thinking tokens", &edit.resolveThinkingTokens, 256, 1024);
             ImGui::SetItemTooltip(THINKING_TOOLTIP, core::MIN_THINKING_TOKENS);
             ImGui::InputInt("Narrate thinking tokens", &edit.narrateThinkingTokens, 256, 1024);
@@ -129,8 +155,8 @@ void SettingsWindow::Draw(AppController& controller)
             ImGui::EndDisabled();
             ImGui::SameLine();
             const bool revert = ImGui::Button("Revert");
-            ImGui::TextDisabled("Apply saves settings.json and restarts the engine. New model paths, context size or "
-                                "GPU layers reload the models.");
+            ImGui::TextDisabled("Apply saves settings.json and restarts the engine. A new backend, model paths, server "
+                                "URLs or slot, context size or GPU layers reload the backend.");
             if (revert) {
                 _edit.reset(); // Read from the file again on the next draw.
                 _problem.clear();
