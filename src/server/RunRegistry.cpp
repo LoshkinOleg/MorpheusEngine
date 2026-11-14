@@ -1,6 +1,7 @@
 #include "server/RunRegistry.h"
 
 #include <algorithm>
+#include <cctype>
 #include <format>
 #include <system_error>
 #include <utility>
@@ -62,6 +63,25 @@ bool RunRegistry::Open(const std::string& runId, turn::HostData data, std::uint6
         return false;
     }
 
+    {
+        std::scoped_lock lock(_mutex);
+        // No fresh, unstopped worker is born during shutdown.
+        if (_stopping) {
+            throw inference::InferenceError("the server is stopping");
+        }
+        // Ids differing only in case name one file on case-insensitive file systems: never two workers on it.
+        for (const auto& [otherId, pOther] : _runs) {
+            const bool sameIgnoringCase = std::ranges::equal(runId, otherId, [](char a, char b) {
+                return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b));
+            });
+            if (sameIgnoringCase) {
+                throw core::DataError(std::format("run_id: '{}' differs only in case from the opened run '{}'; run ids "
+                                                  "name files, which may not tell case apart",
+                                                  runId, otherId));
+            }
+        }
+    }
+
     // Otherwise it gets a worker, which opens the file or creates it. Nothing is registered when that throws.
     std::error_code error;
     const bool existed = std::filesystem::exists(file, error);
@@ -84,6 +104,7 @@ RunWorker* RunRegistry::Find(std::string_view runId) const
 void RunRegistry::StopAll()
 {
     std::scoped_lock lock(_mutex);
+    _stopping = true;
     for (auto& [runId, pWorker] : _runs) {
         pWorker->RequestStop();
     }

@@ -128,3 +128,26 @@ TEST_CASE("RunRegistry::StopAll stops every worker: their later jobs are refused
                           ContainsSubstring("the server is stopping"));
     }
 }
+
+TEST_CASE("RunRegistry refuses a run id that differs from an opened run's only in case", "[hosted-server][registry]")
+{
+    test::HostedScript script;
+    server::RunRegistry registry = MakeRegistry(test::FreshTempDir("registry_case") / "runs", script);
+    REQUIRE(registry.Open("save_1", test::FixtureHostData(), 0));
+    CHECK_THROWS_AS(registry.Open("SAVE_1", test::FixtureHostData(), 0), core::DataError);
+    CHECK_THROWS_WITH(registry.Open("SAVE_1", test::FixtureHostData(), 0),
+                      ContainsSubstring("SAVE_1") && ContainsSubstring("save_1") && ContainsSubstring("case"));
+    CHECK(registry.Find("SAVE_1") == nullptr);
+    // The exact id still reopens.
+    CHECK_FALSE(registry.Open("save_1", test::FixtureHostData(), 0));
+}
+
+TEST_CASE("RunRegistry refuses to open a run after StopAll", "[hosted-server][registry]")
+{
+    test::HostedScript script;
+    server::RunRegistry registry = MakeRegistry(test::FreshTempDir("registry_stopped_open") / "runs", script);
+    registry.StopAll();
+    CHECK_THROWS_AS(registry.Open("late", test::FixtureHostData(), 0), inference::InferenceError);
+    CHECK_THROWS_WITH(registry.Open("late", test::FixtureHostData(), 0), ContainsSubstring("the server is stopping"));
+    CHECK(registry.Find("late") == nullptr);
+}
