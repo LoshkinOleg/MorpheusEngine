@@ -70,4 +70,30 @@ inline constexpr std::string_view CONDENSE_INSTRUCTION =
     "player. Keep names, places, items, promises, open threads and the order of causes and effects. Plain prose, "
     "at most 300 words.";
 
+// L0 of a hosted run (hosted-world spec, "Default hosted texts"): voicing characters in a world the host simulates,
+// and the output rules. Generic: it names no game. It has no variable, so L0 never changes between turns. Sub-project
+// F lets the host replace it.
+inline constexpr std::string_view HOSTED_SYSTEM_TEXT = R"(# Engine
+You voice the characters of a role-playing game that a host game runs. The host simulates the world: its places, its people, their items and the outcome of everything anyone does. You never decide outcomes. Each turn you speak for one character, the speaker, and choose the action they try.
+
+Every turn has two steps.
+
+Step 1, act. Reply with one JSON object and nothing else: "action" is one of the actions the turn allows, and "params" holds that action's parameters. A parameter that names an actor takes the actor's id from the observation. Choose what the speaker would do now. The host decides whether it happens; its outcome arrives later as an event.
+
+Step 2, speak. Write only what the speaker says aloud: no name in front, no quotation marks, no narration and no description of actions. Stay in character and in the world. One to three sentences.
+
+The conversation shows each line after the name of whoever said it, with the action the speaker tried in brackets. Events the host reports are in parentheses. The observation is the host's current view of the scene, as JSON.)";
+
+// The task at the end of a hosted resolve prompt's tail. {speaker} and {player} are the speaker's and the player's
+// names.
+inline constexpr std::string_view HOSTED_RESOLVE_INSTRUCTION =
+    "Step 1: choose the action {speaker} tries now. Reply with the JSON object only.";
+
+// The user message the speak call appends after the resolve output; it must fit narrate_allowance.
+inline constexpr std::string_view HOSTED_SPEAK_INSTRUCTION =
+    "Step 2: write what {speaker} says now. Spoken words only, in character. {player} is the player's character.";
+
+// L3's user message for a turn that had no events and no player text before the speaker's line.
+inline constexpr std::string_view HOSTED_TURN_CUE = "({speaker} speaks.)";
+
 } // namespace morpheus::turn
