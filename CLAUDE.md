@@ -26,14 +26,14 @@ Local-first, LLM-driven text RPG engine in C++20. The repository owner acts as p
 - src/inference: the Tokenizer, ChatModel and Embedder interfaces, LlmBackend (their union) and their types. No llama.cpp, no HTTP.
 - src/context: layered prompt assembly with exact token budgets.
 - src/grammar: bounded-JSON grammars: the GBNF builder, `FromSchema`, `Validate` and `grammar::Check` (does a text fit a grammar, and where it stops fitting). No llama.cpp.
-- src/turn: turn orchestration: grammar, resolve and apply, retrieval, folding, session, worker, replay.
+- src/turn: turn orchestration: grammar, resolve and apply, retrieval, folding and the shared memory upkeep (`MemoryUpkeep`), session, worker, replay; hosted runs, a world the host owns and sends as data (`HostedWorld`, `HostedSession`).
 - src/llama: the llama.cpp backend (`dev` and `linux-release` presets only). Only this module, tools/probe, tools/play and src/app/main.cpp link llama.cpp; only src/llama and the tools include <llama.h>.
 - src/llamaserver: the llama-server backend over HTTP (cpp-httplib, header-only, no OpenSSL), built in every preset (`MORPHEUS_BUILD_LLAMA_SERVER`, default on). Only it and the tests include <httplib.h>; tests/fakes/FakeLlamaServer.h is the fast suite's fake server.
 - tools/probe: `morpheus_probe`, a manual check of the models, the GPU backend and KV-cache reuse (`dev` and `linux-release` presets only).
 - tools/play: `morpheus_play`, the terminal player; `--record` writes a replay fixture for tests/data/replays (`dev` and `linux-release` presets only).
 - models/ and settings.json: both gitignored, per machine. settings.example.json is the template.
 - src/app: the app. model/ (morpheus_app_model): its state and actions, no SDL, ImGui or llama.cpp. ui/ (morpheus_app_ui): the ImGui windows, needing only ImGui's core, so tests draw them headless (tests/app/HeadlessImGui.h). main.cpp (`morpheus`, `dev` and `linux-release` presets only): the SDL3 window and the backend settings.json names (llama.cpp in-process or llama-server). ImGui is upstream's docking branch; IM_ASSERT throws (src/app/ui/ImGuiConfig.h).
-- tests/: Catch2 tests (every tests/**/*.cpp is compiled in), tests/data: test worlds.
+- tests/: Catch2 tests (every tests/**/*.cpp is compiled in), tests/data: test worlds, tests/hosted/fixtures: hosted-run fixtures written from the host's data contracts.
 - cmake/consumer-check: a host project that includes Morpheus through FetchContent and links `Morpheus::turn`; it fails to configure if the vendored build defines more than the engine libraries and `morpheus_httplib`.
 - game_projects/<id>/: worlds as data (world.json, rules.md, lore.csv, state_schema.json, initial_state.json).
 
