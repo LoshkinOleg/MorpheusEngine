@@ -115,7 +115,7 @@ export MORPHEUS_TEST_EMBED_SERVER_URL=http://127.0.0.1:8081
 ./build/tests/bin/Debug/morpheus_tests.exe "[server]"
 ```
 
-They complete a resolve call under its grammar and a streamed narrate call, think on a thinking model (skipped on one without a thinking mode), and run three sessions on three slots at once, each alternating an action call and a speech call for ten exchanges; that test prints each call's reused share of its prompt (`tokensReused / promptTokens`) and checks that every call after a session's first reuses some. In the `dev` build, with the `[llama]` variables set too, `"[server][llama]"` checks that the server and the in-process backend count the same tokens when the server runs the `MORPHEUS_TEST_CHAT_MODEL` file.
+They complete a resolve call under its grammar and a streamed narrate call, think on a thinking model (skipped on one without a thinking mode), and run three sessions on three slots at once, each alternating an action call and a speech call for ten exchanges; that test prints each call's reused share of its prompt (`tokensReused / promptTokens`) and checks that every call after a session's first reuses some. In the `dev` build, with the `[llama]` variables set too, `"[server][llama]"` checks that the server and the in-process backend count the same tokens when the server runs the `MORPHEUS_TEST_CHAT_MODEL` file. `morpheus_server`'s own `[server]` test plays the conversation fixture over HTTP against your servers and prints each turn's time to its first sentence.
 
 ### Prompt-cache reuse through llama-server
 
@@ -261,6 +261,74 @@ When the review finds that a narration contradicts the outcome, the terminal pri
 
 `--record <file>` needs a new run file. When you quit, it writes a replay fixture of the session for `tests/data/replays`, where the replay test plays it back without a model. Commands that fail are left out of the fixture, together with their replies, except summaries: a summary recorded around a failed step stays in the fixture and never breaks a replay. If maintenance fails during the session no fixture is written. That guard covers maintenance failures reported before you quit: maintenance still running at `/quit` is cancelled by shutdown, and a summary call it cancels is not recorded at all. The fixture stores the world path exactly as you typed it, so run `--record` from the repo root with a repo-relative world path (for example `game_projects/sandcrawler`); a rooted or absolute path, or a world folder that does not exist from the current directory, is refused.
 
+## morpheus_server (hosted runs over HTTP)
+
+`morpheus_server` is a localhost HTTP server through which a host (the Skyrim/Mantella fork) plays hosted runs: it keeps the runs, plays each turn through the engine and streams the action and the spoken line back as Server-Sent Events. Its design is in `docs/superpowers/specs/2026-11-16-morpheus-server-design.md`, hosted runs in `docs/superpowers/specs/2026-11-16-hosted-world-design.md`, and the host data and request format in `tests/hosted/fixtures/README.md`.
+
+It builds in every top-level preset (`MORPHEUS_BUILD_SERVER`, default on when top level), with no llama.cpp. The binary is `build/<preset>/bin/<config>/morpheus_server(.exe)`: `build/tests/bin/Debug/` in the `tests` preset, `build/dev/bin/<config>/` in `dev`.
+
+To run it, start the two llama-servers as in "Models through llama-server", the chat server with `--parallel 3` or more (slot 0 is for folding, the others for conversations), and set `"backend": "llama_server"` in settings.json (its `server.slot` is not used: the server hands out slots itself). Then:
+
+```
+./build/dev/bin/Release/morpheus_server --port 4998 --runs runs --settings settings.json
+```
+
+The flags and their defaults are `--port 4998`, `--runs ./runs` and `--settings ./settings.json`. The server listens on 127.0.0.1 only and owns its port alone: a port already in use ends it at startup with a message. A run's file is `<runs>/<run_id>.morpheus`. Ctrl+C stops it; turns still running commit nothing. A `run_id` is 1 to 64 characters of `A-Z a-z 0-9 _ -`; one that differs from an opened run's only in case is refused with 400, and so is any `open` once shutdown has begun (503).
+
+Every response carries `"api_version": "1.0.0"` (the changes are in `CHANGELOG.md`). The endpoints:
+
+| Endpoint | Body | Answer |
+|---|---|---|
+| `GET /health` | - | `{ready, chat_model, embedding_model, slots}` |
+| `POST /v1/runs/{run_id}/open` | `{catalog, observation_schema, lore?, seed?}` | `{run_id, created}`; the same host data reopens the run as it is |
+| `POST /v1/runs/{run_id}/conversations` | `{participants, observation}` | `{conversation_id}` |
+| `POST /v1/runs/{run_id}/conversations/{cid}/turn` | `{speaker, player_text?, events?, observation, allowed_actions?}` | a Server-Sent Events stream |
+| `POST /v1/runs/{run_id}/conversations/{cid}/events` | `{events}` | `{}` |
+| `POST /v1/runs/{run_id}/conversations/{cid}/participants` | `{joined?, left?, observation}` | `{participants}` |
+| `POST /v1/runs/{run_id}/conversations/{cid}/end` | `{}` | `{}`; folding follows in the background |
+| `GET /v1/runs/{run_id}/conversations/{cid}` | - | `{conversation, turns, events}`: the stored records |
+| `POST /v1/tokenize` | `{content}` | `{tokens}` |
+| `POST /v1/embeddings` | `{input, purpose}` | `{embeddings, model}` |
+
+A turn's stream has these events, in order: `action` (the adjudicated action, or null with the reasons when it was refused, sent before the line starts), `token` (one per streamed piece), `sentence` (each complete sentence, as soon as it is complete), then `done` (the speaker, action, line, turn number, `events_omitted`, timings) or `error` (`status` and `message`, when a failure comes after the stream has started). A client that disconnects stops the turn and nothing is committed. Events recorded since a conversation's last turn that do not fit its tail leave the prompt, oldest first; `events_omitted` says how many, and the store keeps them all.
+
+An example session, in Git Bash or on Linux, with the host data and the observation from the fixtures:
+
+```
+curl -s -X POST http://127.0.0.1:4998/v1/runs/save_1/open -H "Content-Type: application/json" --data @tests/hosted/fixtures/open.json
+curl -s -X POST http://127.0.0.1:4998/v1/runs/save_1/conversations -H "Content-Type: application/json"   --data '{"participants": ["0001A6A4", "00000007"], "observation": '"$(cat tests/hosted/fixtures/observation.json)"'}'
+curl -s -X POST http://127.0.0.1:4998/v1/runs/save_1/conversations/c1/events -H "Content-Type: application/json"   --data '{"events": [{"type": "heard", "text": "A dragon roars in the distance."}]}'
+curl -N -X POST http://127.0.0.1:4998/v1/runs/save_1/conversations/c1/turn -H "Content-Type: application/json"   --data '{"speaker": "0001A6A4", "player_text": "Can you follow me?", "observation": '"$(cat tests/hosted/fixtures/observation.json)"'}'
+curl -s -X POST http://127.0.0.1:4998/v1/runs/save_1/conversations/c1/end -H "Content-Type: application/json" --data '{}'
+```
+
+The turn's stream looks like this:
+
+```
+event: action
+data: {"action":{"id":"follow","params":{}},"api_version":"1.0.0","speaker":"0001A6A4"}
+
+event: token
+data: {"text":"Lead"}
+...
+event: sentence
+data: {"text":"Lead the way, then."}
+
+event: done
+data: {"action":{"id":"follow","params":{}},"events_omitted":0,"line":"Lead the way, then.","speaker":"0001A6A4","timings":{...},"turn":1}
+```
+
+Errors answer `{"api_version", "error": {"status", "message"}}` with these statuses:
+
+- 400: a malformed body or field (the message names it), a bad `run_id`, or `speaker: "decide"` (not supported yet)
+- 404: an unknown route, or an unknown conversation of an opened run
+- 409: a run not opened in this server process
+- 422: the observation and player text do not fit the tail
+- 503: a llama-server is unreachable or answered an error
+- 500: anything else, logged with its message
+
+The `"[server]"` test (see "The [server] tests") also plays the conversation fixture over HTTP against your servers and prints each turn's time to its first sentence.
+
 ## Worlds
 
 A world is a folder `game_projects/<id>/`: `world.json` (id, title, roll expression, check entity, stats, difficulties, default memory mode), `rules.md`, `lore.csv`, `state_schema.json` and `initial_state.json`. `world.json` may also declare a scene, the state values that say where the player is:
@@ -284,6 +352,8 @@ Each path is `entity.field`, a string field of an entity in `initial_state.json`
 - `src/turn`: turn orchestration: grammar, resolve and apply, retrieval, folding, session, worker, replay
 - `src/llama`: the llama.cpp backend (`dev` and `linux-release` presets only)
 - `src/llamaserver`: the llama-server backend over HTTP (cpp-httplib; every preset, `MORPHEUS_BUILD_LLAMA_SERVER`)
+- `src/server`: `morpheus_server`'s library: run workers, slots, the transport-free API and the HTTP adapter (cpp-httplib; every top-level preset, `MORPHEUS_BUILD_SERVER`)
+- `tools/server`: `morpheus_server`, the HTTP server for hosted runs (every top-level preset)
 - `tools/probe`: `morpheus_probe`, a manual model check (`dev` and `linux-release` presets only)
 - `tools/play`: `morpheus_play`, the terminal player (`dev` and `linux-release` presets only)
 - `src/app`: the app. `model/` is its state and actions (no SDL or ImGui), `ui/` its ImGui windows, `main.cpp` the SDL3 window (`dev` and `linux-release` presets only)

@@ -14,10 +14,12 @@ Local-first, LLM-driven text RPG engine in C++20. The repository owner acts as p
 - `tests` and `asan` build without llama.cpp. `dev` builds everything, including llama.cpp with Vulkan (needs the Vulkan SDK), the app (`morpheus`, the startup project in Visual Studio, run from the repo root), `morpheus_probe` and `morpheus_play`.
 - `dev-asan` is `dev` with llama.cpp on the CPU (no Vulkan SDK needed) and every target under AddressSanitizer, RelWithDebInfo: the tests, `morpheus_probe` and `morpheus_play`, not the app. Slow, for memory checks of the backend. Binaries land in `build/dev-asan/bin/RelWithDebInfo/`.
 - `MORPHEUS_GPU_BACKEND` picks llama.cpp's GPU backend: `Vulkan` (the default; `dev`), `CUDA` or `CPU` (`dev-asan`). Any other value fails the configure.
+- `MORPHEUS_BUILD_SERVER` (default on when top level) builds `morpheus_server` and its library `morpheus_server_lib` in every preset, without llama.cpp; it needs `MORPHEUS_BUILD_LLAMA_SERVER`.
 - Linux (Ubuntu 24.04): `linux-tests` is the fast loop (`cmake --preset linux-tests`, `cmake --build --preset linux-tests`, `ctest --preset linux-tests`; binaries in `build/linux-tests/bin/`); `linux-release` builds everything with llama.cpp on CUDA (needs the CUDA toolkit). Each OS lists only its own presets.
 - Included in another CMake project (not top level), Morpheus builds only the engine libraries (`Morpheus::core`, `Morpheus::store`, `Morpheus::inference`, `Morpheus::context`, `Morpheus::grammar`, `Morpheus::turn`, `Morpheus::llamaserver`) and cpp-httplib as `morpheus_httplib` (fetched when `MORPHEUS_BUILD_LLAMA_SERVER` is on: the default, also when vendored; header-only, no OpenSSL), with warnings that are not errors (`MORPHEUS_WARNINGS_AS_ERRORS`) and the host's output directories. `cmake/consumer-check/` checks this (README, "Using Morpheus from another project").
 - Model-backed tests are tagged `[llama]` and skip unless `MORPHEUS_TEST_CHAT_MODEL` and `MORPHEUS_TEST_EMBED_MODEL` point at the two GGUF files in `models/`.
-- Real-server tests are tagged `[server]` and skip unless `MORPHEUS_TEST_SERVER_URL` and `MORPHEUS_TEST_EMBED_SERVER_URL` point at running llama-servers (README, "The [server] tests").
+- Real-server tests are tagged `[server]` and skip unless `MORPHEUS_TEST_SERVER_URL` and `MORPHEUS_TEST_EMBED_SERVER_URL` point at running llama-servers (README, "The [server] tests"); `[server]` also covers `morpheus_server` over HTTP.
+- The server's own tests that need no real server are tagged `[hosted-server]`.
 - One tag or test case: `./build/tests/bin/Debug/morpheus_tests.exe "[csv]"`
 
 ## Layout
@@ -28,7 +30,9 @@ Local-first, LLM-driven text RPG engine in C++20. The repository owner acts as p
 - src/grammar: bounded-JSON grammars: the GBNF builder, `FromSchema`, `Validate` and `grammar::Check` (does a text fit a grammar, and where it stops fitting). No llama.cpp.
 - src/turn: turn orchestration: grammar, resolve and apply, retrieval, folding and the shared memory upkeep (`MemoryUpkeep`), session, worker, replay; hosted runs, a world the host owns and sends as data (`HostedWorld`, `HostedSession`).
 - src/llama: the llama.cpp backend (`dev` and `linux-release` presets only). Only this module, tools/probe, tools/play and src/app/main.cpp link llama.cpp; only src/llama and the tools include <llama.h>.
-- src/llamaserver: the llama-server backend over HTTP (cpp-httplib, header-only, no OpenSSL), built in every preset (`MORPHEUS_BUILD_LLAMA_SERVER`, default on). Only it and the tests include <httplib.h>; tests/fakes/FakeLlamaServer.h is the fast suite's fake server.
+- src/llamaserver: the llama-server backend over HTTP (cpp-httplib, header-only, no OpenSSL), built in every preset (`MORPHEUS_BUILD_LLAMA_SERVER`, default on). Only it, src/server/HttpServer.cpp and the tests include <httplib.h>; tests/fakes/FakeLlamaServer.h is the fast suite's fake server.
+- src/server: `morpheus_server_lib`, the server for hosted runs: `SlotPool` and `SlotBackend` (a llama-server slot per conversation, slot 0 for folding), `RunWorker` (one thread per run owning its `HostedSession` and backend, folding when idle), `RunRegistry` (run ids and files), `Api` (every route and status, without sockets), `TurnStream`, `SentenceSplitter`, `HttpServer` (cpp-httplib, Server-Sent Events). Never links llama.cpp.
+- tools/server: `morpheus_server` (`--port`, `--runs`, `--settings`), every top-level preset.
 - tools/probe: `morpheus_probe`, a manual check of the models, the GPU backend and KV-cache reuse (`dev` and `linux-release` presets only).
 - tools/play: `morpheus_play`, the terminal player; `--record` writes a replay fixture for tests/data/replays (`dev` and `linux-release` presets only).
 - models/ and settings.json: both gitignored, per machine. settings.example.json is the template.
