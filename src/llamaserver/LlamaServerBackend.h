@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <span>
 #include <stop_token>
@@ -9,6 +10,10 @@
 #include <vector>
 
 #include "inference/Llm.h"
+
+namespace httplib {
+class Client; // cpp-httplib, included only by LlamaServerBackend.cpp.
+}
 
 namespace morpheus::llamaserver {
 
@@ -26,6 +31,9 @@ struct LlamaServerConfig {
 // counts come from the chat server's POST /tokenize; prompts are rendered by its POST /apply-template around content
 // markers and tokenized piece by piece, contents as plain text, exactly as LlamaCppBackend does, and sent to POST
 // /completion as token ids on a slot with cache_prompt; vectors come from the embedding server's POST /embedding.
+// Each server is reached through one kept-alive connection, reused by every request (a new connection per request
+// would cost a TCP connect each, about 2 s on Windows when "localhost" tries ::1 first); cpp-httplib reconnects when
+// the server closed it. The streaming /completion may use a client of its own, so that a cancel can stop it.
 //
 // Thinking models (the chat template has the enable_thinking switch): as LlamaCppBackend, the backend writes the
 // thinking block's markers itself. A call that thinks is two /completion calls on one slot: the block, which stops at
@@ -44,18 +52,24 @@ private:
     };
 
     LlamaServerConfig _config = {};
+    std::unique_ptr<httplib::Client> _pChatClient = nullptr;      // Kept alive to the chat server, for every request.
+    std::unique_ptr<httplib::Client> _pEmbeddingClient = nullptr; // Kept alive to the embedding server.
     std::optional<ThinkingMarkers> _thinking = {}; // Set when the chat template has the enable_thinking switch.
     std::optional<std::int32_t> _bos = {};         // The BOS token the chat model adds at a prompt's start, if any.
     std::string _embeddingModelId = {};            // The embedding server's model file name, without its extension.
 
 public:
-    // Reads both servers' GET /props: the chat server's context per slot, which must hold config.contextSize, and its
-    // chat template (whether the model thinks); the embedding server's model file. Then tokenizes the thinking texts
-    // (thinking models) and an empty text with add_special (the BOS the model adds, if any). Throws InferenceError
-    // naming the URL for a URL that is not http://host:port, an unreachable server, an HTTP error, an unexpected
-    // answer, or slots smaller than config.contextSize. Throws ContractError for a context size below 1 or a slot
-    // below 0.
+    // Makes a kept-alive client for each server, then reads their GET /props: the chat server's context per slot,
+    // which must hold config.contextSize, and its chat template (whether the model thinks); the embedding server's
+    // model file. Then tokenizes the thinking texts (thinking models) and an empty text with add_special (the special
+    // tokens the model adds: a BOS in front of a text is kept, an EOS after it ignored). Throws InferenceError
+    // naming the URL for a URL that is not http://host or http://host:port (a port from 1 to 65535), an unreachable
+    // server, an HTTP error, an unexpected answer, slots smaller than config.contextSize, or a model that adds more
+    // than one special token to a text. Throws ContractError for a context size below 1 or a slot below 0.
     explicit LlamaServerBackend(LlamaServerConfig config);
+    ~LlamaServerBackend() override;
+    LlamaServerBackend(const LlamaServerBackend&) = delete;
+    LlamaServerBackend& operator=(const LlamaServerBackend&) = delete;
 
     int CountTokens(std::string_view text) override;
     int CountPromptTokens(const inference::Prompt& prompt) override;

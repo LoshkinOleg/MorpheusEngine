@@ -38,7 +38,7 @@ namespace morpheus::test {
 //   per piece, then the last message with stop_type, tokens_cached and timings. With none queued: HTTP 500.
 // - POST /embedding: llama-server's own answer, [{"index": 0, "embedding": [vectors]}], with the embedding maker's
 //   vectors (by default the one vector {3, 4}).
-// SetStatus makes a path answer an HTTP error instead. Handlers run on the server's threads; every member they use
+// SetStatus makes a path answer an HTTP error instead, SetRawAnswer a body that is not JSON. Handlers run on the server's threads; every member they use
 // is guarded by one mutex.
 class FakeLlamaServer {
 public:
@@ -47,6 +47,7 @@ public:
         std::string method = {};
         std::string path = {};
         nlohmann::json body = nullptr; // The JSON body; null for a GET.
+        int remotePort = -1;           // The client's port: requests over one connection share it.
     };
 
     // One /completion answer.
@@ -93,7 +94,8 @@ private:
     };
     EmbeddingMaker _embeddingMaker = [](const std::string&) { return std::vector<std::vector<float>>{{3.0f, 4.0f}}; };
     std::deque<CompletionScript> _completions = {};
-    std::map<std::string, int> _statuses = {}; // Path -> the HTTP error it answers.
+    std::map<std::string, int> _statuses = {};           // Path -> the HTTP error it answers.
+    std::map<std::string, std::string> _rawAnswers = {}; // Path -> the raw body it answers with HTTP 200.
     std::vector<Request> _requests = {};
     bool _clientClosedStream = false;
     std::atomic<bool> _stopping = false; // Set by the destructor: held streams end at once.
@@ -102,7 +104,8 @@ private:
     std::jthread _listener = {}; // Last: joined first on destruction, after the destructor has stopped the server.
 
 public:
-    FakeLlamaServer()
+    // On `port` of 127.0.0.1 (a server restarted where another one stopped), or on a free port when it is 0.
+    explicit FakeLlamaServer(int port = 0)
     {
         // Each handler records its request, then answers from the script, or with the status SetStatus gave its path.
         _server.Get("/props", [this](const httplib::Request& request, httplib::Response& response) {
@@ -249,9 +252,13 @@ public:
         });
 
         // A free local port, then the server on a thread of its own.
-        _port = _server.bind_to_any_port("127.0.0.1");
+        if (port == 0) {
+            _port = _server.bind_to_any_port("127.0.0.1");
+        } else if (_server.bind_to_port("127.0.0.1", port)) {
+            _port = port;
+        }
         if (_port <= 0) {
-            throw std::runtime_error("FakeLlamaServer: cannot bind a local port");
+            throw std::runtime_error("FakeLlamaServer: cannot bind port " + std::to_string(port) + " of 127.0.0.1");
         }
         _listener = std::jthread([this] { _server.listen_after_bind(); });
         _server.wait_until_ready();
@@ -277,6 +284,12 @@ public:
             tokens.push_back(static_cast<unsigned char>(content[at]) + 256 * static_cast<int>(length));
         }
         return tokens;
+    }
+
+    // The port it listens on, of 127.0.0.1.
+    int Port() const
+    {
+        return _port;
     }
 
     // "http://127.0.0.1:<port>".
@@ -327,6 +340,18 @@ public:
         }
     }
 
+    // Requests to `path` answer HTTP 200 with `body` as it is (an answer that is not JSON); "" answers them normally
+    // again.
+    void SetRawAnswer(const std::string& path, std::string body)
+    {
+        std::scoped_lock lock(_mutex);
+        if (body.empty()) {
+            _rawAnswers.erase(path);
+        } else {
+            _rawAnswers[path] = std::move(body);
+        }
+    }
+
     // Every request so far, in order.
     std::vector<Request> Requests() const
     {
@@ -373,7 +398,8 @@ private:
         return false;
     }
 
-    // Records `request`. Returns false after answering the HTTP error SetStatus set for its path, true otherwise.
+    // Records `request`. Returns false after answering the HTTP error SetStatus set for its path, or the raw body
+    // SetRawAnswer set for it; true otherwise.
     bool Record(const httplib::Request& request, httplib::Response& response)
     {
         std::scoped_lock lock(_mutex);
@@ -385,7 +411,11 @@ private:
                 body = request.body;
             }
         }
-        _requests.push_back({request.method, request.path, std::move(body)});
+        _requests.push_back({request.method, request.path, std::move(body), request.remote_port});
+        if (const auto raw = _rawAnswers.find(request.path); raw != _rawAnswers.end()) {
+            response.set_content(raw->second, "text/html");
+            return false;
+        }
         const auto status = _statuses.find(request.path);
         if (status == _statuses.end()) {
             return true;

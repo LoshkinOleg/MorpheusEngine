@@ -1,9 +1,11 @@
 #include "llamaserver/LlamaServerBackend.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <format>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -25,21 +27,19 @@ using inference::InferenceError;
 
 namespace {
 
-// How long a request may take to connect, and to wait for the server's next bytes. A long prompt is read before the
-// first piece of its answer arrives, so the read wait is generous.
+// How long a request may take to connect, and to wait for the server's next bytes. These requests (/props,
+// /tokenize, /apply-template, /embedding) answer at once; the streaming /completion, which reads a long prompt before
+// its first piece, waits longer on a client of its own.
 constexpr int CONNECT_TIMEOUT_SECONDS = 5;
-constexpr int READ_TIMEOUT_SECONDS = 600;
+constexpr int READ_TIMEOUT_SECONDS = 60;
 // How much of a server's answer an error message quotes, in bytes.
 constexpr std::size_t QUOTED_ANSWER_BYTES = 300;
-// A server URL is this, then a host with an optional port: no HTTPS and no path.
+// A server URL is this, then a host with an optional port (DEFAULT_PORT without one): no HTTPS, user or path.
 constexpr std::string_view URL_SCHEME = "http://";
-
-// Gives `client` Morpheus's timeouts.
-void SetTimeouts(httplib::Client& client)
-{
-    client.set_connection_timeout(CONNECT_TIMEOUT_SECONDS, 0);
-    client.set_read_timeout(READ_TIMEOUT_SECONDS, 0);
-}
+constexpr int DEFAULT_PORT = 80;
+constexpr int MAX_PORT = 65535;
+// Tokenized with add_special to tell a BOS (in front of it) from an EOS (after it). Never a special token itself.
+constexpr std::string_view BOS_PROBE_TEXT = "a";
 
 // The start of a server's answer, for an error message.
 std::string Quoted(std::string_view answer)
@@ -57,14 +57,13 @@ std::string BodyText(const nlohmann::json& body)
     }
 }
 
-// Sends GET `path` (no body) or POST `path` with a JSON body to `url`, and reads the JSON answer with `read`.
-// Throws InferenceError naming the URL and path for an unreachable server, an HTTP error, an answer that is not JSON,
-// or one `read` cannot read (a missing field, a wrong type).
+// Sends GET `path` (no body) or POST `path` with a JSON body through `client`, the kept-alive client of the server at
+// `url`, and reads the JSON answer with `read`. Throws InferenceError naming the URL and path for an unreachable
+// server, an HTTP error, an answer that is not JSON, or one `read` cannot read (a missing field, a wrong type).
 template <typename Read>
-auto Ask(const std::string& url, const std::string& path, const std::optional<nlohmann::json>& body, Read&& read)
+auto Ask(httplib::Client& client, const std::string& url, const std::string& path,
+         const std::optional<nlohmann::json>& body, Read&& read)
 {
-    httplib::Client client(url);
-    SetTimeouts(client);
     const httplib::Result response = body ? client.Post(path, BodyText(*body), "application/json") : client.Get(path);
     if (!response) {
         throw InferenceError(std::format("cannot reach {}{}: {}", url, path, httplib::to_string(response.error())));
@@ -88,22 +87,52 @@ LlamaServerBackend::LlamaServerBackend(LlamaServerConfig config)
     MORPHEUS_REQUIRE(_config.contextSize > 0, "LlamaServerBackend: the context size must be positive");
     MORPHEUS_REQUIRE(_config.slot >= 0, "LlamaServerBackend: the slot must be at least 0");
 
-    // Each URL is "http://" and a host with an optional port. cpp-httplib would quietly drop a path, and HTTPS is
-    // not supported.
-    for (const std::string* pUrl : {&_config.chatUrl, &_config.embeddingUrl}) {
-        const std::string_view host = std::string_view(*pUrl).substr(std::min(pUrl->size(), URL_SCHEME.size()));
-        if (!pUrl->starts_with(URL_SCHEME) || host.empty() || host.find_first_of("/?#") != std::string_view::npos) {
-            throw InferenceError(
-                std::format("'{}' is not a llama-server URL: it must be http://host:port, without a path", *pUrl));
+    // One kept-alive client per server. Its URL is "http://", a host (letters, digits, '.' and '-'), then optionally
+    // ':' and a port from 1 to 65535, and nothing else: cpp-httplib would quietly drop a path, does not do HTTPS here,
+    // and makes an unusable client (one that crashes on first use) from a port it cannot parse, so the URL is read
+    // here and the client made from its host and port.
+    auto connect = [](const std::string& url) {
+        const std::string_view rest = std::string_view(url).substr(std::min(url.size(), URL_SCHEME.size()));
+        const std::size_t colon = rest.find(':');
+        const std::string_view host = rest.substr(0, colon);
+        const bool hostValid = !host.empty() && std::all_of(host.begin(), host.end(), [](char c) {
+            return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '-';
+        });
+        int port = DEFAULT_PORT;
+        bool portValid = true;
+        if (colon != std::string_view::npos) {
+            // Digits only (from_chars alone would take a leading '-'), all of the rest, within range.
+            const std::string_view portText = rest.substr(colon + 1);
+            const auto [pEnd, error] = std::from_chars(portText.data(), portText.data() + portText.size(), port);
+            portValid = !portText.empty() && portText.find_first_not_of("0123456789") == std::string_view::npos &&
+                        error == std::errc() && pEnd == portText.data() + portText.size() && port >= 1 &&
+                        port <= MAX_PORT;
         }
-    }
+        if (!url.starts_with(URL_SCHEME) || !hostValid || !portValid) {
+            throw InferenceError(std::format(
+                "'{}' is not a llama-server URL: it must be http://host or http://host:port, with a port from 1 to {}, "
+                "and nothing else",
+                url, MAX_PORT));
+        }
+        auto pClient = std::make_unique<httplib::Client>(std::string(host), port);
+        if (!pClient->is_valid()) {
+            throw InferenceError(std::format("cannot make an HTTP client for the llama-server at '{}'", url));
+        }
+        pClient->set_connection_timeout(CONNECT_TIMEOUT_SECONDS, 0);
+        pClient->set_read_timeout(READ_TIMEOUT_SECONDS, 0);
+        pClient->set_keep_alive(true);
+        return pClient;
+    };
+    _pChatClient = connect(_config.chatUrl);
+    _pEmbeddingClient = connect(_config.embeddingUrl);
 
     // The chat server: each slot must hold the context the budgets plan for, and its template tells whether the
     // model thinks.
-    const auto [slotContext, chatTemplate] = Ask(_config.chatUrl, "/props", std::nullopt, [](const nlohmann::json& props) {
-        return std::pair(props.at("default_generation_settings").at("n_ctx").get<int>(),
-                         props.at("chat_template").get<std::string>());
-    });
+    const auto [slotContext, chatTemplate] =
+        Ask(*_pChatClient, _config.chatUrl, "/props", std::nullopt, [](const nlohmann::json& props) {
+            return std::pair(props.at("default_generation_settings").at("n_ctx").get<int>(),
+                             props.at("chat_template").get<std::string>());
+        });
     if (slotContext < _config.contextSize) {
         throw InferenceError(std::format("the chat server at {} holds {} tokens per slot, less than the context size "
                                          "{} (start llama-server with a --ctx-size of at least the context size times "
@@ -121,16 +150,27 @@ LlamaServerBackend::LlamaServerBackend(LlamaServerConfig config)
         markers.afterEnd = ServerTokens(inference::THINKING_AFTER_END_TEXT, false, false);
         _thinking = std::move(markers);
     }
-    // The BOS the model adds, if any: what add_special puts in front of an empty text.
-    if (const std::vector<std::int32_t> special = ServerTokens("", true, false); !special.empty()) {
-        _bos = special.front();
+    // The BOS the model adds, if any. What add_special puts around an empty text are the model's special tokens: one
+    // in front of a text is a BOS, one after it an EOS (which the backend never asks for). More is refused rather than
+    // guessed at.
+    const std::vector<std::int32_t> special = ServerTokens("", true, false);
+    if (special.size() > 1) {
+        throw InferenceError(std::format("the chat server at {} adds {} special tokens to a text; the llama-server "
+                                         "backend handles a model that adds at most a BOS",
+                                         _config.chatUrl, special.size()));
+    }
+    if (special.size() == 1) {
+        const std::vector<std::int32_t> probe = ServerTokens(BOS_PROBE_TEXT, true, false);
+        if (!probe.empty() && probe.front() == special.front()) {
+            _bos = special.front();
+        }
     }
 
     // The embedding server: its model file's name, without the extension, names the vectors it makes, as the
     // in-process backend names them, so a run's stored vectors stay valid when the backend changes.
-    const std::string modelPath = Ask(_config.embeddingUrl, "/props", std::nullopt, [](const nlohmann::json& props) {
-        return props.at("model_path").get<std::string>();
-    });
+    const std::string modelPath =
+        Ask(*_pEmbeddingClient, _config.embeddingUrl, "/props", std::nullopt,
+            [](const nlohmann::json& props) { return props.at("model_path").get<std::string>(); });
     const std::size_t nameStart = modelPath.find_last_of("/\\");
     const std::string fileName = modelPath.substr(nameStart == std::string::npos ? 0 : nameStart + 1);
     const std::size_t dot = fileName.rfind('.');
@@ -140,6 +180,9 @@ LlamaServerBackend::LlamaServerBackend(LlamaServerConfig config)
                                          _config.embeddingUrl, modelPath));
     }
 }
+
+// Out of line: httplib::Client is complete only here.
+LlamaServerBackend::~LlamaServerBackend() = default;
 
 int LlamaServerBackend::CountTokens(std::string_view text)
 {
@@ -173,18 +216,17 @@ std::vector<std::vector<float>> LlamaServerBackend::Embed(const std::vector<std:
     for (const std::string& text : texts) {
         // One result for the one text, holding one vector: a pooled sentence-embedding model. A model without
         // pooling answers a vector per token.
-        std::vector<float> vector = Ask(_config.embeddingUrl, "/embedding", nlohmann::json{{"content", prefix + text}},
-                                        [this](const nlohmann::json& answer) {
-                                            const std::size_t vectorCount =
-                                                answer.size() == 1 ? answer.at(0).at("embedding").size() : 0;
-                                            if (answer.size() != 1 || vectorCount != 1) {
-                                                throw InferenceError(std::format(
-                                                    "{}/embedding answered {} results and {} vectors for one text; it "
-                                                    "needs one pooled vector (a sentence-embedding model)",
-                                                    _config.embeddingUrl, answer.size(), vectorCount));
-                                            }
-                                            return answer.at(0).at("embedding").at(0).get<std::vector<float>>();
-                                        });
+        const nlohmann::json body = {{"content", prefix + text}};
+        std::vector<float> vector =
+            Ask(*_pEmbeddingClient, _config.embeddingUrl, "/embedding", body, [this](const nlohmann::json& answer) {
+                const std::size_t vectorCount = answer.size() == 1 ? answer.at(0).at("embedding").size() : 0;
+                if (answer.size() != 1 || vectorCount != 1) {
+                    throw InferenceError(std::format("{}/embedding answered {} results and {} vectors for one text; it "
+                                                     "needs one pooled vector (a sentence-embedding model)",
+                                                     _config.embeddingUrl, answer.size(), vectorCount));
+                }
+                return answer.at(0).at("embedding").at(0).get<std::vector<float>>();
+            });
 
         // L2-normalize, so cosine similarity is a dot product.
         double norm = 0.0;
@@ -234,9 +276,8 @@ std::vector<std::int32_t> LlamaServerBackend::TokenizePrompt(const inference::Pr
     if (_thinking) {
         body["chat_template_kwargs"] = {{"enable_thinking", true}};
     }
-    std::string rendered = Ask(_config.chatUrl, "/apply-template", body, [](const nlohmann::json& answer) {
-        return answer.at("prompt").get<std::string>();
-    });
+    std::string rendered = Ask(*_pChatClient, _config.chatUrl, "/apply-template", body,
+                               [](const nlohmann::json& answer) { return answer.at("prompt").get<std::string>(); });
     // A template that opens the block itself when thinking is on ends with the open marker; the markers come from the
     // backend, so it goes.
     if (_thinking && rendered.ends_with(inference::THINKING_OPEN_TEXT)) {
@@ -272,7 +313,7 @@ std::vector<std::int32_t> LlamaServerBackend::TokenizePrompt(const inference::Pr
 std::vector<std::int32_t> LlamaServerBackend::ServerTokens(std::string_view text, bool addSpecial, bool parseSpecial) const
 {
     const nlohmann::json body = {{"content", std::string(text)}, {"add_special", addSpecial}, {"parse_special", parseSpecial}};
-    return Ask(_config.chatUrl, "/tokenize", body, [](const nlohmann::json& answer) {
+    return Ask(*_pChatClient, _config.chatUrl, "/tokenize", body, [](const nlohmann::json& answer) {
         return answer.at("tokens").get<std::vector<std::int32_t>>();
     });
 }

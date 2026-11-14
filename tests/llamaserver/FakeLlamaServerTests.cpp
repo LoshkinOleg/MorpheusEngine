@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -193,4 +194,45 @@ TEST_CASE("FakeLlamaServer records a malformed body and answers 400", "[fake-lla
     const std::vector<test::FakeLlamaServer::Request> requests = fake.RequestsTo("/tokenize");
     REQUIRE(requests.size() == 1);
     CHECK(requests[0].body == "{not json");
+}
+
+TEST_CASE("FakeLlamaServer records each request's connection, answers a raw body, and listens on a given port",
+          "[fake-llama-server]")
+{
+    std::optional<test::FakeLlamaServer> fake(std::in_place);
+    const int port = fake->Port();
+    CHECK(fake->Url() == "http://127.0.0.1:" + std::to_string(port));
+
+    // Requests over one kept-alive connection share the client's port; another client has a port of its own.
+    {
+        httplib::Client client(fake->Url());
+        client.set_keep_alive(true);
+        REQUIRE(client.Get("/props"));
+        REQUIRE(client.Get("/props"));
+        httplib::Client other(fake->Url());
+        REQUIRE(other.Get("/props"));
+    }
+    const std::vector<test::FakeLlamaServer::Request> requests = fake->Requests();
+    REQUIRE(requests.size() == 3);
+    CHECK(requests[0].remotePort > 0);
+    CHECK(requests[1].remotePort == requests[0].remotePort);
+    CHECK(requests[2].remotePort != requests[0].remotePort);
+
+    // A raw answer: HTTP 200 with a body that is not JSON, the request still recorded.
+    fake->SetRawAnswer("/tokenize", "<html>busy</html>");
+    {
+        httplib::Client client(fake->Url());
+        const httplib::Result raw = client.Post("/tokenize", R"({"content":"a"})", "application/json");
+        REQUIRE(raw);
+        CHECK(raw->status == 200);
+        CHECK(raw->body == "<html>busy</html>");
+    }
+    CHECK(fake->RequestsTo("/tokenize").size() == 1);
+
+    // A server started on the port of one that stopped: a restarted llama-server.
+    fake.reset();
+    fake.emplace(port);
+    CHECK(fake->Port() == port);
+    httplib::Client client(fake->Url());
+    REQUIRE(client.Get("/props"));
 }

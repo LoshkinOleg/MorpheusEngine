@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -89,12 +91,22 @@ TEST_CASE("LlamaServerBackend names the URL when a server cannot be used", "[lla
     }
     SECTION("a URL that is not http://host:port")
     {
-        for (const std::string url : {"https://127.0.0.1:8080", "127.0.0.1:8080", "http://", "http://127.0.0.1:8080/v1"}) {
+        // cpp-httplib leaves a client unusable (and crashes on its first use) for a port it cannot parse, so every
+        // malformed URL must be refused before a client is made.
+        for (const std::string url : {"https://127.0.0.1:8080", "127.0.0.1:8080", "http://", "http://127.0.0.1:8080/v1",
+                                      "http://127.0.0.1:80800", "http://127.0.0.1:65536", "http://127.0.0.1:0",
+                                      "http://127.0.0.1:abc", "http://127.0.0.1:", "http://127.0.0.1:+80",
+                                      "http://:8080", "http://user:pw@127.0.0.1:8080", "http://127.0.0.1:8080?x=1",
+                                      "http://127.0.0.1 :8080"}) {
             INFO(url);
             config.chatUrl = url;
             CHECK_THROWS_AS(llamaserver::LlamaServerBackend(config), inference::InferenceError);
             CHECK_THROWS_WITH(llamaserver::LlamaServerBackend(config), ContainsSubstring(url));
         }
+        // The embedding server's URL is checked the same way.
+        config.chatUrl = chat.Url();
+        config.embeddingUrl = "http://127.0.0.1:0";
+        CHECK_THROWS_WITH(llamaserver::LlamaServerBackend(config), ContainsSubstring("http://127.0.0.1:0"));
     }
 }
 
@@ -292,4 +304,111 @@ TEST_CASE("LlamaServerBackend does not save or restore the chat cache", "[llamas
     CHECK_THROWS_AS(backend.SaveState(), inference::InferenceError);
     CHECK_THROWS_WITH(backend.SaveState(), ContainsSubstring("not supported by the llama-server backend"));
     CHECK_THROWS_WITH(backend.RestoreState({}), ContainsSubstring("not supported by the llama-server backend"));
+}
+
+TEST_CASE("LlamaServerBackend keeps one connection to each server and reconnects after a restart", "[llamaserver]")
+{
+    std::optional<test::FakeLlamaServer> chat(std::in_place);
+    test::FakeLlamaServer embed;
+    // The connections a server saw: one client port per connection.
+    auto connections = [](const std::vector<test::FakeLlamaServer::Request>& requests) {
+        std::set<int> ports;
+        for (const test::FakeLlamaServer::Request& request : requests) {
+            ports.insert(request.remotePort);
+        }
+        return ports.size();
+    };
+
+    llamaserver::LlamaServerBackend backend(test::ConfigFor(*chat, embed));
+    CHECK(backend.CountTokens("hello") == 2);
+    CHECK(backend.CountPromptTokens(test::SERVER_PROMPT) == static_cast<int>(test::ServerPromptTokens().size()));
+    CHECK(backend.Embed({"a lighthouse", "a keeper"}, inference::EmbedPurpose::Query).size() == 2);
+    // Startup, the count and the prompt: many requests to each server, each over one kept-alive connection.
+    CHECK(chat->Requests().size() >= 8);
+    CHECK(connections(chat->Requests()) == 1);
+    CHECK(embed.Requests().size() == 3);
+    CHECK(connections(embed.Requests()) == 1);
+
+    // A second backend has connections of its own, and the first one's still serve it.
+    {
+        llamaserver::LlamaServerBackend other(test::ConfigFor(*chat, embed));
+        CHECK(other.CountTokens("hello") == 2);
+    }
+    CHECK(backend.CountTokens("hello") == 2);
+    CHECK(connections(chat->Requests()) == 2);
+    CHECK(connections(embed.Requests()) == 2);
+
+    // The chat server stops: a request names its URL. Once a server listens on the port again, the backend
+    // reconnects and works on.
+    const int port = chat->Port();
+    const std::string url = chat->Url();
+    chat.reset();
+    CHECK_THROWS_AS(backend.CountTokens("hello"), inference::InferenceError);
+    CHECK_THROWS_WITH(backend.CountTokens("hello"), ContainsSubstring(url + "/tokenize"));
+    chat.emplace(port);
+    CHECK(backend.CountTokens("hello") == 2);
+    CHECK(chat->RequestsTo("/tokenize").size() == 1);
+}
+
+TEST_CASE("LlamaServerBackend tells a BOS the model adds from an EOS, and refuses more special tokens", "[llamaserver]")
+{
+    test::FakeLlamaServer chat;
+    test::FakeLlamaServer embed;
+
+    SECTION("an EOS that add_special appends is not a BOS")
+    {
+        // A model that adds no BOS, whose add_special appends EOS (id 2).
+        chat.SetTokenizer([](const std::string& content, bool addSpecial, bool /*parseSpecial*/) {
+            std::vector<int> tokens = test::FakeLlamaServer::DefaultTokens(content, false, false);
+            if (addSpecial) {
+                tokens.push_back(2);
+            }
+            return tokens;
+        });
+        llamaserver::LlamaServerBackend backend(test::ConfigFor(chat, embed));
+        const std::size_t before = chat.RequestsTo("/tokenize").size();
+        // No piece asks for special tokens, so no EOS lands inside the prompt.
+        CHECK(backend.CountPromptTokens(test::SERVER_PROMPT) == static_cast<int>(test::ServerPromptTokens().size()));
+        const std::vector<test::FakeLlamaServer::Request> tokenized = chat.RequestsTo("/tokenize");
+        for (std::size_t request = before; request < tokenized.size(); ++request) {
+            CHECK(tokenized[request].body.at("add_special") == false);
+        }
+    }
+    SECTION("a BOS and an EOS")
+    {
+        chat.SetTokenizer([](const std::string& content, bool addSpecial, bool /*parseSpecial*/) {
+            std::vector<int> tokens = addSpecial ? std::vector<int>{1} : std::vector<int>{};
+            const std::vector<int> text = test::FakeLlamaServer::DefaultTokens(content, false, false);
+            tokens.insert(tokens.end(), text.begin(), text.end());
+            if (addSpecial) {
+                tokens.push_back(2);
+            }
+            return tokens;
+        });
+        CHECK_THROWS_AS(llamaserver::LlamaServerBackend(test::ConfigFor(chat, embed)), inference::InferenceError);
+        CHECK_THROWS_WITH(llamaserver::LlamaServerBackend(test::ConfigFor(chat, embed)),
+                          ContainsSubstring(chat.Url()) && ContainsSubstring("2 special tokens"));
+    }
+}
+
+TEST_CASE("LlamaServerBackend names the URL when counting a prompt's tokens fails", "[llamaserver]")
+{
+    test::FakeLlamaServer chat;
+    test::FakeLlamaServer embed;
+    llamaserver::LlamaServerBackend backend(test::ConfigFor(chat, embed));
+
+    SECTION("an HTTP error from /apply-template")
+    {
+        chat.SetStatus("/apply-template", 500);
+        CHECK_THROWS_AS(backend.CountPromptTokens(test::SERVER_PROMPT), inference::InferenceError);
+        CHECK_THROWS_WITH(backend.CountPromptTokens(test::SERVER_PROMPT),
+                          ContainsSubstring(chat.Url() + "/apply-template") && ContainsSubstring("500"));
+    }
+    SECTION("an answer from /tokenize that is not JSON")
+    {
+        chat.SetRawAnswer("/tokenize", "<html>busy</html>");
+        CHECK_THROWS_AS(backend.CountPromptTokens(test::SERVER_PROMPT), inference::InferenceError);
+        CHECK_THROWS_WITH(backend.CountPromptTokens(test::SERVER_PROMPT),
+                          ContainsSubstring(chat.Url() + "/tokenize") && ContainsSubstring("<html>busy</html>"));
+    }
 }
