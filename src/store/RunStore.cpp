@@ -6,6 +6,7 @@
 #include <format>
 #include <map>
 #include <utility>
+#include <vector>
 
 #include "core/Errors.h"
 #include "core/Text.h"
@@ -56,6 +57,63 @@ CREATE TABLE embeddings (
 );
 )sql";
 
+// The tables version 3 adds: a hosted run's host data, its conversations, its turns and the events recorded between
+// them. Created in every file, so a version 2 file is upgraded by adding them.
+constexpr const char* HOSTED_SCHEMA_SQL = R"sql(
+CREATE TABLE host_data (
+    id   INTEGER PRIMARY KEY CHECK (id = 1),
+    data TEXT NOT NULL
+);
+CREATE TABLE conversations (
+    id             TEXT PRIMARY KEY,
+    position       INTEGER NOT NULL UNIQUE,
+    participants   TEXT NOT NULL,
+    ended          INTEGER NOT NULL,
+    folded_through INTEGER NOT NULL
+);
+CREATE TABLE hosted_turns (
+    number          INTEGER PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    speaker_id      TEXT NOT NULL,
+    listener_ids    TEXT NOT NULL,
+    player_text     TEXT NOT NULL,
+    events          TEXT NOT NULL,
+    observation     TEXT NOT NULL,
+    resolve_output  TEXT NOT NULL,
+    adjudication    TEXT NOT NULL,
+    line            TEXT NOT NULL,
+    timings         TEXT NOT NULL
+);
+CREATE TABLE conversation_events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    after_turn      INTEGER NOT NULL,
+    event           TEXT NOT NULL
+);
+)sql";
+
+// Stored spelling of a run kind, run_meta 'kind'.
+const char* RunKindName(RunKind kind)
+{
+    switch (kind) {
+    case RunKind::Owned:
+        return "owned";
+    case RunKind::Hosted:
+        return "hosted";
+    }
+    throw morpheus::core::ContractError("RunKindName: unhandled RunKind");
+}
+
+// A conversation's participants as stored: [{"id": ..., "name": ..., "bio": ...}] in join order.
+nlohmann::json ParticipantsToJson(const std::vector<core::Participant>& participants)
+{
+    nlohmann::json json = nlohmann::json::array();
+    for (const core::Participant& participant : participants) {
+        json.push_back({{"id", participant.id}, {"name", participant.name}, {"bio", participant.bio}});
+    }
+    return json;
+}
+
 // Stored spelling of an embedding kind. TruncateAfter's SQL relies on "turn" and "note".
 const char* KindName(EmbeddingKind kind)
 {
@@ -73,6 +131,25 @@ const char* KindName(EmbeddingKind kind)
 } // namespace
 
 RunStore RunStore::Create(const std::filesystem::path& file, RunMeta meta, const nlohmann::json& initialState)
+{
+    MORPHEUS_REQUIRE(meta.kind == RunKind::Owned, "RunStore::Create: a hosted run is created with CreateHosted");
+    // An owned run starts from its world's initial state.
+    return CreateWith(file, std::move(meta), [&initialState](Database& db) {
+        db.Prepare("INSERT INTO state_snapshots (turn, state) VALUES (0, ?1)").Bind(1, initialState.dump()).Run();
+    });
+}
+
+RunStore RunStore::CreateHosted(const std::filesystem::path& file, RunMeta meta, const nlohmann::json& hostData)
+{
+    MORPHEUS_REQUIRE(meta.kind == RunKind::Hosted, "RunStore::CreateHosted: an owned run is created with Create");
+    // A hosted run has no state: it starts with the host's data.
+    return CreateWith(file, std::move(meta), [&hostData](Database& db) {
+        db.Prepare("INSERT INTO host_data (id, data) VALUES (1, ?1)").Bind(1, hostData.dump()).Run();
+    });
+}
+
+RunStore RunStore::CreateWith(const std::filesystem::path& file, RunMeta meta,
+                              const std::function<void(Database& db)>& fill)
 {
     std::error_code error;
     const bool exists = std::filesystem::exists(file, error);
@@ -95,12 +172,13 @@ RunStore RunStore::Create(const std::filesystem::path& file, RunMeta meta, const
     // Opening creates the (empty) file, so any failure from here on must remove it again, or a retry would be
     // blocked by "already exists".
     try {
-        // Schema, meta and the turn-0 snapshot land together or not at all.
+        // Schema, meta and the kind's first rows land together or not at all.
         Database db = Database::Open(file, true);
         db.Transaction([&] {
             db.Exec(SCHEMA_SQL);
+            db.Exec(HOSTED_SCHEMA_SQL);
 
-            const std::array<std::pair<const char*, std::string>, 7> metaRows = {{
+            const std::array<std::pair<const char*, std::string>, 8> metaRows = {{
                 {"schema_version", std::to_string(SCHEMA_VERSION)},
                 {"world_id", meta.worldId},
                 {"world_hash", meta.worldHash},
@@ -108,12 +186,12 @@ RunStore RunStore::Create(const std::filesystem::path& file, RunMeta meta, const
                 {"rng_seed", std::to_string(meta.rngSeed)}, // Text: SQLite integers are signed 64-bit.
                 {"settings", meta.settings.dump()},
                 {"created_at", meta.createdAt},
+                {"kind", RunKindName(meta.kind)},
             }};
             for (const auto& [key, value] : metaRows) {
                 db.Prepare("INSERT INTO run_meta (key, value) VALUES (?1, ?2)").Bind(1, key).Bind(2, value).Run();
             }
-
-            db.Prepare("INSERT INTO state_snapshots (turn, state) VALUES (0, ?1)").Bind(1, initialState.dump()).Run();
+            fill(db);
         });
         return RunStore(std::move(db), std::move(meta), file);
     } catch (...) {
@@ -153,6 +231,19 @@ RunStore RunStore::Open(const std::filesystem::path& file)
         return it->second;
     };
 
+    // A version 2 run is upgraded in place: the hosted tables are added and it is marked owned, in one transaction.
+    // Its data is not touched. Any other version is refused.
+    if (value("schema_version") == "2") {
+        db.Transaction([&] {
+            db.Exec(HOSTED_SCHEMA_SQL);
+            db.Prepare("INSERT INTO run_meta (key, value) VALUES ('kind', ?1)").Bind(1, RunKindName(RunKind::Owned)).Run();
+            db.Prepare("UPDATE run_meta SET value = ?1 WHERE key = 'schema_version'")
+                .Bind(1, std::to_string(SCHEMA_VERSION))
+                .Run();
+        });
+        values["schema_version"] = std::to_string(SCHEMA_VERSION);
+        values["kind"] = RunKindName(RunKind::Owned);
+    }
     if (value("schema_version") != std::to_string(SCHEMA_VERSION)) {
         throw StoreError(std::format("'{}': schema version {} is not the supported version {}",
                                      core::PathText(file), value("schema_version"), SCHEMA_VERSION));
@@ -179,6 +270,16 @@ RunStore RunStore::Open(const std::filesystem::path& file)
                                      core::PathText(file), error.what()));
     }
     meta.createdAt = value("created_at");
+
+    const std::string& kindText = value("kind");
+    if (kindText == RunKindName(RunKind::Owned)) {
+        meta.kind = RunKind::Owned;
+    } else if (kindText == RunKindName(RunKind::Hosted)) {
+        meta.kind = RunKind::Hosted;
+    } else {
+        throw StoreError(std::format("'{}': run_meta 'kind' is '{}', not 'owned' or 'hosted'", core::PathText(file),
+                                     kindText));
+    }
     return RunStore(std::move(db), std::move(meta), file);
 }
 
@@ -426,6 +527,307 @@ std::vector<EmbeddingRow> RunStore::Embeddings(EmbeddingKind kind, const std::st
         rows.push_back({kind, query.ColumnText(0), model, query.ColumnFloats(1), query.ColumnText(2)});
     }
     return rows;
+}
+
+nlohmann::json RunStore::HostData()
+{
+    RequireHosted("HostData");
+    Statement query = _db.Prepare("SELECT data FROM host_data WHERE id = 1");
+    if (!query.Step()) {
+        throw StoreError(std::format("'{}': the hosted run has no host data", core::PathText(_file)));
+    }
+    try {
+        return nlohmann::json::parse(query.ColumnText(0));
+    } catch (const nlohmann::json::parse_error& error) {
+        throw StoreError(std::format("'{}': host data is not valid JSON: {}", core::PathText(_file), error.what()));
+    }
+}
+
+void RunStore::ReplaceHostData(const nlohmann::json& hostData, const std::string& hash)
+{
+    RequireHosted("ReplaceHostData");
+    MORPHEUS_REQUIRE(!hash.empty(), "ReplaceHostData: the content hash must not be empty");
+    // The data and its hash change together, so a reopen never compares new data with an old hash.
+    _db.Transaction([&] {
+        _db.Prepare("UPDATE host_data SET data = ?1 WHERE id = 1").Bind(1, hostData.dump()).Run();
+        _db.Prepare("UPDATE run_meta SET value = ?1 WHERE key = 'world_hash'").Bind(1, hash).Run();
+    });
+    _meta.worldHash = hash;
+}
+
+std::string RunStore::CreateConversation(const std::vector<core::Participant>& participants)
+{
+    RequireHosted("CreateConversation");
+    MORPHEUS_REQUIRE(!participants.empty(), "CreateConversation: a conversation needs a participant");
+    // Conversations are never deleted, so their count names the next one: c1, c2, ... The count's statement is
+    // finished before the insert.
+    std::int64_t position = 0;
+    {
+        Statement count = _db.Prepare("SELECT COUNT(*) FROM conversations");
+        const bool hasRow = count.Step();
+        MORPHEUS_REQUIRE(hasRow, "CreateConversation: aggregate query returned no row");
+        position = count.ColumnInt(0) + 1;
+    }
+    const std::string id = std::format("c{}", position);
+    _db.Prepare("INSERT INTO conversations (id, position, participants, ended, folded_through) "
+                "VALUES (?1, ?2, ?3, 0, 0)")
+        .Bind(1, id)
+        .Bind(2, position)
+        .Bind(3, ParticipantsToJson(participants).dump())
+        .Run();
+    return id;
+}
+
+std::optional<core::Conversation> RunStore::Conversation(std::string_view id)
+{
+    RequireHosted("Conversation");
+    for (core::Conversation& conversation : Conversations()) {
+        if (conversation.id == id) {
+            return std::move(conversation);
+        }
+    }
+    return std::nullopt;
+}
+
+std::vector<core::Conversation> RunStore::Conversations()
+{
+    RequireHosted("Conversations");
+    Statement query =
+        _db.Prepare("SELECT id, participants, ended, folded_through FROM conversations ORDER BY position");
+    std::vector<core::Conversation> conversations;
+    while (query.Step()) {
+        core::Conversation conversation;
+        conversation.id = query.ColumnText(0);
+        // Damaged participants are a StoreError naming the file and the conversation.
+        auto damaged = [&](const std::string& problem) {
+            return StoreError(std::format("'{}': conversation '{}' column 'participants' {}", core::PathText(_file),
+                                          conversation.id, problem));
+        };
+        nlohmann::json participants;
+        try {
+            participants = nlohmann::json::parse(query.ColumnText(1));
+        } catch (const nlohmann::json::parse_error& error) {
+            throw damaged(std::string("is not valid JSON: ") + error.what());
+        }
+        if (!participants.is_array()) {
+            throw damaged("is not an array");
+        }
+        for (const nlohmann::json& participant : participants) {
+            const bool whole = participant.is_object() && participant.contains("id") && participant.at("id").is_string() &&
+                               participant.contains("name") && participant.at("name").is_string() &&
+                               participant.contains("bio") && participant.at("bio").is_string();
+            if (!whole) {
+                throw damaged("holds a participant without a string id, name and bio");
+            }
+            conversation.participants.push_back({participant.at("id").get<std::string>(),
+                                                 participant.at("name").get<std::string>(),
+                                                 participant.at("bio").get<std::string>()});
+        }
+        conversation.ended = query.ColumnInt(2) != 0;
+        conversation.foldedThrough = static_cast<int>(query.ColumnInt(3));
+        conversations.push_back(std::move(conversation));
+    }
+    return conversations;
+}
+
+void RunStore::SetParticipants(std::string_view id, const std::vector<core::Participant>& participants)
+{
+    RequireHosted("SetParticipants");
+    MORPHEUS_REQUIRE(Conversation(id).has_value(), "SetParticipants: no such conversation");
+    MORPHEUS_REQUIRE(!participants.empty(), "SetParticipants: a conversation needs a participant");
+    _db.Prepare("UPDATE conversations SET participants = ?1 WHERE id = ?2")
+        .Bind(1, ParticipantsToJson(participants).dump())
+        .Bind(2, id)
+        .Run();
+}
+
+void RunStore::EndConversation(std::string_view id)
+{
+    RequireHosted("EndConversation");
+    MORPHEUS_REQUIRE(Conversation(id).has_value(), "EndConversation: no such conversation");
+    _db.Prepare("UPDATE conversations SET ended = 1 WHERE id = ?1").Bind(1, id).Run();
+}
+
+void RunStore::FoldConversation(std::string_view id, const core::Summary& summary)
+{
+    RequireHosted("FoldConversation");
+    MORPHEUS_REQUIRE(summary.fromTurn >= 1 && summary.fromTurn <= summary.toTurn,
+                     std::format("FoldConversation: bad turn range {}..{}", summary.fromTurn, summary.toTurn));
+    MORPHEUS_REQUIRE(Conversation(id).has_value(), "FoldConversation: no such conversation");
+    // The summary and the conversation's folded mark land together: a turn is never both folded and shown in L3.
+    _db.Transaction([&] {
+        _db.Prepare("INSERT INTO summaries (from_turn, to_turn, text) VALUES (?1, ?2, ?3)")
+            .Bind(1, summary.fromTurn)
+            .Bind(2, summary.toTurn)
+            .Bind(3, summary.text)
+            .Run();
+        _db.Prepare("UPDATE conversations SET folded_through = ?1 WHERE id = ?2").Bind(1, summary.toTurn).Bind(2, id).Run();
+    });
+}
+
+void RunStore::AddConversationEvents(std::string_view id, int afterTurn, const std::vector<nlohmann::json>& events)
+{
+    RequireHosted("AddConversationEvents");
+    MORPHEUS_REQUIRE(Conversation(id).has_value(), "AddConversationEvents: no such conversation");
+    _db.Transaction([&] {
+        for (const nlohmann::json& event : events) {
+            _db.Prepare("INSERT INTO conversation_events (conversation_id, after_turn, event) VALUES (?1, ?2, ?3)")
+                .Bind(1, id)
+                .Bind(2, afterTurn)
+                .Bind(3, event.dump())
+                .Run();
+        }
+    });
+}
+
+std::vector<core::ConversationEvent> RunStore::ConversationEvents(std::string_view id)
+{
+    RequireHosted("ConversationEvents");
+    Statement query =
+        _db.Prepare("SELECT after_turn, event FROM conversation_events WHERE conversation_id = ?1 ORDER BY id");
+    query.Bind(1, id);
+    std::vector<core::ConversationEvent> events;
+    while (query.Step()) {
+        core::ConversationEvent event;
+        event.afterTurn = static_cast<int>(query.ColumnInt(0));
+        try {
+            event.event = nlohmann::json::parse(query.ColumnText(1));
+        } catch (const nlohmann::json::parse_error& error) {
+            throw StoreError(std::format("'{}': an event of conversation '{}' is not valid JSON: {}",
+                                         core::PathText(_file), id, error.what()));
+        }
+        events.push_back(std::move(event));
+    }
+    return events;
+}
+
+int RunStore::LatestHostedTurn()
+{
+    RequireHosted("LatestHostedTurn");
+    Statement query = _db.Prepare("SELECT COALESCE(MAX(number), 0) FROM hosted_turns");
+    const bool hasRow = query.Step();
+    MORPHEUS_REQUIRE(hasRow, "LatestHostedTurn: aggregate query returned no row");
+    return static_cast<int>(query.ColumnInt(0));
+}
+
+void RunStore::CommitHostedTurn(const core::HostedTurn& record)
+{
+    RequireHosted("CommitHostedTurn");
+    const int expected = LatestHostedTurn() + 1;
+    MORPHEUS_REQUIRE(record.number == expected,
+                     std::format("CommitHostedTurn: expected turn {}, got {}", expected, record.number));
+    MORPHEUS_REQUIRE(Conversation(record.conversationId).has_value(), "CommitHostedTurn: no such conversation");
+
+    // JSON columns. The replace handler keeps a reason quoting text that is not UTF-8 from throwing.
+    const nlohmann::json listeners = record.listenerIds;
+    const nlohmann::json playerText = record.playerText ? nlohmann::json(*record.playerText) : nlohmann::json(nullptr);
+    nlohmann::json events = nlohmann::json::array();
+    for (const nlohmann::json& event : record.events) {
+        events.push_back(event);
+    }
+    const nlohmann::json adjudication = {{"requested", record.adjudication.requested},
+                                         {"action_id", record.adjudication.actionId},
+                                         {"params", record.adjudication.params},
+                                         {"reasons", record.adjudication.reasons}};
+    _db.Prepare("INSERT INTO hosted_turns (number, conversation_id, speaker_id, listener_ids, player_text, events, "
+                "observation, resolve_output, adjudication, line, timings) "
+                "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)")
+        .Bind(1, record.number)
+        .Bind(2, record.conversationId)
+        .Bind(3, record.speakerId)
+        .Bind(4, listeners.dump())
+        .Bind(5, playerText.dump())
+        .Bind(6, events.dump())
+        .Bind(7, record.observation.dump())
+        .Bind(8, record.resolveOutput)
+        .Bind(9, adjudication.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace))
+        .Bind(10, record.line)
+        .Bind(11, record.timings.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace))
+        .Run();
+}
+
+std::vector<core::HostedTurn> RunStore::HostedTurns(std::string_view conversationId)
+{
+    RequireHosted("HostedTurns");
+    Statement query = _db.Prepare("SELECT number, speaker_id, listener_ids, player_text, events, observation, "
+                                  "resolve_output, adjudication, line, timings FROM hosted_turns "
+                                  "WHERE conversation_id = ?1 ORDER BY number");
+    query.Bind(1, conversationId);
+    std::vector<core::HostedTurn> turns;
+    while (query.Step()) {
+        core::HostedTurn turn;
+        turn.number = static_cast<int>(query.ColumnInt(0));
+        turn.conversationId = std::string(conversationId);
+        // Damaged saved data is a StoreError naming the file, the turn and the column.
+        auto damaged = [&](const char* column, const std::string& problem) {
+            return StoreError(std::format("'{}': hosted turn {} column '{}' {}", core::PathText(_file), turn.number,
+                                          column, problem));
+        };
+        auto parseColumn = [&](int column, const char* name) {
+            try {
+                return nlohmann::json::parse(query.ColumnText(column));
+            } catch (const nlohmann::json::parse_error& error) {
+                throw damaged(name, std::string("is not valid JSON: ") + error.what());
+            }
+        };
+        turn.speakerId = query.ColumnText(1);
+
+        const nlohmann::json listeners = parseColumn(2, "listener_ids");
+        if (!listeners.is_array()) {
+            throw damaged("listener_ids", "is not an array");
+        }
+        for (const nlohmann::json& listener : listeners) {
+            if (!listener.is_string()) {
+                throw damaged("listener_ids", "holds a value that is not a string");
+            }
+            turn.listenerIds.push_back(listener.get<std::string>());
+        }
+
+        const nlohmann::json playerText = parseColumn(3, "player_text");
+        if (playerText.is_string()) {
+            turn.playerText = playerText.get<std::string>();
+        } else if (!playerText.is_null()) {
+            throw damaged("player_text", "is neither a string nor null");
+        }
+
+        const nlohmann::json events = parseColumn(4, "events");
+        if (!events.is_array()) {
+            throw damaged("events", "is not an array");
+        }
+        for (const nlohmann::json& event : events) {
+            turn.events.push_back(event);
+        }
+        turn.observation = parseColumn(5, "observation");
+        turn.resolveOutput = query.ColumnText(6);
+
+        const nlohmann::json adjudication = parseColumn(7, "adjudication");
+        const bool whole = adjudication.is_object() && adjudication.contains("requested") &&
+                           adjudication.at("requested").is_boolean() && adjudication.contains("action_id") &&
+                           adjudication.at("action_id").is_string() && adjudication.contains("params") &&
+                           adjudication.contains("reasons") && adjudication.at("reasons").is_array();
+        if (!whole) {
+            throw damaged("adjudication", "is malformed");
+        }
+        turn.adjudication.requested = adjudication.at("requested").get<bool>();
+        turn.adjudication.actionId = adjudication.at("action_id").get<std::string>();
+        turn.adjudication.params = adjudication.at("params");
+        for (const nlohmann::json& reason : adjudication.at("reasons")) {
+            if (!reason.is_string()) {
+                throw damaged("adjudication", "holds a reason that is not a string");
+            }
+            turn.adjudication.reasons.push_back(reason.get<std::string>());
+        }
+
+        turn.line = query.ColumnText(8);
+        turn.timings = parseColumn(9, "timings");
+        turns.push_back(std::move(turn));
+    }
+    return turns;
+}
+
+void RunStore::RequireHosted(const char* method) const
+{
+    MORPHEUS_REQUIRE(_meta.kind == RunKind::Hosted, std::format("RunStore::{}: this is an owned run", method));
 }
 
 RunStore::RunStore(Database db, RunMeta meta, std::filesystem::path file)
