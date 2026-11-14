@@ -17,6 +17,8 @@ TEST_CASE("A hosted conversation on the real model: every action validates and e
 {
     llama::LlamaCppBackend& backend = test::SharedBackend();
     // Budgets for the shared backend's context of 4096, greedy sampling, no thinking.
+    // Fields in order: resolveMaxTokens, narrateMaxTokens, narrateAllowance, tailAllowance, engineRulesCap, worldCap,
+    // summaryCap, retrievalCap.
     core::Settings settings = test::HostedSettings();
     settings.contextSize = backend.ContextSize();
     settings.budget = {96, 160, 128, 1024, 1024, 1024, 512, 256};

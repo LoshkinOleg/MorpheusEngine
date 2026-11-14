@@ -89,6 +89,7 @@ void PlayFixture(const std::string& name)
         // The turn's prompt: its L3 messages, and the new events in its tail.
         const inference::Prompt& prompt = session.LastAssembly().prompt;
         if (expect.contains("l3")) {
+            // Message 0 is the stable system message (L0); L3 starts at message 1 and runs to stableCount.
             std::vector<std::string> l3;
             for (std::size_t k = 1; k < prompt.stableCount; ++k) {
                 l3.push_back(prompt.messages[k].content);
