@@ -1,0 +1,44 @@
+{
+  "description": "Hulda and Saadia talk for six turns with no player input (requirement R8's acceptance), alternating, each with a valid action.",
+  "participants": ["0001A6A4", "0001B07C"],
+  "steps": [
+    {
+      "turn": {"speaker": "0001B07C"},
+      "model": {"resolve": "{\"action\":\"none\",\"params\":{}}", "line": "Another quiet night."},
+      "expect": {"requested": true, "action": {"id": "none", "params": {}}, "line": "Another quiet night.",
+                 "listeners": ["0001A6A4"], "l3": []}
+    },
+    {
+      "turn": {"speaker": "0001A6A4"},
+      "model": {"resolve": "{\"action\":\"none\",\"params\":{}}", "line": "Quiet suits me fine."},
+      "expect": {"requested": true, "line": "Quiet suits me fine.", "listeners": ["0001B07C"]}
+    },
+    {
+      "turn": {"speaker": "0001B07C"},
+      "model": {"resolve": "{\"action\":\"give_item\",\"params\":{\"item\":\"Sweetroll\"}}", "line": "Here, have a sweetroll."},
+      "expect": {"requested": true, "action": {"id": "give_item", "params": {"item": "Sweetroll"}},
+                 "line": "Here, have a sweetroll.", "listeners": ["0001A6A4"]}
+    },
+    {
+      "turn": {"speaker": "0001A6A4"},
+      "model": {"resolve": "{\"action\":\"follow\",\"params\":{}}", "line": "Show me what you found."},
+      "expect": {"requested": true, "line": "Show me what you found.", "listeners": ["0001B07C"]}
+    },
+    {
+      "turn": {"speaker": "0001B07C"},
+      "model": {"resolve": "{\"action\":\"wait\",\"params\":{}}", "line": "Wait, someone is coming."},
+      "expect": {"requested": true, "line": "Wait, someone is coming.", "listeners": ["0001A6A4"]}
+    },
+    {
+      "turn": {"speaker": "0001A6A4"},
+      "model": {"resolve": "{\"action\":\"none\",\"params\":{}}", "line": "Then we wait together."},
+      "expect": {"requested": true, "line": "Then we wait together.", "listeners": ["0001B07C"],
+                 "l3": ["(Saadia speaks.)", "Saadia [none]: Another quiet night.",
+                        "(Hulda speaks.)", "Hulda [none]: Quiet suits me fine.",
+                        "(Saadia speaks.)", "Saadia [give_item {\"item\":\"Sweetroll\"}]: Here, have a sweetroll.",
+                        "(Hulda speaks.)", "Hulda [follow]: Show me what you found.",
+                        "(Saadia speaks.)", "Saadia [wait]: Wait, someone is coming."],
+                 "new_events": []}
+    }
+  ]
+}

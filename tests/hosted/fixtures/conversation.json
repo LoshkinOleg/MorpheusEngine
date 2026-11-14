@@ -1,0 +1,49 @@
+{
+  "description": "Aela asks Hulda to follow; an action result arrives between turns and an ambient event with a turn; Hulda offers an attack with a target, a wait with an extra key is refused, and Hulda speaks on without player text. Written from section 5 of the integration requirements.",
+  "participants": ["0001A6A4", "00000007"],
+  "steps": [
+    {
+      "turn": {"speaker": "0001A6A4", "player_text": "Hulda, I need you to follow me."},
+      "model": {"resolve": "{\"action\":\"follow\",\"params\":{}}", "line": "Lead the way, then."},
+      "expect": {"requested": true, "action": {"id": "follow", "params": {}}, "line": "Lead the way, then.",
+                 "listeners": ["00000007"], "l3": [], "new_events": []}
+    },
+    {
+      "events": [{"type": "action_result", "action": "follow", "actor": "0001A6A4", "succeeded": true,
+                  "text": "Hulda is now following Aela."}]
+    },
+    {
+      "turn": {"speaker": "0001A6A4", "player_text": "Saadia keeps staring at us.",
+               "events": [{"type": "ambient", "text": "Saadia glances at the door."}]},
+      "model": {"resolve": "{\"action\":\"attack\",\"params\":{\"target\":\"0001B07C\"}}",
+                "line": "Say the word and I will deal with her."},
+      "expect": {"requested": true, "action": {"id": "attack", "params": {"target": "0001B07C"}},
+                 "line": "Say the word and I will deal with her.", "listeners": ["00000007"],
+                 "l3": ["Aela: Hulda, I need you to follow me.", "Hulda [follow]: Lead the way, then."],
+                 "new_events": ["Hulda is now following Aela.", "Saadia glances at the door."]}
+    },
+    {
+      "turn": {"speaker": "0001A6A4", "player_text": "No. Wait here for me.",
+               "allowed_actions": ["none", "wait", "end_conversation"]},
+      "model": {"resolve": "{\"action\":\"wait\",\"params\":{},\"intent\":\"rest\"}", "line": "As you wish."},
+      "expect": {"requested": false,
+                 "reasons": ["/intent: unexpected key 'intent'; the keys are 'action', 'params'"],
+                 "line": "As you wish.", "listeners": ["00000007"],
+                 "l3": ["Aela: Hulda, I need you to follow me.", "Hulda [follow]: Lead the way, then.",
+                        "(Hulda is now following Aela.)\n(Saadia glances at the door.)\nAela: Saadia keeps staring at us.",
+                        "Hulda [attack {\"target\":\"0001B07C\"}]: Say the word and I will deal with her."],
+                 "new_events": []}
+    },
+    {
+      "turn": {"speaker": "0001A6A4"},
+      "model": {"resolve": "{\"action\":\"end_conversation\",\"params\":{}}", "line": "I will be here when you return."},
+      "expect": {"requested": true, "action": {"id": "end_conversation", "params": {}},
+                 "line": "I will be here when you return.", "listeners": ["00000007"],
+                 "l3": ["Aela: Hulda, I need you to follow me.", "Hulda [follow]: Lead the way, then.",
+                        "(Hulda is now following Aela.)\n(Saadia glances at the door.)\nAela: Saadia keeps staring at us.",
+                        "Hulda [attack {\"target\":\"0001B07C\"}]: Say the word and I will deal with her.",
+                        "Aela: No. Wait here for me.", "Hulda: As you wish."],
+                 "new_events": []}
+    }
+  ]
+}
