@@ -10,6 +10,7 @@
 #include <nlohmann/json.hpp>
 
 #include "TestPaths.h"
+#include "core/Settings.h"
 #include "turn/HostedWorld.h"
 
 namespace morpheus::test {
@@ -47,6 +48,29 @@ inline turn::HostData FixtureHostData()
 inline nlohmann::json FixtureObservation()
 {
     return ReadFixture("observation.json");
+}
+
+// Settings for hosted session tests: a context of 16384 with roomy budgets (resolve_max_tokens 64, narrate_max_tokens
+// 256, narrate_allowance 128, tail_allowance 1024, engine_rules_cap 1024, world_cap 1024, summary_cap 512,
+// retrieval_cap 256) and no thinking.
+inline core::Settings HostedSettings()
+{
+    core::Settings settings;
+    settings.chatModel = "models/chat.gguf"; // Only named in the run meta; never opened.
+    settings.embeddingModel = "models/embed.gguf";
+    settings.embeddingQueryPrefix = "search_query: ";
+    settings.embeddingDocumentPrefix = "search_document: ";
+    settings.contextSize = 16384;
+    settings.budget = {64, 256, 128, 1024, 1024, 1024, 512, 256};
+    settings.resolveSampling = {0.3, 40, 0.9};
+    settings.narrateSampling = {0.8, 40, 0.95};
+    return settings;
+}
+
+// A run file in a fresh folder for test `name`.
+inline std::filesystem::path HostedRunFile(std::string_view name)
+{
+    return FreshTempDir(name) / "run.db";
 }
 
 } // namespace morpheus::test

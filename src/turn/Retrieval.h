@@ -8,6 +8,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "context/Transcript.h"
 #include "core/World.h"
 #include "inference/Llm.h"
 #include "store/RunStore.h"
@@ -73,15 +74,27 @@ private:
 public:
     explicit MemoryIndex(std::string documentPrefix);
 
-    // Indexes every lore entry that is not always on as "subject: data", embedding entries one at a time where
-    // the stored vector is missing or stale. Throws DataError naming the subject when an entry cannot be embedded
-    // (too long for the embedding model) or a subject appears twice.
+    // Indexes every entry of `lore` that is not always on as "subject: data", embedding entries one at a time where
+    // the stored vector is missing or stale. `source` names the lore in errors ("world 'mini': lore.csv", "host data:
+    // lore"). Throws DataError naming the source and the subject when an entry cannot be embedded (too long for the
+    // embedding model) or a subject appears twice.
+    void SyncLore(std::string_view source, const std::vector<core::LoreEntry>& lore, store::RunStore& store,
+                  inference::LlmBackend& backend);
+
+    // SyncLore of the world's lore.csv, named "world '<id>': lore.csv".
     void SyncLore(const core::World& world, store::RunStore& store, inference::LlmBackend& backend);
 
     // Indexes turns 1..foldedThrough ("Turn N: input -> narration") and every note ("Note from turn N: text"),
     // embedding where missing or stale. Throws ContractError if foldedThrough < 0, and InferenceError when the
     // backend cannot embed a text (the engine cuts them, so that is a runtime failure).
     void SyncHistory(store::RunStore& store, int foldedThrough, inference::LlmBackend& backend);
+
+    // Indexes `folded` (a hosted run's folded turns, as transcript entries) as searchable history: each embedded as
+    // its fact cut to EMBED_TEXT_CHARS and shown as "Turn N: <fact>" with the fact cut to 2 * HISTORY_SNIPPET_CHARS,
+    // embedding where missing or stale. Replaces every turn entry; notes are left as they are. Throws InferenceError
+    // when the backend cannot embed a text (the engine cuts them, so that is a runtime failure).
+    void SyncEntries(const std::vector<context::TranscriptEntry>& folded, store::RunStore& store,
+                     inference::LlmBackend& backend);
 
     // The best hits for `query` among `sources`. Each hit scores at least RETRIEVAL_MIN_SCORE: the cosine with the
     // embedding of query.Text(), plus NAME_BOOST, once, for a lore subject (lower-cased) contained in the input
@@ -93,9 +106,11 @@ public:
 
 private:
     // Vectors for `documents` of one kind, aligned with them: stored ones whose hash still matches, the rest
-    // embedded one text per call and stored.
+    // embedded one text per call and stored. `loreSource` names lore in the DataError for an entry that cannot be
+    // embedded; it is unused for other kinds.
     std::vector<std::vector<float>> Vectors(store::EmbeddingKind kind, const std::vector<Document>& documents,
-                                            store::RunStore& store, inference::LlmBackend& backend) const;
+                                            std::string_view loreSource, store::RunStore& store,
+                                            inference::LlmBackend& backend) const;
 
     // Replaces every entry of `kind` with `entries`.
     void Replace(store::EmbeddingKind kind, std::vector<Entry> entries);

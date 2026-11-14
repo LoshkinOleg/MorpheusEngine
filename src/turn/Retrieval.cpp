@@ -106,28 +106,33 @@ MemoryIndex::MemoryIndex(std::string documentPrefix)
 {
 }
 
-void MemoryIndex::SyncLore(const core::World& world, store::RunStore& store, inference::LlmBackend& backend)
+void MemoryIndex::SyncLore(std::string_view source, const std::vector<core::LoreEntry>& lore, store::RunStore& store,
+                           inference::LlmBackend& backend)
 {
     std::vector<Document> documents;
     std::vector<Entry> entries;
     std::set<std::string> subjects;
-    for (const core::LoreEntry& lore : world.lore) {
-        if (lore.alwaysOn) {
+    for (const core::LoreEntry& entry : lore) {
+        if (entry.alwaysOn) {
             continue; // Always in L1.
         }
-        if (!subjects.insert(lore.subject).second) {
-            throw core::DataError(
-                std::format("world '{}': lore.csv has two entries for subject '{}'", world.id, lore.subject));
+        if (!subjects.insert(entry.subject).second) {
+            throw core::DataError(std::format("{} has two entries for subject '{}'", source, entry.subject));
         }
-        const std::string text = lore.subject + ": " + lore.data;
-        documents.push_back({lore.subject, text});
-        entries.push_back({store::EmbeddingKind::Lore, lore.subject, Lowered(lore.subject), text, {}});
+        const std::string text = entry.subject + ": " + entry.data;
+        documents.push_back({entry.subject, text});
+        entries.push_back({store::EmbeddingKind::Lore, entry.subject, Lowered(entry.subject), text, {}});
     }
-    std::vector<std::vector<float>> vectors = Vectors(store::EmbeddingKind::Lore, documents, store, backend);
+    std::vector<std::vector<float>> vectors = Vectors(store::EmbeddingKind::Lore, documents, source, store, backend);
     for (std::size_t i = 0; i < entries.size(); ++i) {
         entries[i].vector = std::move(vectors[i]);
     }
     Replace(store::EmbeddingKind::Lore, std::move(entries));
+}
+
+void MemoryIndex::SyncLore(const core::World& world, store::RunStore& store, inference::LlmBackend& backend)
+{
+    SyncLore(std::format("world '{}': lore.csv", world.id), world.lore, store, backend);
 }
 
 void MemoryIndex::SyncHistory(store::RunStore& store, int foldedThrough, inference::LlmBackend& backend)
@@ -158,16 +163,36 @@ void MemoryIndex::SyncHistory(store::RunStore& store, int foldedThrough, inferen
                                std::format("Note from turn {}: {}", note.turn, note.text), {}});
     }
 
-    std::vector<std::vector<float>> turnVectors = Vectors(store::EmbeddingKind::Turn, turnDocuments, store, backend);
+    std::vector<std::vector<float>> turnVectors = Vectors(store::EmbeddingKind::Turn, turnDocuments, "", store, backend);
     for (std::size_t i = 0; i < turnEntries.size(); ++i) {
         turnEntries[i].vector = std::move(turnVectors[i]);
     }
-    std::vector<std::vector<float>> noteVectors = Vectors(store::EmbeddingKind::Note, noteDocuments, store, backend);
+    std::vector<std::vector<float>> noteVectors = Vectors(store::EmbeddingKind::Note, noteDocuments, "", store, backend);
     for (std::size_t i = 0; i < noteEntries.size(); ++i) {
         noteEntries[i].vector = std::move(noteVectors[i]);
     }
     Replace(store::EmbeddingKind::Turn, std::move(turnEntries));
     Replace(store::EmbeddingKind::Note, std::move(noteEntries));
+}
+
+void MemoryIndex::SyncEntries(const std::vector<context::TranscriptEntry>& folded, store::RunStore& store,
+                              inference::LlmBackend& backend)
+{
+    // Each folded turn under its run-wide number: its fact is what is embedded and, cut shorter, what is shown.
+    std::vector<Document> documents;
+    std::vector<Entry> entries;
+    for (const context::TranscriptEntry& turn : folded) {
+        const std::string refId = std::to_string(turn.turn);
+        documents.push_back({refId, core::CutUtf8(turn.fact, EMBED_TEXT_CHARS)});
+        entries.push_back({store::EmbeddingKind::Turn, refId, {},
+                           std::format("Turn {}: {}", turn.turn, core::CutUtf8(turn.fact, 2 * HISTORY_SNIPPET_CHARS)),
+                           {}});
+    }
+    std::vector<std::vector<float>> vectors = Vectors(store::EmbeddingKind::Turn, documents, "", store, backend);
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        entries[i].vector = std::move(vectors[i]);
+    }
+    Replace(store::EmbeddingKind::Turn, std::move(entries));
 }
 
 std::vector<RetrievalHit> MemoryIndex::Retrieve(const RetrievalQuery& query,
@@ -248,7 +273,8 @@ std::vector<RetrievalHit> MemoryIndex::Retrieve(const RetrievalQuery& query,
 }
 
 std::vector<std::vector<float>> MemoryIndex::Vectors(store::EmbeddingKind kind, const std::vector<Document>& documents,
-                                                     store::RunStore& store, inference::LlmBackend& backend) const
+                                                     std::string_view loreSource, store::RunStore& store,
+                                                     inference::LlmBackend& backend) const
 {
     const std::string model = backend.EmbeddingModelId();
     std::map<std::string, store::EmbeddingRow> stored;
@@ -268,7 +294,7 @@ std::vector<std::vector<float>> MemoryIndex::Vectors(store::EmbeddingKind kind, 
             vectors.push_back(it->second.vector);
             continue;
         }
-        // A lore entry that cannot be embedded is a world problem (too long for the embedding model): a DataError
+        // A lore entry that cannot be embedded is a problem of its source (too long for the embedding model): a DataError
         // naming its subject. History and note texts are cut by the engine, so their failures are the backend's and
         // stay InferenceError.
         auto embed = [&backend, &document] {
@@ -282,7 +308,7 @@ std::vector<std::vector<float>> MemoryIndex::Vectors(store::EmbeddingKind kind, 
                 vector = embed();
             } catch (const inference::InferenceError& error) {
                 throw core::DataError(
-                    std::format("lore.csv entry '{}' cannot be embedded: {}", document.refId, error.what()));
+                    std::format("{} entry '{}' cannot be embedded: {}", loreSource, document.refId, error.what()));
             }
         }
         store.PutEmbedding({kind, document.refId, model, vector, hash.Hex()});

@@ -1,5 +1,6 @@
 add_library(morpheus_turn STATIC
     Folding.cpp
+    HostedSession.cpp
     HostedWorld.cpp
     MemoryUpkeep.cpp
     Replay.cpp

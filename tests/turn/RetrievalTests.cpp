@@ -12,6 +12,7 @@
 #include <nlohmann/json.hpp>
 
 #include "TestPaths.h"
+#include "context/Transcript.h"
 #include "core/Errors.h"
 #include "core/World.h"
 #include "fakes/ScriptedBackend.h"
@@ -304,4 +305,30 @@ TEST_CASE("SceneOf lists the scene's values and who is present", "[retrieval]")
     {
         CHECK(turn::SceneOf(MiniWorld(), MiniWorld().initialState).empty());
     }
+}
+
+TEST_CASE("Folded transcript entries are searchable history under their turn number", "[retrieval]")
+{
+    const core::World world = MiniWorld();
+    store::RunStore store = NewRun("retrieval_entries", world);
+    context::TranscriptEntry entry;
+    entry.turn = 4;
+    entry.fact = "Aela: Where is the brass key? Hulda [none]: Under the bar.";
+    test::ScriptedBackend backend(16384);
+    turn::MemoryIndex index("search_document: ");
+    index.SyncEntries({entry}, store, backend);
+
+    const std::vector<turn::RetrievalHit> hits =
+        index.Retrieve(turn::RetrievalQuery{"brass key"}, ALL_SOURCES, 1000, 6, backend);
+    REQUIRE(hits.size() == 1);
+    CHECK(hits[0].kind == store::EmbeddingKind::Turn);
+    CHECK(hits[0].refId == "4");
+    CHECK(hits[0].text == "Turn 4: Aela: Where is the brass key? Hulda [none]: Under the bar.");
+
+    // The stored vector is reused, and an empty list leaves no history.
+    const int embedded = backend.EmbeddedTexts();
+    index.SyncEntries({entry}, store, backend);
+    CHECK(backend.EmbeddedTexts() == embedded);
+    index.SyncEntries({}, store, backend);
+    CHECK(index.Retrieve(turn::RetrievalQuery{"brass key"}, ALL_SOURCES, 1000, 6, backend).empty());
 }
