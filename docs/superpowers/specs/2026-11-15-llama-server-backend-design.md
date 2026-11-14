@@ -71,6 +71,16 @@ class LlmBackend : public Tokenizer, public ChatModel, public Embedder {};
 - `LlamaServerBackend` sends it as `id_slot`.
 - Morpheus's own game leaves it at -1. Sub-project D sets one slot per conversation.
 
+### Content markers move
+
+The logic that keeps a message's content from becoming control tokens leaves `LlamaCppBackend::TokenizePrompt` for `inference`, so both backends share it (section 4, "Rendering a prompt"):
+
+- `std::string ContentMarker(const Prompt&)`: the first of `"\x1E"`, `"\x1E1\x1E"`, `"\x1E2\x1E"`, ... that no content contains;
+- `Prompt MarkContents(const Prompt&, std::string_view marker)`: every content replaced by the marker;
+- `std::vector<std::string> TemplatePieces(std::string_view rendered, std::string_view marker, std::size_t contentCount)`: the template's text around the contents, an `InferenceError` when the template repeats or drops one.
+
+`LlamaCppBackend`'s behaviour and error texts do not change.
+
 ### `SamplingFrom` moves
 
 `inference::SamplingFrom(const core::SamplingSettings&, std::uint32_t)` moves to `turn` (`turn::SamplingFrom`). Its only callers are in `turn/Session.cpp`, and the move takes `inference`'s dependency on `core` away. The architecture spec's module table is updated to match.
@@ -149,30 +159,33 @@ The constructor reads `GET /props` from the chat server and from the embedding s
 ### Token counts
 
 - `CountTokens(text)` uses `POST /tokenize` (`{"content": text, "add_special": false, "parse_special": false}`).
-- `CountPromptTokens(prompt)` renders the prompt (below), then tokenizes it with special tokens parsed.
+- `CountPromptTokens(prompt)` is the length of the prompt's token list (below), the same list `Complete` sends.
 
 ### Rendering a prompt
 
-`POST /apply-template` with the messages and `add_generation_prompt: true`, plus `chat_template_kwargs: {"enable_thinking": true}` when the template has the switch.
+Player text must never become control tokens: a content holding `<|im_end|>` is text. The backend therefore builds the prompt's tokens exactly as `LlamaCppBackend::TokenizePrompt` does in-process:
 
-- The rendered text ends where the assistant's answer begins.
-- The backend then appends the thinking markers exactly as `LlamaCppBackend` does: the empty block when thinking is off, the open marker when it is on.
-- The rendering is cached per prompt within one `Complete` call, not across calls.
+- **Markers.** Every message content is replaced by a per-call marker, the first of `"\x1E"`, `"\x1E1\x1E"`, `"\x1E2\x1E"`, ... that no content contains. The marker selection, the marking and the cutting of the rendered text are shared by both backends: `inference::ContentMarker`, `MarkContents` and `TemplatePieces` (moved out of `LlamaCppBackend`), not copied.
+- **Rendering.** `POST /apply-template` with the marked messages and `add_generation_prompt: true`, plus `chat_template_kwargs: {"enable_thinking": true}` when the template has the switch. The rendered text ends where the assistant's answer begins.
+- **Tokenizing.** The rendered text is cut at the markers; a template that repeats or drops a marker is an `InferenceError`, as in-process. Each template piece goes to `POST /tokenize` with `parse_special: true` (`add_special` only on the first piece, when the model adds BOS; a BOS the template wrote itself is not doubled); each content goes with `parse_special: false`. The ids are concatenated in order.
+- **Thinking markers.** The backend then appends the thinking markers as tokens (tokenized once at startup with `parse_special`), exactly as `LlamaCppBackend` does: the empty block when thinking is off, the open marker when it is on.
+- **Sending.** `/completion` receives the token list as its `prompt` (an array of ids, which llama-server evaluates as given).
+- The token list is made once per prompt within one `Complete` call, not cached across calls.
 
 ### `Complete`
 
 - **Answer without thinking:** one streaming `POST /completion` with:
-  - `prompt`: the rendered text;
+  - `prompt`: the prompt's token ids (above);
   - `n_predict`: `maxTokens`;
   - `grammar`: when set;
-  - sampling: `temperature`, `top_k`, `top_p`, `seed`;
+  - sampling: the same chain as `LlamaCppBackend` (top-k, top-p keeping at least one token, temperature, then a draw with the seed; greedy at temperature 0). The request names it, `samplers: ["top_k", "top_p", "temperature"]` with `top_k`, `top_p`, `min_keep: 1`, `temperature`, `dynatemp_range: 0`, `dynatemp_exponent: 1` and `seed`, and sends neutral values for every other sampler llama-server knows, so its command-line defaults cannot change the output: `mirostat: 0`, `min_p: 0`, `typical_p: 1`, `top_n_sigma: -1`, `xtc_probability: 0`, `repeat_penalty: 1`, `repeat_last_n: 0`, `frequency_penalty: 0`, `presence_penalty: 0`, `dry_multiplier: 0`, `logit_bias: []`, `ignore_eos: false`, `n_probs: 0`;
   - `id_slot`: `spec.slot`, or the configured slot when -1;
   - `cache_prompt: true`, `stream: true`.
 
   Each streamed piece goes to `onToken`.
 - **With thinking:** two calls, as the in-process backend does in one decode loop.
-  1. The thinking call has no grammar and no streaming to `onToken`. It stops at the close marker or at `thinkingMaxTokens` minus the closing sentence's tokens; when it stops at the limit, the closing sentence is appended.
-  2. The answer call continues that same prompt (the rendered text plus the thinking block), with the grammar, streamed.
+  1. The thinking call has no grammar and no streaming to `onToken`. It stops at the close marker (a `stop` string) or at `thinkingMaxTokens` minus the closing sentence's tokens; when it stops at the limit, the closing sentence is appended.
+  2. The answer call continues that same prompt as tokens: the first call's ids, then the thinking text tokenized as plain text (`POST /tokenize`, `parse_special: false`), then the end marker and blank line, or the closing sentence, as tokens. It has the grammar and is streamed. The stream cannot give the generated ids themselves (llama-server sends no message for a token that ends inside a UTF-8 character, and its last stream message carries no ids), so the text is tokenized again; where the model's own split differs, cache reuse stops there.
 
   Because the second call extends the first, the server reuses its cache.
 - **Telemetry:** the server's `timings` fill `Completion`:
@@ -210,15 +223,19 @@ A fake `llama-server` (`tests/fakes/FakeLlamaServer.h`): a cpp-httplib server on
   - `/props` read;
   - a per-slot context smaller than `context_size` refused;
   - an unreachable URL refused with the URL in the message.
-- **Token counts:** `CountTokens` and `CountPromptTokens` send the expected bodies and return the server's counts.
+- **Token counts:** `CountTokens` and `CountPromptTokens` send the expected bodies and return the server's counts:
+  - the marked messages to `/apply-template`, then each template piece with `parse_special: true` and each content with `parse_special: false`, in order;
+  - a content holding `<|im_end|>` is tokenized with `parse_special: false`;
+  - BOS on the first piece only, not doubled when the template writes it; a template that repeats or drops a content is refused;
+  - the shared marker helpers (`ContentMarker`, `MarkContents`, `TemplatePieces`) have tests of their own.
 - **`Complete`:**
-  - the request body (prompt, grammar, sampling, `id_slot` default and explicit, `cache_prompt`, `stream`);
+  - the request body (prompt as token ids, grammar, the sampling chain and the neutral samplers, `id_slot` default and explicit, `cache_prompt`, `stream`);
   - pieces streamed in order;
   - telemetry from timings, including `tokensReused`;
   - `stoppedAtLimit`;
   - an HTTP 500 or a malformed stream line is an `InferenceError`.
 - **Thinking:**
-  - two calls, the second extending the first;
+  - two calls, the second extending the first's tokens (the thinking text tokenized as plain text, then the marker tokens);
   - the thinking text kept out of `text` and `onToken`;
   - the limit closing sentence;
   - thinking asked of a non-thinking template is an `InferenceError`.
