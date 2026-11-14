@@ -49,8 +49,8 @@ One open hosted run, the counterpart of `turn::Session`. Every backend call happ
 **D1's contract:**
 - One `HostedSession` per run file. Two sessions on one file are not supported.
 - It is not thread-safe: its caller serializes every call on a run, turns of different conversations included. `Maintain` runs between them and stops through its stop token when the next call is due.
-- Every model call uses the backend's default slot (`GenerationSpec::slot` is left at -1).
-- Choosing a slot per conversation and any concurrency across conversations are left to D2 (`morpheus_server`), which can add them without changing this API.
+- D1's contract: every model call uses the backend's default slot (`GenerationSpec::slot` is left at -1). `morpheus_server` (D2) gives each conversation its own slot, slot 0 for folding.
+- D1 left choosing a slot per conversation and any concurrency across conversations to D2 (`morpheus_server`), which added them (one worker thread per run, a slot per conversation) without changing this API.
 
 - `static HostedSession Open(const std::filesystem::path& file, HostData data, core::Settings settings, std::uint64_t seed, inference::LlmBackend& backend)` creates the run if the file does not exist, or reopens it:
   - the same host data (equal content hash) reopens as is;
@@ -184,7 +184,7 @@ The model writes `{"action":"attack","params":{"target":"0001A6A4"}}` (compact).
 
 ## 5. Storage
 
-`RunStore` moves to schema version 3.
+`RunStore` moves to schema version 3. (D2 later moved it to version 4: `hosted_turns.events_omitted`, section 6.)
 
 - **Meta** gains `kind`, owned or hosted.
 - A hosted run stores its host data (catalog, observation schema, lore) and its content hash. Its world id is `hosted`.
