@@ -2,6 +2,7 @@
 # adapter. It is not one of the engine libraries a vendored build exposes, so it has no Morpheus:: alias.
 add_library(morpheus_server_lib STATIC
     Api.cpp
+    HttpServer.cpp
     RunRegistry.cpp
     RunWorker.cpp
     SentenceSplitter.cpp
