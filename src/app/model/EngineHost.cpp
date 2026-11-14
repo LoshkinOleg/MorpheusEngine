@@ -15,9 +15,12 @@ EngineHost::EngineHost(BackendFactory factory)
 void EngineHost::Start(core::Settings settings)
 {
     MORPHEUS_REQUIRE(_status != Status::Loading, "EngineHost: Start while models load");
-    // Whether the loaded backend was made for the same models, prefixes and context.
-    const bool sameBackend = _pBackend && settings.chatModel == _settings.chatModel &&
+    // Whether the loaded backend was made for the same kind of backend, models or servers, prefixes and context.
+    const bool sameBackend = _pBackend && settings.backend == _settings.backend &&
+                             settings.chatModel == _settings.chatModel &&
                              settings.embeddingModel == _settings.embeddingModel &&
+                             settings.chatUrl == _settings.chatUrl && settings.embeddingUrl == _settings.embeddingUrl &&
+                             settings.serverSlot == _settings.serverSlot &&
                              settings.embeddingQueryPrefix == _settings.embeddingQueryPrefix &&
                              settings.embeddingDocumentPrefix == _settings.embeddingDocumentPrefix &&
                              settings.contextSize == _settings.contextSize && settings.gpuLayers == _settings.gpuLayers;
@@ -100,6 +103,21 @@ const core::Settings& EngineHost::CurrentSettings() const
 turn::Worker* EngineHost::ActiveWorker()
 {
     return _status == Status::Ready ? _pWorker.get() : nullptr;
+}
+
+EngineHost::BackendFactory BackendFactoryByKind(EngineHost::BackendFactory llamaCpp, EngineHost::BackendFactory llamaServer)
+{
+    MORPHEUS_REQUIRE(llamaCpp && llamaServer, "BackendFactoryByKind: both factories are needed");
+    return [llamaCpp = std::move(llamaCpp), llamaServer = std::move(llamaServer)](
+               const core::Settings& settings) -> std::unique_ptr<inference::LlmBackend> {
+        switch (settings.backend) {
+        case core::BackendKind::LlamaCpp:
+            return llamaCpp(settings);
+        case core::BackendKind::LlamaServer:
+            return llamaServer(settings);
+        }
+        throw core::ContractError("BackendFactoryByKind: unhandled BackendKind");
+    };
 }
 
 } // namespace morpheus::app

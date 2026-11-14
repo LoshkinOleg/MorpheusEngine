@@ -38,9 +38,10 @@ public:
     explicit EngineHost(BackendFactory factory);
 
     // Starts the engine with `settings`. The running worker stops first, cancelling its command and closing its
-    // run. The backend is kept when the model paths, embedding prefixes, context size and GPU layers are unchanged,
-    // and the engine is Ready at once. Otherwise the backend is released (freeing its memory) and a new one loads in
-    // the background. Throws ContractError while Loading: a load cannot be interrupted.
+    // run. The backend is kept when the backend kind, the model paths, the server URLs and slot, the embedding
+    // prefixes, the context size and the GPU layers are unchanged, and the engine is Ready at once. Otherwise the
+    // backend is released (freeing its memory) and a new one loads in the background. Throws ContractError while
+    // Loading: a load cannot be interrupted.
     void Start(core::Settings settings);
 
     // Takes a finished load: Ready with a new worker, or Failed. Call once per frame.
@@ -51,5 +52,10 @@ public:
     const core::Settings& CurrentSettings() const;  // The settings of the last Start.
     turn::Worker* ActiveWorker();                   // The worker while Ready, else nullptr.
 };
+
+// A factory that makes the backend settings.backend names: `llamaCpp` for BackendKind::LlamaCpp, `llamaServer` for
+// BackendKind::LlamaServer. The app passes the llama.cpp and llama-server factories (main.cpp); the tests pass
+// recording ones. Throws ContractError when either is empty.
+EngineHost::BackendFactory BackendFactoryByKind(EngineHost::BackendFactory llamaCpp, EngineHost::BackendFactory llamaServer);
 
 } // namespace morpheus::app

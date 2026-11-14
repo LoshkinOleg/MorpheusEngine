@@ -1,3 +1,3 @@
 add_executable(morpheus_probe main.cpp)
-target_link_libraries(morpheus_probe PRIVATE morpheus_context morpheus_turn morpheus_llama)
+target_link_libraries(morpheus_probe PRIVATE morpheus_context morpheus_turn morpheus_llama morpheus_llamaserver)
 morpheus_target_defaults(morpheus_probe)

@@ -32,9 +32,9 @@ target_link_libraries(morpheus_app_ui PUBLIC morpheus_app_model imgui_core)
 morpheus_target_defaults(morpheus_app_ui)
 
 if(MORPHEUS_BUILD_APP)
-    # The app: the SDL3 window, ImGui's SDL backends and the llama.cpp backend.
+    # The app: the SDL3 window, ImGui's SDL backends, and the llama.cpp and llama-server backends.
     add_executable(morpheus main.cpp)
-    target_link_libraries(morpheus PRIVATE morpheus_app_ui morpheus_llama imgui_sdl3)
+    target_link_libraries(morpheus PRIVATE morpheus_app_ui morpheus_llama morpheus_llamaserver imgui_sdl3)
     if(WIN32)
         # shell32 and ole32: the Windows fonts folder, for the UI font.
         target_link_libraries(morpheus PRIVATE shell32 ole32)

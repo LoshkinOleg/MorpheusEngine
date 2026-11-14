@@ -1,18 +1,21 @@
 // morpheus_probe: loads settings.json and a world, assembles a resolve-style prompt, and streams two
-// completions, printing token usage and KV-cache reuse. A manual check that the model, the Vulkan backend and
-// prefix caching work on this machine.
+// completions, printing token usage and KV-cache reuse. A manual check that the model, the GPU backend and
+// prefix caching work on this machine; with "backend": "llama-server", the reuse figures are the server's
+// (its timings), so the second run measures what a llama-server slot reuses.
 //
 // Usage: morpheus_probe <settings.json> <world folder> "<player input>"
 
 #include <exception>
 #include <format>
 #include <iostream>
+#include <memory>
 #include <string_view>
 
 #include "context/PromptBuilder.h"
 #include "core/Settings.h"
 #include "core/World.h"
 #include "llama/LlamaCppBackend.h"
+#include "llamaserver/LlamaServerBackend.h"
 #include "turn/Session.h"
 
 using namespace morpheus;
@@ -27,14 +30,29 @@ int main(int argc, char** argv)
         const core::Settings settings = core::LoadSettings(argv[1]);
         const core::World world = core::LoadWorld(argv[2]);
 
-        llama::LlamaConfig config;
-        config.chatModel = settings.chatModel;
-        config.embeddingModel = settings.embeddingModel;
-        config.embeddingQueryPrefix = settings.embeddingQueryPrefix;
-        config.embeddingDocumentPrefix = settings.embeddingDocumentPrefix;
-        config.contextSize = settings.contextSize;
-        config.gpuLayers = settings.gpuLayers;
-        llama::LlamaCppBackend backend(config);
+        // The backend settings.json names: llama.cpp in-process, or llama-server over HTTP.
+        std::unique_ptr<inference::LlmBackend> pBackend = nullptr;
+        if (settings.backend == core::BackendKind::LlamaCpp) {
+            llama::LlamaConfig config;
+            config.chatModel = settings.chatModel;
+            config.embeddingModel = settings.embeddingModel;
+            config.embeddingQueryPrefix = settings.embeddingQueryPrefix;
+            config.embeddingDocumentPrefix = settings.embeddingDocumentPrefix;
+            config.contextSize = settings.contextSize;
+            config.gpuLayers = settings.gpuLayers;
+            pBackend = std::make_unique<llama::LlamaCppBackend>(config);
+        } else {
+            llamaserver::LlamaServerConfig config;
+            config.chatUrl = settings.chatUrl;
+            config.embeddingUrl = settings.embeddingUrl;
+            config.slot = settings.serverSlot;
+            config.contextSize = settings.contextSize;
+            config.embeddingQueryPrefix = settings.embeddingQueryPrefix;
+            config.embeddingDocumentPrefix = settings.embeddingDocumentPrefix;
+            pBackend = std::make_unique<llamaserver::LlamaServerBackend>(config);
+            std::cout << std::format("backend: llama-server at {} (slot {})\n", settings.chatUrl, settings.serverSlot);
+        }
+        inference::LlmBackend& backend = *pBackend;
 
         // A plain-prose stand-in for the resolve call: the real engine rules and grammar arrive in milestone 3.
         context::ContextInputs inputs;

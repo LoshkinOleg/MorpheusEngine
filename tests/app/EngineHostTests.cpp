@@ -116,3 +116,41 @@ TEST_CASE("EngineHost refuses a restart while models load", "[engine_host]")
     PollWhileLoading(host);
     CHECK(host.CurrentStatus() == app::EngineHost::Status::Ready);
 }
+
+TEST_CASE("EngineHost rebuilds the backend when the backend kind, a server URL or the slot changes", "[engine_host]")
+{
+    std::atomic<int> made = 0;
+    app::EngineHost host(CountingFactory(made));
+    core::Settings server = test::EngineSettings();
+    server.backend = core::BackendKind::LlamaServer;
+    server.chatUrl = "http://127.0.0.1:8080";
+    server.embeddingUrl = "http://127.0.0.1:8081";
+    host.Start(server);
+    PollWhileLoading(host);
+    CHECK(made == 1);
+
+    // The same servers: the backend is kept.
+    host.Start(server);
+    CHECK(host.CurrentStatus() == app::EngineHost::Status::Ready);
+    CHECK(made == 1);
+
+    // Each change loads a new one.
+    core::Settings moved = server;
+    moved.chatUrl = "http://127.0.0.1:9090";
+    host.Start(moved);
+    PollWhileLoading(host);
+    CHECK(made == 2);
+    core::Settings otherEmbedding = moved;
+    otherEmbedding.embeddingUrl = "http://127.0.0.1:9091";
+    host.Start(otherEmbedding);
+    PollWhileLoading(host);
+    CHECK(made == 3);
+    core::Settings otherSlot = otherEmbedding;
+    otherSlot.serverSlot = 1;
+    host.Start(otherSlot);
+    PollWhileLoading(host);
+    CHECK(made == 4);
+    host.Start(test::EngineSettings()); // Back to llama-cpp.
+    PollWhileLoading(host);
+    CHECK(made == 5);
+}

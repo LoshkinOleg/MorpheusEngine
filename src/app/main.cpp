@@ -33,6 +33,7 @@
 #include "app/ui/Ui.h"
 #include "core/Text.h"
 #include "llama/LlamaCppBackend.h"
+#include "llamaserver/LlamaServerBackend.h"
 
 using namespace morpheus;
 
@@ -110,7 +111,7 @@ public:
     ImGuiBackends& operator=(const ImGuiBackends&) = delete;
 };
 
-// The llama.cpp backend for the engine's settings. Runs on EngineHost's loader thread.
+// The llama.cpp backend for the engine's settings: the models they name. Runs on EngineHost's loader thread.
 std::unique_ptr<inference::LlmBackend> MakeLlamaBackend(const core::Settings& settings)
 {
     llama::LlamaConfig config;
@@ -121,6 +122,20 @@ std::unique_ptr<inference::LlmBackend> MakeLlamaBackend(const core::Settings& se
     config.contextSize = settings.contextSize;
     config.gpuLayers = settings.gpuLayers;
     return std::make_unique<llama::LlamaCppBackend>(config);
+}
+
+// The llama-server backend for the engine's settings: the chat and embedding servers they name. Runs on EngineHost's
+// loader thread.
+std::unique_ptr<inference::LlmBackend> MakeServerBackend(const core::Settings& settings)
+{
+    llamaserver::LlamaServerConfig config;
+    config.chatUrl = settings.chatUrl;
+    config.embeddingUrl = settings.embeddingUrl;
+    config.slot = settings.serverSlot;
+    config.contextSize = settings.contextSize;
+    config.embeddingQueryPrefix = settings.embeddingQueryPrefix;
+    config.embeddingDocumentPrefix = settings.embeddingDocumentPrefix;
+    return std::make_unique<llamaserver::LlamaServerBackend>(config);
 }
 
 } // namespace
@@ -209,7 +224,8 @@ int main(int argc, char** argv)
         const ImGuiBackends backends(pWindow.get(), pRenderer.get());
 
         // The app: settings, worlds and the engine (its models load in the background while the UI draws).
-        app::AppController controller(app::AppController::PathsUnder(root), MakeLlamaBackend);
+        app::AppController controller(app::AppController::PathsUnder(root),
+                                      app::BackendFactoryByKind(MakeLlamaBackend, MakeServerBackend));
         app::Ui ui;
 
         bool running = true;

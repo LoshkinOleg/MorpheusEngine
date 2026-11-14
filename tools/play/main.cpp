@@ -21,6 +21,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <optional>
 #include <random>
 #include <stdexcept>
@@ -39,6 +40,7 @@
 #include "core/Text.h"
 #include "core/World.h"
 #include "llama/LlamaCppBackend.h"
+#include "llamaserver/LlamaServerBackend.h"
 #include "turn/Replay.h"
 #include "turn/Worker.h"
 
@@ -199,20 +201,32 @@ int main(int argc, char** argv)
             return 2;
         }
 
-        llama::LlamaConfig config;
-        config.chatModel = settings.chatModel;
-        config.embeddingModel = settings.embeddingModel;
-        config.embeddingQueryPrefix = settings.embeddingQueryPrefix;
-        config.embeddingDocumentPrefix = settings.embeddingDocumentPrefix;
-        config.contextSize = settings.contextSize;
-        config.gpuLayers = settings.gpuLayers;
-        llama::LlamaCppBackend llamaBackend(config);
+        // The backend settings.json names: llama.cpp in-process, or llama-server over HTTP.
+        std::unique_ptr<inference::LlmBackend> pModels = nullptr;
+        if (settings.backend == core::BackendKind::LlamaCpp) {
+            llama::LlamaConfig config;
+            config.chatModel = settings.chatModel;
+            config.embeddingModel = settings.embeddingModel;
+            config.embeddingQueryPrefix = settings.embeddingQueryPrefix;
+            config.embeddingDocumentPrefix = settings.embeddingDocumentPrefix;
+            config.contextSize = settings.contextSize;
+            config.gpuLayers = settings.gpuLayers;
+            pModels = std::make_unique<llama::LlamaCppBackend>(config);
+        } else {
+            llamaserver::LlamaServerConfig config;
+            config.chatUrl = settings.chatUrl;
+            config.embeddingUrl = settings.embeddingUrl;
+            config.slot = settings.serverSlot;
+            config.contextSize = settings.contextSize;
+            config.embeddingQueryPrefix = settings.embeddingQueryPrefix;
+            config.embeddingDocumentPrefix = settings.embeddingDocumentPrefix;
+            pModels = std::make_unique<llamaserver::LlamaServerBackend>(config);
+        }
         std::optional<turn::RecordingBackend> recording;
         if (recordFile) {
-            recording.emplace(llamaBackend);
+            recording.emplace(*pModels);
         }
-        inference::LlmBackend& backend =
-            recording ? static_cast<inference::LlmBackend&>(*recording) : static_cast<inference::LlmBackend&>(llamaBackend);
+        inference::LlmBackend& backend = recording ? static_cast<inference::LlmBackend&>(*recording) : *pModels;
 
         std::random_device entropy;
         const std::uint64_t runSeed =

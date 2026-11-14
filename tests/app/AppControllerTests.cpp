@@ -284,3 +284,34 @@ TEST_CASE("The model seat keeps its switch and modes across a restart that reloa
     controller.Cancel();
     test::PumpUntil(controller, [&] { return controller.CanPost(); });
 }
+
+TEST_CASE("The app's backend factory builds the backend settings.json names", "[app_controller]")
+{
+    const std::filesystem::path dir = test::SettingsFolder("app_backend_kind");
+    // Recording factories in place of llama.cpp and llama-server: both make a ScriptedBackend and count their calls.
+    std::atomic<int> llamaCpp = 0;
+    std::atomic<int> llamaServer = 0;
+    const app::EngineHost::BackendFactory scripted = test::ScriptedFactory(Responder("You walk."));
+    app::AppController controller(test::PathsIn(dir), app::BackendFactoryByKind(
+                                                          [&](const core::Settings& settings) {
+                                                              ++llamaCpp;
+                                                              return scripted(settings);
+                                                          },
+                                                          [&](const core::Settings& settings) {
+                                                              ++llamaServer;
+                                                              return scripted(settings);
+                                                          }));
+    test::PumpUntil(controller, [&] { return controller.CanPost(); });
+    CHECK(llamaCpp == 1); // settings.example.json names llama-cpp.
+    CHECK(llamaServer == 0);
+
+    app::SettingsEdit edit = app::ReadSettingsEdit(dir / "settings.json");
+    edit.backend = core::BackendKind::LlamaServer;
+    edit.chatUrl = "http://127.0.0.1:8080";
+    edit.embeddingUrl = "http://127.0.0.1:8081";
+    REQUIRE(controller.CanApplySettings());
+    CHECK(controller.ApplySettings(edit).empty());
+    test::PumpUntil(controller, [&] { return controller.CanPost(); });
+    CHECK(llamaCpp == 1);
+    CHECK(llamaServer == 1);
+}
