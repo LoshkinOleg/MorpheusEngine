@@ -29,20 +29,35 @@ constexpr std::array<std::string_view, 14> SUBSET_KEYWORDS = {
     "minimum", "maximum", "minLength", "maxLength", "items",      "minItems", "maxItems"};
 // The keywords that say what a value is; a schema has exactly one of them.
 constexpr std::array<std::string_view, 4> KIND_KEYWORDS = {"type", "enum", "const", "oneOf"};
+// A string's or an array's count with no upper limit: only a schema that is validated, never written as a grammar,
+// has one.
+constexpr int UNBOUNDED = -1;
+// A number's absent bounds.
+constexpr double NO_MINIMUM = -std::numeric_limits<double>::infinity();
+constexpr double NO_MAXIMUM = std::numeric_limits<double>::infinity();
+
+// What a schema is read for. A grammar must be bounded, so FromSchema reads the subset; Validate and
+// CheckValidationSchema read the extended subset of schemas that are only validated.
+enum class Use { Grammar, Validation };
 
 // A schema checked against the subset, as FromSchema and Validate read it.
 struct Node {
-    enum class Kind { Object, Enum, Const, Integer, String, Array, OneOf };
+    enum class Kind { Object, Enum, Const, Integer, Number, Boolean, String, Array, OneOf };
 
     Kind kind = Kind::Object;
-    std::vector<std::string> keys = {};      // Object: its keys, in `required` order.
+    // Object: its keys, the required ones in `required` order, then the optional ones (Validation only) by name.
+    std::vector<std::string> keys = {};
+    std::size_t requiredKeys = 0;            // Object: how many of `keys`, from the first, are required.
+    bool open = false;                       // Object: "additionalProperties": true (Validation only).
     std::vector<Node> children = {};         // Object: one value schema per key; Array: the item schema;
                                              // OneOf: the branches, each an Object whose first key is the discriminator.
     std::vector<nlohmann::json> values = {}; // Enum: the allowed values (all strings or all integers); Const: the one.
     long long minimum = 0;                   // Integer: the bounds, both included.
     long long maximum = 0;
+    double lowest = NO_MINIMUM;              // Number (Validation only): the bounds, both included.
+    double highest = NO_MAXIMUM;
     int minCount = 0;                        // String: characters; Array: items.
-    int maxCount = 0;
+    int maxCount = 0;                        // UNBOUNDED when there is no upper limit (Validation only).
 };
 
 // `key` as one reference token of a JSON pointer (RFC 6901): "~" is written "~0" and "/" is written "~1".
@@ -71,10 +86,10 @@ bool SameValue(const nlohmann::json& a, const nlohmann::json& b)
     return a.is_number_integer() && b.is_number_integer() && a.dump() == b.dump();
 }
 
-// Reads `schema`, found at `pointer` inside the whole schema, into a Node, checking it against the subset. Throws
-// DataError naming the pointer of the mistake. Recursive: the schemas of an object's properties, an array's items and
-// a oneOf's branches follow the same rules.
-Node Compile(const nlohmann::json& schema, const std::string& pointer)
+// Reads `schema`, found at `pointer` inside the whole schema, into a Node, checking it against the subset `use` reads.
+// Throws DataError naming the pointer of the mistake. Recursive: the schemas of an object's properties, an array's
+// items and a oneOf's branches follow the same rules.
+Node Compile(const nlohmann::json& schema, const std::string& pointer, Use use)
 {
     auto error = [](const std::string& at, const std::string& problem) {
         return core::DataError(std::format("schema at {}: {}", at.empty() ? "the root" : at, problem));
@@ -134,6 +149,7 @@ Node Compile(const nlohmann::json& schema, const std::string& pointer)
     constexpr long long LOWEST = std::numeric_limits<long long>::min();
     constexpr long long HIGHEST = std::numeric_limits<long long>::max();
     constexpr long long MOST_COUNT = std::numeric_limits<int>::max();
+    const bool grammarUse = use == Use::Grammar;
 
     Node node;
     if (kind == "oneOf") {
@@ -151,10 +167,10 @@ Node Compile(const nlohmann::json& schema, const std::string& pointer)
             if (!branch.is_object() || !branch.contains("type") || branch.at("type") != "object") {
                 throw error(branchAt, "a 'oneOf' branch must be an object schema");
             }
-            Node compiled = Compile(branch, branchAt);
+            Node compiled = Compile(branch, branchAt, use);
             // The discriminator: the first key of the branch's `required`, the same key in every branch, and a const
             // string in each that no other branch has.
-            if (compiled.keys.empty()) {
+            if (compiled.requiredKeys == 0) {
                 throw error(branchAt + "/required", "a 'oneOf' branch needs a discriminator, the first key of 'required'");
             }
             const std::string& key = compiled.keys[0];
@@ -238,22 +254,51 @@ Node Compile(const nlohmann::json& schema, const std::string& pointer)
         return node;
     }
 
+    // A number and a boolean are only validated: a grammar of them is not part of the subset.
+    if (typeName == "number" && !grammarUse) {
+        allowOnly("a number", {"type", "minimum", "maximum"});
+        // A bound: absent, or any JSON number (a bool is not one).
+        auto bound = [&](const char* keyword, double absent) {
+            if (!schema.contains(keyword)) {
+                return absent;
+            }
+            const nlohmann::json& value = schema.at(keyword);
+            if (!value.is_number()) {
+                throw error(pointer + "/" + keyword, std::format("'{}' must be a number", keyword));
+            }
+            return value.get<double>();
+        };
+        node.kind = Node::Kind::Number;
+        node.lowest = bound("minimum", NO_MINIMUM);
+        node.highest = bound("maximum", NO_MAXIMUM);
+        if (node.lowest > node.highest) {
+            throw error(pointer, std::format("'minimum' {} is above 'maximum' {}", node.lowest, node.highest));
+        }
+        return node;
+    }
+    if (typeName == "boolean" && !grammarUse) {
+        allowOnly("a boolean", {"type"});
+        node.kind = Node::Kind::Boolean;
+        return node;
+    }
+
     if (typeName == "string") {
         allowOnly("a string", {"type", "minLength", "maxLength"});
         const std::optional<long long> minLength = integer("minLength", 0, MOST_COUNT);
         const std::optional<long long> maxLength = integer("maxLength", 0, MOST_COUNT);
-        if (!maxLength) {
+        // A grammar needs the upper limit, within llama.cpp's; a validated string may have none, or a larger one.
+        if (!maxLength && grammarUse) {
             throw error(pointer, "a string needs 'maxLength'");
         }
-        if (*maxLength > GBNF_MAX_STRING_CHARS) {
+        if (maxLength && grammarUse && *maxLength > GBNF_MAX_STRING_CHARS) {
             throw beyondLlamaLimit("maxLength", *maxLength, GBNF_MAX_STRING_CHARS);
         }
-        if (minLength.value_or(0) > *maxLength) {
+        if (maxLength && minLength.value_or(0) > *maxLength) {
             throw error(pointer, std::format("'minLength' {} is above 'maxLength' {}", *minLength, *maxLength));
         }
         node.kind = Node::Kind::String;
         node.minCount = static_cast<int>(minLength.value_or(0));
-        node.maxCount = static_cast<int>(*maxLength);
+        node.maxCount = maxLength ? static_cast<int>(*maxLength) : UNBOUNDED;
         return node;
     }
 
@@ -264,30 +309,39 @@ Node Compile(const nlohmann::json& schema, const std::string& pointer)
         }
         const std::optional<long long> minItems = integer("minItems", 0, MOST_COUNT);
         const std::optional<long long> maxItems = integer("maxItems", 0, MOST_COUNT);
-        if (!maxItems) {
+        // As for a string: a grammar needs the upper limit within llama.cpp's; a validated array may have none.
+        if (!maxItems && grammarUse) {
             throw error(pointer, "an array needs 'maxItems'");
         }
-        if (*maxItems < 1) {
+        if (maxItems && *maxItems < 1) {
             throw error(pointer + "/maxItems", "'maxItems' must be at least 1");
         }
-        if (*maxItems > GBNF_MAX_LIST_ITEMS) {
+        if (maxItems && grammarUse && *maxItems > GBNF_MAX_LIST_ITEMS) {
             throw beyondLlamaLimit("maxItems", *maxItems, GBNF_MAX_LIST_ITEMS);
         }
-        if (minItems.value_or(0) > *maxItems) {
+        if (maxItems && minItems.value_or(0) > *maxItems) {
             throw error(pointer, std::format("'minItems' {} is above 'maxItems' {}", *minItems, *maxItems));
         }
         node.kind = Node::Kind::Array;
         node.minCount = static_cast<int>(minItems.value_or(0));
-        node.maxCount = static_cast<int>(*maxItems);
-        node.children.push_back(Compile(schema.at("items"), pointer + "/items"));
+        node.maxCount = maxItems ? static_cast<int>(*maxItems) : UNBOUNDED;
+        node.children.push_back(Compile(schema.at("items"), pointer + "/items", use));
         return node;
     }
 
     if (typeName == "object") {
         allowOnly("an object", {"type", "properties", "required", "additionalProperties"});
-        if (schema.contains("additionalProperties") && schema.at("additionalProperties") != false) {
-            throw error(pointer + "/additionalProperties",
-                        "'additionalProperties' may only be false: extra keys are never allowed");
+        if (schema.contains("additionalProperties")) {
+            const nlohmann::json& additional = schema.at("additionalProperties");
+            // A grammar never allows extra keys; a validated object may be open.
+            if (grammarUse && additional != false) {
+                throw error(pointer + "/additionalProperties",
+                            "'additionalProperties' may only be false: extra keys are never allowed");
+            }
+            if (!additional.is_boolean()) {
+                throw error(pointer + "/additionalProperties", "'additionalProperties' must be true or false");
+            }
+            node.open = additional.get<bool>();
         }
         if (!schema.contains("properties") || !schema.at("properties").is_object()) {
             throw error(pointer, "an object needs 'properties', an object");
@@ -298,7 +352,7 @@ Node Compile(const nlohmann::json& schema, const std::string& pointer)
         const nlohmann::json& properties = schema.at("properties");
         const nlohmann::json& required = schema.at("required");
         node.kind = Node::Kind::Object;
-        // The keys in `required` order, which the grammar writes them in (JSON objects carry no order).
+        // The required keys in `required` order, which the grammar writes them in (JSON objects carry no order).
         for (std::size_t i = 0; i < required.size(); ++i) {
             const std::string at = std::format("{}/required/{}", pointer, i);
             if (!required[i].is_string()) {
@@ -312,14 +366,21 @@ Node Compile(const nlohmann::json& schema, const std::string& pointer)
                 throw error(at, std::format("'{}' is listed twice", key));
             }
             node.keys.push_back(key);
-            node.children.push_back(Compile(properties.at(key), pointer + "/properties/" + PointerToken(key)));
+            node.children.push_back(Compile(properties.at(key), pointer + "/properties/" + PointerToken(key), use));
         }
-        // Every property is required: optional keys are outside the subset.
+        node.requiredKeys = node.keys.size();
+        // Then every other property: optional, which only a validated object may have. nlohmann keeps an object's
+        // keys sorted, so they follow by name.
         for (auto it = properties.begin(); it != properties.end(); ++it) {
-            if (std::find(node.keys.begin(), node.keys.end(), it.key()) == node.keys.end()) {
-                throw error(pointer + "/properties/" + PointerToken(it.key()),
-                            std::format("'{}' must be in 'required': optional keys are not supported", it.key()));
+            if (std::find(node.keys.begin(), node.keys.end(), it.key()) != node.keys.end()) {
+                continue;
             }
+            const std::string at = pointer + "/properties/" + PointerToken(it.key());
+            if (grammarUse) {
+                throw error(at, std::format("'{}' must be in 'required': optional keys are not supported", it.key()));
+            }
+            node.keys.push_back(it.key());
+            node.children.push_back(Compile(it.value(), at, use));
         }
         return node;
     }
@@ -329,11 +390,14 @@ Node Compile(const nlohmann::json& schema, const std::string& pointer)
 
 // The grammar expression for the values `node` allows. Recursive, like Compile. Each array's item expression becomes a
 // rule of `builder`, items-0, items-1 and so on in the order they are added (inner arrays first), so that ListOf repeats
-// a single reference: llama.cpp limits a repetition by the symbols its repeated group creates.
+// a single reference: llama.cpp limits a repetition by the symbols its repeated group creates. Only a node compiled for
+// Use::Grammar comes here, so every count is bounded and every key required.
 std::string Expression(const Node& node, GrammarBuilder& builder, int& itemRules)
 {
     switch (node.kind) {
     case Node::Kind::Object: {
+        MORPHEUS_REQUIRE(node.requiredKeys == node.keys.size() && !node.open,
+                         "FromSchema: an object with optional keys or extra keys reached the grammar writer");
         // An object without keys is the empty object (Object needs at least one field).
         if (node.keys.empty()) {
             return Literal("{}");
@@ -363,9 +427,14 @@ std::string Expression(const Node& node, GrammarBuilder& builder, int& itemRules
         return Literal(node.values[0].dump());
     case Node::Kind::Integer:
         return IntRange(node.minimum, node.maximum);
+    case Node::Kind::Number:
+    case Node::Kind::Boolean:
+        throw core::ContractError("FromSchema: a number or boolean schema reached the grammar writer");
     case Node::Kind::String:
+        MORPHEUS_REQUIRE(node.maxCount != UNBOUNDED, "FromSchema: an unbounded string reached the grammar writer");
         return JsonString(node.minCount, node.maxCount);
     case Node::Kind::Array: {
+        MORPHEUS_REQUIRE(node.maxCount != UNBOUNDED, "FromSchema: an unbounded array reached the grammar writer");
         std::string item = Expression(node.children[0], builder, itemRules);
         const std::string name = builder.Rule(std::format("items-{}", itemRules++), std::move(item));
         return ListOf(name, node.minCount, node.maxCount);
@@ -410,33 +479,50 @@ void CheckValue(const Node& node, const nlohmann::json& value, const std::string
         }
         return text;
     };
+    // Keys as messages list them: 'a', 'b'.
+    auto keyList = [](const std::vector<std::string>& keys, std::size_t count) {
+        std::string text;
+        for (std::size_t i = 0; i < count; ++i) {
+            text += (text.empty() ? "'" : ", '") + keys[i] + "'";
+        }
+        return text;
+    };
     auto same = [](const nlohmann::json& a, const nlohmann::json& b) { return SameValue(a, b); };
 
     switch (node.kind) {
     case Node::Kind::Object: {
-        std::string keyList;
-        for (const std::string& key : node.keys) {
-            keyList += (keyList.empty() ? "'" : ", '") + key + "'";
-        }
         if (!value.is_object()) {
-            add(path, node.keys.empty() ? "expected an empty object" : "expected an object with the keys " + keyList);
+            // The shape expected: empty, the required keys, or any object when none is required.
+            if (node.keys.empty() && !node.open) {
+                add(path, "expected an empty object");
+            } else if (node.requiredKeys == 0) {
+                add(path, "expected an object");
+            } else {
+                add(path, "expected an object with the keys " + keyList(node.keys, node.requiredKeys));
+            }
             break;
         }
-        // The schema's keys first, in its order; each present one is checked against its schema.
+        // The schema's keys first, in its order: a required key must be present; every present key is checked.
         for (std::size_t i = 0; i < node.keys.size(); ++i) {
             const std::string at = path + "/" + PointerToken(node.keys[i]);
             if (!value.contains(node.keys[i])) {
-                add(at, std::format("missing key '{}'", node.keys[i]));
+                if (i < node.requiredKeys) {
+                    add(at, std::format("missing key '{}'", node.keys[i]));
+                }
             } else {
                 CheckValue(node.children[i], value.at(node.keys[i]), at, errors);
             }
         }
-        // Then every key the schema does not allow.
+        // Then every key the schema does not allow, unless the object is open.
+        if (node.open) {
+            break;
+        }
         for (auto it = value.begin(); it != value.end(); ++it) {
             if (std::find(node.keys.begin(), node.keys.end(), it.key()) == node.keys.end()) {
                 add(path + "/" + PointerToken(it.key()),
                     std::format("unexpected key '{}'; {}", it.key(),
-                                node.keys.empty() ? "the object must be empty" : "the keys are " + keyList));
+                                node.keys.empty() ? "the object must be empty"
+                                                  : "the keys are " + keyList(node.keys, node.keys.size())));
             }
         }
         break;
@@ -460,16 +546,46 @@ void CheckValue(const Node& node, const nlohmann::json& value, const std::string
             add(path, std::format("expected an integer from {} to {}, got {}", node.minimum, node.maximum, shown(value)));
         }
         break;
+    case Node::Kind::Number: {
+        // The bounds the message names: both, one, or none.
+        const bool hasMinimum = node.lowest != NO_MINIMUM;
+        const bool hasMaximum = node.highest != NO_MAXIMUM;
+        std::string range;
+        if (hasMinimum && hasMaximum) {
+            range = std::format(" from {} to {}", node.lowest, node.highest);
+        } else if (hasMinimum) {
+            range = std::format(" of at least {}", node.lowest);
+        } else if (hasMaximum) {
+            range = std::format(" of at most {}", node.highest);
+        }
+        // is_number is false for a bool. Every JSON number compares as a double.
+        if (!value.is_number() || value.get<double>() < node.lowest || value.get<double>() > node.highest) {
+            add(path, std::format("expected a number{}, got {}", range, shown(value)));
+        }
+        break;
+    }
+    case Node::Kind::Boolean:
+        if (!value.is_boolean()) {
+            add(path, std::format("expected a boolean, got {}", shown(value)));
+        }
+        break;
     case Node::Kind::String: {
+        const bool bounded = node.maxCount != UNBOUNDED;
         if (!value.is_string()) {
-            const std::string lengths = node.minCount == 0 ? std::format("at most {}", node.maxCount)
-                                                           : std::format("{} to {}", node.minCount, node.maxCount);
-            add(path, std::format("expected a string of {} characters, got {}", lengths, shown(value)));
+            // The lengths the message names, as the schema gives them.
+            std::string lengths;
+            if (bounded) {
+                lengths = node.minCount == 0 ? std::format(" of at most {} characters", node.maxCount)
+                                             : std::format(" of {} to {} characters", node.minCount, node.maxCount);
+            } else if (node.minCount > 0) {
+                lengths = std::format(" of at least {} characters", node.minCount);
+            }
+            add(path, std::format("expected a string{}, got {}", lengths, shown(value)));
             break;
         }
         // Lengths count characters (code points), as the grammar's `char` does for compact JSON text.
         const std::size_t length = core::Utf8Length(value.get_ref<const std::string&>());
-        if (length > static_cast<std::size_t>(node.maxCount)) {
+        if (bounded && length > static_cast<std::size_t>(node.maxCount)) {
             add(path, std::format("longer than {} characters", node.maxCount));
         } else if (length < static_cast<std::size_t>(node.minCount)) {
             add(path, std::format("shorter than {} characters", node.minCount));
@@ -477,12 +593,22 @@ void CheckValue(const Node& node, const nlohmann::json& value, const std::string
         break;
     }
     case Node::Kind::Array: {
+        const bool bounded = node.maxCount != UNBOUNDED;
         if (!value.is_array()) {
-            add(path, std::format("expected an array of {} to {} items, got {}", node.minCount, node.maxCount, shown(value)));
+            if (bounded) {
+                add(path, std::format("expected an array of {} to {} items, got {}", node.minCount, node.maxCount, shown(value)));
+            } else if (node.minCount > 0) {
+                add(path, std::format("expected an array of at least {} items, got {}", node.minCount, shown(value)));
+            } else {
+                add(path, std::format("expected an array, got {}", shown(value)));
+            }
             break;
         }
-        if (value.size() < static_cast<std::size_t>(node.minCount) || value.size() > static_cast<std::size_t>(node.maxCount)) {
+        if (bounded && (value.size() < static_cast<std::size_t>(node.minCount) ||
+                        value.size() > static_cast<std::size_t>(node.maxCount))) {
             add(path, std::format("has {} items; expected {} to {}", value.size(), node.minCount, node.maxCount));
+        } else if (!bounded && value.size() < static_cast<std::size_t>(node.minCount)) {
+            add(path, std::format("has {} items; expected at least {}", value.size(), node.minCount));
         }
         // Every item is checked, even past the limit.
         for (std::size_t i = 0; i < value.size(); ++i) {
@@ -525,7 +651,7 @@ void CheckValue(const Node& node, const nlohmann::json& value, const std::string
 std::string FromSchema(const nlohmann::json& schema)
 {
     // Check the whole schema first, then write it: a bad schema never yields part of a grammar.
-    const Node root = Compile(schema, "");
+    const Node root = Compile(schema, "", Use::Grammar);
     GrammarBuilder builder;
     int itemRules = 0; // The item rules named so far.
     const std::string rootBody = Expression(root, builder, itemRules);
@@ -534,11 +660,17 @@ std::string FromSchema(const nlohmann::json& schema)
 
 std::vector<ValidationError> Validate(const nlohmann::json& value, const nlohmann::json& schema)
 {
-    // A schema outside the subset is the host's data error, the same one FromSchema throws.
-    const Node root = Compile(schema, "");
+    // A schema outside the extended subset is the host's data error.
+    const Node root = Compile(schema, "", Use::Validation);
     std::vector<ValidationError> errors;
     CheckValue(root, value, "", errors);
     return errors;
+}
+
+void CheckValidationSchema(const nlohmann::json& schema)
+{
+    // Compiling is the whole check: it throws for anything outside the extended subset.
+    Compile(schema, "", Use::Validation);
 }
 
 } // namespace morpheus::grammar

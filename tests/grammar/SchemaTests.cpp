@@ -54,6 +54,23 @@ std::string SchemaError(const std::string& text)
     return fromSchema;
 }
 
+// The message of the DataError FromSchema throws for the schema `text`, after checking that Validate accepts it: the
+// schema is in the extended subset of schemas that are only validated.
+std::string GrammarOnlyError(const std::string& text)
+{
+    const nlohmann::json schema = nlohmann::json::parse(text);
+    std::string fromSchema;
+    try {
+        grammar::FromSchema(schema);
+    } catch (const core::DataError& error) {
+        fromSchema = error.what();
+    }
+    INFO("schema: " << text);
+    REQUIRE_FALSE(fromSchema.empty());
+    CHECK_NOTHROW(grammar::Validate(nlohmann::json::object(), schema));
+    return fromSchema;
+}
+
 // The one error Validate finds in `value` against `schema`.
 grammar::ValidationError OnlyError(const nlohmann::json& value, const nlohmann::json& schema)
 {
@@ -241,8 +258,8 @@ TEST_CASE("FromSchema refuses what is not a schema of the subset, naming the poi
           "schema at /properties/a/$ref: the keyword '$ref' is not supported");
     CHECK(SchemaError(R"({"const": "a", "description": "fine", "default": "a"})") ==
           "schema at /default: the keyword 'default' is not supported");
-    CHECK(SchemaError(R"({"type": "boolean"})") == "schema at /type: the type 'boolean' is not supported");
-    CHECK(SchemaError(R"({"type": "number"})") == "schema at /type: the type 'number' is not supported");
+    CHECK(GrammarOnlyError(R"({"type": "boolean"})") == "schema at /type: the type 'boolean' is not supported");
+    CHECK(GrammarOnlyError(R"({"type": "number"})") == "schema at /type: the type 'number' is not supported");
     CHECK(SchemaError(R"({"type": ["string", "null"], "maxLength": 3})") == "schema at /type: 'type' must be a string");
     CHECK(SchemaError(R"({"type": "integer", "minimum": 0, "maximum": 3, "maxLength": 2})") ==
           "schema at /maxLength: 'maxLength' does not apply to an integer");
@@ -254,7 +271,7 @@ TEST_CASE("FromSchema refuses objects outside the subset", "[schema]")
           "schema at the root: an object needs 'properties', an object");
     CHECK(SchemaError(R"({"type": "object", "properties": {}})") ==
           "schema at the root: an object needs 'required', an array");
-    CHECK(SchemaError(R"({"type": "object", "properties": {"a": {"const": 1}}, "required": []})") ==
+    CHECK(GrammarOnlyError(R"({"type": "object", "properties": {"a": {"const": 1}}, "required": []})") ==
           "schema at /properties/a: 'a' must be in 'required': optional keys are not supported");
     CHECK(SchemaError(R"({"type": "object", "properties": {}, "required": ["a"]})") ==
           "schema at /required/0: 'a' is required but not in 'properties'");
@@ -262,12 +279,12 @@ TEST_CASE("FromSchema refuses objects outside the subset", "[schema]")
           "schema at /required/1: 'a' is listed twice");
     CHECK(SchemaError(R"({"type": "object", "properties": {"a": {"const": 1}}, "required": [1]})") ==
           "schema at /required/0: 'required' entries must be strings");
-    CHECK(SchemaError(R"({"type": "object", "properties": {}, "required": [], "additionalProperties": true})") ==
+    CHECK(GrammarOnlyError(R"({"type": "object", "properties": {}, "required": [], "additionalProperties": true})") ==
           "schema at /additionalProperties: 'additionalProperties' may only be false: extra keys are never allowed");
     CHECK(SchemaError(R"({"type": "object", "properties": {}, "required": [], "minItems": 1})") ==
           "schema at /minItems: 'minItems' does not apply to an object");
     // A key with "/" and "~" is escaped in the pointer as RFC 6901 says.
-    CHECK(SchemaError(R"({"type": "object", "properties": {"a/b~c": {"type": "string"}}, "required": ["a/b~c"]})") ==
+    CHECK(GrammarOnlyError(R"({"type": "object", "properties": {"a/b~c": {"type": "string"}}, "required": ["a/b~c"]})") ==
           "schema at /properties/a~1b~0c: a string needs 'maxLength'");
 }
 
@@ -308,7 +325,7 @@ TEST_CASE("FromSchema refuses integers outside the subset", "[schema]")
 
 TEST_CASE("FromSchema refuses strings outside the subset", "[schema]")
 {
-    CHECK(SchemaError(R"({"type": "string"})") == "schema at the root: a string needs 'maxLength'");
+    CHECK(GrammarOnlyError(R"({"type": "string"})") == "schema at the root: a string needs 'maxLength'");
     CHECK(SchemaError(R"({"type": "string", "minLength": 4, "maxLength": 3})") ==
           "schema at the root: 'minLength' 4 is above 'maxLength' 3");
     CHECK(SchemaError(R"({"type": "string", "maxLength": -1})") ==
@@ -319,25 +336,25 @@ TEST_CASE("FromSchema refuses strings outside the subset", "[schema]")
           "schema at /items: 'items' does not apply to a string");
     // A string repeats `char` up to maxLength times, which llama.cpp allows up to 1999.
     CHECK_NOTHROW(grammar::FromSchema(R"({"type": "string", "maxLength": 1999})"_json));
-    CHECK(SchemaError(R"({"type": "string", "maxLength": 2000})") ==
+    CHECK(GrammarOnlyError(R"({"type": "string", "maxLength": 2000})") ==
           "schema at /maxLength: 'maxLength' 2000 is above 1999, the most a grammar llama.cpp loads can hold");
 }
 
 TEST_CASE("FromSchema refuses arrays outside the subset", "[schema]")
 {
     CHECK(SchemaError(R"({"type": "array", "maxItems": 3})") == "schema at the root: an array needs 'items'");
-    CHECK(SchemaError(R"({"type": "array", "items": {"const": 1}})") == "schema at the root: an array needs 'maxItems'");
+    CHECK(GrammarOnlyError(R"({"type": "array", "items": {"const": 1}})") == "schema at the root: an array needs 'maxItems'");
     CHECK(SchemaError(R"({"type": "array", "items": {"const": 1}, "maxItems": 0})") ==
           "schema at /maxItems: 'maxItems' must be at least 1");
     CHECK(SchemaError(R"({"type": "array", "items": {"const": 1}, "minItems": 4, "maxItems": 3})") ==
           "schema at the root: 'minItems' 4 is above 'maxItems' 3");
-    CHECK(SchemaError(R"({"type": "array", "items": {"type": "string"}, "maxItems": 3})") ==
+    CHECK(GrammarOnlyError(R"({"type": "array", "items": {"type": "string"}, "maxItems": 3})") ==
           "schema at /items: a string needs 'maxLength'");
     CHECK(SchemaError(R"({"type": "array", "items": {"const": 1}, "maxItems": 3, "maxLength": 3})") ==
           "schema at /maxLength: 'maxLength' does not apply to an array");
     // An array repeats the items after its first up to maxItems - 1 times, which llama.cpp allows up to 1000 items.
     CHECK_NOTHROW(grammar::FromSchema(R"({"type": "array", "items": {"const": 1}, "maxItems": 1000})"_json));
-    CHECK(SchemaError(R"({"type": "array", "items": {"const": 1}, "maxItems": 1001})") ==
+    CHECK(GrammarOnlyError(R"({"type": "array", "items": {"const": 1}, "maxItems": 1001})") ==
           "schema at /maxItems: 'maxItems' 1001 is above 1000, the most a grammar llama.cpp loads can hold");
 }
 
@@ -369,7 +386,7 @@ TEST_CASE("FromSchema names the pointer of a mistake deep inside the schema", "[
     // The catalog's attack target with no maxLength: the spec's example pointer.
     nlohmann::json schema = test::CatalogSchema();
     schema["oneOf"][3]["properties"]["params"]["properties"]["target"] = nlohmann::json::parse(R"({"type": "string"})");
-    CHECK(SchemaError(schema.dump()) ==
+    CHECK(GrammarOnlyError(schema.dump()) ==
           "schema at /oneOf/3/properties/params/properties/target: a string needs 'maxLength'");
 }
 
@@ -524,7 +541,7 @@ TEST_CASE("Validate checks every keyword of the subset", "[schema]")
 
 TEST_CASE("Validate throws the schema's DataError and never one for the value", "[schema]")
 {
-    CHECK_THROWS_AS(grammar::Validate(nlohmann::json::object(), R"({"type": "boolean"})"_json), core::DataError);
+    CHECK_THROWS_AS(grammar::Validate(nlohmann::json::object(), R"({"type": "null"})"_json), core::DataError);
     // A value of any shape is data: errors, not exceptions.
     const nlohmann::json schema = test::CatalogSchema();
     const std::vector<nlohmann::json> values = {nlohmann::json(), nlohmann::json(1.5), nlohmann::json::array({1, 2}),
