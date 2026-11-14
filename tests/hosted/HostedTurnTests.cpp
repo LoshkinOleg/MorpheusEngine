@@ -3,6 +3,7 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <cstddef>
+#include <filesystem>
 #include <optional>
 #include <stop_token>
 #include <string>
@@ -17,6 +18,7 @@
 #include "fakes/ScriptedBackend.h"
 #include "grammar/Check.h"
 #include "hosted/HostedTestSupport.h"
+#include "store/Sqlite.h"
 #include "turn/HostedSession.h"
 #include "turn/HostedWorld.h"
 #include "turn/Session.h"
@@ -402,10 +404,11 @@ TEST_CASE("Events over the tail allowance: the oldest leave the prompt, the newe
     // The oldest left the prompt; the newest and the player's line stayed, and the tail fits.
     const context::Assembly& assembly = session.LastAssembly();
     const std::string& tail = assembly.prompt.messages.back().content;
-    CHECK(record->eventsOmitted >= 1);
-    CHECK(record->eventsOmitted < 4);
+    CHECK(record->eventsOmitted == 2);
     CHECK(assembly.tokens.tail <= test::HostedSettings().budget.tailAllowance);
     CHECK_THAT(tail, !ContainsSubstring(a));
+    CHECK_THAT(tail, !ContainsSubstring(b));
+    CHECK_THAT(tail, ContainsSubstring(c));
     CHECK_THAT(tail, ContainsSubstring("(" + d + ")"));
     CHECK_THAT(tail, ContainsSubstring("Still there?"));
     // The store keeps every event, and the turn keeps its count.
@@ -424,6 +427,33 @@ TEST_CASE("Events over the tail allowance: the oldest leave the prompt, the newe
     }
     CHECK_FALSE(showsOldest);
     CHECK(showsNewest);
+}
+
+TEST_CASE("A stored events_omitted larger than the events before its turn is a StoreError naming the column",
+          "[hosted][turn]")
+{
+    test::HostedScript script;
+    script.actions = {NONE, NONE};
+    script.lines = {"Welcome.", "Yes?"};
+    test::ScriptedBackend backend(16384, script.Responder());
+    const std::filesystem::path file = test::HostedRunFile("hosted_damaged_omitted");
+    std::string id;
+    {
+        turn::HostedSession session = turn::HostedSession::Open(file, test::FixtureHostData(), test::HostedSettings(),
+                                                                42, backend);
+        id = session.StartConversation({test::HULDA, test::AELA}, test::FixtureObservation());
+        REQUIRE(session.RunTurn(test::Request(id, test::HULDA, "Hello."), {}, {}));
+    }
+    {
+        // Damage the closed file: the turn claims five omitted events, with one player line and no event before it.
+        store::Database db = store::Database::Open(file, false);
+        db.Exec("UPDATE hosted_turns SET events_omitted = 5");
+    }
+    turn::HostedSession session = turn::HostedSession::Open(file, test::FixtureHostData(), test::HostedSettings(), 42,
+                                                            backend);
+    // The next turn renders the stored turn's L3 entry.
+    CHECK_THROWS_MATCHES(session.RunTurn(test::Request(id, test::HULDA, "Again."), {}, {}), store::StoreError,
+                         MessageMatches(ContainsSubstring("events_omitted")));
 }
 
 TEST_CASE("A tail over the allowance even without its events is still a TurnError, before any model call",

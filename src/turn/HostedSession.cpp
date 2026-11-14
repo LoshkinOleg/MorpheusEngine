@@ -461,8 +461,12 @@ std::vector<context::TranscriptEntry> HostedSession::Entries(const core::Convers
             }
             // The events its prompt left out (the oldest, when the tail was over tail_allowance) stay out of its
             // entry too, so one long burst of events does not overflow L3 later.
-            before.erase(before.begin(),
-                         before.begin() + std::min<std::ptrdiff_t>(turn.eventsOmitted, std::ssize(before)));
+            // RunStore checked the count is not negative; one over what came before the turn is a damaged file.
+            if (turn.eventsOmitted > std::ssize(before)) {
+                throw store::StoreError(std::format("turn {}: events_omitted {} is more than the {} events before it",
+                                                    turn.number, turn.eventsOmitted, std::ssize(before)));
+            }
+            before.erase(before.begin(), before.begin() + turn.eventsOmitted);
             if (turn.playerText) {
                 before.push_back(player->name + ": " + *turn.playerText);
             }

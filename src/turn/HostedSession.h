@@ -78,7 +78,8 @@ public:
 
     // Adds events to an open conversation without a turn, in order (HostedWorld::CheckEvents). They come before the
     // conversation's next turn: every event recorded since its last turn joins that turn's tail. When the tail is over
-    // tail_allowance, the oldest of them are left out of that turn's prompt (RunTurn); the store keeps them all.
+    // tail_allowance, the oldest events (these first, then the request's own) are left out of that turn's prompt (RunTurn); the store
+    // keeps them all.
     // Throws DataError naming the field.
     void RecordEvents(std::string_view conversationId, const std::vector<nlohmann::json>& events);
 
