@@ -55,8 +55,8 @@ struct SeatReply {
 
 // What Check found about a reply.
 struct SeatCheck {
-    std::string problem = {}; // grammar::Check's verdict: "" when the reply fits the request's grammar.
-    int tokens = 0;           // The reply's tokens, by the real tokenizer.
+    std::string problem = {}; // grammar::Check's verdict ("" when the reply fits), then any token count failure.
+    int tokens = 0;           // The reply's tokens, by the real tokenizer; 0 when they cannot be counted.
 };
 
 // The model seat's state (the model seat design), shared by the UI thread (the Model seat window) and the engine
@@ -95,7 +95,8 @@ public:
     bool Submit(std::uint64_t id, std::string text, std::string thinking);
 
     // Checks `text` against request `id`'s grammar (grammar::Check), and counts its tokens with the backend that
-    // published the request.
+    // published the request. A count that fails with InferenceError (llama-server unreachable) is reported in the
+    // problem, "cannot count tokens: ...", and the request stays pending.
     // Returns nullopt when `id` is stale. Throws ContractError for an id never issued, or when the request has no
     // grammar. The worker is blocked in Await while a request is pending and cannot return from it while Check holds
     // the lock, so the backend is not in use on another thread.

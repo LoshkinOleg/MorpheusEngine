@@ -134,8 +134,9 @@ public:
     // answer, which alone is streamed to onToken and constrained by spec.grammar. Throws InferenceError if prompt +
     // spec.thinkingMaxTokens + spec.maxTokens exceeds the context, or if thinking is asked of a model without a
     // thinking mode. Throws ContractError for maxTokens <= 0, a negative thinkingMaxTokens, one too small to close
-    // the block, or a grammar that does not parse. Cancellation through `stop` returns early with
-    // completion.cancelled set; it is not an error.
+    // the block, or (in-process, LlamaCppBackend) a grammar that does not parse; LlamaServerBackend sends the grammar
+    // to the server and reports its refusal (HTTP 400) as InferenceError. Cancellation through `stop` returns early
+    // with completion.cancelled set; it is not an error.
     virtual Completion Complete(const Prompt& prompt, const GenerationSpec& spec, const TokenCallback& onToken,
                                 std::stop_token stop) = 0;
 

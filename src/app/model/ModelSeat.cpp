@@ -1,11 +1,13 @@
 #include "app/model/ModelSeat.h"
 
 #include <cstddef>
+#include <string>
 #include <utility>
 
 #include "core/Dice.h"
 #include "core/Errors.h"
 #include "grammar/Check.h"
+#include "inference/Llm.h"
 #include "turn/EngineText.h"
 #include "turn/Replay.h"
 
@@ -126,7 +128,16 @@ std::optional<SeatCheck> ModelSeat::Check(std::uint64_t id, std::string_view tex
     // The worker is blocked in Await and cannot return from it while this lock is held, so the backend is idle.
     SeatCheck check;
     check.problem = grammar::Check(_pending->spec.grammar, text);
-    check.tokens = _pBackend->CountTokens(text);
+    // Under llama-server the count is a POST /tokenize on this (the UI) thread, which fails when the chat server is
+    // down or restarting. That is reported as the problem, with no count, so the app carries on and the owner's
+    // reply stays in the window; only InferenceError is caught, so an engine bug still fails loudly. A hung server
+    // blocks this check (and the window) for up to the request's read timeout (60 s), and once more for its one retry.
+    try {
+        check.tokens = _pBackend->CountTokens(text);
+    } catch (const inference::InferenceError& error) {
+        const std::string failure = std::string("cannot count tokens: ") + error.what();
+        check.problem = check.problem.empty() ? failure : check.problem + "; " + failure;
+    }
     return check;
 }
 

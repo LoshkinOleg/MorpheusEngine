@@ -141,8 +141,10 @@ StreamResult StreamCompletion(httplib::Client& client, const std::string& url, c
     }
     // The client serves /completion alone, so a stop can shut its connection down from any thread without touching
     // the other requests' connection; the next call connects again. cpp-httplib holds the client's socket lock while
-    // it connects, so a stop that comes during a connect waits for it (up to the connect timeout) on the stopping
-    // thread, then finds no request in flight to stop: the request sees it once written (upload_progress below).
+    // it connects, and marks the request in flight under that same lock, so a stop that comes during a connect waits
+    // for it (up to the connect timeout) on the stopping thread, then finds the request in flight and shuts its socket
+    // down: the write fails, the retry below is barred by the stop, and the call ends cancelled. A stop that lands
+    // before the body is written is also seen by upload_progress below.
     std::stop_callback closeOnStop(stop, [&client] { client.stop(); });
 
     // The status arrives before the body: an error's body is kept whole for the message, a stream is read line by
@@ -228,9 +230,15 @@ StreamResult StreamCompletion(httplib::Client& client, const std::string& url, c
 
     // The connection kept from the previous call may have been closed by the server as this request left on it
     // (llama-server closes one idle for 5 s, as between two turns). A write or read failure on that reused
-    // connection before a byte of answer arrived (no status) means the server never answered it, so it is sent once
-    // more, over a new connection (cpp-httplib drops the failed one). A failure after any byte of answer (the server
-    // may have started generating), a stop, and a failure on a new connection are never repeated.
+    // connection before a byte of answer arrived (no status) is sent once more, over a new connection (cpp-httplib
+    // drops the failed one). "Reused" is judged by is_socket_open() before the request: when the server had already
+    // closed the socket, cpp-httplib reconnects silently, and a failure on that fresh connection is retried too (one
+    // extra attempt; a connect to a server that is gone fails fast). llama-server sends a streaming /completion's
+    // headers only after the first token, so "no status yet" covers the whole prompt read: a failure or a read
+    // timeout while a long prompt is read is retried, so a hung server takes about two read timeouts (about 1200 s)
+    // to fail, and a retried prompt runs again on the same slot, mostly from its cache. A failure after any byte of
+    // answer (the server has started generating), a stop, and a failure on a connection not reused are never
+    // repeated.
     const bool reused = client.is_socket_open() != 0;
     httplib::Result response = client.send(request);
     if (!response && reused && status == 0 && !failure && !stop.stop_requested() &&

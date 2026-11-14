@@ -3,6 +3,7 @@
 #include <optional>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "TestPaths.h"
@@ -33,6 +34,20 @@ app::SeatRequest NarrateRequest()
     request.prompt = {{{inference::Role::User, "I walk."}}, 0};
     return request;
 }
+
+// A backend whose tokenizer cannot be reached, as llama-server's /tokenize when the chat server is down.
+class UnreachableTokenizerBackend final : public test::FakeBackend {
+public:
+    UnreachableTokenizerBackend()
+        : FakeBackend(16384)
+    {
+    }
+
+    int CountTokens(std::string_view) override
+    {
+        throw inference::InferenceError("cannot reach http://127.0.0.1:8080/tokenize");
+    }
+};
 
 } // namespace
 
@@ -197,6 +212,40 @@ TEST_CASE("ModelSeat::Check needs a request with a grammar", "[model_seat]")
     CHECK_THROWS_AS(seat.Check(published.id, "You walk."), core::ContractError);
     CHECK(seat.Submit(published.id, "You walk.", ""));
     CHECK(waiting.Get());
+}
+
+TEST_CASE("ModelSeat::Check reports a token count that fails as the problem, and the request stays pending",
+          "[model_seat]")
+{
+    app::ModelSeat seat;
+    UnreachableTokenizerBackend backend;
+    app::SeatRequest request;
+    request.label = app::SeatLabel::Resolve;
+    request.prompt = {{{inference::Role::User, "Is it yes?"}}, 0};
+    request.spec.grammar = R"(root ::= "yes" | "no")";
+    request.spec.maxTokens = 8;
+    test::AsyncCall<std::optional<app::SeatReply>> waiting(
+        [&](std::stop_token stop) { return seat.Await(request, backend, stop); });
+
+    // The reply fits the grammar, but its tokens cannot be counted: Check says so instead of throwing.
+    const app::SeatRequest published = test::WaitForRequest(seat);
+    std::optional<app::SeatCheck> checked;
+    REQUIRE_NOTHROW(checked = seat.Check(published.id, "yes"));
+    REQUIRE(checked);
+    CHECK(checked->problem == "cannot count tokens: cannot reach http://127.0.0.1:8080/tokenize");
+    CHECK(checked->tokens == 0);
+
+    // A reply that also breaks the grammar reports both.
+    const std::optional<app::SeatCheck> both = seat.Check(published.id, "maybe");
+    REQUIRE(both);
+    CHECK(both->problem ==
+          "the grammar rejects 'm' at the start; cannot count tokens: cannot reach http://127.0.0.1:8080/tokenize");
+
+    // The request is still pending, so the owner's reply can still be submitted.
+    REQUIRE(seat.Pending());
+    CHECK(seat.Pending()->id == published.id);
+    CHECK(seat.Submit(published.id, "yes", ""));
+    CHECK(waiting.Get()->text == "yes");
 }
 
 TEST_CASE("A stop wakes a request waiting at the seat and clears it; a Submit after it is stale", "[model_seat]")

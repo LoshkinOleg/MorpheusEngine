@@ -201,7 +201,11 @@ TEST_CASE("llama-server: three sessions on three slots reuse their own cached pr
         const SessionLog& log = logs[static_cast<std::size_t>(session)];
         INFO("session " << session);
         CHECK(log.error == "");
-        REQUIRE(log.reused.size() == static_cast<std::size_t>(2 * EXCHANGES));
+        // A short session fails here, and its per-call figures are skipped, so the other sessions' still print.
+        CHECK(log.reused.size() == static_cast<std::size_t>(2 * EXCHANGES));
+        if (log.reused.size() != static_cast<std::size_t>(2 * EXCHANGES)) {
+            continue;
+        }
         // Every call after the session's first finds part of its prompt in its own slot's cache. The figures go to
         // the README; 80% is not asserted, since what a model's linear-attention layers allow is what is measured.
         std::string figures;

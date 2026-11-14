@@ -36,7 +36,10 @@ struct LlamaServerConfig {
 // the server closed it, and a request that fails under a reused connection (llama-server closes one idle for 5 s, and
 // can do so as a request leaves) is sent once more. The streaming /completion has a kept-alive client of its own,
 // so that a cancel shuts down only its connection (the next call connects again); it is sent once more only when its
-// reused connection failed before a byte of answer arrived.
+// reused connection (is_socket_open() before the request) failed before a byte of answer arrived. llama-server sends
+// a streaming /completion's headers only after the first token, so that covers the whole prompt read: a failure or a
+// read timeout during a long prompt read is retried, so a hung server takes about two read timeouts (about 1200 s) to
+// fail, and a retried prompt runs again on the same slot, mostly from its cache.
 //
 // Thinking models (the chat template has the enable_thinking switch): as LlamaCppBackend, the backend writes the
 // thinking block's markers itself. A call that thinks is two /completion calls on one slot: the block, which stops at
