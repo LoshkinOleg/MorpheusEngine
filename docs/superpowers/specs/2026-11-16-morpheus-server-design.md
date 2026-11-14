@@ -116,7 +116,7 @@ Ctrl+C (SIGINT) or SIGTERM: the server stops accepting connections, stops runnin
 - The tail holds the observation, the events recorded since the conversation's last turn, the request's events, and the player text. When they do not fit `tail_allowance`, the oldest events are left out of the prompt until the rest fits. The observation, the player text and the instruction must fit on their own; when they do not, `RunTurn` throws `TurnError` before the resolve call, as in D1.
 - `core::HostedTurn` gains `int eventsOmitted = 0`: how many of the events before the turn its prompt left out. The store keeps every event.
 - A turn's L3 transcript entry (`Entries`) shows the same events its prompt showed, so one long burst of events does not overflow L3 later.
-- Store: `hosted_turns` gains `events_omitted INTEGER NOT NULL DEFAULT 0`, so `RunStore`'s schema goes to version 4. A version 3 file is upgraded in place in a transaction (`ALTER TABLE`; existing turns read as 0); a version 2 file upgrades through 3. Owned runs are unaffected.
+- Store: `hosted_turns` gains `events_omitted INTEGER NOT NULL DEFAULT 0`, so `RunStore`'s schema goes to version 4. A version 3 file is upgraded in place in a transaction (`ALTER TABLE`; existing turns read as 0); a version 2 file gains the hosted tables, already with the new column, in one step. Owned runs are unaffected.
 - D1's documented overflow behaviour (`RecordEvents` and `RunTurn` comments, the hosted-world spec's section 6) is replaced by this one.
 
 ### `llamaserver::LlamaServerBackend::SlotCount()`
@@ -168,7 +168,7 @@ New module `src/server`, library `morpheus_server_lib` (namespace `morpheus::ser
   - `eventsOmitted` stored and read back;
   - the L3 entry shows the same events;
   - the observation alone over the tail is still `TurnError`.
-- `RunStore`: a version 3 file upgrades to version 4 with its turns at 0 omitted; a version 2 file upgrades through 3.
+- `RunStore`: a version 3 file upgrades to version 4 with its turns at 0 omitted; a version 2 file upgrades to version 4 in one step.
 
 ### End to end, real sockets, `FakeLlamaServer` behind
 
