@@ -11,6 +11,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "context/PromptBuilder.h"
 #include "core/Errors.h"
 #include "core/HostedRecord.h"
 #include "fakes/ScriptedBackend.h"
@@ -374,36 +375,71 @@ TEST_CASE("A player text with no room in the tail allowance is a TurnError", "[h
     CHECK(session.Turns(id).empty());
 }
 
-TEST_CASE("Events recorded between turns over the tail allowance make every later turn a TurnError until the "
-          "conversation ends",
+TEST_CASE("Events over the tail allowance: the oldest leave the prompt, the newest stay, and the turn counts them",
           "[hosted][turn]")
 {
     test::HostedScript script;
-    script.actions = {NONE};
-    script.lines = {"Welcome."};
+    script.actions = {NONE, NONE, NONE};
+    script.lines = {"Welcome.", "Hm.", "Yes?"};
     test::ScriptedBackend backend(16384, script.Responder());
     turn::HostedSession session = OpenRun("hosted_events_overflow", backend);
     const std::string id = session.StartConversation({test::HULDA, test::AELA}, test::FixtureObservation());
     REQUIRE(session.RunTurn(test::Request(id, test::HULDA, "Hello."), {}, {}));
 
-    // About 1200 tokens of event text (the fake counts 4 bytes a token), over tail_allowance 1024: every event recorded
-    // since the conversation's last turn joins its next turn's tail, and nothing removes them.
-    session.RecordEvents(id, {nlohmann::json{{"text", std::string(2400, 'x')}}});
-    session.RecordEvents(id, {nlohmann::json{{"text", std::string(2400, 'y')}}});
-    const std::size_t calls = backend.Calls().size();
-    CHECK_THROWS_MATCHES(session.RunTurn(test::Request(id, test::HULDA, "Still there?"), {}, {}), turn::TurnError,
-                         MessageMatches(ContainsSubstring("the observation, the events and the player text use")));
-    // Without player text it is the same, and so is every later try: the recorded events alone are over.
-    CHECK_THROWS_AS(session.RunTurn(test::Request(id, test::HULDA, ""), {}, {}), turn::TurnError);
-    CHECK_THROWS_AS(session.RunTurn(test::Request(id, test::HULDA, "Hello?"), {}, {}), turn::TurnError);
-    CHECK(backend.Calls().size() == calls); // No model call.
-    CHECK(session.Turns(id).size() == 1);
+    // Four events of 300 tokens each (the fake counts 4 bytes a token): with the observation and the player's line,
+    // over tail_allowance 1024. Three are recorded between turns, the fourth comes with the request.
+    const std::string a(1200, 'a');
+    const std::string b(1200, 'b');
+    const std::string c(1200, 'c');
+    const std::string d(1200, 'd');
+    session.RecordEvents(id, {nlohmann::json{{"text", a}}, nlohmann::json{{"text", b}}});
+    session.RecordEvents(id, {nlohmann::json{{"text", c}}});
+    turn::HostedTurnRequest request = test::Request(id, test::HULDA, "Still there?");
+    request.events = {nlohmann::json{{"text", d}}};
+    const std::optional<core::HostedTurn> record = session.RunTurn(request, {}, {});
+    REQUIRE(record);
 
-    // Ending the conversation still works, and Maintain folds its turn: a fold reads no tail.
-    session.EndConversation(id);
-    CHECK(session.Conversation(id)->ended);
-    CHECK(session.Maintain({}));
-    CHECK(session.Conversation(id)->foldedThrough == 1);
+    // The oldest left the prompt; the newest and the player's line stayed, and the tail fits.
+    const context::Assembly& assembly = session.LastAssembly();
+    const std::string& tail = assembly.prompt.messages.back().content;
+    CHECK(record->eventsOmitted >= 1);
+    CHECK(record->eventsOmitted < 4);
+    CHECK(assembly.tokens.tail <= test::HostedSettings().budget.tailAllowance);
+    CHECK_THAT(tail, !ContainsSubstring(a));
+    CHECK_THAT(tail, ContainsSubstring("(" + d + ")"));
+    CHECK_THAT(tail, ContainsSubstring("Still there?"));
+    // The store keeps every event, and the turn keeps its count.
+    CHECK(session.Events(id).size() == 3);
+    CHECK(session.Turns(id).back().events.size() == 1);
+    CHECK(session.Turns(id).back().eventsOmitted == record->eventsOmitted);
+
+    // The next turn's L3 shows that turn with the events its prompt showed: not the oldest, still the newest.
+    REQUIRE(session.RunTurn(test::Request(id, test::HULDA, "Well?"), {}, {}));
+    const inference::Prompt& next = session.LastAssembly().prompt;
+    bool showsOldest = false;
+    bool showsNewest = false;
+    for (std::size_t k = 1; k < next.stableCount; ++k) {
+        showsOldest = showsOldest || next.messages[k].content.find(a) != std::string::npos;
+        showsNewest = showsNewest || next.messages[k].content.find(d) != std::string::npos;
+    }
+    CHECK_FALSE(showsOldest);
+    CHECK(showsNewest);
+}
+
+TEST_CASE("A tail over the allowance even without its events is still a TurnError, before any model call",
+          "[hosted][turn]")
+{
+    test::HostedScript script; // No reply: a model call would fail the test.
+    test::ScriptedBackend backend(16384, script.Responder());
+    turn::HostedSession session = OpenRun("hosted_tail_over", backend);
+    const std::string id = session.StartConversation({test::HULDA, test::AELA}, test::FixtureObservation());
+    session.RecordEvents(id, {nlohmann::json{{"text", "A door opens."}}});
+    const turn::HostedTurnRequest request = test::Request(id, test::HULDA, std::string(5000, 'x'));
+    CHECK_THROWS_MATCHES(session.RunTurn(request, {}, {}), turn::TurnError,
+                         MessageMatches(ContainsSubstring("the observation, the events and the player text use")));
+    CHECK(backend.Calls().empty());
+    CHECK(session.Turns(id).empty());
+    CHECK(session.Events(id).size() == 1);
 }
 
 TEST_CASE("allowedActions narrows the grammar the resolve call runs under and the schema it is checked against",

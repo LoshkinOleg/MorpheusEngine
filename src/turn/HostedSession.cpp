@@ -274,8 +274,21 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
     tail.events = newEvents;
     tail.playerLine = playerText ? player.name + ": " + *playerText : std::string();
     tail.instruction = resolveInstruction;
+    // The fit loop sheds retrieved hits first. When the tail is still over tail_allowance with none left, the oldest
+    // events leave the prompt one by one until it fits (the store keeps them all; the record counts them). The
+    // observation, the player text and the instruction must fit on their own: with no event left, an over-long tail
+    // is the fit loop's TurnError, before any model call.
     std::optional<context::Assembly> assembly = Upkeep(conversation.id, turn).Fit(
-        hits, [&](const std::vector<RetrievalHit>& kept) { return Pass(conversation.id, kept, tail); }, stop);
+        hits,
+        [&](const std::vector<RetrievalHit>& kept) {
+            FitPass pass = Pass(conversation.id, kept, tail);
+            while (pass.assembly.tailOverBudget && kept.empty() && !tail.events.empty()) {
+                tail.events.erase(tail.events.begin());
+                pass = Pass(conversation.id, kept, tail);
+            }
+            return pass;
+        },
+        stop);
     if (!assembly) {
         return std::nullopt;
     }
@@ -326,6 +339,7 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
     record.resolveOutput = resolved.text;
     record.adjudication = adjudication;
     record.line = core::Trim(spoken.text);
+    record.eventsOmitted = static_cast<int>(newEvents.size() - tail.events.size());
     nlohmann::json timings = nlohmann::json::object();
     timings["resolve"] = CallTelemetry(resolved, resolveSpec);
     if (!adjudication.requested) {
@@ -445,6 +459,10 @@ std::vector<context::TranscriptEntry> HostedSession::Entries(const core::Convers
             for (const nlohmann::json& event : turn.events) {
                 before.push_back("(" + event.at("text").get<std::string>() + ")");
             }
+            // The events its prompt left out (the oldest, when the tail was over tail_allowance) stay out of its
+            // entry too, so one long burst of events does not overflow L3 later.
+            before.erase(before.begin(),
+                         before.begin() + std::min<std::ptrdiff_t>(turn.eventsOmitted, std::ssize(before)));
             if (turn.playerText) {
                 before.push_back(player->name + ": " + *turn.playerText);
             }
