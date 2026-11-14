@@ -13,6 +13,33 @@ namespace morpheus::context {
 
 namespace {
 
+// L1's always-on lore as "- <subject>: <data>" lines, in order; empty when no entry is always-on. Both builders show
+// the lore the same way.
+std::string RenderAlwaysOnLore(const std::vector<core::LoreEntry>& lore)
+{
+    std::string text;
+    for (const core::LoreEntry& entry : lore) {
+        if (entry.alwaysOn) {
+            text += std::format("- {}: {}\n", entry.subject, entry.data);
+        }
+    }
+    return text;
+}
+
+// L2: the folded summaries under "# Story so far", oldest first; empty when there are none. The condense call reads
+// this section, so both kinds of run render it the same way.
+std::string RenderSummaries(const std::vector<core::Summary>& summaries)
+{
+    if (summaries.empty()) {
+        return {};
+    }
+    std::string text = "# Story so far\n";
+    for (const core::Summary& summary : summaries) {
+        text += std::format("Turns {}-{}: {}\n", summary.fromTurn, summary.toTurn, summary.text);
+    }
+    return text;
+}
+
 // Lays out a prompt into `assembly`: one system message with `systemText`, the messages of the transcript entries
 // (the stable prefix ends after them), then one user message with `tail`. Then measures it against `budget`: the
 // layer counts the caller has not set (tail, transcript, total), the transcript's budget and cost, and every flag. The
@@ -21,6 +48,10 @@ namespace {
 void LayOut(Assembly& assembly, std::string systemText, const std::vector<TranscriptEntry>& transcript,
             std::string tail, const core::BudgetSettings& budget, inference::LlmBackend& backend)
 {
+    // The caller passes a fresh result: this appends to its prompt and adds to its transcript count.
+    MORPHEUS_REQUIRE(assembly.prompt.messages.empty() && assembly.tokens.transcript == 0,
+                     "LayOut: expects a fresh assembly with no messages and no transcript tokens");
+
     // The fixed part of the prompt: the system message and the tail. Counting it, with and without the tail,
     // gives the template-inclusive costs the transcript budget needs.
     inference::Prompt fixed;
@@ -99,24 +130,13 @@ Assembly AssembleResolvePrompt(const core::World& world, const ContextInputs& in
         worldText += '\n';
     }
     worldText += "\n" + RenderWorldReference(world);
-    std::string lore;
-    for (const core::LoreEntry& entry : world.lore) {
-        if (entry.alwaysOn) {
-            lore += std::format("- {}: {}\n", entry.subject, entry.data);
-        }
-    }
+    const std::string lore = RenderAlwaysOnLore(world.lore);
     if (!lore.empty()) {
         worldText += "# Lore\n" + lore;
     }
 
     // L2: folded summaries, oldest first.
-    std::string summaryText;
-    if (!inputs.summaries.empty()) {
-        summaryText = "# Story so far\n";
-        for (const core::Summary& summary : inputs.summaries) {
-            summaryText += std::format("Turns {}-{}: {}\n", summary.fromTurn, summary.toTurn, summary.text);
-        }
-    }
+    const std::string summaryText = RenderSummaries(inputs.summaries);
 
     // T1-T4: rebuilt every call, so it goes last.
     std::string tail = "# Current state\n" + RenderStateView(inputs.state);
@@ -155,12 +175,7 @@ Assembly AssembleHostedPrompt(const HostedInputs& inputs, const core::BudgetSett
 
     // L1, then the participants: the host's always-on lore, then who takes part, in join order. A join or a leave
     // changes the prompt from the participants on; the lore before them stays cached.
-    std::string lore;
-    for (const core::LoreEntry& entry : inputs.lore) {
-        if (entry.alwaysOn) {
-            lore += std::format("- {}: {}\n", entry.subject, entry.data);
-        }
-    }
+    const std::string lore = RenderAlwaysOnLore(inputs.lore);
     std::string worldText = lore.empty() ? std::string() : "# Lore\n" + lore + "\n";
     worldText += "# Participants\n";
     for (const core::Participant& participant : inputs.participants) {
@@ -170,13 +185,7 @@ Assembly AssembleHostedPrompt(const HostedInputs& inputs, const core::BudgetSett
     }
 
     // L2: run-wide summaries of folded turns, oldest first.
-    std::string summaryText;
-    if (!inputs.summaries.empty()) {
-        summaryText = "# Story so far\n";
-        for (const core::Summary& summary : inputs.summaries) {
-            summaryText += std::format("Turns {}-{}: {}\n", summary.fromTurn, summary.toTurn, summary.text);
-        }
-    }
+    const std::string summaryText = RenderSummaries(inputs.summaries);
 
     // The tail, rebuilt every turn, so it goes last: retrieved snippets, the observation, the new events, the
     // player's line and the instruction. The replace handler keeps a string that is not UTF-8 from throwing: the

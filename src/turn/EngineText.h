@@ -82,7 +82,7 @@ Step 1, act. Reply with one JSON object and nothing else: "action" is one of the
 
 Step 2, speak. Write only what the speaker says aloud: no name in front, no quotation marks, no narration and no description of actions. Stay in character and in the world. One to three sentences.
 
-The conversation shows each line after the name of whoever said it, with the action the speaker tried in brackets. Events the host reports are in parentheses. The observation is the host's current view of the scene, as JSON.)";
+The conversation shows each line after the name of whoever said it, with the action the speaker requested in brackets. Events the host reports are in parentheses. The observation is the host's current view of the scene, as JSON.)";
 
 // The task at the end of a hosted resolve prompt's tail. {speaker} and {player} are the speaker's and the player's
 // names.

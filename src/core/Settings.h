@@ -35,9 +35,9 @@ struct BudgetSettings {
     int resolveMaxTokens = 0; // The resolve call's answer (its JSON).
     int narrateMaxTokens = 0; // The narrate call's answer (the prose).
     int narrateAllowance = 0; // Resolution record + narrate instruction appended for the narrate call.
-    int tailAllowance = 0;    // State view + retrieved snippets + player input + instruction (T1-T4).
+    int tailAllowance = 0;    // The tail: state view or observation, retrieved snippets, events, player text, instruction.
     int engineRulesCap = 0;   // L0
-    int worldCap = 0;         // L1: world rules + always-on lore.
+    int worldCap = 0;         // L1: world rules + always-on lore; hosted: the host's lore + the participants.
     int summaryCap = 0;       // L2
     int retrievalCap = 0;     // T2: retrieved lore, history and notes. Part of the tail allowance.
     // Last, so positional initializers of the fields above stay valid.
