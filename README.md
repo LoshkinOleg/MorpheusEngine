@@ -32,7 +32,7 @@ llama.cpp's GPU backend is `MORPHEUS_GPU_BACKEND`: `Vulkan` (the default, used b
 
 ## Models and settings
 
-The `dev` and `linux-release` presets run models in-process through llama.cpp. Download two GGUF files into `models/` (gitignored):
+The `dev` and `linux-release` presets run models in-process through llama.cpp, or reach them through `llama-server` over HTTP (`backend`, below). For llama.cpp in-process, download two GGUF files into `models/` (gitignored):
 
 - `Qwen3.8-27B-UD-Q4_K_M.gguf` (chat, a thinking model, about 16.5 GB) from Hugging Face `unsloth/Qwen3.8-27B-GGUF`
 - `nomic-embed-text-v1.5.Q8_0.gguf` (embeddings, about 140 MB) from Hugging Face `nomic-ai/nomic-embed-text-v1.5-GGUF`
@@ -41,6 +41,18 @@ The model-backed tests also use `Qwen3-4B-Instruct-2507-Q4_K_M.gguf` (about 2.5 
 
 Then copy `settings.example.json` (the template) to `settings.json` at the repository root and adjust it for your machine. `settings.json` is gitignored. Relative model paths resolve against the settings file's folder.
 
+- `backend`: `"llama-cpp"` runs the models in-process and needs `chat_model`, `embedding_model` and `gpu_layers`; `"llama-server"` reaches them through two running `llama-server`s (see "Models through llama-server" below) and needs a `server` object instead (the model keys, if present, are ignored, as `server` is under `llama-cpp`):
+
+  ```json
+  "backend": "llama-server",
+  "server": {
+    "chat_url": "http://127.0.0.1:8080",
+    "embedding_url": "http://127.0.0.1:8081",
+    "slot": 0
+  },
+  ```
+
+  The URLs are `http://host:port` (no HTTPS, no path, no IPv6 literal host; a bad URL fails at startup naming it); `slot` (at least 0) is the chat server's slot for Morpheus's calls. `context_size` is still what the budgets plan for: each of the chat server's slots must hold at least that many tokens, or the backend refuses to start.
 - `budget.retrieval_cap` caps the retrieved memory (lore, past turns, notes) placed in the prompt, in tokens, including what `assisted`-mode lookups add. It is part of `budget.tail_allowance`.
 - The optional top-level `"memory_mode": "engine" | "assisted"` overrides the world's default memory mode.
 - `budget.resolve_thinking_tokens` and `budget.narrate_thinking_tokens` let a thinking model (one whose chat template has `enable_thinking`, such as Qwen3.5 and later) reason before the resolve and narrate answers, up to that many tokens each; 0 turns a call's thinking off, otherwise the minimum is 64. A block that runs out is closed by the engine and the model answers from what it has. The reasoning never reaches the player or a later prompt; it is kept in the turn's telemetry and shown in the Turn log window. Both budgets are reserved in the context, like `resolve_max_tokens` and `narrate_max_tokens`. With a model that has no thinking mode, set both to 0.
@@ -56,7 +68,7 @@ To check that the models, the GPU backend and KV-cache prefix reuse work, run th
 ./build/dev/bin/Debug/morpheus_probe.exe settings.json game_projects/sandcrawler "I climb onto the crawler's roof."
 ```
 
-llama.cpp prints a few warnings while loading Qwen3 (control-token and `n_ctx_seq` notices); they are expected. The two runs' text can differ slightly even with the same seed. Qwen3.5 and later (Qwen3.8 among them) mix linear-attention layers into the model, whose cache llama.cpp cannot cut back to a shared prefix: with them every call evaluates its whole prompt, and the probe reports 0 reused.
+llama.cpp prints a few warnings while loading Qwen3 (control-token and `n_ctx_seq` notices); they are expected. The two runs' text can differ slightly even with the same seed. Qwen3.5 and later (Qwen3.8 among them) mix linear-attention layers into the model, whose cache llama.cpp cannot cut back to a shared prefix: with them every call evaluates its whole prompt, and the probe reports 0 reused. That is in-process; llama-server keeps context checkpoints for such models, and what it reuses is measured below.
 
 Model-backed tests are tagged `[llama]` and skip unless both model variables are set (Git Bash, from the repo root). The thinking tests also need `MORPHEUS_TEST_THINKING_MODEL`, a thinking model: Qwen3.8 itself, or the small `Qwen3.5-0.8B-Q4_K_M.gguf` (`unsloth/Qwen3.5-0.8B-GGUF`, about 530 MB) for a quick run:
 
@@ -66,6 +78,40 @@ export MORPHEUS_TEST_EMBED_MODEL="$PWD/models/nomic-embed-text-v1.5.Q8_0.gguf"
 export MORPHEUS_TEST_THINKING_MODEL="$PWD/models/Qwen3.5-0.8B-Q4_K_M.gguf"
 ./build/dev/bin/Debug/morpheus_tests.exe "[llama]"
 ```
+
+### Models through llama-server
+
+With `"backend": "llama-server"`, Morpheus runs no model itself: one model host can serve the app, `morpheus_play`, `morpheus_probe` and other programs at once, each on its own slot, and each slot keeps its own prompt cache. Morpheus does not build `llama-server`: use a llama.cpp release or your own build. Start a chat server and an embedding server, for example:
+
+```
+llama-server -m models/Qwen3.8-27B-UD-Q4_K_M.gguf --host 127.0.0.1 --port 8080 --parallel 3 --ctx-size 73728 -ngl 24
+llama-server -m models/nomic-embed-text-v1.5.Q8_0.gguf --host 127.0.0.1 --port 8081 --embedding --ctx-size 2048 --batch-size 2048 --ubatch-size 2048
+```
+
+Use `127.0.0.1`, not `localhost`, in both the command lines and `settings.json`: on Windows a `localhost` connection tries IPv6 first and costs about 2 s per new connection.
+
+- `--parallel N` gives the chat server N slots, each with `--ctx-size / N` tokens of context: make that at least `context_size` (73728 / 3 = 24576 above).
+- The embedding server needs `--embedding` and a pooled sentence-embedding model; a batch as large as its context lets a long text be embedded in one piece, as in-process.
+- Morpheus sends the prompt as token ids, tokenized as in-process (a player's text never becomes control tokens), and names the in-process sampling chain in every request (top-k, top-p, temperature; the server's other samplers neutral), so the server's command-line sampling options do not change Morpheus's calls.
+- Thinking works as in-process: Morpheus writes the thinking block's markers itself, so the thinking budgets apply unchanged.
+- Connections: Morpheus keeps one connection alive to each server (a second, dedicated one for the streamed `/completion`, so a cancel closes only that one). llama-server closes a connection idle for 5 s, so a non-streaming request, and a `/completion` that got no answer, is sent once more when a stale connection failed it.
+- `morpheus_probe` works with either backend; with llama-server its reuse figures are the server's, so the second run shows what a slot reuses.
+
+### The [server] tests
+
+Tests tagged `[server]` run against your servers and skip unless both variables are set. They need a chat server with at least 3 slots of at least 16384 tokens (`--parallel 3 --ctx-size 49152`):
+
+```
+export MORPHEUS_TEST_SERVER_URL=http://127.0.0.1:8080
+export MORPHEUS_TEST_EMBED_SERVER_URL=http://127.0.0.1:8081
+./build/tests/bin/Debug/morpheus_tests.exe "[server]"
+```
+
+They complete a resolve call under its grammar and a streamed narrate call, think on a thinking model (skipped on one without a thinking mode), and run three sessions on three slots at once, each alternating an action call and a speech call for ten exchanges; that test prints each call's reused share of its prompt (`tokensReused / promptTokens`) and checks that every call after a session's first reuses some. In the `dev` build, with the `[llama]` variables set too, `"[server][llama]"` checks that the server and the in-process backend count the same tokens when the server runs the `MORPHEUS_TEST_CHAT_MODEL` file.
+
+### Prompt-cache reuse through llama-server
+
+Not measured yet. Run the three-slot `[server]` test with Qwen3-4B-Instruct and with a Qwen3.5 or later model, and record here the reused shares it prints (R2 of the Skyrim integration asks for more than 80% on the second and later calls of a session; for Qwen3.5 this measures what its linear-attention layers allow through llama-server).
 
 ### Performance with Qwen3.8-27B on a 10 GB GPU
 
@@ -173,7 +219,7 @@ The root holds `settings.json`, `game_projects/` and `saves/`. The models load i
 - **Turn log:** each turn's intent, rolls, applied and rejected changes, notes, lookups, the narration review (each review's verdict, problems and digest, and the narration a rewrite replaced), per-call token counts and timings, and the raw resolve output.
 - **Context:** the latest resolve prompt by layer: tokens per layer, KV-cache reuse per call, and the text as sections or raw.
 - **Memory:** the story summaries, the notes, and what retrieval put in the latest turn's prompt, with scores and why each hit matched (`name`: named in your input; `scene`: named by the scene), and the scene values it searched with.
-- **Settings:** the chat and embedding models, picked from the `.gguf` files in `models/`; context size, GPU layers, the resolve, narrate and review thinking budgets (0 for a model without a thinking mode), sampling, memory mode, the narration check, the compact transcript and its prose turns. Apply saves `settings.json` and restarts the engine, reopening the run; changing the models, the embedding prefixes, the context size or GPU layers reloads the models. The rest of the budget is shown and edited in `settings.json`.
+- **Settings:** the backend; under llama.cpp the chat and embedding models, picked from the `.gguf` files in `models/`, and GPU layers; under llama-server the two server URLs and the slot; context size, the resolve, narrate and review thinking budgets (0 for a model without a thinking mode), sampling, memory mode, the narration check, the compact transcript and its prose turns. Apply saves `settings.json` and restarts the engine, reopening the run; changing the backend, the models, the server URLs or slot, the embedding prefixes, the context size or GPU layers reloads the backend. The rest of the budget is shown and edited in `settings.json`.
 - **Model seat:** a debug window for answering the engine's model calls yourself. Tick "Answer as the model" and choose, per call (resolve, narrate, rewrite, lookup, review, summarize, condense), Human (you write the reply), Draft (the model answers first and you submit or edit its answer) or Model (as usual); every call starts in Human. A waiting call shows its token limits, its prompt by layer, its grammar and the model's draft. Check counts the reply's tokens and tests it against the grammar; Submit sends it whether or not it fits, and the engine treats it as the model's reply, mistakes included; Withdraw releases the call without a reply (during a turn it cancels the turn, as Cancel does; between turns it ends that fold or condense, and the next turn folds what it needs); Check is disabled for a call without a grammar. A summary that a cancelled turn interrupted comes back between turns, and can be withdrawn again. Nothing is saved: the seat is off whenever the app starts.
 
 `--frames N` exits after N frames, a quick check that the app starts on this machine.
@@ -214,9 +260,9 @@ Each path is `entity.field`, a string field of an entity in `initial_state.json`
 
 - `src/core`: world loading, settings, schema-typed state, state changes, dice, turn record types
 - `src/store`: one SQLite database per run
-- `src/inference`: the `LlmBackend` interface (no llama.cpp)
+- `src/inference`: the `Tokenizer`, `ChatModel` and `Embedder` interfaces and `LlmBackend`, their union (no llama.cpp)
 - `src/context`: layered prompt assembly with exact token budgets
-- `src/grammar`: bounded-JSON grammars: the GBNF builder, `FromSchema` and `Validate` (no llama.cpp)
+- `src/grammar`: bounded-JSON grammars: the GBNF builder, `FromSchema`, `Validate` and `grammar::Check` (no llama.cpp)
 - `src/turn`: turn orchestration: grammar, resolve and apply, retrieval, folding, session, worker, replay
 - `src/llama`: the llama.cpp backend (`dev` and `linux-release` presets only)
 - `src/llamaserver`: the llama-server backend over HTTP (cpp-httplib; every preset, `MORPHEUS_BUILD_LLAMA_SERVER`)

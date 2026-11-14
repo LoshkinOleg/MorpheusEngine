@@ -76,7 +76,7 @@ private:
     std::optional<SeatRequest> _pending = {};
     std::optional<SeatReply> _reply = {};       // Submit's reply, until Await takes it.
     bool _withdrawn = false;                    // Withdraw released the pending request, until Await sees it.
-    inference::LlmBackend* _pBackend = nullptr; // The pending request's real backend, for Check. Not owned.
+    inference::LlmBackend* _pBackend = nullptr; // The pending request's real backend, for Check's token count. Not owned.
     std::uint64_t _lastId = 0;                  // The latest request's id; 0 before the first.
 
 public:

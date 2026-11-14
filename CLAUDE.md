@@ -17,14 +17,15 @@ Local-first, LLM-driven text RPG engine in C++20. The repository owner acts as p
 - Linux (Ubuntu 24.04): `linux-tests` is the fast loop (`cmake --preset linux-tests`, `cmake --build --preset linux-tests`, `ctest --preset linux-tests`; binaries in `build/linux-tests/bin/`); `linux-release` builds everything with llama.cpp on CUDA (needs the CUDA toolkit). Each OS lists only its own presets.
 - Included in another CMake project (not top level), Morpheus builds only the engine libraries (`Morpheus::core`, `Morpheus::store`, `Morpheus::inference`, `Morpheus::context`, `Morpheus::grammar`, `Morpheus::turn`, `Morpheus::llamaserver`) and cpp-httplib as `morpheus_httplib` (fetched when `MORPHEUS_BUILD_LLAMA_SERVER` is on: the default, also when vendored; header-only, no OpenSSL), with warnings that are not errors (`MORPHEUS_WARNINGS_AS_ERRORS`) and the host's output directories. `cmake/consumer-check/` checks this (README, "Using Morpheus from another project").
 - Model-backed tests are tagged `[llama]` and skip unless `MORPHEUS_TEST_CHAT_MODEL` and `MORPHEUS_TEST_EMBED_MODEL` point at the two GGUF files in `models/`.
+- Real-server tests are tagged `[server]` and skip unless `MORPHEUS_TEST_SERVER_URL` and `MORPHEUS_TEST_EMBED_SERVER_URL` point at running llama-servers (README, "The [server] tests").
 - One tag or test case: `./build/tests/bin/Debug/morpheus_tests.exe "[csv]"`
 
 ## Layout
 - src/core: world loading, settings, schema-typed state, state changes, dice, turn record types. No LLM, no UI; its only I/O is reading world folders and settings.json.
 - src/store: one SQLite database per run.
-- src/inference: the LlmBackend interface and its types. No llama.cpp.
+- src/inference: the Tokenizer, ChatModel and Embedder interfaces, LlmBackend (their union) and their types. No llama.cpp, no HTTP.
 - src/context: layered prompt assembly with exact token budgets.
-- src/grammar: bounded-JSON grammars: the GBNF builder, `FromSchema` and `Validate`. No llama.cpp.
+- src/grammar: bounded-JSON grammars: the GBNF builder, `FromSchema`, `Validate` and `grammar::Check` (does a text fit a grammar, and where it stops fitting). No llama.cpp.
 - src/turn: turn orchestration: grammar, resolve and apply, retrieval, folding, session, worker, replay.
 - src/llama: the llama.cpp backend (`dev` and `linux-release` presets only). Only this module, tools/probe, tools/play and src/app/main.cpp link llama.cpp; only src/llama and the tools include <llama.h>.
 - src/llamaserver: the llama-server backend over HTTP (cpp-httplib, header-only, no OpenSSL), built in every preset (`MORPHEUS_BUILD_LLAMA_SERVER`, default on). Only it and the tests include <httplib.h>; tests/fakes/FakeLlamaServer.h is the fast suite's fake server.
