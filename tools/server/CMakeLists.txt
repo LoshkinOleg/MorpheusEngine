@@ -1,0 +1,3 @@
+add_executable(morpheus_server main.cpp)
+target_link_libraries(morpheus_server PRIVATE morpheus_server_lib)
+morpheus_target_defaults(morpheus_server)
