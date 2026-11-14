@@ -1,0 +1,69 @@
+{
+  "catalog": {
+    "actions": [
+      {"id": "none"},
+      {"id": "follow", "params": {}},
+      {"id": "wait", "params": {}},
+      {"id": "attack", "params": {"target": {"type": "actor", "scope": "present_non_player"}}},
+      {"id": "give_item", "params": {"item": {"type": "string", "maxLength": 48}}},
+      {"id": "end_conversation"}
+    ]
+  },
+  "observation_schema": {
+    "type": "object",
+    "required": ["game_time", "location", "actors"],
+    "properties": {
+      "game_time": {
+        "type": "object",
+        "required": ["days_passed", "hour"],
+        "properties": {
+          "days_passed": {"type": "number", "minimum": 0},
+          "hour": {"type": "integer", "minimum": 0, "maximum": 23}
+        }
+      },
+      "location": {"type": "string"},
+      "weather": {"type": "string"},
+      "actors": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "object",
+          "required": ["id", "name", "is_player"],
+          "additionalProperties": true,
+          "properties": {
+            "id": {"type": "string", "minLength": 1},
+            "name": {"type": "string", "minLength": 1},
+            "is_player": {"type": "boolean"},
+            "bio": {"type": "string"},
+            "description": {"type": "string"},
+            "gender": {"type": "string"},
+            "race": {"type": "string"},
+            "relationship_rank": {"type": "integer", "minimum": -4, "maximum": 4},
+            "in_combat": {"type": "boolean"},
+            "hostile": {"type": "boolean"}
+          }
+        }
+      },
+      "nearby": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["id", "name"],
+          "additionalProperties": true,
+          "properties": {
+            "id": {"type": "string"},
+            "name": {"type": "string"},
+            "distance_m": {"type": "number", "minimum": 0}
+          }
+        }
+      },
+      "events": {"type": "array", "items": {"type": "string"}}
+    }
+  },
+  "lore": [
+    {"subject": "Whiterun", "data": "A city of the plains, ruled from its keep on the hill.", "always_on": true},
+    {"subject": "The Bannered Mare", "data": "The inn of Whiterun, kept by Hulda.", "always_on": true},
+    {"subject": "Hulda", "data": "Hulda has kept the Bannered Mare for years and hears every rumour in town.", "always_on": false},
+    {"subject": "Saadia", "data": "Saadia came from across the desert and hides from men who hunt her.", "always_on": false}
+  ]
+}

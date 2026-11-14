@@ -1,0 +1,15 @@
+{
+  "game_time": {"days_passed": 213.42, "hour": 14},
+  "location": "Whiterun, The Bannered Mare",
+  "weather": "clear",
+  "actors": [
+    {"id": "0001A6A4", "name": "Hulda", "is_player": false, "gender": "female", "race": "Nord",
+     "relationship_rank": 1, "in_combat": false, "hostile": false, "voice_type": "FemaleEvenToned",
+     "equipment": {"body": "Barkeeper's Clothes"}, "bio": "Hulda keeps the Bannered Mare."},
+    {"id": "0001B07C", "name": "Saadia", "is_player": false, "gender": "female", "race": "Redguard",
+     "relationship_rank": 0, "in_combat": false, "hostile": false, "bio": "Saadia serves at the inn."},
+    {"id": "00000007", "name": "Aela", "is_player": true, "description": "A huntress."}
+  ],
+  "nearby": [{"id": "0001B07D", "name": "Mikael", "distance_m": 6.5}],
+  "events": ["Aela picked up an Iron Sword.", "Hulda started following Aela."]
+}

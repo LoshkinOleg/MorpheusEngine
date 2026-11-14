@@ -1,0 +1,422 @@
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
+
+#include <cstddef>
+#include <string>
+#include <vector>
+
+#include <nlohmann/json.hpp>
+
+#include "core/Errors.h"
+#include "core/HostedRecord.h"
+#include "grammar/Check.h"
+#include "grammar/Schema.h"
+#include "hosted/HostedTestSupport.h"
+#include "turn/HostedWorld.h"
+
+using namespace morpheus;
+using namespace nlohmann::literals;
+using Catch::Matchers::ContainsSubstring;
+
+namespace {
+
+constexpr char BACKSLASH = '\\';
+
+// The fixture's conversation: Hulda, and Aela, the player.
+turn::Participants HuldaAndAela()
+{
+    return {{test::HULDA, "Hulda", "Hulda keeps the Bannered Mare."}, {test::AELA, "Aela", ""}};
+}
+
+// The fixture host data with another catalog.
+turn::HostData WithCatalog(const std::string& catalog)
+{
+    turn::HostData data = test::FixtureHostData();
+    data.catalog = nlohmann::json::parse(catalog);
+    return data;
+}
+
+// The fixture host data with a schema that lets any object through, so a test sees the core's faults alone.
+turn::HostData WithOpenSchema()
+{
+    turn::HostData data = test::FixtureHostData();
+    data.observationSchema = R"({"type": "object", "properties": {}, "required": [], "additionalProperties": true})"_json;
+    return data;
+}
+
+// The fixture observation without Saadia: Hulda and Aela only.
+nlohmann::json WithoutSaadia()
+{
+    nlohmann::json observation = test::FixtureObservation();
+    nlohmann::json& actors = observation.at("actors");
+    actors.erase(actors.begin() + 1);
+    return observation;
+}
+
+// The message of the DataError HostedWorld throws for `data`, or "" when it accepts it.
+std::string OpenError(const turn::HostData& data)
+{
+    try {
+        const turn::HostedWorld world(data);
+    } catch (const core::DataError& error) {
+        return error.what();
+    }
+    return "";
+}
+
+// The message of the DataError Observe throws for `observation`, or "" when it accepts it.
+std::string ObserveError(const turn::HostedWorld& world, const nlohmann::json& observation)
+{
+    try {
+        world.Observe(observation);
+    } catch (const core::DataError& error) {
+        return error.what();
+    }
+    return "";
+}
+
+// The action ids a proposal schema offers, in order.
+std::vector<std::string> OfferedIds(const nlohmann::json& schema)
+{
+    std::vector<std::string> ids;
+    for (const nlohmann::json& branch : schema.at("oneOf")) {
+        ids.push_back(branch.at("properties").at("action").at("const").get<std::string>());
+    }
+    return ids;
+}
+
+} // namespace
+
+TEST_CASE("Host data reads and writes its JSON form and hashes its content", "[hosted]")
+{
+    const nlohmann::json fixture = test::ReadFixture("open.json");
+    const turn::HostData data = turn::HostDataFromJson(fixture);
+    CHECK(data.catalog == fixture.at("catalog"));
+    CHECK(data.observationSchema == fixture.at("observation_schema"));
+    REQUIRE(data.lore.size() == 4);
+    CHECK(data.lore[0].subject == "Whiterun");
+    CHECK(data.lore[0].alwaysOn);
+    CHECK_FALSE(data.lore[2].alwaysOn);
+    CHECK(turn::HostDataToJson(data) == fixture);
+
+    // The hash follows the content.
+    CHECK(turn::HostDataHash(data) == turn::HostDataHash(turn::HostDataFromJson(fixture)));
+    CHECK(turn::HostDataHash(data).size() == 16);
+    turn::HostData changed = data;
+    changed.lore[2].data = "Hulda has kept the inn for twenty years.";
+    CHECK(turn::HostDataHash(changed) != turn::HostDataHash(data));
+
+    // Lore may be absent, and always_on defaults to false.
+    CHECK(turn::HostDataFromJson(R"({"catalog": {}, "observation_schema": {}})"_json).lore.empty());
+    CHECK_FALSE(turn::HostDataFromJson(
+                    R"({"catalog": {}, "observation_schema": {}, "lore": [{"subject": "a", "data": "b"}]})"_json)
+                    .lore[0]
+                    .alwaysOn);
+
+    // A wrong shape is a DataError naming the pointer.
+    CHECK_THROWS_WITH(turn::HostDataFromJson(R"([])"_json), "host data at the root: host data must be a JSON object");
+    CHECK_THROWS_WITH(turn::HostDataFromJson(R"({"observation_schema": {}})"_json),
+                      "host data at /catalog: missing: the action catalog is required");
+    CHECK_THROWS_WITH(turn::HostDataFromJson(R"({"catalog": {}})"_json),
+                      "host data at /observation_schema: missing: the observation's JSON Schema is required");
+    CHECK_THROWS_WITH(turn::HostDataFromJson(R"({"catalog": {}, "observation_schema": {}, "mods": []})"_json),
+                      "host data at /mods: unknown key 'mods'");
+    CHECK_THROWS_WITH(turn::HostDataFromJson(R"({"catalog": {}, "observation_schema": {}, "lore": {}})"_json),
+                      "host data at /lore: 'lore' must be an array");
+    CHECK_THROWS_WITH(
+        turn::HostDataFromJson(R"({"catalog": {}, "observation_schema": {}, "lore": [{"subject": "a"}]})"_json),
+        "host data at /lore/0/data: 'data' must be a string");
+    CHECK_THROWS_WITH(turn::HostDataFromJson(
+                          R"({"catalog": {}, "observation_schema": {}, "lore": [{"subject": "a", "data": "b", "always_on": "yes"}]})"_json),
+                      "host data at /lore/0/always_on: 'always_on' must be true or false");
+}
+
+TEST_CASE("The catalog gives the proposal schema of section 3, and its grammar takes the right strings", "[hosted]")
+{
+    const turn::HostedWorld world(test::FixtureHostData());
+    const turn::Observation observation = world.Observe(test::FixtureObservation());
+    CHECK(world.ActionIds() ==
+          std::vector<std::string>{"none", "follow", "wait", "attack", "give_item", "end_conversation"});
+
+    // Hulda speaks: attack's present_non_player target is Saadia alone (never the speaker, never the player).
+    const nlohmann::json schema = world.ProposalSchema(observation, HuldaAndAela(), world.ActionIds(), test::HULDA);
+    const nlohmann::json expected = R"({"oneOf": [
+        {"type": "object", "required": ["action", "params"], "properties": {"action": {"const": "none"},
+            "params": {"type": "object", "properties": {}, "required": []}}},
+        {"type": "object", "required": ["action", "params"], "properties": {"action": {"const": "follow"},
+            "params": {"type": "object", "properties": {}, "required": []}}},
+        {"type": "object", "required": ["action", "params"], "properties": {"action": {"const": "wait"},
+            "params": {"type": "object", "properties": {}, "required": []}}},
+        {"type": "object", "required": ["action", "params"], "properties": {"action": {"const": "attack"},
+            "params": {"type": "object", "properties": {"target": {"enum": ["0001B07C"]}}, "required": ["target"]}}},
+        {"type": "object", "required": ["action", "params"], "properties": {"action": {"const": "give_item"},
+            "params": {"type": "object", "properties": {"item": {"type": "string", "maxLength": 48}}, "required": ["item"]}}},
+        {"type": "object", "required": ["action", "params"], "properties": {"action": {"const": "end_conversation"},
+            "params": {"type": "object", "properties": {}, "required": []}}}
+    ]})"_json;
+    CHECK(schema == expected);
+
+    // The grammar is FromSchema's, and it takes the model's compact JSON only.
+    const std::string gbnf = world.ProposalGrammar(observation, HuldaAndAela(), world.ActionIds(), test::HULDA);
+    CHECK(gbnf == grammar::FromSchema(expected));
+    CHECK(grammar::Check(gbnf, R"({"action":"follow","params":{}})").empty());
+    CHECK(grammar::Check(gbnf, R"({"action":"attack","params":{"target":"0001B07C"}})").empty());
+    CHECK(grammar::Check(gbnf, R"({"action":"give_item","params":{"item":"Iron Sword"}})").empty());
+    CHECK_FALSE(grammar::Check(gbnf, R"({"action":"wait","params":{},"intent":"rest"})").empty());
+    CHECK_FALSE(grammar::Check(gbnf, R"({"action":"attack","params":{"target":"0001A6A4"}})").empty());
+    CHECK_FALSE(grammar::Check(gbnf, R"({"action":"fly","params":{}})").empty());
+    CHECK_FALSE(grammar::Check(gbnf, R"({"action": "none", "params": {}})").empty());
+    CHECK_FALSE(
+        grammar::Check(gbnf, R"({"action":"give_item","params":{"item":")" + std::string(49, 'x') + R"("}})").empty());
+}
+
+TEST_CASE("Each actor scope offers its actors, never the speaker, each once", "[hosted]")
+{
+    const turn::HostedWorld world(WithCatalog(R"({"actions": [
+        {"id": "greet", "params": {"whom": {"type": "actor", "scope": "present"}}},
+        {"id": "attack", "params": {"target": {"type": "actor", "scope": "present_non_player"}}},
+        {"id": "beckon", "params": {"companion": {"type": "actor", "scope": "participant"}}}]})"));
+    const turn::Observation observation = world.Observe(test::FixtureObservation());
+    // Hulda and Aela take part; Aela is listed twice to show the enum keeps each id once.
+    const turn::Participants participants = {{test::HULDA, "Hulda", ""}, {test::AELA, "Aela", ""}, {test::AELA, "Aela", ""}};
+    auto targets = [](const nlohmann::json& schema, std::size_t branch, const char* param) {
+        return schema.at("oneOf")[branch].at("properties").at("params").at("properties").at(param).at("enum");
+    };
+
+    // Hulda speaks: present is Saadia and Aela, in observation order; present_non_player is Saadia; participant is
+    // Aela.
+    const nlohmann::json hulda = world.ProposalSchema(observation, participants, world.ActionIds(), test::HULDA);
+    REQUIRE(hulda.at("oneOf").size() == 3);
+    CHECK(targets(hulda, 0, "whom") == nlohmann::json::array({test::SAADIA, test::AELA}));
+    CHECK(targets(hulda, 1, "target") == nlohmann::json::array({test::SAADIA}));
+    CHECK(targets(hulda, 2, "companion") == nlohmann::json::array({test::AELA}));
+
+    // Saadia speaks: Hulda is present, and a participant.
+    const nlohmann::json saadia = world.ProposalSchema(observation, participants, world.ActionIds(), test::SAADIA);
+    CHECK(targets(saadia, 0, "whom") == nlohmann::json::array({test::HULDA, test::AELA}));
+    CHECK(targets(saadia, 1, "target") == nlohmann::json::array({test::HULDA}));
+    CHECK(targets(saadia, 2, "companion") == nlohmann::json::array({test::HULDA, test::AELA}));
+}
+
+TEST_CASE("An action without a target this turn is left out, and allowedActions narrows the catalog", "[hosted]")
+{
+    const turn::HostedWorld world(test::FixtureHostData());
+    const turn::Observation alone = world.Observe(WithoutSaadia());
+    // Only Aela, the player, is there besides Hulda: attack's present_non_player target has no one.
+    CHECK(OfferedIds(world.ProposalSchema(alone, HuldaAndAela(), world.ActionIds(), test::HULDA)) ==
+          std::vector<std::string>{"none", "follow", "wait", "give_item", "end_conversation"});
+
+    // allowedActions keeps the catalog's order and leaves the rest out.
+    const turn::Observation observation = world.Observe(test::FixtureObservation());
+    CHECK(OfferedIds(world.ProposalSchema(observation, HuldaAndAela(), {"attack", "follow"}, test::HULDA)) ==
+          std::vector<std::string>{"follow", "attack"});
+
+    // An unknown or repeated id, or nothing left to do, is the host's DataError naming the field.
+    CHECK_THROWS_WITH(world.ProposalSchema(observation, HuldaAndAela(), {"follow", "fly"}, test::HULDA),
+                      "allowed_actions/1: 'fly' is not an action of the catalog");
+    CHECK_THROWS_WITH(world.ProposalSchema(observation, HuldaAndAela(), {"follow", "follow"}, test::HULDA),
+                      "allowed_actions/1: 'follow' is listed twice");
+    CHECK_THROWS_AS(world.ProposalSchema(alone, HuldaAndAela(), {"attack"}, test::HULDA), core::DataError);
+    CHECK_THROWS_WITH(world.ProposalSchema(alone, HuldaAndAela(), {"attack"}, test::HULDA),
+                      ContainsSubstring("allowed_actions: no allowed action"));
+}
+
+TEST_CASE("The catalog is checked at open, naming the pointer of its first fault", "[hosted]")
+{
+    CHECK(OpenError(test::FixtureHostData()).empty());
+    CHECK(OpenError(WithCatalog(R"([])")) == "catalog at the root: the catalog must be a JSON object with 'actions'");
+    CHECK(OpenError(WithCatalog(R"({"actions": [], "version": 2})")) ==
+          "catalog at /version: 'version' does not apply to the catalog");
+    CHECK(OpenError(WithCatalog(R"({"actions": []})")) == "catalog at /actions: 'actions' must be a non-empty array");
+    CHECK(OpenError(WithCatalog(R"({"actions": ["none"]})")) == "catalog at /actions/0: an action must be a JSON object");
+    CHECK(OpenError(WithCatalog(R"({"actions": [{"id": ""}]})")) ==
+          "catalog at /actions/0/id: an action needs 'id', a non-empty string");
+    CHECK(OpenError(WithCatalog(R"({"actions": [{"id": "none"}, {"id": "none"}]})")) ==
+          "catalog at /actions/1/id: the id 'none' is repeated: /actions/0 has it too");
+    CHECK(OpenError(WithCatalog(R"({"actions": [{"id": "none", "label": "Nothing"}]})")) ==
+          "catalog at /actions/0/label: 'label' does not apply to an action");
+    CHECK(OpenError(WithCatalog(R"({"actions": [{"id": "x", "params": []}]})")) ==
+          "catalog at /actions/0/params: 'params' must be a JSON object");
+    CHECK(OpenError(WithCatalog(R"({"actions": [{"id": "x", "params": {"p": 3}}]})")) ==
+          "catalog at /actions/0/params/p: a parameter must be a JSON object");
+    CHECK(OpenError(WithCatalog(R"({"actions": [{"id": "x", "params": {"p": {"type": "float"}}}]})")) ==
+          "catalog at /actions/0/params/p/type: 'type' must be 'actor', 'string', 'integer' or 'enum'");
+    CHECK(OpenError(WithCatalog(R"({"actions": [{"id": "x", "params": {"p": {"type": "actor", "scope": "nearby"}}}]})")) ==
+          "catalog at /actions/0/params/p/scope: 'scope' must be 'present', 'present_non_player' or 'participant'");
+    CHECK(OpenError(WithCatalog(
+              R"({"actions": [{"id": "x", "params": {"p": {"type": "actor", "scope": "present", "maxLength": 3}}}]})")) ==
+          "catalog at /actions/0/params/p/maxLength: 'maxLength' does not apply to an actor parameter");
+    CHECK(OpenError(WithCatalog(R"({"actions": [{"id": "x", "params": {"p": {"type": "string"}}}]})")) ==
+          "catalog at /actions/0/params/p/maxLength: a string parameter needs 'maxLength', an integer from 0 to 1999");
+    CHECK(OpenError(WithCatalog(
+              R"({"actions": [{"id": "x", "params": {"p": {"type": "string", "maxLength": 4, "minLength": 5}}}]})")) ==
+          "catalog at /actions/0/params/p/minLength: 'minLength' must be an integer from 0 to 4 (the 'maxLength')");
+    CHECK(OpenError(WithCatalog(
+              R"({"actions": [{"id": "x", "params": {"p": {"type": "integer", "minimum": 5, "maximum": 3}}}]})")) ==
+          "catalog at /actions/0/params/p: 'minimum' 5 is above 'maximum' 3");
+    CHECK(OpenError(WithCatalog(R"({"actions": [{"id": "x", "params": {"p": {"type": "integer", "maximum": 3}}}]})")) ==
+          "catalog at /actions/0/params/p/minimum: an integer parameter needs 'minimum', an integer");
+    CHECK(OpenError(WithCatalog(R"({"actions": [{"id": "x", "params": {"p": {"type": "enum", "values": []}}}]})")) ==
+          "catalog at /actions/0/params/p/values: 'values' must be a non-empty array of strings");
+    CHECK(OpenError(WithCatalog(R"({"actions": [{"id": "x", "params": {"p": {"type": "enum", "values": ["a", "a"]}}}]})")) ==
+          "catalog at /actions/0/params/p/values/1: 'a' is listed twice");
+
+    // Integer and enum parameters reach the proposal as their own schemas, every parameter required.
+    const turn::HostedWorld paying(WithCatalog(R"({"actions": [{"id": "pay", "params": {
+        "gold": {"type": "integer", "minimum": 1, "maximum": 100},
+        "mood": {"type": "enum", "values": ["calm", "angry"]}}}]})"));
+    const nlohmann::json pay =
+        paying.ProposalSchema(paying.Observe(test::FixtureObservation()), HuldaAndAela(), {"pay"}, test::HULDA);
+    const nlohmann::json& params = pay.at("oneOf")[0].at("properties").at("params");
+    CHECK(params.at("properties").at("gold") == R"({"type": "integer", "minimum": 1, "maximum": 100})"_json);
+    CHECK(params.at("properties").at("mood") == R"({"enum": ["calm", "angry"]})"_json);
+    CHECK(params.at("required") == R"(["gold", "mood"])"_json);
+}
+
+TEST_CASE("The observation schema is checked at open against Validate's extended subset", "[hosted]")
+{
+    turn::HostData data = test::FixtureHostData();
+    data.observationSchema =
+        R"({"type": "object", "required": [], "properties": {"location": {"type": "string", "pattern": "^W"}}})"_json;
+    CHECK(OpenError(data) ==
+          "observation_schema: schema at /properties/location/pattern: the keyword 'pattern' is not supported");
+    data.observationSchema = R"({"type": "object", "required": [], "properties": {"weather": {"type": "null"}}})"_json;
+    CHECK(OpenError(data) == "observation_schema: schema at /properties/weather/type: the type 'null' is not supported");
+    // Numbers, booleans, optional keys, open objects and unbounded strings and arrays are in the subset: the
+    // fixture's schema uses each.
+    data.observationSchema = test::FixtureHostData().observationSchema;
+    CHECK(OpenError(data).empty());
+}
+
+TEST_CASE("The host's lore is checked at open", "[hosted]")
+{
+    turn::HostData data = test::FixtureHostData();
+    data.lore[1].subject = "";
+    CHECK(OpenError(data) == "lore at /1/subject: a lore entry needs a subject");
+    data = test::FixtureHostData();
+    data.lore[3].subject = "Whiterun";
+    CHECK(OpenError(data) == "lore at /3/subject: the subject 'Whiterun' is repeated: /0 has it too");
+    data = test::FixtureHostData();
+    data.lore[0].data = "";
+    CHECK(OpenError(data) == "lore at /0/data: a lore entry needs data");
+    CHECK(turn::HostedWorld(test::FixtureHostData()).Lore().size() == 4);
+}
+
+TEST_CASE("Observe reads the actors and validates the rest against the host's schema", "[hosted]")
+{
+    const turn::HostedWorld world(test::FixtureHostData());
+    const nlohmann::json json = test::FixtureObservation();
+    const turn::Observation observation = world.Observe(json);
+    CHECK(observation.json == json);
+    REQUIRE(observation.actors.size() == 3);
+    CHECK(observation.actors[0].id == test::HULDA);
+    CHECK(observation.actors[0].name == "Hulda");
+    CHECK_FALSE(observation.actors[0].isPlayer);
+    CHECK(observation.actors[0].bio == "Hulda keeps the Bannered Mare.");
+    CHECK(observation.actors[2].bio.empty()); // The player has a description, not a bio.
+    CHECK(observation.Player().id == test::AELA);
+    REQUIRE(observation.Find(test::SAADIA) != nullptr);
+    CHECK(observation.Find(test::SAADIA)->name == "Saadia");
+    CHECK(observation.Find("00000000") == nullptr);
+    CHECK(turn::HostedWorld::ActorsOf(json).size() == 3);
+
+    // The rest is the host's to describe: each field its schema refuses is a fault, all of them reported.
+    nlohmann::json wrong = json;
+    wrong["weather"] = 3;
+    wrong["mood"] = "tense";
+    const std::string message = ObserveError(world, wrong);
+    CHECK_THAT(message, ContainsSubstring("observation at /weather: expected a string, got 3"));
+    CHECK_THAT(message, ContainsSubstring("; observation at /mood: unexpected key 'mood'"));
+}
+
+TEST_CASE("Each fault of the observation core is a DataError naming its pointer", "[hosted]")
+{
+    const turn::HostedWorld world(WithOpenSchema());
+    // The fixture observation with the field `key` of actor `index` set to `value`.
+    auto withActor = [](std::size_t index, const char* key, const nlohmann::json& value) {
+        nlohmann::json observation = test::FixtureObservation();
+        observation.at("actors").at(index)[key] = value;
+        return observation;
+    };
+    CHECK_THAT(ObserveError(world, nlohmann::json::array()),
+               ContainsSubstring("observation at the root: the observation must be a JSON object"));
+    CHECK(ObserveError(world, R"({"location": "inn"})"_json) ==
+          "observation at /actors: the observation needs 'actors', an array");
+    nlohmann::json notAnActor = test::FixtureObservation();
+    notAnActor.at("actors").push_back(3);
+    CHECK(ObserveError(world, notAnActor) == "observation at /actors/3: an actor must be a JSON object");
+    CHECK(ObserveError(world, withActor(0, "id", "")) ==
+          "observation at /actors/0/id: an actor needs 'id', a non-empty string");
+    CHECK(ObserveError(world, withActor(1, "name", 7)) ==
+          "observation at /actors/1/name: an actor needs 'name', a non-empty string");
+    CHECK(ObserveError(world, withActor(1, "is_player", "no")) ==
+          "observation at /actors/1/is_player: an actor needs 'is_player', true or false");
+    CHECK(ObserveError(world, withActor(0, "bio", 5)) == "observation at /actors/0/bio: 'bio' must be a string");
+    CHECK(ObserveError(world, withActor(2, "id", test::HULDA)) ==
+          "observation at /actors/2/id: the id '0001A6A4' is repeated: /actors/0 has it too");
+    CHECK(ObserveError(world, withActor(0, "is_player", true)) ==
+          "observation at /actors: exactly one actor must be the player, not 2");
+    CHECK(ObserveError(world, withActor(2, "is_player", false)) ==
+          "observation at /actors: exactly one actor must be the player, not 0");
+
+    // Every fault is reported, joined in order.
+    nlohmann::json twoFaults = withActor(0, "id", "");
+    twoFaults.at("actors").at(1)["bio"] = 5;
+    CHECK(ObserveError(world, twoFaults) == "observation at /actors/0/id: an actor needs 'id', a non-empty string; "
+                                            "observation at /actors/1/bio: 'bio' must be a string");
+    CHECK_THROWS_AS(turn::HostedWorld::ActorsOf(twoFaults), core::DataError);
+}
+
+TEST_CASE("Adjudicate requests a valid action and refuses the model's mistakes with their reasons", "[hosted]")
+{
+    const turn::HostedWorld world(test::FixtureHostData());
+    const nlohmann::json schema = world.ProposalSchema(world.Observe(test::FixtureObservation()), HuldaAndAela(),
+                                                       world.ActionIds(), test::HULDA);
+
+    const core::Adjudication attack = world.Adjudicate(schema, R"({"action":"attack","params":{"target":"0001B07C"}})");
+    CHECK(attack.requested);
+    CHECK(attack.actionId == "attack");
+    CHECK(attack.params == R"({"target": "0001B07C"})"_json);
+    CHECK(attack.reasons.empty());
+
+    // The measured failure the grammar exists for: an "intent" key added to wait.
+    const core::Adjudication intent = world.Adjudicate(schema, R"({"action":"wait","params":{},"intent":"rest"})");
+    CHECK_FALSE(intent.requested);
+    CHECK(intent.actionId.empty());
+    CHECK(intent.reasons == std::vector<std::string>{"/intent: unexpected key 'intent'; the keys are 'action', 'params'"});
+
+    const core::Adjudication fly = world.Adjudicate(schema, R"({"action":"fly","params":{}})");
+    CHECK_FALSE(fly.requested);
+    REQUIRE(fly.reasons.size() == 1);
+    CHECK(fly.reasons[0].starts_with("/action: unknown action 'fly'; expected one of: "));
+
+    // A target the turn does not offer: the speaker herself.
+    const core::Adjudication self = world.Adjudicate(schema, R"({"action":"attack","params":{"target":"0001A6A4"}})");
+    CHECK_FALSE(self.requested);
+    CHECK(self.reasons == std::vector<std::string>{R"(/params/target: '0001A6A4' is not one of: "0001B07C")"});
+
+    // Text that does not parse, among it a lone surrogate escape the grammar admits and the JSON parser refuses.
+    const core::Adjudication cut = world.Adjudicate(schema, R"({"action":"fol)");
+    CHECK_FALSE(cut.requested);
+    REQUIRE(cut.reasons.size() == 1);
+    CHECK(cut.reasons[0].starts_with("the output is not valid JSON: "));
+    const std::string surrogate = std::string(R"({"action":"give_item","params":{"item":")") + BACKSLASH + "ud800\"}}";
+    const core::Adjudication lone = world.Adjudicate(schema, surrogate);
+    CHECK_FALSE(lone.requested);
+    REQUIRE(lone.reasons.size() == 1);
+    CHECK(lone.reasons[0].starts_with("the output is not valid JSON: "));
+}
+
+TEST_CASE("Events are JSON objects with a text string", "[hosted]")
+{
+    CHECK_NOTHROW(turn::HostedWorld::CheckEvents(
+        {R"({"type": "action_result", "action": "follow", "actor": "0001A6A4", "succeeded": true, "text": "Hulda is now following Aela."})"_json,
+         R"({"text": "Rain."})"_json}));
+    CHECK_NOTHROW(turn::HostedWorld::CheckEvents({}));
+    CHECK_THROWS_WITH(turn::HostedWorld::CheckEvents({R"({"text": "a"})"_json, R"("b")"_json}),
+                      "events/1: an event must be a JSON object");
+    CHECK_THROWS_WITH(turn::HostedWorld::CheckEvents({R"({"type": "ambient"})"_json}),
+                      "events/0/text: an event needs 'text', a string");
+    CHECK_THROWS_WITH(turn::HostedWorld::CheckEvents({R"({"text": 3})"_json}),
+                      "events/0/text: an event needs 'text', a string");
+}
