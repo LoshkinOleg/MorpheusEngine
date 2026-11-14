@@ -27,10 +27,19 @@ constexpr std::array<store::EmbeddingKind, 3> ALL_SOURCES = {store::EmbeddingKin
 // Stands in for the next input when maintenance measures the stable layers between turns.
 constexpr std::string_view MAINTENANCE_INPUT = "(the player's next action)";
 
-// One model call's numbers for the turn telemetry (TurnRecord::timings). A call that was allowed to think also
-// gets its thinking block: its numbers and its text, kept so the turn log can show why the model did what it did.
-// The thinking text goes nowhere else: not into the narration, the transcript or a later prompt.
-nlohmann::json Telemetry(const inference::Completion& completion, const inference::GenerationSpec& spec)
+} // namespace
+
+inference::Sampling SamplingFrom(const core::SamplingSettings& settings, std::uint32_t seed)
+{
+    inference::Sampling sampling;
+    sampling.temperature = static_cast<float>(settings.temperature);
+    sampling.topK = settings.topK;
+    sampling.topP = static_cast<float>(settings.topP);
+    sampling.seed = seed;
+    return sampling;
+}
+
+nlohmann::json CallTelemetry(const inference::Completion& completion, const inference::GenerationSpec& spec)
 {
     nlohmann::json telemetry = {{"prompt_tokens", completion.promptTokens},  {"reused", completion.tokensReused},
                                 {"evaluated", completion.tokensEvaluated},   {"generated", completion.tokensGenerated},
@@ -43,18 +52,6 @@ nlohmann::json Telemetry(const inference::Completion& completion, const inferenc
                                  {"text", completion.thinking}};
     }
     return telemetry;
-}
-
-} // namespace
-
-inference::Sampling SamplingFrom(const core::SamplingSettings& settings, std::uint32_t seed)
-{
-    inference::Sampling sampling;
-    sampling.temperature = static_cast<float>(settings.temperature);
-    sampling.topK = settings.topK;
-    sampling.topP = static_cast<float>(settings.topP);
-    sampling.seed = seed;
-    return sampling;
 }
 
 Session::Session(core::World world, core::Settings settings, store::RunStore store, MemoryIndex index,
@@ -305,7 +302,7 @@ std::optional<core::TurnRecord> Session::PlayTurn(const std::string& input, int 
             capLeft -= hit.tokens;
         }
         std::string lookupError;
-        nlohmann::json lookupTelemetry = Telemetry(looked, lookupSpec);
+        nlohmann::json lookupTelemetry = CallTelemetry(looked, lookupSpec);
         lookupTelemetry["requests"] = nlohmann::json::array();
         for (const Lookup& lookup : ParseLookupOutput(looked.text, lookupError)) {
             const std::array<store::EmbeddingKind, 1> source = {lookup.source};
@@ -391,7 +388,7 @@ std::optional<core::TurnRecord> Session::PlayTurn(const std::string& input, int 
         return std::nullopt;
     }
     record.narration = core::Trim(narrated.text);
-    telemetry["narrate"] = Telemetry(narrated, narrateSpec);
+    telemetry["narrate"] = CallTelemetry(narrated, narrateSpec);
 
     // 5. Review, when the narration check or the compact transcript is on: one standalone call reads the outcome
     // and the narration, and says whether they agree (the check), writes the turn's digest (the compact transcript),
@@ -416,7 +413,7 @@ std::optional<core::TurnRecord> Session::PlayTurn(const std::string& input, int 
                 return std::nullopt;
             }
             Review result = ParseReviewOutput(reviewed.text, check, digest);
-            nlohmann::json entry = Telemetry(reviewed, spec);
+            nlohmann::json entry = CallTelemetry(reviewed, spec);
             if (result.consistent) {
                 entry["consistent"] = *result.consistent;
             }
@@ -448,7 +445,7 @@ std::optional<core::TurnRecord> Session::PlayTurn(const std::string& input, int 
             if (renarrated.cancelled) {
                 return std::nullopt;
             }
-            telemetry["renarrate"] = Telemetry(renarrated, narrateSpec);
+            telemetry["renarrate"] = CallTelemetry(renarrated, narrateSpec);
             telemetry["renarrate"]["replaced"] = record.narration;
             record.narration = core::Trim(renarrated.text);
             // The offset keeps this seed apart from a regenerated turn's first review (attempt + 1).
@@ -461,7 +458,7 @@ std::optional<core::TurnRecord> Session::PlayTurn(const std::string& input, int 
     }
 
     // 7. Commit.
-    telemetry["resolve"] = Telemetry(resolved, resolveSpec);
+    telemetry["resolve"] = CallTelemetry(resolved, resolveSpec);
     if (!proposal.error.empty()) {
         // Why nothing was proposed: the record's resolve output alone does not say so for JSON of the wrong shape.
         telemetry["resolve"]["error"] = proposal.error;

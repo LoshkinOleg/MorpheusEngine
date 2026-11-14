@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <stop_token>
 #include <string>
@@ -17,12 +18,31 @@
 #include "inference/Llm.h"
 #include "store/RunStore.h"
 #include "turn/HostedWorld.h"
+#include "turn/MemoryUpkeep.h"
 #include "turn/Retrieval.h"
 
 namespace morpheus::turn {
 
 // Every hosted run's world id (store::RunMeta::worldId).
 constexpr std::string_view HOSTED_WORLD_ID = "hosted";
+
+// One hosted turn as the host asks for it (hosted-world spec, section 1).
+struct HostedTurnRequest {
+    std::string conversationId = {};
+    std::string speakerId = {};
+    std::optional<std::string> playerText = {}; // Absent for a turn between NPCs.
+    std::vector<nlohmann::json> events = {};    // Objects with a `text` string, added to the conversation before the turn.
+    nlohmann::json observation = nlohmann::json::object();
+    std::optional<std::vector<std::string>> allowedActions = {}; // Action ids; absent means every action of the catalog.
+};
+
+// What a hosted turn reports while it runs.
+struct HostedCallbacks {
+    // After the resolve call, before the line starts: what became of the speaker's proposed action.
+    std::function<void(const core::Adjudication&)> onAction = {};
+    // The line's pieces as they are written.
+    inference::TokenCallback onToken = {};
+};
 
 // One open hosted run (hosted-world spec, section 1): the counterpart of turn::Session for a world the host owns and
 // sends as data. Every backend call happens on the caller's thread. Not thread-safe.
@@ -59,6 +79,18 @@ public:
     void SetParticipants(std::string_view conversationId, const std::vector<std::string>& joined,
                          const std::vector<std::string>& left, const nlohmann::json& observation);
 
+    // Plays one turn (hosted-world spec, section 2): checks the request, retrieves from lore and the run's folded
+    // turns, resolves under the proposal grammar (the fit loop folding the conversation's oldest turns when L3 is
+    // over its budget), adjudicates and reports the action through onAction, speaks on a prompt that extends the
+    // resolve prompt (streamed through onToken), and commits the record. Player text is cleaned as Session cleans
+    // input; nothing left means none. Returns the committed turn, or nullopt when `stop` cancelled it: then no turn is
+    // committed and the request's events are not kept (folds the fit loop finished before the stop are, as in
+    // Session). Throws DataError naming the field for a malformed request (before any model call), TurnError when
+    // the tail does not fit tail_allowance, and InferenceError from the backend. Model mistakes are not exceptions: a
+    // refused action is recorded with its reasons and the turn goes on with no action.
+    std::optional<core::HostedTurn> RunTurn(const HostedTurnRequest& request, const HostedCallbacks& callbacks,
+                                            std::stop_token stop);
+
     // Marks the conversation ended; the next Maintain folds its remaining turns. Throws DataError for an unknown or
     // ended conversation.
     void EndConversation(std::string_view conversationId);
@@ -86,6 +118,15 @@ private:
 
     // Indexes every conversation's folded turns as searchable history.
     void SyncHistory();
+
+    // One pass of the memory upkeep for a turn of conversation `conversationId`: the hosted prompt for `hits`, with
+    // the tail parts `inputs` already holds (observation, events, player line, instruction) and the conversation, the
+    // summaries and its unfolded entries read from the store as it is now; and the entries its L3 shows.
+    FitPass Pass(std::string_view conversationId, const std::vector<RetrievalHit>& hits, context::HostedInputs inputs);
+
+    // The shared memory upkeep for turn `turn` of conversation `conversationId`: a fold's summary joins the store with
+    // the conversation's folded mark, and the folded turns become searchable history.
+    MemoryUpkeep Upkeep(const std::string& conversationId, int turn);
 };
 
 } // namespace morpheus::turn

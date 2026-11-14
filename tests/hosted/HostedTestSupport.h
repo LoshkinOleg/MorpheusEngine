@@ -1,16 +1,22 @@
 #pragma once
 
+#include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
 #include "TestPaths.h"
+#include "core/Errors.h"
 #include "core/Settings.h"
+#include "fakes/ScriptedBackend.h"
+#include "turn/EngineText.h"
+#include "turn/HostedSession.h"
 #include "turn/HostedWorld.h"
 
 namespace morpheus::test {
@@ -71,6 +77,47 @@ inline core::Settings HostedSettings()
 inline std::filesystem::path HostedRunFile(std::string_view name)
 {
     return FreshTempDir(name) / "run.db";
+}
+
+// A scripted model for hosted turns. Resolve calls (they carry the proposal grammar) get `actions` in order, speak
+// calls (no grammar) get `lines` in order, and fold and condense calls "Summary.". Running out of replies is a test
+// bug. The script must outlive the backends that call it.
+struct HostedScript {
+    std::vector<std::string> actions = {};
+    std::vector<std::string> lines = {};
+    std::size_t acted = 0;
+    std::size_t spoken = 0;
+
+    ScriptedBackend::Responder Responder()
+    {
+        return [this](const inference::Prompt& prompt, const inference::GenerationSpec& spec) -> std::string {
+            const std::string& last = prompt.messages.back().content;
+            if (last == turn::SUMMARIZE_INSTRUCTION || last == turn::CONDENSE_INSTRUCTION) {
+                return "Summary.";
+            }
+            if (!spec.grammar.empty()) {
+                MORPHEUS_REQUIRE(acted < actions.size(), "HostedScript: no action left");
+                return actions[acted++];
+            }
+            MORPHEUS_REQUIRE(spoken < lines.size(), "HostedScript: no line left");
+            return lines[spoken++];
+        };
+    }
+};
+
+// A request in conversation `conversationId`: `speakerId` speaks after `playerText` (no player text when it is
+// empty), in observation.json, with every action of the catalog allowed.
+inline turn::HostedTurnRequest Request(const std::string& conversationId, const std::string& speakerId,
+                                       const std::string& playerText)
+{
+    turn::HostedTurnRequest request;
+    request.conversationId = conversationId;
+    request.speakerId = speakerId;
+    if (!playerText.empty()) {
+        request.playerText = playerText;
+    }
+    request.observation = FixtureObservation();
+    return request;
 }
 
 } // namespace morpheus::test

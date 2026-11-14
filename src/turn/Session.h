@@ -35,6 +35,12 @@ constexpr int REVIEW_RETRY_OFFSET = 1 << 23;
 // The sampling for one call from its settings.json values and the call's seed (core::SamplingSeed).
 inference::Sampling SamplingFrom(const core::SamplingSettings& settings, std::uint32_t seed);
 
+// One model call's numbers for a turn's telemetry (core::TurnRecord::timings, core::HostedTurn::timings). A call that
+// was allowed to think also gets its thinking block: its numbers and its text, kept so the turn log can show why the
+// model did what it did. The thinking text goes nowhere else: not into the narration, the transcript or a later
+// prompt.
+nlohmann::json CallTelemetry(const inference::Completion& completion, const inference::GenerationSpec& spec);
+
 struct TurnCallbacks {
     // After apply, before narrate: the record has its checks and applied and rejected changes, no narration yet.
     std::function<void(const core::TurnRecord&)> onResolved = {};

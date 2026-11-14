@@ -1,14 +1,17 @@
 #include "turn/HostedSession.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <format>
 #include <system_error>
 #include <utility>
 
+#include "core/Dice.h"
 #include "core/Errors.h"
 #include "core/Text.h"
 #include "turn/EngineText.h"
+#include "turn/Session.h"
 
 namespace morpheus::turn {
 
@@ -16,6 +19,10 @@ namespace {
 
 // The names of the host's lore in errors.
 constexpr std::string_view HOST_LORE_SOURCE = "host data: lore";
+// What a hosted tail holds, for the TurnError when it does not fit tail_allowance.
+constexpr std::string_view HOSTED_TAIL_NAME = "the observation, the events and the player text";
+// A hosted turn retrieves from the host's lore and the run's folded turns; a hosted run has no notes.
+constexpr std::array<store::EmbeddingKind, 2> HOSTED_SOURCES = {store::EmbeddingKind::Lore, store::EmbeddingKind::Turn};
 // The variables the engine fills in the hosted texts.
 constexpr std::string_view SPEAKER_VARIABLE = "{speaker}";
 constexpr std::string_view PLAYER_VARIABLE = "{player}";
@@ -180,6 +187,163 @@ void HostedSession::SetParticipants(std::string_view conversationId, const std::
     _store.SetParticipants(conversation.id, participants);
 }
 
+std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& request,
+                                                       const HostedCallbacks& callbacks, std::stop_token stop)
+{
+    // 0. Check the request: nothing is stored and no model call is made before it passes. The conversation exists and
+    // is open, the observation passes Observe, the speaker takes part, is present and is not the player, every
+    // allowed action is in the catalog with one left after the actor scopes, and every event has its text.
+    const core::Conversation conversation = OpenConversation(request.conversationId);
+    const Observation observation = _world.Observe(request.observation);
+    const bool participates = std::any_of(conversation.participants.begin(), conversation.participants.end(),
+                                          [&](const core::Participant& participant) { return participant.id == request.speakerId; });
+    if (!participates) {
+        throw core::DataError(std::format("speaker: '{}' is not a participant of conversation '{}'", request.speakerId,
+                                          conversation.id));
+    }
+    const Actor* pSpeaker = observation.Find(request.speakerId);
+    if (pSpeaker == nullptr) {
+        throw core::DataError(std::format("speaker: '{}' is not an actor of the observation", request.speakerId));
+    }
+    if (pSpeaker->isPlayer) {
+        throw core::DataError(
+            std::format("speaker: '{}' is the player; the host speaks for the player", request.speakerId));
+    }
+    const std::vector<std::string> allowed = request.allowedActions.value_or(_world.ActionIds());
+    const nlohmann::json proposalSchema =
+        _world.ProposalSchema(observation, conversation.participants, allowed, request.speakerId);
+    HostedWorld::CheckEvents(request.events);
+
+    // Player text is cleaned as Session cleans input: control characters other than newline and tab go (they have no
+    // place in a prompt), and it is trimmed. Nothing left means no player text.
+    std::optional<std::string> playerText;
+    if (request.playerText) {
+        std::string kept;
+        for (const char c : *request.playerText) {
+            const auto byte = static_cast<unsigned char>(c);
+            if ((byte >= 0x20 && byte != 0x7F) || c == '\n' || c == '\t') {
+                kept += c;
+            }
+        }
+        std::string cleaned = core::Trim(kept);
+        if (!cleaned.empty()) {
+            playerText = std::move(cleaned);
+        }
+    }
+
+    // The instructions name the speaker and the player. The speak instruction must fit narrate_allowance, which the
+    // prompt reserves for it; the names come from the host.
+    const Actor& player = observation.Player();
+    const std::string resolveInstruction = FillVariables(HOSTED_RESOLVE_INSTRUCTION, pSpeaker->name, player.name);
+    const std::string speakMessage = FillVariables(HOSTED_SPEAK_INSTRUCTION, pSpeaker->name, player.name);
+    const int speakTokens = _pBackend->CountTokens(speakMessage);
+    if (speakTokens > _settings.budget.narrateAllowance) {
+        throw core::DataError(std::format("speaker: the speak instruction for '{}' uses {} tokens, over "
+                                          "narrate_allowance {}",
+                                          pSpeaker->name, speakTokens, _settings.budget.narrateAllowance));
+    }
+
+    const int turn = _store.LatestHostedTurn() + 1; // Run-wide, shared with the summaries' ranges.
+    const std::uint64_t seed = _store.Meta().rngSeed;
+    const std::vector<core::HostedTurn> played = _store.HostedTurns(conversation.id);
+    const int lastTurn = played.empty() ? 0 : played.back().number;
+
+    // The new events: those recorded since the conversation's last turn, then the request's, in order.
+    std::vector<std::string> newEvents;
+    for (const core::ConversationEvent& recorded : _store.ConversationEvents(conversation.id)) {
+        if (recorded.afterTurn == lastTurn) {
+            newEvents.push_back(recorded.event.at("text").get<std::string>());
+        }
+    }
+    for (const nlohmann::json& event : request.events) {
+        newEvents.push_back(event.at("text").get<std::string>());
+    }
+
+    // 1. Retrieve from lore and the run's folded turns (this and earlier conversations), with the player text, the
+    // speaker's name and the previous line.
+    RetrievalQuery query;
+    query.input = playerText.value_or("");
+    query.scene = {pSpeaker->name};
+    query.digest = played.empty() ? std::string() : played.back().line;
+    std::vector<RetrievalHit> hits =
+        _index.Retrieve(query, HOSTED_SOURCES, _settings.budget.retrievalCap, RETRIEVAL_MAX_HITS, *_pBackend);
+
+    // 2. Resolve: a prompt that fits (the fit loop sheds hits, condenses and folds), under the proposal grammar.
+    context::HostedInputs tail;
+    tail.observation = observation.json;
+    tail.events = newEvents;
+    tail.playerLine = playerText ? player.name + ": " + *playerText : std::string();
+    tail.instruction = resolveInstruction;
+    std::optional<context::Assembly> assembly = Upkeep(conversation.id, turn).Fit(
+        hits, [&](const std::vector<RetrievalHit>& kept) { return Pass(conversation.id, kept, tail); }, stop);
+    if (!assembly) {
+        return std::nullopt;
+    }
+    _lastAssembly = *assembly;
+    inference::GenerationSpec resolveSpec;
+    resolveSpec.grammar = _world.ProposalGrammar(observation, conversation.participants, allowed, request.speakerId);
+    resolveSpec.maxTokens = _settings.budget.resolveMaxTokens;
+    resolveSpec.thinkingMaxTokens = _settings.budget.resolveThinkingTokens;
+    resolveSpec.sampling =
+        SamplingFrom(_settings.resolveSampling, core::SamplingSeed(seed, turn, core::CallKind::Resolve, 0));
+    const inference::Completion resolved = _pBackend->Complete(assembly->prompt, resolveSpec, {}, stop);
+    if (resolved.cancelled) {
+        return std::nullopt;
+    }
+    // A refused action is the model's mistake: its reasons are kept, and the speaker takes no action.
+    const core::Adjudication adjudication = _world.Adjudicate(proposalSchema, resolved.text);
+    if (callbacks.onAction) {
+        callbacks.onAction(adjudication);
+    }
+
+    // 3. Speak: the resolve prompt, the resolve output as the model wrote it, and the speak instruction, so nearly all
+    // of the prompt stays cached. No grammar; the line streams.
+    inference::Prompt speakPrompt = assembly->prompt;
+    context::ExtendForNarrate(speakPrompt, resolved.text, speakMessage);
+    inference::GenerationSpec speakSpec;
+    speakSpec.maxTokens = _settings.budget.narrateMaxTokens;
+    speakSpec.thinkingMaxTokens = _settings.budget.narrateThinkingTokens;
+    speakSpec.sampling =
+        SamplingFrom(_settings.narrateSampling, core::SamplingSeed(seed, turn, core::CallKind::Narrate, 0));
+    const inference::Completion spoken = _pBackend->Complete(speakPrompt, speakSpec, callbacks.onToken, stop);
+    if (spoken.cancelled) {
+        return std::nullopt;
+    }
+
+    // 4. Commit the record: the listeners are the other participants present.
+    core::HostedTurn record;
+    record.number = turn;
+    record.conversationId = conversation.id;
+    record.speakerId = request.speakerId;
+    for (const core::Participant& participant : conversation.participants) {
+        if (participant.id != request.speakerId && observation.Find(participant.id) != nullptr) {
+            record.listenerIds.push_back(participant.id);
+        }
+    }
+    record.playerText = playerText;
+    record.events = request.events;
+    record.observation = observation.json;
+    record.resolveOutput = resolved.text;
+    record.adjudication = adjudication;
+    record.line = core::Trim(spoken.text);
+    nlohmann::json timings = nlohmann::json::object();
+    timings["resolve"] = CallTelemetry(resolved, resolveSpec);
+    if (!adjudication.requested) {
+        timings["resolve"]["refused"] = adjudication.reasons; // The log of why the speaker took no action.
+    }
+    timings["speak"] = CallTelemetry(spoken, speakSpec);
+    timings["retrieval"] = nlohmann::json::array(); // The hits that made it into the prompt, and why they matched.
+    for (const RetrievalHit& hit : hits) {
+        timings["retrieval"].push_back({{"source", hit.kind == store::EmbeddingKind::Lore ? "lore" : "history"},
+                                        {"ref", hit.refId},
+                                        {"score", hit.score},
+                                        {"reasons", hit.reasons}});
+    }
+    record.timings = std::move(timings);
+    _store.CommitHostedTurn(record);
+    return record;
+}
+
 void HostedSession::EndConversation(std::string_view conversationId)
 {
     const core::Conversation conversation = OpenConversation(conversationId);
@@ -301,6 +465,38 @@ void HostedSession::SyncHistory()
         }
     }
     _index.SyncEntries(folded, _store, *_pBackend);
+}
+
+FitPass HostedSession::Pass(std::string_view conversationId, const std::vector<RetrievalHit>& hits,
+                            context::HostedInputs inputs)
+{
+    // The conversation as the store holds it now: a fold since the last pass moved its folded mark.
+    const std::optional<core::Conversation> conversation = _store.Conversation(conversationId);
+    MORPHEUS_REQUIRE(conversation.has_value(), "HostedSession::Pass: the conversation is not in the store");
+    inputs.systemText = std::string(HOSTED_SYSTEM_TEXT);
+    inputs.lore = _world.Lore();
+    inputs.participants = conversation->participants;
+    inputs.summaries = _store.Summaries();
+    inputs.transcript = Entries(*conversation, false);
+    inputs.retrieved.clear();
+    for (const RetrievalHit& hit : hits) {
+        inputs.retrieved.push_back(hit.text);
+    }
+
+    FitPass pass;
+    pass.assembly = context::AssembleHostedPrompt(inputs, _settings.budget, *_pBackend);
+    pass.transcript = std::move(inputs.transcript);
+    return pass;
+}
+
+MemoryUpkeep HostedSession::Upkeep(const std::string& conversationId, int turn)
+{
+    // A fold's summary joins the store with the conversation's folded mark, and the folded turns become history.
+    return MemoryUpkeep(_store, *_pBackend, _settings, std::string(HOSTED_TAIL_NAME), turn, 0,
+                        [this, conversationId](const core::Summary& summary) {
+                            _store.FoldConversation(conversationId, summary);
+                            SyncHistory();
+                        });
 }
 
 } // namespace morpheus::turn
