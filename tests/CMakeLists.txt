@@ -11,6 +11,11 @@ if(NOT MORPHEUS_BUILD_LLAMA_SERVER)
     list(FILTER MORPHEUS_TEST_SOURCES EXCLUDE REGEX "/tests/llamaserver/")
 endif()
 
+# The server's tests need morpheus_server_lib; presets without it skip their sources too.
+if(NOT MORPHEUS_BUILD_SERVER)
+    list(FILTER MORPHEUS_TEST_SOURCES EXCLUDE REGEX "/tests/server/")
+endif()
+
 add_executable(morpheus_tests ${MORPHEUS_TEST_SOURCES})
 target_link_libraries(morpheus_tests PRIVATE morpheus_core morpheus_store morpheus_inference morpheus_context morpheus_grammar morpheus_turn morpheus_app_model morpheus_app_ui imgui_core Catch2::Catch2WithMain)
 if(MORPHEUS_BUILD_LLAMA)
@@ -18,6 +23,9 @@ if(MORPHEUS_BUILD_LLAMA)
 endif()
 if(MORPHEUS_BUILD_LLAMA_SERVER)
     target_link_libraries(morpheus_tests PRIVATE morpheus_llamaserver morpheus_httplib) # morpheus_httplib: the fake llama-server.
+endif()
+if(MORPHEUS_BUILD_SERVER)
+    target_link_libraries(morpheus_tests PRIVATE morpheus_server_lib)
 endif()
 target_include_directories(morpheus_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(morpheus_tests PRIVATE

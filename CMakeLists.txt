@@ -25,6 +25,7 @@ option(MORPHEUS_BUILD_TESTS "Build morpheus_tests (fetches Catch2, and ImGui's c
 option(MORPHEUS_BUILD_LLAMA "Build the llama.cpp backend, morpheus_probe and morpheus_play (fetches and builds llama.cpp)" ${PROJECT_IS_TOP_LEVEL})
 # On in every build, vendored ones included: the llama-server backend needs no GPU or model, only cpp-httplib.
 option(MORPHEUS_BUILD_LLAMA_SERVER "Build the llama-server backend, morpheus_llamaserver (fetches cpp-httplib, header-only, no OpenSSL)" ON)
+option(MORPHEUS_BUILD_SERVER "Build morpheus_server, the HTTP server for hosted runs (needs MORPHEUS_BUILD_LLAMA_SERVER; no llama.cpp)" ${PROJECT_IS_TOP_LEVEL})
 option(MORPHEUS_WARNINGS_AS_ERRORS "Treat warnings as errors on MorpheusEngine's own targets (/WX or -Werror)" ${PROJECT_IS_TOP_LEVEL})
 option(MORPHEUS_ASAN "Instrument every target with AddressSanitizer (MSVC only)" OFF)
 
@@ -46,6 +47,9 @@ endif()
 # The app, morpheus_play and morpheus_probe build either backend, as settings.json chooses.
 if(MORPHEUS_BUILD_LLAMA AND NOT MORPHEUS_BUILD_LLAMA_SERVER)
     message(FATAL_ERROR "MORPHEUS_BUILD_LLAMA (the app, morpheus_play and morpheus_probe) needs MORPHEUS_BUILD_LLAMA_SERVER.")
+endif()
+if(MORPHEUS_BUILD_SERVER AND NOT MORPHEUS_BUILD_LLAMA_SERVER)
+    message(FATAL_ERROR "MORPHEUS_BUILD_SERVER (morpheus_server) needs MORPHEUS_BUILD_LLAMA_SERVER.")
 endif()
 
 # AddressSanitizer is applied to every target, dependencies included: MSVC refuses to link instrumented and
@@ -236,6 +240,9 @@ add_subdirectory(src/grammar)
 add_subdirectory(src/turn)
 if(MORPHEUS_BUILD_LLAMA_SERVER)
     add_subdirectory(src/llamaserver)
+endif()
+if(MORPHEUS_BUILD_SERVER)
+    add_subdirectory(src/server)
 endif()
 if(MORPHEUS_BUILD_LLAMA)
     add_subdirectory(src/llama)
