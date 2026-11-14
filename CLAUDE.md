@@ -15,7 +15,7 @@ Local-first, LLM-driven text RPG engine in C++20. The repository owner acts as p
 - `dev-asan` is `dev` with llama.cpp on the CPU (no Vulkan SDK needed) and every target under AddressSanitizer, RelWithDebInfo: the tests, `morpheus_probe` and `morpheus_play`, not the app. Slow, for memory checks of the backend. Binaries land in `build/dev-asan/bin/RelWithDebInfo/`.
 - `MORPHEUS_GPU_BACKEND` picks llama.cpp's GPU backend: `Vulkan` (the default; `dev`), `CUDA` or `CPU` (`dev-asan`). Any other value fails the configure.
 - Linux (Ubuntu 24.04): `linux-tests` is the fast loop (`cmake --preset linux-tests`, `cmake --build --preset linux-tests`, `ctest --preset linux-tests`; binaries in `build/linux-tests/bin/`); `linux-release` builds everything with llama.cpp on CUDA (needs the CUDA toolkit). Each OS lists only its own presets.
-- Included in another CMake project (not top level), Morpheus builds only the engine libraries (`Morpheus::core`, `Morpheus::store`, `Morpheus::inference`, `Morpheus::context`, `Morpheus::grammar`, `Morpheus::turn`), with warnings that are not errors (`MORPHEUS_WARNINGS_AS_ERRORS`) and the host's output directories. `cmake/consumer-check/` checks this (README, "Using Morpheus from another project").
+- Included in another CMake project (not top level), Morpheus builds only the engine libraries (`Morpheus::core`, `Morpheus::store`, `Morpheus::inference`, `Morpheus::context`, `Morpheus::grammar`, `Morpheus::turn`) and cpp-httplib as `morpheus_httplib` (fetched when `MORPHEUS_BUILD_LLAMA_SERVER` is on: the default, also when vendored; header-only, no OpenSSL), with warnings that are not errors (`MORPHEUS_WARNINGS_AS_ERRORS`) and the host's output directories. `cmake/consumer-check/` checks this (README, "Using Morpheus from another project").
 - Model-backed tests are tagged `[llama]` and skip unless `MORPHEUS_TEST_CHAT_MODEL` and `MORPHEUS_TEST_EMBED_MODEL` point at the two GGUF files in `models/`.
 - One tag or test case: `./build/tests/bin/Debug/morpheus_tests.exe "[csv]"`
 
@@ -32,7 +32,7 @@ Local-first, LLM-driven text RPG engine in C++20. The repository owner acts as p
 - models/ and settings.json: both gitignored, per machine. settings.example.json is the template.
 - src/app: the app. model/ (morpheus_app_model): its state and actions, no SDL, ImGui or llama.cpp. ui/ (morpheus_app_ui): the ImGui windows, needing only ImGui's core, so tests draw them headless (tests/app/HeadlessImGui.h). main.cpp (`morpheus`, `dev` and `linux-release` presets only): the SDL3 window and the llama.cpp backend. ImGui is upstream's docking branch; IM_ASSERT throws (src/app/ui/ImGuiConfig.h).
 - tests/: Catch2 tests (every tests/**/*.cpp is compiled in), tests/data: test worlds.
-- cmake/consumer-check: a host project that includes Morpheus through FetchContent and links `Morpheus::turn`; it fails to configure if the vendored build defines more than the engine libraries.
+- cmake/consumer-check: a host project that includes Morpheus through FetchContent and links `Morpheus::turn`; it fails to configure if the vendored build defines more than the engine libraries and `morpheus_httplib`.
 - game_projects/<id>/: worlds as data (world.json, rules.md, lore.csv, state_schema.json, initial_state.json).
 
 ## Coding rules

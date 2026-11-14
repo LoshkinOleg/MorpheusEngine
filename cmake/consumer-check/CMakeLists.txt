@@ -1,5 +1,5 @@
 # Consumer check: includes Morpheus the way a host project would (FetchContent), but from a local checkout, and checks
-# that the vendored build defines only the engine libraries. See the README, "Using Morpheus from another project".
+# that the vendored build defines only the engine libraries and morpheus_httplib. See the README, "Using Morpheus from another project".
 cmake_minimum_required(VERSION 3.25)
 
 # A C++-only host: Morpheus enables C itself for the SQLite amalgamation.
@@ -14,7 +14,8 @@ include(FetchContent)
 FetchContent_Declare(morpheus SOURCE_DIR "${MORPHEUS_SOURCE_DIR}" SYSTEM)
 FetchContent_MakeAvailable(morpheus)
 
-# With Morpheus's vendored defaults nothing beyond the six engine libraries exists: no app, tests or tools, no
+# With Morpheus's vendored defaults nothing beyond the six engine libraries and morpheus_httplib (cpp-httplib, fetched
+# while MORPHEUS_BUILD_LLAMA_SERVER is on, as it is by default) exists: no app, tests or tools, no
 # app-model or app-ui library, and none of llama.cpp, SDL3, ImGui or Catch2.
 set(MORPHEUS_UNWANTED_TARGETS
     morpheus morpheus_tests morpheus_llama imgui_core SDL3::SDL3 Catch2::Catch2
@@ -27,6 +28,9 @@ foreach(unwanted IN LISTS MORPHEUS_UNWANTED_TARGETS)
 endforeach()
 if(NOT TARGET Morpheus::turn)
     message(FATAL_ERROR "The vendored Morpheus build does not define Morpheus::turn.")
+endif()
+if(NOT TARGET morpheus_httplib)
+    message(FATAL_ERROR "The vendored Morpheus build does not define morpheus_httplib (MORPHEUS_BUILD_LLAMA_SERVER defaults to ON).")
 endif()
 if(NOT TARGET Morpheus::grammar)
     message(FATAL_ERROR "The vendored Morpheus build does not define Morpheus::grammar.")

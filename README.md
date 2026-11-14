@@ -137,13 +137,13 @@ FetchContent_MakeAvailable(morpheus)
 target_link_libraries(my_target PRIVATE Morpheus::turn)
 ```
 
-- Included this way (not the top-level project), Morpheus builds only its engine libraries, `Morpheus::core`, `Morpheus::store`, `Morpheus::inference`, `Morpheus::context`, `Morpheus::grammar` and `Morpheus::turn`, with nlohmann/json and SQLite (as `morpheus_sqlite3`, so it never meets a `sqlite3` target of yours). `MORPHEUS_BUILD_APP`, `MORPHEUS_BUILD_TESTS` and `MORPHEUS_BUILD_LLAMA` default to off, so no llama.cpp, SDL3, ImGui or Catch2 is fetched.
+- Included this way (not the top-level project), Morpheus builds only its engine libraries, `Morpheus::core`, `Morpheus::store`, `Morpheus::inference`, `Morpheus::context`, `Morpheus::grammar` and `Morpheus::turn`, with nlohmann/json, SQLite (as `morpheus_sqlite3`, so it never meets a `sqlite3` target of yours) and cpp-httplib (as `morpheus_httplib`, header-only and without OpenSSL; fetched while `MORPHEUS_BUILD_LLAMA_SERVER` is on, its default, also when vendored). `MORPHEUS_BUILD_APP`, `MORPHEUS_BUILD_TESTS` and `MORPHEUS_BUILD_LLAMA` default to off, so no llama.cpp, SDL3, ImGui or Catch2 is fetched.
 - Link the `Morpheus::` names, not the internal `morpheus_*` ones. For the llama.cpp backend, `Morpheus::llama`, `set(MORPHEUS_BUILD_LLAMA ON)` (and `MORPHEUS_GPU_BACKEND`: `Vulkan`, `CUDA` or `CPU`) before `FetchContent_MakeAvailable`. `Morpheus::app_model` and `Morpheus::app_ui` exist when the app or the tests are built.
 - A project that already provides `nlohmann_json::nlohmann_json` (its own FetchContent or `find_package`) keeps its copy, and Morpheus links the same target. Make yours available BEFORE `FetchContent_MakeAvailable(morpheus)`: Morpheus checks for the target when it is included, so the guard only works in that order.
 - `SYSTEM` makes Morpheus's headers count as system headers in your own files, so your warnings do not fire on them.
 - Morpheus's warnings stay on but are not errors (`MORPHEUS_WARNINGS_AS_ERRORS` defaults to off when vendored), so a warning from your compiler does not fail your build. `MORPHEUS_WARNINGS_AS_ERRORS` uses CMake's `COMPILE_WARNING_AS_ERROR` property, so it holds even when you set `CMAKE_COMPILE_WARNING_AS_ERROR`; a global `add_compile_options(-Werror)` of yours still reaches Morpheus's targets. Output directories and the Visual Studio startup project are yours.
 
-`cmake/consumer-check/` is such a project, built from this checkout (`-DMORPHEUS_SOURCE_DIR=<path>` picks another): it fails to configure if the vendored build defines anything beyond the engine libraries, and its program calls into `core` and `turn`. On Linux:
+`cmake/consumer-check/` is such a project, built from this checkout (`-DMORPHEUS_SOURCE_DIR=<path>` picks another): it fails to configure if the vendored build defines anything beyond the engine libraries and `morpheus_httplib`, and its program calls into `core` and `turn`. On Linux:
 
 ```bash
 cmake -S cmake/consumer-check -B build/consumer-check -G Ninja && cmake --build build/consumer-check && ./build/consumer-check/consumer_check

@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <string>
@@ -142,4 +143,54 @@ TEST_CASE("FakeLlamaServer sees a client close a held stream", "[fake-llama-serv
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     CHECK(fake.ClientClosedStream());
+}
+
+TEST_CASE("FakeLlamaServer runs its callbacks outside its lock, so they may call it and requests overlap",
+          "[fake-llama-server]")
+{
+    test::FakeLlamaServer fake;
+    // A tokenizer that reads the fake's own request log would deadlock under the lock; two requests wait for each
+    // other inside it, which would serialize (and time out) if the handlers held the lock around the callback.
+    std::atomic<int> inside = 0;
+    std::atomic<std::size_t> seen = 0;
+    fake.SetTokenizer([&](const std::string&, bool, bool) {
+        seen = fake.Requests().size();
+        ++inside;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (inside < 2 && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        return std::vector<int>{1};
+    });
+
+    std::atomic<int> okCount = 0;
+    auto ask = [&fake, &okCount] {
+        httplib::Client client(fake.Url());
+        const httplib::Result result =
+            client.Post("/tokenize", R"({"content":"abc"})", "application/json");
+        if (result && result->status == 200) {
+            ++okCount;
+        }
+    };
+    std::thread first(ask);
+    std::thread second(ask);
+    first.join();
+    second.join();
+
+    CHECK(okCount == 2);
+    CHECK(inside == 2); // Both were inside the callback at the same time.
+    CHECK(seen >= 1);
+}
+
+TEST_CASE("FakeLlamaServer records a malformed body and answers 400", "[fake-llama-server]")
+{
+    test::FakeLlamaServer fake;
+    httplib::Client client(fake.Url());
+    const httplib::Result result = client.Post("/tokenize", "{not json", "application/json");
+    REQUIRE(result);
+    CHECK(result->status == 400);
+
+    const std::vector<test::FakeLlamaServer::Request> requests = fake.RequestsTo("/tokenize");
+    REQUIRE(requests.size() == 1);
+    CHECK(requests[0].body == "{not json");
 }

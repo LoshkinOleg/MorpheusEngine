@@ -69,9 +69,14 @@ public:
     using EmbeddingMaker = std::function<std::vector<std::vector<float>>(const std::string& content)>;
 
 private:
+    static constexpr int DEFAULT_CONTEXT_SIZE = 16384; // The default /props: tokens per slot.
+    static constexpr int DEFAULT_SLOTS = 3;            // The default /props: total_slots.
+    static constexpr int HOLD_LIMIT_SECONDS = 10;      // A held stream ends after this long, closed or not.
+    static constexpr int PING_INTERVAL_MS = 10;        // Pause between the pings of a held stream.
+
     mutable std::mutex _mutex = {};
-    nlohmann::json _props = {{"default_generation_settings", {{"n_ctx", 16384}}},
-                             {"total_slots", 3},
+    nlohmann::json _props = {{"default_generation_settings", {{"n_ctx", DEFAULT_CONTEXT_SIZE}}},
+                             {"total_slots", DEFAULT_SLOTS},
                              {"chat_template", "{% for message in messages %}<|im_start|>{{ message.role }}{% endfor %}"},
                              {"model_path", "/models/nomic-embed-text-v1.5.Q8_0.gguf"}};
     Tokenizer _tokenizer = DefaultTokens;
@@ -111,37 +116,51 @@ public:
             if (!Record(request, response)) {
                 return;
             }
-            const nlohmann::json body = nlohmann::json::parse(request.body);
-            std::scoped_lock lock(_mutex);
-            const std::vector<int> tokens = _tokenizer(body.at("content").get<std::string>(),
-                                                       body.value("add_special", false), body.value("parse_special", true));
+            nlohmann::json body;
+            if (!ParseBody(request, response, body)) {
+                return;
+            }
+            // The callback runs outside the lock: it may call the fake, and requests run concurrently.
+            const Tokenizer tokenizer = Copy(_tokenizer);
+            const std::vector<int> tokens = tokenizer(body.at("content").get<std::string>(),
+                                                      body.value("add_special", false), body.value("parse_special", true));
             response.set_content(nlohmann::json{{"tokens", tokens}}.dump(), "application/json");
         });
         _server.Post("/apply-template", [this](const httplib::Request& request, httplib::Response& response) {
             if (!Record(request, response)) {
                 return;
             }
-            const nlohmann::json body = nlohmann::json::parse(request.body);
-            std::scoped_lock lock(_mutex);
-            response.set_content(nlohmann::json{{"prompt", _renderer(body)}}.dump(), "application/json");
+            nlohmann::json body;
+            if (!ParseBody(request, response, body)) {
+                return;
+            }
+            const Renderer renderer = Copy(_renderer);
+            response.set_content(nlohmann::json{{"prompt", renderer(body)}}.dump(), "application/json");
         });
         _server.Post("/embedding", [this](const httplib::Request& request, httplib::Response& response) {
             if (!Record(request, response)) {
                 return;
             }
-            const nlohmann::json body = nlohmann::json::parse(request.body);
-            std::scoped_lock lock(_mutex);
-            const nlohmann::json answer = nlohmann::json::array(
-                {{{"index", 0}, {"embedding", _embeddingMaker(body.at("content").get<std::string>())}}});
+            nlohmann::json body;
+            if (!ParseBody(request, response, body)) {
+                return;
+            }
+            const EmbeddingMaker maker = Copy(_embeddingMaker);
+            const nlohmann::json answer =
+                nlohmann::json::array({{{"index", 0}, {"embedding", maker(body.at("content").get<std::string>())}}});
             response.set_content(answer.dump(), "application/json");
         });
         _server.Post("/completion", [this](const httplib::Request& request, httplib::Response& response) {
             if (!Record(request, response)) {
                 return;
             }
-            const nlohmann::json body = nlohmann::json::parse(request.body);
+            nlohmann::json body;
+            if (!ParseBody(request, response, body)) {
+                return;
+            }
             CompletionScript script;
             int promptTokens = 0;
+            Tokenizer tokenizer;
             {
                 std::scoped_lock lock(_mutex);
                 if (_completions.empty()) {
@@ -153,12 +172,15 @@ public:
                 }
                 script = std::move(_completions.front());
                 _completions.pop_front();
+                tokenizer = _tokenizer;
+            }
+            {
                 // The prompt's tokens as llama-server counts them: token ids as they are, a text tokenized with
                 // special tokens added and parsed.
                 const nlohmann::json& prompt = body.at("prompt");
                 promptTokens = script.tokensEvaluated >= 0 ? script.tokensEvaluated
                                : prompt.is_array()        ? static_cast<int>(prompt.size())
-                                   : static_cast<int>(_tokenizer(prompt.get<std::string>(), true, true).size());
+                                   : static_cast<int>(tokenizer(prompt.get<std::string>(), true, true).size());
             }
             const int slot = std::max(0, body.value("id_slot", -1));
             response.set_chunked_content_provider(
@@ -183,14 +205,16 @@ public:
                     if (script.holdOpen) {
                         // Pings (comment lines, as llama-server sends while it works) until a write fails: the client
                         // closed the stream. Bounded, so a test that never closes cannot hang the fake.
-                        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+                        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(HOLD_LIMIT_SECONDS);
                         bool closed = false;
                         while (!closed && !_stopping && std::chrono::steady_clock::now() < deadline) {
                             closed = !send(":\n\n");
-                            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                            std::this_thread::sleep_for(std::chrono::milliseconds(PING_INTERVAL_MS));
                         }
-                        std::scoped_lock lock(_mutex);
-                        _clientClosedStream = closed;
+                        if (closed) {
+                            std::scoped_lock lock(_mutex);
+                            _clientClosedStream = true;
+                        }
                         return false;
                     }
                     if (!script.endEarly) {
@@ -328,12 +352,40 @@ public:
     }
 
 private:
+    // A copy of a callback member, taken under the lock so the caller can run it without.
+    template <typename Callback>
+    Callback Copy(const Callback& member) const
+    {
+        std::scoped_lock lock(_mutex);
+        return member;
+    }
+
+    // Parses the body of `request` into `body`. A malformed body answers HTTP 400 and returns false.
+    bool ParseBody(const httplib::Request& request, httplib::Response& response, nlohmann::json& body) const
+    {
+        body = nlohmann::json::parse(request.body, nullptr, false);
+        if (!body.is_discarded()) {
+            return true;
+        }
+        response.status = 400;
+        response.set_content(R"({"error":{"code":400,"message":"malformed JSON body","type":"invalid_request_error"}})",
+                             "application/json");
+        return false;
+    }
+
     // Records `request`. Returns false after answering the HTTP error SetStatus set for its path, true otherwise.
     bool Record(const httplib::Request& request, httplib::Response& response)
     {
         std::scoped_lock lock(_mutex);
-        _requests.push_back({request.method, request.path,
-                             request.body.empty() ? nlohmann::json(nullptr) : nlohmann::json::parse(request.body)});
+        // The raw body is kept first: a body that is not JSON is recorded as its text.
+        nlohmann::json body = nullptr;
+        if (!request.body.empty()) {
+            body = nlohmann::json::parse(request.body, nullptr, false);
+            if (body.is_discarded()) {
+                body = request.body;
+            }
+        }
+        _requests.push_back({request.method, request.path, std::move(body)});
         const auto status = _statuses.find(request.path);
         if (status == _statuses.end()) {
             return true;
