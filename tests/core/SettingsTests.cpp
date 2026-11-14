@@ -22,6 +22,7 @@ namespace {
 nlohmann::json ValidSettingsJson()
 {
     return nlohmann::json::parse(R"({
+        "backend": "llama-cpp",
         "chat_model": "models/chat.gguf",
         "embedding_model": "models/embed.gguf",
         "embedding_query_prefix": "search_query: ",
@@ -305,6 +306,7 @@ TEST_CASE("SettingsToJson round-trips through LoadSettings", "[settings]")
     // Model paths in the JSON are absolute, so they still resolve from another folder.
     const Settings copy = LoadSettings(WriteSettings("settings_to_json_b", SettingsToJson(original)));
     CHECK(copy.chatModel == original.chatModel);
+    CHECK(copy.backend == BackendKind::LlamaCpp);
     CHECK(copy.embeddingDocumentPrefix == original.embeddingDocumentPrefix);
     CHECK(copy.contextSize == original.contextSize);
     CHECK(copy.budget.retrievalCap == original.budget.retrievalCap);
@@ -357,10 +359,114 @@ TEST_CASE("settings.example.json loads with the current loader", "[settings]")
         morpheus::test::WriteFile(model, "x");
     }
     const Settings settings = LoadSettings(dir / "settings.json");
+    CHECK(settings.backend == BackendKind::LlamaCpp); // The example runs the models in-process.
     // The example turns the narration review and the compact transcript on.
     CHECK(settings.narrationCheck);
     CHECK(settings.compactTranscript);
     CHECK(settings.proseTurns == 2);
     CHECK(settings.budget.reviewMaxTokens == 384);
     CHECK(settings.budget.reviewThinkingTokens == 0);
+}
+
+TEST_CASE("LoadSettings reads the llama-server backend", "[settings]")
+{
+    nlohmann::json json = ValidSettingsJson();
+    json["backend"] = "llama-server";
+    json["server"] = {{"chat_url", "http://127.0.0.1:8080"}, {"embedding_url", "http://127.0.0.1:8081"}, {"slot", 2}};
+    json.erase("chat_model");
+    json.erase("embedding_model");
+    json.erase("gpu_layers");
+    const Settings settings = LoadSettings(WriteSettings("settings_server", json));
+    CHECK(settings.backend == BackendKind::LlamaServer);
+    CHECK(settings.chatUrl == "http://127.0.0.1:8080");
+    CHECK(settings.embeddingUrl == "http://127.0.0.1:8081");
+    CHECK(settings.serverSlot == 2);
+    CHECK(settings.chatModel.empty());
+    CHECK(settings.contextSize == 16384); // Still what the budgets plan for.
+    CHECK(settings.budget.narrateMaxTokens == 768);
+
+    // The in-process backend's keys are ignored when present, even ones that would not load.
+    json["chat_model"] = "models/missing.gguf";
+    json["gpu_layers"] = "all";
+    CHECK(LoadSettings(WriteSettings("settings_server_ignores_models", json)).chatModel.empty());
+
+    // And llama-cpp ignores a server object.
+    nlohmann::json local = ValidSettingsJson();
+    local["server"] = {{"chat_url", "not a url"}};
+    CHECK(LoadSettings(WriteSettings("settings_cpp_ignores_server", local)).backend == BackendKind::LlamaCpp);
+}
+
+TEST_CASE("LoadSettings names the backend key at fault", "[settings]")
+{
+    // Writes `json` and checks that loading it is a DataError naming `key`.
+    auto refuses = [](const std::string& name, const nlohmann::json& json, const std::string& key) {
+        INFO(name);
+        const fs::path file = WriteSettings(name, json);
+        CHECK_THROWS_AS(LoadSettings(file), DataError);
+        CHECK_THROWS_WITH(LoadSettings(file), ContainsSubstring(key));
+    };
+
+    nlohmann::json missing = ValidSettingsJson();
+    missing.erase("backend");
+    refuses("settings_backend_missing", missing, "backend");
+    nlohmann::json unknown = ValidSettingsJson();
+    unknown["backend"] = "ollama";
+    refuses("settings_backend_unknown", unknown, "backend");
+
+    nlohmann::json server = ValidSettingsJson();
+    server["backend"] = "llama-server";
+    refuses("settings_server_missing", server, "server");
+    server["server"] = {{"chat_url", "http://127.0.0.1:8080"}, {"embedding_url", "http://127.0.0.1:8081"}, {"slot", 0}};
+    for (const std::string key : {"chat_url", "embedding_url", "slot"}) {
+        nlohmann::json without = server;
+        without["server"].erase(key);
+        refuses("settings_server_no_" + key, without, key);
+    }
+    nlohmann::json https = server;
+    https["server"]["chat_url"] = "https://127.0.0.1:8080"; // HTTPS is not supported.
+    refuses("settings_server_https", https, "chat_url");
+    nlohmann::json bare = server;
+    bare["server"]["embedding_url"] = "127.0.0.1:8081";
+    refuses("settings_server_bare", bare, "embedding_url");
+    nlohmann::json empty = server;
+    empty["server"]["chat_url"] = "http://";
+    refuses("settings_server_empty_host", empty, "chat_url");
+    nlohmann::json negative = server;
+    negative["server"]["slot"] = -1;
+    refuses("settings_server_slot", negative, "slot");
+    nlohmann::json extra = server;
+    extra["server"]["port"] = 8080;
+    refuses("settings_server_extra", extra, "port");
+
+    // llama-cpp still needs its model keys.
+    for (const std::string key : {"chat_model", "embedding_model", "gpu_layers"}) {
+        nlohmann::json without = ValidSettingsJson();
+        without.erase(key);
+        refuses("settings_cpp_no_" + key, without, key);
+    }
+}
+
+TEST_CASE("SettingsToJson writes the backend and its own keys", "[settings]")
+{
+    nlohmann::json json = ValidSettingsJson();
+    json["backend"] = "llama-server";
+    json["server"] = {{"chat_url", "http://127.0.0.1:8080"}, {"embedding_url", "http://127.0.0.1:8081"}, {"slot", 1}};
+    const Settings original = LoadSettings(WriteSettings("settings_server_to_json_a", json));
+    const nlohmann::json written = SettingsToJson(original);
+    CHECK(written.at("backend") == "llama-server");
+    CHECK(written.at("server") == json.at("server"));
+    CHECK_FALSE(written.contains("chat_model")); // Only the backend in use has its keys written.
+    CHECK_FALSE(written.contains("gpu_layers"));
+    const Settings copy = LoadSettings(WriteSettings("settings_server_to_json_b", written));
+    CHECK(copy.backend == BackendKind::LlamaServer);
+    CHECK(copy.chatUrl == original.chatUrl);
+    CHECK(copy.embeddingUrl == original.embeddingUrl);
+    CHECK(copy.serverSlot == 1);
+
+    // The in-process backend writes its model keys and no server object.
+    const nlohmann::json local = SettingsToJson(LoadSettings(WriteSettings("settings_cpp_to_json", ValidSettingsJson())));
+    CHECK(local.at("backend") == "llama-cpp");
+    CHECK(local.contains("chat_model"));
+    CHECK(local.contains("gpu_layers"));
+    CHECK_FALSE(local.contains("server"));
 }

@@ -1,4 +1,5 @@
 {
+  "backend": "llama-cpp",
   "chat_model": "models/Qwen3.8-27B-UD-Q4_K_M.gguf",
   "embedding_model": "models/nomic-embed-text-v1.5.Q8_0.gguf",
   "embedding_query_prefix": "search_query: ",

@@ -6,6 +6,7 @@
 #include <initializer_list>
 #include <limits>
 #include <optional>
+#include <string_view>
 
 #include <nlohmann/json.hpp>
 
@@ -22,6 +23,28 @@ namespace {
 constexpr int SETTINGS_TEMPLATE_MARGIN = 64;
 
 } // namespace
+
+std::optional<BackendKind> ParseBackendKind(std::string_view text)
+{
+    if (text == "llama-cpp") {
+        return BackendKind::LlamaCpp;
+    }
+    if (text == "llama-server") {
+        return BackendKind::LlamaServer;
+    }
+    return std::nullopt;
+}
+
+std::string BackendKindName(BackendKind kind)
+{
+    switch (kind) {
+    case BackendKind::LlamaCpp:
+        return "llama-cpp";
+    case BackendKind::LlamaServer:
+        return "llama-server";
+    }
+    throw ContractError("BackendKindName: unhandled BackendKind");
+}
 
 Settings LoadSettings(const std::filesystem::path& file)
 {
@@ -85,9 +108,9 @@ Settings LoadSettings(const std::filesystem::path& file)
         return value.get<bool>();
     };
 
-    checkKeys(json, "settings", {"chat_model", "embedding_model", "embedding_query_prefix", "embedding_document_prefix",
-                                 "context_size", "gpu_layers", "budget", "sampling", "memory_mode", "narration_check",
-                                 "compact_transcript", "prose_turns"});
+    checkKeys(json, "settings", {"backend", "chat_model", "embedding_model", "embedding_query_prefix",
+                                 "embedding_document_prefix", "context_size", "gpu_layers", "server", "budget",
+                                 "sampling", "memory_mode", "narration_check", "compact_transcript", "prose_turns"});
 
     Settings settings;
 
@@ -114,12 +137,39 @@ Settings LoadSettings(const std::filesystem::path& file)
         }
         return path;
     };
-    settings.chatModel = requireModel("chat_model");
-    settings.embeddingModel = requireModel("embedding_model");
+    // The backend says which keys reach the models. Each backend's own keys are ignored (not read or checked) under
+    // the other, so a file can keep both while it switches.
+    const std::string backendText = requireString(json, "backend", "settings");
+    const std::optional<BackendKind> backend = ParseBackendKind(backendText);
+    if (!backend) {
+        throw DataError(std::format("{}: 'backend' must be 'llama-cpp' or 'llama-server', got '{}'", where, backendText));
+    }
+    settings.backend = *backend;
+    if (settings.backend == BackendKind::LlamaCpp) {
+        settings.chatModel = requireModel("chat_model");
+        settings.embeddingModel = requireModel("embedding_model");
+        settings.gpuLayers = requireInt(json, "gpu_layers", "settings", -1, 10000);
+    } else {
+        // The servers: plain HTTP to a host (a local host such as 127.0.0.1 is the intended use), and the slot
+        // Morpheus's calls use.
+        const nlohmann::json& server = requireMember(json, "server", "settings");
+        checkKeys(server, "server", {"chat_url", "embedding_url", "slot"});
+        auto requireUrl = [&](const char* key) {
+            const std::string url = requireString(server, key, "server");
+            if (!url.starts_with("http://") || url.size() == std::string_view("http://").size()) {
+                throw DataError(std::format("{}: server '{}' must start with 'http://' and name a host (HTTPS is not "
+                                            "supported), got '{}'",
+                                            where, key, url));
+            }
+            return url;
+        };
+        settings.chatUrl = requireUrl("chat_url");
+        settings.embeddingUrl = requireUrl("embedding_url");
+        settings.serverSlot = requireInt(server, "slot", "server", 0, std::numeric_limits<int>::max());
+    }
     settings.embeddingQueryPrefix = requireString(json, "embedding_query_prefix", "settings");
     settings.embeddingDocumentPrefix = requireString(json, "embedding_document_prefix", "settings");
     settings.contextSize = requireInt(json, "context_size", "settings", 512, 262144);
-    settings.gpuLayers = requireInt(json, "gpu_layers", "settings", -1, 10000);
     if (json.contains("memory_mode")) {
         const std::string text = requireString(json, "memory_mode", "settings");
         settings.memoryMode = ParseMemoryMode(text);
@@ -204,12 +254,10 @@ nlohmann::json SettingsToJson(const Settings& settings)
         return nlohmann::json{{"temperature", values.temperature}, {"top_k", values.topK}, {"top_p", values.topP}};
     };
     nlohmann::json json = {
-        {"chat_model", PathText(settings.chatModel)},
-        {"embedding_model", PathText(settings.embeddingModel)},
+        {"backend", BackendKindName(settings.backend)},
         {"embedding_query_prefix", settings.embeddingQueryPrefix},
         {"embedding_document_prefix", settings.embeddingDocumentPrefix},
         {"context_size", settings.contextSize},
-        {"gpu_layers", settings.gpuLayers},
         {"narration_check", settings.narrationCheck},
         {"compact_transcript", settings.compactTranscript},
         {"prose_turns", settings.proseTurns},
@@ -230,6 +278,14 @@ nlohmann::json SettingsToJson(const Settings& settings)
     };
     if (settings.memoryMode) {
         json["memory_mode"] = *settings.memoryMode == MemoryMode::Engine ? "engine" : "assisted";
+    }
+    // Only the backend in use has its keys.
+    if (settings.backend == BackendKind::LlamaCpp) {
+        json["chat_model"] = PathText(settings.chatModel);
+        json["embedding_model"] = PathText(settings.embeddingModel);
+        json["gpu_layers"] = settings.gpuLayers;
+    } else {
+        json["server"] = {{"chat_url", settings.chatUrl}, {"embedding_url", settings.embeddingUrl}, {"slot", settings.serverSlot}};
     }
     return json;
 }
