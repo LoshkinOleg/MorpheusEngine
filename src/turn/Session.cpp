@@ -54,6 +54,16 @@ core::DataError CondensedOverCap(int summaryCap, int summaryTokens)
 
 } // namespace
 
+inference::Sampling SamplingFrom(const core::SamplingSettings& settings, std::uint32_t seed)
+{
+    inference::Sampling sampling;
+    sampling.temperature = static_cast<float>(settings.temperature);
+    sampling.topK = settings.topK;
+    sampling.topP = static_cast<float>(settings.topP);
+    sampling.seed = seed;
+    return sampling;
+}
+
 Session::Session(core::World world, core::Settings settings, store::RunStore store, MemoryIndex index,
                  inference::LlmBackend& backend)
     : _world(std::move(world))
@@ -306,7 +316,7 @@ std::optional<core::TurnRecord> Session::PlayTurn(const std::string& input, int 
         inference::GenerationSpec lookupSpec;
         lookupSpec.grammar = BuildLookupGrammar();
         lookupSpec.maxTokens = LOOKUP_MAX_TOKENS;
-        lookupSpec.sampling = inference::SamplingFrom(
+        lookupSpec.sampling = SamplingFrom(
             _settings.resolveSampling, core::SamplingSeed(seed, turn, core::CallKind::Lookup, attempt));
         const inference::Completion looked = _pBackend->Complete(lookupAssembly->prompt, lookupSpec, {}, stop);
         if (looked.cancelled) {
@@ -359,7 +369,7 @@ std::optional<core::TurnRecord> Session::PlayTurn(const std::string& input, int 
     resolveSpec.maxTokens = _settings.budget.resolveMaxTokens;
     resolveSpec.thinkingMaxTokens = _settings.budget.resolveThinkingTokens;
     resolveSpec.sampling =
-        inference::SamplingFrom(_settings.resolveSampling, core::SamplingSeed(seed, turn, core::CallKind::Resolve, attempt));
+        SamplingFrom(_settings.resolveSampling, core::SamplingSeed(seed, turn, core::CallKind::Resolve, attempt));
     const inference::Completion resolved = _pBackend->Complete(assembly->prompt, resolveSpec, {}, stop);
     if (resolved.cancelled) {
         return std::nullopt;
@@ -397,7 +407,7 @@ std::optional<core::TurnRecord> Session::PlayTurn(const std::string& input, int 
                                                        _settings.budget.narrateAllowance, *_pBackend));
         inference::GenerationSpec spec = narrateSpec;
         spec.sampling =
-            inference::SamplingFrom(_settings.narrateSampling, core::SamplingSeed(seed, turn, kind, attempt));
+            SamplingFrom(_settings.narrateSampling, core::SamplingSeed(seed, turn, kind, attempt));
         return _pBackend->Complete(narratePrompt, spec, callbacks.onNarrationToken, stop);
     };
     const inference::Completion narrated = narrate({}, core::CallKind::Narrate);
@@ -422,7 +432,7 @@ std::optional<core::TurnRecord> Session::PlayTurn(const std::string& input, int 
         // when cancelled. Unreadable output is a model mistake: its Review holds only the error, so it finds nothing.
         auto review = [&](const std::string& narration, int seedAttempt) -> std::optional<Review> {
             inference::GenerationSpec spec = reviewSpec;
-            spec.sampling = inference::SamplingFrom(
+            spec.sampling = SamplingFrom(
                 _settings.resolveSampling, core::SamplingSeed(seed, turn, core::CallKind::Review, seedAttempt));
             const inference::Completion reviewed =
                 _pBackend->Complete(ReviewPrompt(input, proposal, resolution, narration), spec, {}, stop);
@@ -586,7 +596,7 @@ bool Session::FoldOldest(const inference::Message& systemMessage, const std::vec
     MORPHEUS_REQUIRE(!transcript.empty(), "FoldOldest: there is no transcript to fold");
     inference::GenerationSpec spec;
     spec.maxTokens = std::max(1, _settings.budget.summaryCap / FOLD_SUMMARY_DIVISOR);
-    spec.sampling = inference::SamplingFrom(
+    spec.sampling = SamplingFrom(
         _settings.resolveSampling, core::SamplingSeed(_store.Meta().rngSeed, turn, core::CallKind::Summarize, attempt));
 
     // The oldest `count` turns of the transcript.
@@ -639,7 +649,7 @@ bool Session::Condense(const inference::Message& systemMessage, int turn, int at
 {
     inference::GenerationSpec spec;
     spec.maxTokens = std::max(1, _settings.budget.summaryCap / CONDENSE_SUMMARY_DIVISOR);
-    spec.sampling = inference::SamplingFrom(
+    spec.sampling = SamplingFrom(
         _settings.resolveSampling, core::SamplingSeed(_store.Meta().rngSeed, turn, core::CallKind::Summarize, attempt));
     const std::vector<core::Summary> summaries = _store.Summaries();
 

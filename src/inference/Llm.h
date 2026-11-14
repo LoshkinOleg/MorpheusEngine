@@ -10,8 +10,6 @@
 #include <string_view>
 #include <vector>
 
-#include "core/Settings.h"
-
 namespace morpheus::inference {
 
 // A model or runtime failure: a model file that will not load, a prompt that does not fit, a failed decode.
@@ -45,9 +43,6 @@ struct Sampling {
     std::uint32_t seed = 0;
 };
 
-// The sampling for one call from its settings.json values and the call's seed (core::SamplingSeed).
-Sampling SamplingFrom(const core::SamplingSettings& settings, std::uint32_t seed);
-
 struct GenerationSpec {
     std::string grammar = {}; // GBNF with a "root" rule; empty means unconstrained. Applies to the answer only.
     int maxTokens = 256;      // The answer: the text after any thinking.
@@ -55,6 +50,9 @@ struct GenerationSpec {
     // included). The block is unconstrained, never streamed and kept out of Completion::text. 0: no thinking.
     int thinkingMaxTokens = 0;
     Sampling sampling = {};
+    // The server slot whose prompt cache the call uses; -1 is the backend's default slot. The in-process backend has
+    // one cache and ignores it; LlamaServerBackend sends it as id_slot. Morpheus's own game leaves it at -1.
+    int slot = -1;
 };
 
 struct Completion {
@@ -78,10 +76,10 @@ enum class EmbedPurpose { Query, Document };
 // Receives generated text as it streams. Pieces never split a UTF-8 character.
 using TokenCallback = std::function<void(std::string_view piece)>;
 
-// The engine's only view of a language model (architecture spec, "Inference interface").
-class LlmBackend {
+// Counts tokens as the chat model reads them (architecture spec, "Inference interface").
+class Tokenizer {
 public:
-    virtual ~LlmBackend() = default;
+    virtual ~Tokenizer() = default;
 
     // Tokens in raw text: no chat template, no special tokens.
     virtual int CountTokens(std::string_view text) = 0;
@@ -91,6 +89,12 @@ public:
     virtual int CountPromptTokens(const Prompt& prompt) = 0;
 
     virtual int ContextSize() const = 0;
+};
+
+// Generates the model's replies, and holds the chat cache they reuse.
+class ChatModel {
+public:
+    virtual ~ChatModel() = default;
 
     // Generates the assistant's reply to `prompt`: with spec.thinkingMaxTokens > 0 a thinking block first, then the
     // answer, which alone is streamed to onToken and constrained by spec.grammar. Throws InferenceError if prompt +
@@ -101,21 +105,32 @@ public:
     virtual Completion Complete(const Prompt& prompt, const GenerationSpec& spec, const TokenCallback& onToken,
                                 std::stop_token stop) = 0;
 
-    // Whether `text`, tokenized as an answer, is accepted by `grammar` (GBNF, root rule "root") from start to end.
-    // Returns "" when it is; otherwise a short reason naming where it stops fitting (the first rejected token and the
-    // text before it, or "the text ends before the grammar does"). Throws ContractError for a grammar that does not
-    // parse. An empty grammar is a ContractError too: there is nothing to check against.
-    virtual std::string CheckGrammar(const std::string& grammar, std::string_view text) = 0;
+    // The chat KV cache and the tokens it holds, so the GPU can be handed to another model and the cache restored.
+    virtual std::vector<std::uint8_t> SaveState() = 0;
+    virtual void RestoreState(std::span<const std::uint8_t> state) = 0;
+};
+
+// Turns texts into vectors for retrieval.
+class Embedder {
+public:
+    virtual ~Embedder() = default;
 
     // One L2-normalized vector per text, in order.
     virtual std::vector<std::vector<float>> Embed(const std::vector<std::string>& texts, EmbedPurpose purpose) = 0;
 
     // Identifies the embedding model, for store::EmbeddingRow::model.
     virtual std::string EmbeddingModelId() const = 0;
+};
 
-    // The chat KV cache and the tokens it holds, so the GPU can be handed to another model and the cache restored.
-    virtual std::vector<std::uint8_t> SaveState() = 0;
-    virtual void RestoreState(std::span<const std::uint8_t> state) = 0;
+// The engine's view of its models: all three parts (architecture spec, "Inference interface"). Code that needs one
+// part can take that part alone.
+class LlmBackend : public Tokenizer, public ChatModel, public Embedder {
+public:
+    // Whether `text`, tokenized as an answer, is accepted by `grammar` (GBNF, root rule "root") from start to end.
+    // Returns "" when it is; otherwise a short reason naming where it stops fitting (the first rejected token and the
+    // text before it, or "the text ends before the grammar does"). Throws ContractError for a grammar that does not
+    // parse. An empty grammar is a ContractError too: there is nothing to check against.
+    virtual std::string CheckGrammar(const std::string& grammar, std::string_view text) = 0;
 };
 
 } // namespace morpheus::inference

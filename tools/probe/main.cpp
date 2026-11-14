@@ -13,6 +13,7 @@
 #include "core/Settings.h"
 #include "core/World.h"
 #include "llama/LlamaCppBackend.h"
+#include "turn/Session.h"
 
 using namespace morpheus;
 
@@ -49,7 +50,7 @@ int main(int argc, char** argv)
 
         inference::GenerationSpec spec;
         spec.maxTokens = settings.budget.narrateMaxTokens;
-        spec.sampling = inference::SamplingFrom(settings.narrateSampling, 1234);
+        spec.sampling = turn::SamplingFrom(settings.narrateSampling, 1234);
 
         // The second run should reuse almost the whole prompt from the KV cache.
         for (int run = 1; run <= 2; ++run) {

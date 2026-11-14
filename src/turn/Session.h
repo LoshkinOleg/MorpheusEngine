@@ -41,6 +41,9 @@ constexpr int CONDENSE_SUMMARY_DIVISOR = 2;   // A condensed summary gets summar
 // SamplingSeed's limit of 2^24.
 constexpr int REVIEW_RETRY_OFFSET = 1 << 23;
 
+// The sampling for one call from its settings.json values and the call's seed (core::SamplingSeed).
+inference::Sampling SamplingFrom(const core::SamplingSettings& settings, std::uint32_t seed);
+
 struct TurnCallbacks {
     // After apply, before narrate: the record has its checks and applied and rejected changes, no narration yet.
     std::function<void(const core::TurnRecord&)> onResolved = {};
