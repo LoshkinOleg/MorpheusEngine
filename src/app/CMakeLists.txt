@@ -11,7 +11,7 @@ add_library(morpheus_app_model STATIC
 )
 add_library(Morpheus::app_model ALIAS morpheus_app_model) # The name host projects link.
 target_include_directories(morpheus_app_model PUBLIC ${PROJECT_SOURCE_DIR}/src)
-target_link_libraries(morpheus_app_model PUBLIC morpheus_turn)
+target_link_libraries(morpheus_app_model PUBLIC morpheus_turn morpheus_grammar)
 morpheus_target_defaults(morpheus_app_model)
 
 # The ImGui windows over AppController. They need only ImGui's core, so the tests draw them headless.

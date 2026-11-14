@@ -92,8 +92,12 @@ public:
     int ContextSize() const override;
     inference::Completion Complete(const inference::Prompt& prompt, const inference::GenerationSpec& spec,
                                    const inference::TokenCallback& onToken, std::stop_token stop) override;
-    // The grammar sampler alone over the text's tokens: no decode, so the KV cache is untouched.
-    std::string CheckGrammar(const std::string& grammar, std::string_view text) override;
+    // Whether `text`, tokenized as an answer, is accepted by `grammar` (GBNF, root rule "root") from start to end, by
+    // llama.cpp's own grammar sampler over the text's tokens: no decode, so the KV cache is untouched. Returns "" when
+    // it is; otherwise a short reason naming the first rejected token and the text before it, or "the text ends
+    // before the grammar does". Throws ContractError for an empty grammar or one that does not parse. Not part of
+    // LlmBackend: the model-backed tests use it to confirm that grammar::Check agrees with llama.cpp.
+    std::string CheckGrammar(const std::string& grammar, std::string_view text);
     std::vector<std::vector<float>> Embed(const std::vector<std::string>& texts, inference::EmbedPurpose purpose) override;
     std::string EmbeddingModelId() const override;
     std::vector<std::uint8_t> SaveState() override;

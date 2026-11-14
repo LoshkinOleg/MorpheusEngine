@@ -5,6 +5,7 @@
 
 #include "core/Dice.h"
 #include "core/Errors.h"
+#include "grammar/Check.h"
 #include "turn/EngineText.h"
 #include "turn/Replay.h"
 
@@ -124,7 +125,7 @@ std::optional<SeatCheck> ModelSeat::Check(std::uint64_t id, std::string_view tex
     MORPHEUS_REQUIRE(!_pending->spec.grammar.empty(), "ModelSeat: Check on a call without a grammar");
     // The worker is blocked in Await and cannot return from it while this lock is held, so the backend is idle.
     SeatCheck check;
-    check.problem = _pBackend->CheckGrammar(_pending->spec.grammar, text);
+    check.problem = grammar::Check(_pending->spec.grammar, text);
     check.tokens = _pBackend->CountTokens(text);
     return check;
 }

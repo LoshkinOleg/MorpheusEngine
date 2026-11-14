@@ -123,14 +123,7 @@ public:
 };
 
 // The engine's view of its models: all three parts (architecture spec, "Inference interface"). Code that needs one
-// part can take that part alone.
-class LlmBackend : public Tokenizer, public ChatModel, public Embedder {
-public:
-    // Whether `text`, tokenized as an answer, is accepted by `grammar` (GBNF, root rule "root") from start to end.
-    // Returns "" when it is; otherwise a short reason naming where it stops fitting (the first rejected token and the
-    // text before it, or "the text ends before the grammar does"). Throws ContractError for a grammar that does not
-    // parse. An empty grammar is a ContractError too: there is nothing to check against.
-    virtual std::string CheckGrammar(const std::string& grammar, std::string_view text) = 0;
-};
+// part can take that part alone. Whether a text fits a grammar is grammar::Check's job, independent of any backend.
+class LlmBackend : public Tokenizer, public ChatModel, public Embedder {};
 
 } // namespace morpheus::inference

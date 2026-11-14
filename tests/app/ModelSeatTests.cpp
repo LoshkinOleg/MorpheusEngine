@@ -130,7 +130,6 @@ TEST_CASE("ModelSeat publishes a request, checks a reply against its grammar, an
 {
     app::ModelSeat seat;
     test::ScriptedBackend backend(16384);
-    backend.SetGrammarVerdict("the grammar rejects 'maybe' at the start");
     app::SeatRequest request;
     request.label = app::SeatLabel::Resolve;
     request.prompt = {{{inference::Role::User, "Is it yes?"}}, 0};
@@ -148,14 +147,13 @@ TEST_CASE("ModelSeat publishes a request, checks a reply against its grammar, an
     CHECK(published.prompt.messages[0].content == "Is it yes?");
     CHECK_FALSE(published.draft);
 
-    // Check asks the backend that published the request, with the request's grammar.
+    // Check fits the reply to the request's grammar with grammar::Check, and counts its tokens with the backend that
+    // published the request.
     const std::optional<app::SeatCheck> checked = seat.Check(published.id, "maybe");
     REQUIRE(checked);
-    CHECK(checked->problem == "the grammar rejects 'maybe' at the start");
+    CHECK(checked->problem == "the grammar rejects 'm' at the start");
     CHECK(checked->tokens == backend.CountTokens("maybe"));
-    REQUIRE(backend.GrammarChecks().size() == 1);
-    CHECK(backend.GrammarChecks()[0].grammar == request.spec.grammar);
-    CHECK(backend.GrammarChecks()[0].text == "maybe");
+    CHECK(seat.Check(published.id, "yes")->problem.empty());
 
     // One request at a time: a second one while this one waits is an engine bug, and the first stays.
     CHECK_THROWS_AS(seat.Await(request, backend, std::stop_token()), core::ContractError);
@@ -197,7 +195,6 @@ TEST_CASE("ModelSeat::Check needs a request with a grammar", "[model_seat]")
 
     const app::SeatRequest published = test::WaitForRequest(seat);
     CHECK_THROWS_AS(seat.Check(published.id, "You walk."), core::ContractError);
-    CHECK(backend.GrammarChecks().empty());
     CHECK(seat.Submit(published.id, "You walk.", ""));
     CHECK(waiting.Get());
 }

@@ -28,7 +28,6 @@ namespace morpheus::test {
 // thinkingMaxTokens > 0 gets the thinker's text as its thinking block (never streamed). Without one, such a call
 // throws InferenceError, as the real backend does for a model without a thinking mode. Embed maps a text to a bag of words (lower-cased [a-z0-9] runs hashed into
 // EMBED_DIMS dimensions, L2-normalized), so texts sharing words score higher. Save/RestoreState keep nothing.
-// CheckGrammar records each check and answers the verdict SetGrammarVerdict set: "" (the text fits) by default.
 class ScriptedBackend final : public FakeBackend {
 public:
     using Responder = std::function<std::string(const inference::Prompt&, const inference::GenerationSpec&)>;
@@ -36,12 +35,6 @@ public:
     struct Call {
         inference::Prompt prompt = {};
         inference::GenerationSpec spec = {};
-    };
-
-    // One CheckGrammar call's arguments.
-    struct GrammarCheck {
-        std::string grammar = {};
-        std::string text = {};
     };
 
     static constexpr std::size_t EMBED_DIMS = 64;
@@ -53,8 +46,6 @@ private:
     int _embeddedTexts = 0;
     std::size_t _embedLimit = 0; // Longest text Embed accepts, in bytes; 0 means no limit.
     std::chrono::milliseconds _pieceDelay = std::chrono::milliseconds(0);
-    std::string _grammarVerdict = {}; // What CheckGrammar answers.
-    std::vector<GrammarCheck> _grammarChecks = {};
 
 public:
     explicit ScriptedBackend(int contextSize, Responder responder = {})
@@ -90,18 +81,6 @@ public:
     void SetPieceDelay(std::chrono::milliseconds delay)
     {
         _pieceDelay = delay;
-    }
-
-    // What CheckGrammar answers from now on: "" when every text fits, else the reason a real backend would give.
-    void SetGrammarVerdict(std::string verdict)
-    {
-        _grammarVerdict = std::move(verdict);
-    }
-
-    // Every CheckGrammar call so far, in order.
-    const std::vector<GrammarCheck>& GrammarChecks() const
-    {
-        return _grammarChecks;
     }
 
     inference::Completion Complete(const inference::Prompt& prompt, const inference::GenerationSpec& spec,
@@ -156,13 +135,6 @@ public:
             at = end;
         }
         return completion;
-    }
-
-    std::string CheckGrammar(const std::string& grammar, std::string_view text) override
-    {
-        MORPHEUS_REQUIRE(!grammar.empty(), "CheckGrammar: no grammar to check against");
-        _grammarChecks.push_back({grammar, std::string(text)});
-        return _grammarVerdict;
     }
 
     std::vector<std::vector<float>> Embed(const std::vector<std::string>& texts, inference::EmbedPurpose) override

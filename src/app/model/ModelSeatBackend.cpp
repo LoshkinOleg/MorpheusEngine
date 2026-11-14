@@ -127,11 +127,6 @@ inference::Completion ModelSeatBackend::Complete(const inference::Prompt& prompt
     return completion;
 }
 
-std::string ModelSeatBackend::CheckGrammar(const std::string& grammar, std::string_view text)
-{
-    return _pInner->CheckGrammar(grammar, text);
-}
-
 std::vector<std::vector<float>> ModelSeatBackend::Embed(const std::vector<std::string>& texts,
                                                         inference::EmbedPurpose purpose)
 {

@@ -79,11 +79,6 @@ TEST_CASE("ModelSeatBackend forwards everything but Complete to the real backend
     CHECK(backend.Embed({"the lighthouse keeper"}, inference::EmbedPurpose::Query) ==
           scripted.Embed({"the lighthouse keeper"}, inference::EmbedPurpose::Query));
     CHECK(backend.EmbeddingModelId() == "scripted-embed");
-    scripted.SetGrammarVerdict("the grammar rejects 'no' at the start");
-    CHECK(backend.CheckGrammar(R"(root ::= "yes")", "no") == "the grammar rejects 'no' at the start");
-    REQUIRE(scripted.GrammarChecks().size() == 1);
-    CHECK(scripted.GrammarChecks()[0].grammar == R"(root ::= "yes")");
-    CHECK(scripted.GrammarChecks()[0].text == "no");
     CHECK_FALSE(pSeat->Pending()); // None of them asks the seat.
 
     // The state calls reach the wrapped backend: FakeBackend's refusals come through.

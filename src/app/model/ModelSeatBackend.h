@@ -39,7 +39,6 @@ public:
     // treats as any cancelled model call (a turn closes with TurnCancelled, a fold or condense stores nothing).
     inference::Completion Complete(const inference::Prompt& prompt, const inference::GenerationSpec& spec,
                                    const inference::TokenCallback& onToken, std::stop_token stop) override;
-    std::string CheckGrammar(const std::string& grammar, std::string_view text) override;
     std::vector<std::vector<float>> Embed(const std::vector<std::string>& texts, inference::EmbedPurpose purpose) override;
     std::string EmbeddingModelId() const override;
     std::vector<std::uint8_t> SaveState() override;

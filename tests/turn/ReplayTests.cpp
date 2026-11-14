@@ -381,20 +381,3 @@ TEST_CASE("RecordingBackend is safe to mark, roll back and read while another th
         CHECK(recording.Replies() == before);
     }
 }
-
-TEST_CASE("RecordingBackend forwards the grammar check and records nothing for it", "[replay]")
-{
-    test::ScriptedBackend inner(16384);
-    turn::RecordingBackend recording(inner);
-    const std::string grammar = R"(root ::= "yes")";
-
-    // ScriptedBackend's default verdict: every text fits.
-    CHECK(recording.CheckGrammar(grammar, "yes").empty());
-    inner.SetGrammarVerdict("the grammar rejects 'no' at the start");
-    CHECK(recording.CheckGrammar(grammar, "no") == "the grammar rejects 'no' at the start");
-
-    REQUIRE(inner.GrammarChecks().size() == 2);
-    CHECK(inner.GrammarChecks()[1].grammar == grammar);
-    CHECK(inner.GrammarChecks()[1].text == "no");
-    CHECK(recording.Replies().empty()); // A check is not a completion.
-}

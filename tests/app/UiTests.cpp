@@ -1,7 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
-#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <memory>
@@ -25,6 +24,7 @@
 #include "app/ui/Windows.h"
 #include "fakes/ScriptedBackend.h"
 #include "core/MemoryMode.h"
+#include "grammar/Check.h"
 #include "inference/Llm.h"
 #include "turn/EngineText.h"
 
@@ -286,14 +286,7 @@ TEST_CASE("The Model seat window shows a Draft call's draft, checks it and submi
 {
     test::HeadlessImGui imgui;
     const std::filesystem::path dir = test::SettingsFolder("ui_seat_draft");
-    // The factory hands out the ScriptedBackend it made, to see the grammar checks reach it.
-    std::atomic<test::ScriptedBackend*> pMade = nullptr;
-    const app::EngineHost::BackendFactory scripted = test::ScriptedFactory(Responder());
-    app::AppController controller(test::PathsIn(dir), [&](const core::Settings& settings) {
-        std::unique_ptr<inference::LlmBackend> pBackend = scripted(settings);
-        pMade = static_cast<test::ScriptedBackend*>(pBackend.get());
-        return pBackend;
-    });
+    app::AppController controller(test::PathsIn(dir), test::ScriptedFactory(Responder()));
     app::ModelSeatWindow window;
     test::PumpUntil(controller, [&] { return controller.CanPost(); });
     controller.NewRun(controller.Worlds().at(0), "seat", 7);
@@ -307,13 +300,14 @@ TEST_CASE("The Model seat window shows a Draft call's draft, checks it and submi
     CHECK(request.draft->text == MOVE);
     DrawSeatWindow(imgui, controller, window, 2); // The draft's thinking, the grammar, the prefilled boxes.
 
-    // Check: the reply's token count and the grammar's verdict, from the real backend. It answers nothing.
+    // Check: the reply's token count by the real backend and grammar::Check's verdict. It answers nothing.
     PressSeatItem("Check");
     DrawSeatWindow(imgui, controller, window, 2);
-    REQUIRE(pMade.load() != nullptr);
-    REQUIRE(pMade.load()->GrammarChecks().size() == 1);
-    CHECK(pMade.load()->GrammarChecks()[0].text == MOVE);
     CHECK(controller.Seat().Pending());
+    const std::optional<app::SeatCheck> checked = controller.Seat().Check(request.id, MOVE);
+    REQUIRE(checked);
+    CHECK(checked->problem == grammar::Check(request.spec.grammar, MOVE));
+    CHECK(checked->tokens == static_cast<int>((MOVE.size() + 3) / 4)); // The scripted tokenizer: 4 bytes a token.
 
     // Submit sends the draft unchanged.
     PressSeatItem("Submit");

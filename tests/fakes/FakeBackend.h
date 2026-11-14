@@ -6,7 +6,7 @@
 namespace morpheus::test {
 
 // Deterministic stand-in for context tests. One token per 4 bytes (rounded up), plus 4 template tokens per
-// message. Generation, the grammar check, embeddings and state are not used by those tests and throw if called.
+// message. Generation, embeddings and state are not used by those tests and throw if called.
 // ScriptedBackend derives from it for turn-layer tests.
 class FakeBackend : public inference::LlmBackend {
 private:
@@ -41,11 +41,6 @@ public:
                                    const inference::TokenCallback&, std::stop_token) override
     {
         throw core::ContractError("FakeBackend::Complete is not available");
-    }
-
-    std::string CheckGrammar(const std::string&, std::string_view) override
-    {
-        throw core::ContractError("FakeBackend::CheckGrammar is not available");
     }
 
     std::vector<std::vector<float>> Embed(const std::vector<std::string>&, inference::EmbedPurpose) override
