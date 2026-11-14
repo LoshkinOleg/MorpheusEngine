@@ -40,6 +40,7 @@ R5's three operations over the host data of one run.
   - parses the model's text (a parse failure is a refusal: the grammar admits lone surrogate escapes that the JSON parser refuses);
   - runs `grammar::Validate` against the turn's proposal schema;
   - returns `Adjudication { bool requested; std::string actionId; nlohmann::json params; std::vector<std::string> reasons; }`. A valid action is `requested` with its id and params; otherwise `requested` is false, the reasons are the parse error or the validation errors, and the speaker takes no action.
+- `Adjudication`, the hosted turn record and the conversation types live in `core/HostedRecord.h` (namespace `core`), because `store` stores them and sits below `turn`.
 
 ### `turn::HostedSession` (`turn/HostedSession.h`)
 
@@ -54,7 +55,7 @@ One open hosted run, the counterpart of `turn::Session`. Every backend call happ
 - `void SetParticipants(std::string_view conversationId, const std::vector<std::string>& joined, const std::vector<std::string>& left, const nlohmann::json& observation)` adds participants (bios from the observation) at the end of the join order, and removes those who left.
 - `std::optional<HostedTurn> RunTurn(const HostedTurnRequest& request, const HostedCallbacks& callbacks, std::stop_token stop)` plays one turn (section 2). It returns the committed turn, or nullopt when `stop` cancelled it.
 - `void EndConversation(std::string_view conversationId)` marks the conversation ended. Its remaining turns are folded by the next `Maintain`.
-- `bool Maintain(std::stop_token stop)` is between-turn upkeep, through the shared memory upkeep: it folds the turns of ended conversations into summaries, condenses summaries over their cap, and indexes folded turns for retrieval. It returns false when cancelled; it can simply run again.
+- `bool Maintain(std::stop_token stop)` is between-turn upkeep, through the shared memory upkeep: it folds the turns of ended conversations into summaries, condenses summaries over their cap on the way, and indexes folded turns for retrieval. A condense needs the hosted system message, so with no ended conversation to fold, an over-cap summary (after a smaller `summary_cap`) is condensed by the next turn's fit loop. It returns false when cancelled; it can simply run again.
 - Readers for the tests and D2: `Conversation(id)`, `Turns(conversationId)`, `Summaries()`, `LastAssembly()`.
 
 `HostData` holds the catalog, the observation schema (both JSON) and the lore (`core::LoreEntry` list); `HostedWorld` is built from it.
@@ -182,7 +183,7 @@ The model writes `{"action":"attack","params":{"target":"0001A6A4"}}` (compact).
 - **Meta** gains `kind`, owned or hosted.
 - A hosted run stores its host data (catalog, observation schema, lore) and its content hash. Its world id is `hosted`.
 - **New tables:**
-  - `conversations`: the id, the participants with their bios in join order, and whether the conversation is ended and folded;
+  - `conversations`: the id, the participants with their bios in join order, whether the conversation is ended, and the last turn folded so far (summary ranges of interleaved conversations may overlap, so each conversation tracks its own folding);
   - `hosted_turns`: the record of section 2, step 4;
   - `conversation_events`: events recorded between turns, with their order and the turn they follow.
 - **Shared tables:** summaries and embeddings serve both kinds of run. Turn numbers run across the whole run.
