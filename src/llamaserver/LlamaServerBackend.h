@@ -65,15 +65,17 @@ private:
     std::optional<ThinkingMarkers> _thinking = {}; // Set when the chat template has the enable_thinking switch.
     std::optional<std::int32_t> _bos = {};         // The BOS token the chat model adds at a prompt's start, if any.
     std::string _embeddingModelId = {};            // The embedding server's model file name, without its extension.
+    int _slotCount = 0;                            // The chat server's slots (/props total_slots).
+    std::string _chatModelId = {};                 // The chat server's model file name, without its extension.
 
 public:
     // Makes the kept-alive clients (the chat server's two, the embedding server's one), then reads both servers' GET
-    // /props: the chat server's context per slot, which must hold config.contextSize, and its chat template (whether
-    // the model thinks); the embedding server's model file. Then tokenizes the thinking texts (thinking models) and an
+    // /props: the chat server's context per slot, which must hold config.contextSize, its chat template (whether
+    // the model thinks), its slot count and its model file; the embedding server's model file. Then tokenizes the thinking texts (thinking models) and an
     // empty text with add_special (the special tokens the model adds: a BOS in front of a text is kept, an EOS after
     // it ignored). Throws InferenceError
     // naming the URL for a URL that is not http://host or http://host:port (a port from 1 to 65535), an unreachable
-    // server, an HTTP error, an unexpected answer, slots smaller than config.contextSize, or a model that adds more
+    // server, an HTTP error, an unexpected answer, slots smaller than config.contextSize, a chat server with no slot, or a model that adds more
     // than one special token to a text. Throws ContractError for a context size below 1 or a slot below 0.
     explicit LlamaServerBackend(LlamaServerConfig config);
     ~LlamaServerBackend() override;
@@ -87,6 +89,10 @@ public:
                                    const inference::TokenCallback& onToken, std::stop_token stop) override;
     std::vector<std::vector<float>> Embed(const std::vector<std::string>& texts, inference::EmbedPurpose purpose) override;
     std::string EmbeddingModelId() const override;
+    // The chat server's slots, from its /props total_slots: what morpheus_server shares between conversations.
+    int SlotCount() const;
+    // The chat server's model: its /props model_path's file name without the extension, as EmbeddingModelId.
+    std::string ChatModelId() const;
     // Not supported: llama-server keeps its slots' caches itself. Both throw InferenceError.
     std::vector<std::uint8_t> SaveState() override;
     void RestoreState(std::span<const std::uint8_t> state) override;

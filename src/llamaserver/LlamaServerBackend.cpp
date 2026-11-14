@@ -30,6 +30,16 @@ using inference::InferenceError;
 
 namespace {
 
+// A model's id as Morpheus names it: the file name in a server's /props model_path, without the extension, as the
+// in-process backend names its models; "" when the path names no file.
+std::string ModelIdFromPath(const std::string& modelPath)
+{
+    const std::size_t nameStart = modelPath.find_last_of("/\\");
+    const std::string fileName = modelPath.substr(nameStart == std::string::npos ? 0 : nameStart + 1);
+    const std::size_t dot = fileName.rfind('.');
+    return dot == std::string::npos || dot == 0 ? fileName : fileName.substr(0, dot);
+}
+
 // How long a request may take to connect, and to wait for the server's next bytes. These requests (/props,
 // /tokenize, /apply-template, /embedding) answer at once; the streaming /completion, which reads a long prompt before
 // its first piece, waits longer on a kept client of its own.
@@ -311,11 +321,30 @@ LlamaServerBackend::LlamaServerBackend(LlamaServerConfig config)
 
     // The chat server: each slot must hold the context the budgets plan for, and its template tells whether the
     // model thinks.
-    const auto [slotContext, chatTemplate] =
-        Ask(*_pChatClient, _config.chatUrl, "/props", std::nullopt, [](const nlohmann::json& props) {
-            return std::pair(props.at("default_generation_settings").at("n_ctx").get<int>(),
-                             props.at("chat_template").get<std::string>());
-        });
+    struct ChatProps {
+        int slotContext = 0;
+        std::string chatTemplate = {};
+        int slots = 0;
+        std::string modelPath = {};
+    };
+    const ChatProps chat = Ask(*_pChatClient, _config.chatUrl, "/props", std::nullopt, [](const nlohmann::json& props) {
+        return ChatProps{props.at("default_generation_settings").at("n_ctx").get<int>(),
+                         props.at("chat_template").get<std::string>(), props.at("total_slots").get<int>(),
+                         props.at("model_path").get<std::string>()};
+    });
+    const int slotContext = chat.slotContext;
+    const std::string& chatTemplate = chat.chatTemplate;
+    // Its slots, which morpheus_server shares between conversations, and its model's id, for /health.
+    if (chat.slots < 1) {
+        throw InferenceError(
+            std::format("the chat server at {} reports {} slots in /props (total_slots)", _config.chatUrl, chat.slots));
+    }
+    _slotCount = chat.slots;
+    _chatModelId = ModelIdFromPath(chat.modelPath);
+    if (_chatModelId.empty()) {
+        throw InferenceError(std::format("the chat server at {} names no model file in /props (model_path '{}')",
+                                         _config.chatUrl, chat.modelPath));
+    }
     if (slotContext < _config.contextSize) {
         throw InferenceError(std::format("the chat server at {} holds {} tokens per slot, less than the context size "
                                          "{} (start llama-server with a --ctx-size of at least the context size times "
@@ -354,10 +383,7 @@ LlamaServerBackend::LlamaServerBackend(LlamaServerConfig config)
     const std::string modelPath =
         Ask(*_pEmbeddingClient, _config.embeddingUrl, "/props", std::nullopt,
             [](const nlohmann::json& props) { return props.at("model_path").get<std::string>(); });
-    const std::size_t nameStart = modelPath.find_last_of("/\\");
-    const std::string fileName = modelPath.substr(nameStart == std::string::npos ? 0 : nameStart + 1);
-    const std::size_t dot = fileName.rfind('.');
-    _embeddingModelId = dot == std::string::npos || dot == 0 ? fileName : fileName.substr(0, dot);
+    _embeddingModelId = ModelIdFromPath(modelPath);
     if (_embeddingModelId.empty()) {
         throw InferenceError(std::format("the embedding server at {} names no model file in /props (model_path '{}')",
                                          _config.embeddingUrl, modelPath));
@@ -576,6 +602,16 @@ std::vector<std::vector<float>> LlamaServerBackend::Embed(const std::vector<std:
 std::string LlamaServerBackend::EmbeddingModelId() const
 {
     return _embeddingModelId;
+}
+
+int LlamaServerBackend::SlotCount() const
+{
+    return _slotCount;
+}
+
+std::string LlamaServerBackend::ChatModelId() const
+{
+    return _chatModelId;
 }
 
 std::vector<std::uint8_t> LlamaServerBackend::SaveState()

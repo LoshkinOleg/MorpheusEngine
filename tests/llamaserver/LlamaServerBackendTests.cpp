@@ -53,7 +53,10 @@ TEST_CASE("LlamaServerBackend refuses a chat server whose slots hold less than t
 {
     test::FakeLlamaServer chat;
     test::FakeLlamaServer embed;
-    chat.SetProps({{"default_generation_settings", {{"n_ctx", 4096}}}, {"chat_template", ""}, {"model_path", "/m/chat.gguf"}});
+    chat.SetProps({{"default_generation_settings", {{"n_ctx", 4096}}},
+                   {"total_slots", 3},
+                   {"chat_template", ""},
+                   {"model_path", "/m/chat.gguf"}});
     CHECK_THROWS_AS(llamaserver::LlamaServerBackend(test::ConfigFor(chat, embed)), inference::InferenceError);
     CHECK_THROWS_WITH(llamaserver::LlamaServerBackend(test::ConfigFor(chat, embed)),
                       ContainsSubstring("4096") && ContainsSubstring("8192") && ContainsSubstring(chat.Url()));
@@ -479,5 +482,45 @@ TEST_CASE("LlamaServerBackend names the URL when counting a prompt's tokens fail
         CHECK_THROWS_AS(backend.CountPromptTokens(test::SERVER_PROMPT), inference::InferenceError);
         CHECK_THROWS_WITH(backend.CountPromptTokens(test::SERVER_PROMPT),
                           ContainsSubstring(chat.Url() + "/tokenize") && ContainsSubstring("<html>busy</html>"));
+    }
+}
+
+TEST_CASE("LlamaServerBackend reads the chat server's slot count and model id from /props", "[llamaserver]")
+{
+    test::FakeLlamaServer chat;
+    test::FakeLlamaServer embed;
+    {
+        // The fake's default /props: 3 slots, and a model file the fake names for both servers.
+        const llamaserver::LlamaServerBackend backend(test::ConfigFor(chat, embed));
+        CHECK(backend.SlotCount() == 3);
+        CHECK(backend.ChatModelId() == "nomic-embed-text-v1.5.Q8_0");
+    }
+    {
+        chat.SetProps(test::ThinkingProps());
+        const llamaserver::LlamaServerBackend backend(test::ConfigFor(chat, embed));
+        CHECK(backend.ChatModelId() == "Qwen3.5-0.8B-Q4_K_M");
+    }
+}
+
+TEST_CASE("LlamaServerBackend refuses a chat server with no slot or no model file", "[llamaserver]")
+{
+    test::FakeLlamaServer chat;
+    test::FakeLlamaServer embed;
+    SECTION("no slot")
+    {
+        nlohmann::json props = test::ThinkingProps();
+        props["total_slots"] = 0;
+        chat.SetProps(props);
+        CHECK_THROWS_AS(llamaserver::LlamaServerBackend(test::ConfigFor(chat, embed)), inference::InferenceError);
+        CHECK_THROWS_WITH(llamaserver::LlamaServerBackend(test::ConfigFor(chat, embed)),
+                          ContainsSubstring(chat.Url()) && ContainsSubstring("total_slots"));
+    }
+    SECTION("no model file")
+    {
+        nlohmann::json props = test::ThinkingProps();
+        props["model_path"] = "";
+        chat.SetProps(props);
+        CHECK_THROWS_WITH(llamaserver::LlamaServerBackend(test::ConfigFor(chat, embed)),
+                          ContainsSubstring(chat.Url()) && ContainsSubstring("model_path"));
     }
 }
