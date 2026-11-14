@@ -420,3 +420,30 @@ TEST_CASE("Events are JSON objects with a text string", "[hosted]")
     CHECK_THROWS_WITH(turn::HostedWorld::CheckEvents({R"({"text": 3})"_json}),
                       "events/0/text: an event needs 'text', a string");
 }
+
+TEST_CASE("Adjudicate refuses a number the JSON parser cannot hold instead of throwing", "[hosted]")
+{
+    const turn::HostedWorld world(test::FixtureHostData());
+    const nlohmann::json schema = world.ProposalSchema(world.Observe(test::FixtureObservation()), HuldaAndAela(),
+                                                       world.ActionIds(), test::HULDA);
+    core::Adjudication overflow;
+    CHECK_NOTHROW(overflow = world.Adjudicate(schema, R"({"action":"wait","params":{},"x":1e999})"));
+    CHECK_FALSE(overflow.requested);
+    REQUIRE(overflow.reasons.size() == 1);
+    CHECK(overflow.reasons[0].starts_with("the output is not valid JSON: "));
+}
+
+TEST_CASE("An empty allowedActions list is named as such, and a minLength reaches the proposal", "[hosted]")
+{
+    const turn::HostedWorld world(test::FixtureHostData());
+    const turn::Observation observation = world.Observe(test::FixtureObservation());
+    CHECK_THROWS_WITH(world.ProposalSchema(observation, HuldaAndAela(), {}, test::HULDA),
+                      "allowed_actions: the list names no action");
+
+    const turn::HostedWorld naming(WithCatalog(R"({"actions": [{"id": "name", "params": {
+        "label": {"type": "string", "maxLength": 10, "minLength": 2}}}]})"));
+    const nlohmann::json schema =
+        naming.ProposalSchema(naming.Observe(test::FixtureObservation()), HuldaAndAela(), {"name"}, test::HULDA);
+    CHECK(schema.at("oneOf")[0].at("properties").at("params").at("properties").at("label") ==
+          R"({"type": "string", "maxLength": 10, "minLength": 2})"_json);
+}

@@ -60,22 +60,6 @@ struct Node {
     int maxCount = 0;                        // UNBOUNDED when there is no upper limit (Validation only).
 };
 
-// `key` as one reference token of a JSON pointer (RFC 6901): "~" is written "~0" and "/" is written "~1".
-std::string PointerToken(std::string_view key)
-{
-    std::string token;
-    for (const char c : key) {
-        if (c == '~') {
-            token += "~0";
-        } else if (c == '/') {
-            token += "~1";
-        } else {
-            token += c;
-        }
-    }
-    return token;
-}
-
 // Equal as the grammar sees it: a string to a string, an integer to an integer (1.0 is not 1). Integers are compared by
 // their text, as the grammar's Literal writes them: nlohmann's == would equate -1 with 18446744073709551615.
 bool SameValue(const nlohmann::json& a, const nlohmann::json& b)
@@ -647,6 +631,22 @@ void CheckValue(const Node& node, const nlohmann::json& value, const std::string
 }
 
 } // namespace
+
+// `key` as one reference token of a JSON pointer (RFC 6901): "~" is written "~0" and "/" is written "~1".
+std::string PointerToken(std::string_view key)
+{
+    std::string token;
+    for (const char c : key) {
+        if (c == '~') {
+            token += "~0";
+        } else if (c == '/') {
+            token += "~1";
+        } else {
+            token += c;
+        }
+    }
+    return token;
+}
 
 std::string FromSchema(const nlohmann::json& schema)
 {

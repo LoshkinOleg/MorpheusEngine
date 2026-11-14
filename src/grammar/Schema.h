@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -63,5 +64,8 @@ std::vector<ValidationError> Validate(const nlohmann::json& value, const nlohman
 // for it, and returns when Validate accepts it. A host's validation-only schema is checked with it when it arrives,
 // so an unsupported keyword fails then rather than at the first value.
 void CheckValidationSchema(const nlohmann::json& schema);
+
+// `key` as one reference token of a JSON pointer (RFC 6901): "~" is written "~0" and "/" is written "~1".
+std::string PointerToken(std::string_view key);
 
 } // namespace morpheus::grammar

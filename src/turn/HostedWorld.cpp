@@ -19,22 +19,6 @@ namespace morpheus::turn {
 
 namespace {
 
-// `key` as one reference token of a JSON pointer (RFC 6901): "~" is written "~0" and "/" is written "~1".
-std::string PointerToken(std::string_view key)
-{
-    std::string token;
-    for (const char c : key) {
-        if (c == '~') {
-            token += "~0";
-        } else if (c == '/') {
-            token += "~1";
-        } else {
-            token += c;
-        }
-    }
-    return token;
-}
-
 // One fault of an observation: where it is ("" for the observation itself) and what is wrong.
 struct Fault {
     std::string pointer = {};
@@ -144,7 +128,7 @@ HostData HostDataFromJson(const nlohmann::json& json)
     }
     for (auto it = json.begin(); it != json.end(); ++it) {
         if (it.key() != "catalog" && it.key() != "observation_schema" && it.key() != "lore") {
-            throw fault("/" + PointerToken(it.key()), std::format("unknown key '{}'", it.key()));
+            throw fault("/" + grammar::PointerToken(it.key()), std::format("unknown key '{}'", it.key()));
         }
     }
     if (!json.contains("catalog")) {
@@ -173,7 +157,7 @@ HostData HostDataFromJson(const nlohmann::json& json)
         }
         for (auto it = entry.begin(); it != entry.end(); ++it) {
             if (it.key() != "subject" && it.key() != "data" && it.key() != "always_on") {
-                throw fault(at + "/" + PointerToken(it.key()), std::format("unknown key '{}'", it.key()));
+                throw fault(at + "/" + grammar::PointerToken(it.key()), std::format("unknown key '{}'", it.key()));
             }
         }
         if (!entry.contains("subject") || !entry.at("subject").is_string()) {
@@ -226,7 +210,7 @@ HostedWorld::HostedWorld(const HostData& data)
     }
     for (auto it = catalog.begin(); it != catalog.end(); ++it) {
         if (it.key() != "actions") {
-            throw fault("/" + PointerToken(it.key()), std::format("'{}' does not apply to the catalog", it.key()));
+            throw fault("/" + grammar::PointerToken(it.key()), std::format("'{}' does not apply to the catalog", it.key()));
         }
     }
     if (!catalog.contains("actions") || !catalog.at("actions").is_array() || catalog.at("actions").empty()) {
@@ -241,7 +225,7 @@ HostedWorld::HostedWorld(const HostData& data)
         }
         for (auto it = entry.begin(); it != entry.end(); ++it) {
             if (it.key() != "id" && it.key() != "params") {
-                throw fault(at + "/" + PointerToken(it.key()), std::format("'{}' does not apply to an action", it.key()));
+                throw fault(at + "/" + grammar::PointerToken(it.key()), std::format("'{}' does not apply to an action", it.key()));
             }
         }
         if (!entry.contains("id") || !entry.at("id").is_string() || entry.at("id").get_ref<const std::string&>().empty()) {
@@ -262,7 +246,7 @@ HostedWorld::HostedWorld(const HostData& data)
                 throw fault(at + "/params", "'params' must be a JSON object");
             }
             for (auto it = params.begin(); it != params.end(); ++it) {
-                const std::string paramAt = at + "/params/" + PointerToken(it.key());
+                const std::string paramAt = at + "/params/" + grammar::PointerToken(it.key());
                 const nlohmann::json& definition = it.value();
                 if (!definition.is_object()) {
                     throw fault(paramAt, "a parameter must be a JSON object");
@@ -295,7 +279,7 @@ HostedWorld::HostedWorld(const HostData& data)
                 }
                 for (auto key = definition.begin(); key != definition.end(); ++key) {
                     if (std::find(keys.begin(), keys.end(), key.key()) == keys.end()) {
-                        throw fault(paramAt + "/" + PointerToken(key.key()),
+                        throw fault(paramAt + "/" + grammar::PointerToken(key.key()),
                                     std::format("'{}' does not apply to {} parameter", key.key(), what));
                     }
                 }
@@ -468,6 +452,9 @@ void HostedWorld::CheckEvents(const std::vector<nlohmann::json>& events)
 nlohmann::json HostedWorld::ProposalSchema(const Observation& observation, const Participants& participants,
                                            const std::vector<std::string>& allowed, std::string_view speakerId) const
 {
+    if (allowed.empty()) {
+        throw core::DataError("allowed_actions: the list names no action");
+    }
     // Every allowed id names an action of the catalog, once.
     for (std::size_t i = 0; i < allowed.size(); ++i) {
         const bool known = std::any_of(_actions.begin(), _actions.end(),
@@ -550,7 +537,7 @@ core::Adjudication HostedWorld::Adjudicate(const nlohmann::json& proposalSchema,
     nlohmann::json proposal;
     try {
         proposal = nlohmann::json::parse(modelText.begin(), modelText.end());
-    } catch (const nlohmann::json::parse_error& error) {
+    } catch (const nlohmann::json::exception& error) {
         adjudication.reasons.push_back(std::format("the output is not valid JSON: {}", error.what()));
         return adjudication;
     }
