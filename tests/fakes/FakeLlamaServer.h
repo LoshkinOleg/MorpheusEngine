@@ -282,6 +282,18 @@ public:
                 });
         });
 
+        // The listening socket owns its port alone. cpp-httplib's default (SO_REUSEADDR on Windows, SO_REUSEPORT
+        // elsewhere) lets a second server bind a port another one still listens on, and the connections then split
+        // between them; a restart onto a port another process took meanwhile must fail instead. SO_EXCLUSIVEADDRUSE
+        // and plain SO_REUSEADDR (outside Windows) still rebind a port whose closed connections wait in TIME_WAIT.
+        _server.set_socket_options([](socket_t sock) {
+#ifdef _WIN32
+            httplib::set_socket_opt(sock, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, 1);
+#else
+            httplib::set_socket_opt(sock, SOL_SOCKET, SO_REUSEADDR, 1);
+#endif
+        });
+
         // A free local port, then the server on a thread of its own.
         if (port == 0) {
             _port = _server.bind_to_any_port("127.0.0.1");

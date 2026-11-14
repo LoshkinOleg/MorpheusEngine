@@ -279,3 +279,15 @@ Task 10: complete (commits 556af86..283b108, sonnet review clean; 499 tests; asa
   Minor (doc, fold into the final fix): spec names 'R5's three operations' without naming them; participants line omits the no-bio form; the L3 cue '({speaker} speaks.)' undocumented; 'byte for byte' stable prefix exception list omits folds (L2).
 Final review: opus, not ready (3 Important: D1 concurrency contract undocumented; events over tail_allowance stick a conversation in TurnError; no interleaved-conversation test). One fix round 88c9adb + follow-up 01f6643 (core::ReadActors shared by store and HostedWorld): contract documented (one session per run, caller serializes, default slot; slots and concurrency left to D2), event overflow documented and tested, interleaved and stop-between-folds tests, damaged stored turn = StoreError, Session::Load refuses hosted runs, reopen re-embeds before replacing host data, comments and doc fixes. 505 tests; asan; dev builds (controller); [hosted] incl. llama 62 cases pass; consumer check ok. Sub-project D1 COMPLETE at 01f6643, not pushed.
   For D2: cure for event overflow (show only the newest events that fit) is an owner decision; conversation ids c1, c2 are per run (namespace them); O(run) re-sync per fold and parse-all conversation lookup; world_cap measured only when a prompt is built; Qwen3-4B output quality with default texts (F).
+
+## Flaky reconnect test (before D2)
+- Not reproduced: 60 runs alone under asan, 67 alongside the [llamaserver] suite; each takes ~4.5 s because a refused
+  connect to a closed local port costs ~2 s on Windows (two in the "server down" phase).
+- Found: cpp-httplib's default socket option (SO_REUSEADDR on Windows, SO_REUSEPORT elsewhere) lets a second server
+  bind a port another one still listens on; connections then split between them. The restart test frees its port for
+  ~4 s and rebinds it, so another process (e.g. a second ctest run left in the background) taking the port meanwhile
+  misroutes its requests silently. Likely cause of the one stall, not proven.
+- Fix (uncommitted at first): FakeLlamaServer sets SO_EXCLUSIVEADDRUSE (Windows) / SO_REUSEADDR (elsewhere), so such a
+  rebind throws "cannot bind port". New test "FakeLlamaServer refuses a port another server still listens on".
+  tests 506/506, asan 506/506 (3 [server] skipped); restart tests 30/30.
+- For D2: morpheus_server's own httplib::Server needs the same exclusive socket option.

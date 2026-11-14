@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -235,6 +236,20 @@ TEST_CASE("FakeLlamaServer records each request's connection, answers a raw body
     fake.emplace(port);
     CHECK(fake->Port() == port);
     httplib::Client client(fake->Url());
+    REQUIRE(client.Get("/props"));
+}
+
+TEST_CASE("FakeLlamaServer refuses a port another server still listens on", "[fake-llama-server]")
+{
+    // cpp-httplib's default socket options let a second server share a live port (SO_REUSEADDR on Windows,
+    // SO_REUSEPORT elsewhere), and the connections then split between the two at random. A restart test that rebinds
+    // its port after another process took it must fail loudly instead.
+    const test::FakeLlamaServer first;
+    CHECK_THROWS_WITH(test::FakeLlamaServer(first.Port()),
+                      "FakeLlamaServer: cannot bind port " + std::to_string(first.Port()) + " of 127.0.0.1");
+
+    // The first server still answers.
+    httplib::Client client(first.Url());
     REQUIRE(client.Get("/props"));
 }
 
