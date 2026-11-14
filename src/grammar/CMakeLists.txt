@@ -1,4 +1,5 @@
 add_library(morpheus_grammar STATIC
+    Check.cpp
     Gbnf.cpp
     Schema.cpp
 )

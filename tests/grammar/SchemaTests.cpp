@@ -7,8 +7,8 @@
 #include <nlohmann/json.hpp>
 
 #include "core/Errors.h"
+#include "grammar/Check.h"
 #include "grammar/Gbnf.h"
-#include "grammar/GbnfMatcher.h"
 #include "grammar/Schema.h"
 #include "grammar/TestSchemas.h"
 
@@ -141,7 +141,7 @@ TEST_CASE("FromSchema ignores the keywords that do not change values", "[schema]
 
 TEST_CASE("The catalog grammar accepts the host's actions and refuses its model's mistakes", "[schema]")
 {
-    const test::GbnfMatcher matcher(grammar::FromSchema(test::CatalogSchema()));
+    const std::string matcher = grammar::FromSchema(test::CatalogSchema());
     const std::string longest = LongestItem();
     const std::vector<std::string> accepted = {
         R"({"action":"none","params":{}})",
@@ -156,7 +156,7 @@ TEST_CASE("The catalog grammar accepts the host's actions and refuses its model'
     };
     for (const std::string& text : accepted) {
         INFO(text);
-        CHECK(matcher.Accepts(text));
+        CHECK(grammar::Check(matcher, text).empty());
     }
     const std::vector<std::string> rejected = {
         R"({"action":"dance","params":{}})",                                // an unknown action
@@ -172,13 +172,13 @@ TEST_CASE("The catalog grammar accepts the host's actions and refuses its model'
     };
     for (const std::string& text : rejected) {
         INFO(text);
-        CHECK_FALSE(matcher.Accepts(text));
+        CHECK_FALSE(grammar::Check(matcher, text).empty());
     }
 }
 
 TEST_CASE("The grammar of every keyword accepts a valid value and refuses each broken one", "[schema]")
 {
-    const test::GbnfMatcher matcher(grammar::FromSchema(test::EveryKeywordSchema()));
+    const std::string matcher = grammar::FromSchema(test::EveryKeywordSchema());
     const std::string base =
         R"({"name":"ab","count":0,"big":5,"tags":["red"],"codes":[],"version":2,"pair":[{"x":1,"label":"point"},{"x":2,"label":"point"}],"empty":{},"mode":{"state":"off"}})";
     // `base` with its first `from` replaced by `to`.
@@ -188,7 +188,7 @@ TEST_CASE("The grammar of every keyword accepts a valid value and refuses each b
         REQUIRE(at != std::string::npos);
         return text.replace(at, from.size(), to);
     };
-    CHECK(matcher.Accepts(base));
+    CHECK(grammar::Check(matcher, base).empty());
     const std::vector<std::string> accepted = {
         with(R"("mode":{"state":"off"})", R"("mode":{"state":"on","level":3})"),
         with(R"("big":5)", R"("big":-9223372036854775808)"),
@@ -202,7 +202,7 @@ TEST_CASE("The grammar of every keyword accepts a valid value and refuses each b
     };
     for (const std::string& text : accepted) {
         INFO(text);
-        CHECK(matcher.Accepts(text));
+        CHECK(grammar::Check(matcher, text).empty());
     }
     const std::vector<std::string> rejected = {
         with(R"("count":0)", R"("count":121)"),
@@ -225,7 +225,7 @@ TEST_CASE("The grammar of every keyword accepts a valid value and refuses each b
     };
     for (const std::string& text : rejected) {
         INFO(text);
-        CHECK_FALSE(matcher.Accepts(text));
+        CHECK_FALSE(grammar::Check(matcher, text).empty());
     }
 }
 

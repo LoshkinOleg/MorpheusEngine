@@ -17,8 +17,8 @@
 #include "core/Changes.h"
 #include "core/Errors.h"
 #include "core/World.h"
+#include "grammar/Check.h"
 #include "grammar/Gbnf.h"
-#include "grammar/GbnfMatcher.h"
 #include "grammar/RandomValue.h"
 #include "grammar/Schema.h"
 #include "grammar/TestSchemas.h"
@@ -27,6 +27,24 @@
 
 using namespace morpheus;
 using Catch::Matchers::ContainsSubstring;
+
+namespace {
+
+// The kind of a grammar check's verdict: "fits", "rejects" or "ends early". llama.cpp's reason quotes a token and
+// grammar::Check's a code point, so the two agree on the kind, not the quote.
+std::string VerdictOf(const std::string& reason)
+{
+    if (reason.empty()) {
+        return "fits";
+    }
+    if (reason == "the text ends before the grammar does") {
+        return "ends early";
+    }
+    REQUIRE(reason.starts_with("the grammar rejects '"));
+    return "rejects";
+}
+
+} // namespace
 
 TEST_CASE("llama.cpp accepts the generated grammars and they constrain real output", "[llama]")
 {
@@ -157,20 +175,22 @@ TEST_CASE("llama.cpp loads FromSchema grammars at the repetition limits", "[llam
     CHECK_THROWS_AS(backend.CheckGrammar(inlineList, R"(["Iron Sword"])"), core::ContractError);
 }
 
-TEST_CASE("llama.cpp accepts the random values of each test schema against the schema's grammar", "[llama]")
+TEST_CASE("llama.cpp and grammar::Check accept the random values of each test schema", "[llama]")
 {
     llama::LlamaCppBackend& backend = test::SharedBackend();
     const std::vector<nlohmann::json> schemas = {test::CatalogSchema(), test::EveryKeywordSchema()};
     for (const nlohmann::json& schema : schemas) {
         const std::string gbnf = grammar::FromSchema(schema);
-        // The grammar parses (one that does not is a ContractError) and wants a whole value.
+        // The grammar parses (one that does not is a ContractError) and wants a whole value, by both checkers.
         CHECK(backend.CheckGrammar(gbnf, "") == "the text ends before the grammar does");
+        CHECK(grammar::Check(gbnf, "") == "the text ends before the grammar does");
         // The same values as the fast suite's property test: the same seed, the same draws, written compact.
         std::mt19937_64 random(test::PROPERTY_SEED);
         for (int i = 0; i < test::PROPERTY_DRAWS; ++i) {
             const std::string text = test::RandomValue(schema, random).dump();
             INFO("value " << i << ": " << text);
             CHECK(backend.CheckGrammar(gbnf, text) == "");
+            CHECK(grammar::Check(gbnf, text) == "");
         }
     }
 }
@@ -189,7 +209,9 @@ TEST_CASE("llama.cpp rejects invalid actions against the catalog grammar", "[lla
     };
     for (const std::string& text : invalid) {
         INFO(text);
-        CHECK(backend.CheckGrammar(gbnf, text) != "");
+        const std::string reason = backend.CheckGrammar(gbnf, text);
+        CHECK(reason != "");
+        CHECK(VerdictOf(grammar::Check(gbnf, text)) == VerdictOf(reason));
     }
 }
 
@@ -204,13 +226,12 @@ TEST_CASE("llama.cpp parses the review grammars built on the builder", "[llama]"
     CHECK(backend.CheckGrammar(turn::BuildReviewGrammar(true, true), R"({"consistent":true,"problems":["x"],"digest":""})") != "");
 }
 
-TEST_CASE("llama.cpp and the test matcher agree on IntRange grammars", "[llama]")
+TEST_CASE("llama.cpp and grammar::Check agree on IntRange grammars", "[llama]")
 {
     llama::LlamaCppBackend& backend = test::SharedBackend();
     const std::vector<std::pair<long long, long long>> ranges = {{-15, 123}, {0, 255}, {-1000, -91}, {37, 120}};
     for (const auto& [low, high] : ranges) {
         const std::string gbnf = grammar::GrammarBuilder().Text(grammar::IntRange(low, high));
-        const test::GbnfMatcher matcher(gbnf);
         // Other spellings, then a window around each end.
         std::vector<std::pair<std::string, bool>> probes = {{"-0", false}, {"00", false}, {"007", false}, {"-01", false},
                                                             {"+5", false}};
@@ -222,8 +243,11 @@ TEST_CASE("llama.cpp and the test matcher agree on IntRange grammars", "[llama]"
         }
         for (const auto& [text, inRange] : probes) {
             INFO("IntRange(" << low << ", " << high << ") on '" << text << "'");
-            CHECK(backend.CheckGrammar(gbnf, text).empty() == inRange);
-            CHECK(matcher.Accepts(text) == inRange);
+            const std::string llamaReason = backend.CheckGrammar(gbnf, text);
+            const std::string checkReason = grammar::Check(gbnf, text);
+            CHECK(llamaReason.empty() == inRange);
+            CHECK(checkReason.empty() == inRange);
+            CHECK(VerdictOf(checkReason) == VerdictOf(llamaReason));
         }
     }
 }

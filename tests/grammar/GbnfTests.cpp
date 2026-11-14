@@ -8,8 +8,8 @@
 #include <vector>
 
 #include "core/Errors.h"
+#include "grammar/Check.h"
 #include "grammar/Gbnf.h"
-#include "grammar/GbnfMatcher.h"
 
 using namespace morpheus;
 
@@ -19,10 +19,10 @@ namespace {
 const std::string CHAR_LINE =
     R"gbnf(char ::= [^"\\\x7F\x00-\x1F] | "\\" (["\\/bfnrt] | "u" [0-9a-fA-F]{4}))gbnf" "\n";
 
-// A matcher for the grammar whose root is `rootBody`.
-test::GbnfMatcher MatcherFor(const std::string& rootBody)
+// The grammar whose root is `rootBody`.
+std::string GrammarFor(const std::string& rootBody)
 {
-    return test::GbnfMatcher(grammar::GrammarBuilder().Text(rootBody));
+    return grammar::GrammarBuilder().Text(rootBody);
 }
 
 } // namespace
@@ -48,16 +48,16 @@ TEST_CASE("JsonString bounds a JSON string by characters", "[gbnf]")
     CHECK_THROWS_AS(grammar::JsonString(3, 2), core::ContractError);
 
     // Each character is a code point or one escape; raw control characters, DEL and lone quotes are refused.
-    const test::GbnfMatcher text = MatcherFor(grammar::JsonString(1, 3));
-    CHECK(text.Accepts(R"("a")"));
-    CHECK(text.Accepts(R"("\u00e9\n\"")"));
-    CHECK(text.Accepts("\"\xE6\x97\xA5\xF0\x9F\x98\x80\xC3\xA9\""));
-    CHECK_FALSE(text.Accepts(R"("")"));
-    CHECK_FALSE(text.Accepts(R"("abcd")"));
-    CHECK_FALSE(text.Accepts("\"a\tb\""));
-    CHECK_FALSE(text.Accepts("\"\x7F\""));
-    CHECK_FALSE(text.Accepts(R"("a"")"));
-    CHECK_FALSE(text.Accepts("a"));
+    const std::string text = GrammarFor(grammar::JsonString(1, 3));
+    CHECK(grammar::Check(text, R"("a")").empty());
+    CHECK(grammar::Check(text, R"("\u00e9\n\"")").empty());
+    CHECK(grammar::Check(text, "\"\xE6\x97\xA5\xF0\x9F\x98\x80\xC3\xA9\"").empty());
+    CHECK_FALSE(grammar::Check(text, R"("")").empty());
+    CHECK_FALSE(grammar::Check(text, R"("abcd")").empty());
+    CHECK_FALSE(grammar::Check(text, "\"a\tb\"").empty());
+    CHECK_FALSE(grammar::Check(text, "\"\x7F\"").empty());
+    CHECK_FALSE(grammar::Check(text, R"("a"")").empty());
+    CHECK_FALSE(grammar::Check(text, "a").empty());
 }
 
 TEST_CASE("JsonString stays within llama.cpp's repetition limit", "[gbnf]")
@@ -76,11 +76,11 @@ TEST_CASE("Enum matches one of its values as a JSON string", "[gbnf]")
     CHECK_THROWS_AS(grammar::Enum({}), core::ContractError);
     CHECK_THROWS_AS(grammar::Enum({"a", "b", "a"}), core::ContractError);
 
-    const test::GbnfMatcher mood = MatcherFor(grammar::Enum({"wary", R"(a"b)"}));
-    CHECK(mood.Accepts(R"("wary")"));
-    CHECK(mood.Accepts(R"("a\"b")"));
-    CHECK_FALSE(mood.Accepts("wary"));
-    CHECK_FALSE(mood.Accepts(R"("friendly")"));
+    const std::string mood = GrammarFor(grammar::Enum({"wary", R"(a"b)"}));
+    CHECK(grammar::Check(mood, R"("wary")").empty());
+    CHECK(grammar::Check(mood, R"("a\"b")").empty());
+    CHECK_FALSE(grammar::Check(mood, "wary").empty());
+    CHECK_FALSE(grammar::Check(mood, R"("friendly")").empty());
 }
 
 TEST_CASE("ListOf bounds a compact JSON array", "[gbnf]")
@@ -95,14 +95,14 @@ TEST_CASE("ListOf bounds a compact JSON array", "[gbnf]")
     CHECK_THROWS_AS(grammar::ListOf("x", -1, 2), core::ContractError);
     CHECK_THROWS_AS(grammar::ListOf("x", 3, 2), core::ContractError);
 
-    const test::GbnfMatcher list = MatcherFor(grammar::ListOf(grammar::Literal("7"), 0, 2));
-    CHECK(list.Accepts("[]"));
-    CHECK(list.Accepts("[7]"));
-    CHECK(list.Accepts("[7,7]"));
-    CHECK_FALSE(list.Accepts("[7,7,7]"));
-    CHECK_FALSE(list.Accepts("[ 7]"));
-    CHECK_FALSE(list.Accepts("[7,]"));
-    CHECK_FALSE(list.Accepts("[,]"));
+    const std::string list = GrammarFor(grammar::ListOf(grammar::Literal("7"), 0, 2));
+    CHECK(grammar::Check(list, "[]").empty());
+    CHECK(grammar::Check(list, "[7]").empty());
+    CHECK(grammar::Check(list, "[7,7]").empty());
+    CHECK_FALSE(grammar::Check(list, "[7,7,7]").empty());
+    CHECK_FALSE(grammar::Check(list, "[ 7]").empty());
+    CHECK_FALSE(grammar::Check(list, "[7,]").empty());
+    CHECK_FALSE(grammar::Check(list, "[,]").empty());
 }
 
 TEST_CASE("ListOf stays within llama.cpp's repetition limit", "[gbnf]")
@@ -136,15 +136,15 @@ TEST_CASE("Object matches a compact JSON object with fixed keys in a fixed order
     CHECK_THROWS_AS(grammar::Object({{"a", "x"}, {"a", "y"}}), core::ContractError);
     CHECK_THROWS_AS(grammar::Object({{"a", ""}}), core::ContractError);
 
-    const test::GbnfMatcher object =
-        MatcherFor(grammar::Object({{"a", grammar::Enum({"x", "y"})}, {"b", grammar::Literal("1")}}));
-    CHECK(object.Accepts(R"({"a":"x","b":1})"));
-    CHECK(object.Accepts(R"({"a":"y","b":1})"));
-    CHECK_FALSE(object.Accepts(R"({"b":1,"a":"x"})"));
-    CHECK_FALSE(object.Accepts(R"({"a":"x"})"));
-    CHECK_FALSE(object.Accepts(R"({"a":"x","b":1,"c":1})"));
-    CHECK_FALSE(object.Accepts(R"({"a": "x","b":1})"));
-    CHECK_FALSE(object.Accepts(R"({"a":"z","b":1})"));
+    const std::string object =
+        GrammarFor(grammar::Object({{"a", grammar::Enum({"x", "y"})}, {"b", grammar::Literal("1")}}));
+    CHECK(grammar::Check(object, R"({"a":"x","b":1})").empty());
+    CHECK(grammar::Check(object, R"({"a":"y","b":1})").empty());
+    CHECK_FALSE(grammar::Check(object, R"({"b":1,"a":"x"})").empty());
+    CHECK_FALSE(grammar::Check(object, R"({"a":"x"})").empty());
+    CHECK_FALSE(grammar::Check(object, R"({"a":"x","b":1,"c":1})").empty());
+    CHECK_FALSE(grammar::Check(object, R"({"a": "x","b":1})").empty());
+    CHECK_FALSE(grammar::Check(object, R"({"a":"z","b":1})").empty());
 }
 
 TEST_CASE("Alternatives matches any one of its expressions and can stand in a sequence", "[gbnf]")
@@ -153,14 +153,14 @@ TEST_CASE("Alternatives matches any one of its expressions and can stand in a se
     CHECK(grammar::Alternatives({"a", "b c"}) == "(a | b c)");
     CHECK_THROWS_AS(grammar::Alternatives({}), core::ContractError);
 
-    const test::GbnfMatcher either = MatcherFor(grammar::Literal("<") + " " +
-                                                grammar::Alternatives({grammar::Literal("yes"), grammar::Literal("no")}) +
-                                                " " + grammar::Literal(">"));
-    CHECK(either.Accepts("<yes>"));
-    CHECK(either.Accepts("<no>"));
-    CHECK_FALSE(either.Accepts("<yes"));
-    CHECK_FALSE(either.Accepts("no>"));
-    CHECK_FALSE(either.Accepts("<yesno>"));
+    const std::string either = GrammarFor(grammar::Literal("<") + " " +
+                                          grammar::Alternatives({grammar::Literal("yes"), grammar::Literal("no")}) +
+                                          " " + grammar::Literal(">"));
+    CHECK(grammar::Check(either, "<yes>").empty());
+    CHECK(grammar::Check(either, "<no>").empty());
+    CHECK_FALSE(grammar::Check(either, "<yes").empty());
+    CHECK_FALSE(grammar::Check(either, "no>").empty());
+    CHECK_FALSE(grammar::Check(either, "<yesno>").empty());
 }
 
 TEST_CASE("GrammarBuilder writes the root line first, then its rules, then the shared terminals used", "[gbnf]")
@@ -243,7 +243,7 @@ TEST_CASE("IntRange accepts exactly the integers of its range, each written one 
     }
 
     for (const auto& [low, high] : ranges) {
-        const test::GbnfMatcher matcher = MatcherFor(grammar::IntRange(low, high));
+        const std::string matcher = GrammarFor(grammar::IntRange(low, high));
         std::vector<long long> probes;
         for (long long delta = -15; delta <= 15; ++delta) {
             probes.push_back(low + delta);
@@ -254,19 +254,19 @@ TEST_CASE("IntRange accepts exactly the integers of its range, each written one 
         }
         for (const long long value : probes) {
             INFO("IntRange(" << low << ", " << high << ") on " << value);
-            CHECK(matcher.Accepts(std::to_string(value)) == (low <= value && value <= high));
+            CHECK(grammar::Check(matcher, std::to_string(value)).empty() == (low <= value && value <= high));
         }
         // Whatever the range, no other spelling: a leading zero, "-0", a plus sign, a space, nothing.
         for (const long long value : {low, high}) {
             const std::string digits = std::to_string(value < 0 ? -value : value);
             INFO("IntRange(" << low << ", " << high << ") on other spellings of " << value);
-            CHECK_FALSE(matcher.Accepts((value < 0 ? "-0" : "0") + digits));
-            CHECK_FALSE(matcher.Accepts("+" + digits));
-            CHECK_FALSE(matcher.Accepts(" " + std::to_string(value)));
+            CHECK_FALSE(grammar::Check(matcher, (value < 0 ? "-0" : "0") + digits).empty());
+            CHECK_FALSE(grammar::Check(matcher, "+" + digits).empty());
+            CHECK_FALSE(grammar::Check(matcher, " " + std::to_string(value)).empty());
         }
-        CHECK_FALSE(matcher.Accepts("-0"));
-        CHECK_FALSE(matcher.Accepts("-"));
-        CHECK_FALSE(matcher.Accepts(""));
+        CHECK_FALSE(grammar::Check(matcher, "-0").empty());
+        CHECK_FALSE(grammar::Check(matcher, "-").empty());
+        CHECK_FALSE(grammar::Check(matcher, "").empty());
     }
 }
 
@@ -275,38 +275,38 @@ TEST_CASE("IntRange covers the whole long long range exactly", "[int-range]")
     constexpr long long LOWEST = std::numeric_limits<long long>::min();
     constexpr long long HIGHEST = std::numeric_limits<long long>::max();
 
-    const test::GbnfMatcher all = MatcherFor(grammar::IntRange(LOWEST, HIGHEST));
-    CHECK(all.Accepts("-9223372036854775808"));
-    CHECK(all.Accepts("9223372036854775807"));
-    CHECK(all.Accepts("0"));
-    CHECK(all.Accepts("-1"));
-    CHECK(all.Accepts("1000000000000000000"));
-    CHECK(all.Accepts("-999999999999999999"));
-    CHECK_FALSE(all.Accepts("-9223372036854775809"));
-    CHECK_FALSE(all.Accepts("9223372036854775808"));
-    CHECK_FALSE(all.Accepts("9999999999999999999"));
-    CHECK_FALSE(all.Accepts("10000000000000000000"));
-    CHECK_FALSE(all.Accepts("-0"));
-    CHECK_FALSE(all.Accepts("01"));
+    const std::string all = GrammarFor(grammar::IntRange(LOWEST, HIGHEST));
+    CHECK(grammar::Check(all, "-9223372036854775808").empty());
+    CHECK(grammar::Check(all, "9223372036854775807").empty());
+    CHECK(grammar::Check(all, "0").empty());
+    CHECK(grammar::Check(all, "-1").empty());
+    CHECK(grammar::Check(all, "1000000000000000000").empty());
+    CHECK(grammar::Check(all, "-999999999999999999").empty());
+    CHECK_FALSE(grammar::Check(all, "-9223372036854775809").empty());
+    CHECK_FALSE(grammar::Check(all, "9223372036854775808").empty());
+    CHECK_FALSE(grammar::Check(all, "9999999999999999999").empty());
+    CHECK_FALSE(grammar::Check(all, "10000000000000000000").empty());
+    CHECK_FALSE(grammar::Check(all, "-0").empty());
+    CHECK_FALSE(grammar::Check(all, "01").empty());
 
     // A window at each end.
-    const test::GbnfMatcher top = MatcherFor(grammar::IntRange(HIGHEST - 30, HIGHEST));
+    const std::string top = GrammarFor(grammar::IntRange(HIGHEST - 30, HIGHEST));
     for (long long value = HIGHEST - 40; value < HIGHEST; ++value) {
         INFO(value);
-        CHECK(top.Accepts(std::to_string(value)) == (value >= HIGHEST - 30));
+        CHECK(grammar::Check(top, std::to_string(value)).empty() == (value >= HIGHEST - 30));
     }
-    CHECK(top.Accepts("9223372036854775807"));
-    CHECK_FALSE(top.Accepts("9223372036854775808"));
-    const test::GbnfMatcher bottom = MatcherFor(grammar::IntRange(LOWEST, LOWEST + 30));
+    CHECK(grammar::Check(top, "9223372036854775807").empty());
+    CHECK_FALSE(grammar::Check(top, "9223372036854775808").empty());
+    const std::string bottom = GrammarFor(grammar::IntRange(LOWEST, LOWEST + 30));
     for (long long value = LOWEST + 1; value < LOWEST + 40; ++value) {
         INFO(value);
-        CHECK(bottom.Accepts(std::to_string(value)) == (value <= LOWEST + 30));
+        CHECK(grammar::Check(bottom, std::to_string(value)).empty() == (value <= LOWEST + 30));
     }
-    CHECK(bottom.Accepts("-9223372036854775808"));
-    CHECK_FALSE(bottom.Accepts("-9223372036854775809"));
+    CHECK(grammar::Check(bottom, "-9223372036854775808").empty());
+    CHECK_FALSE(grammar::Check(bottom, "-9223372036854775809").empty());
 
     // The lowest value alone.
-    const test::GbnfMatcher lowest = MatcherFor(grammar::IntRange(LOWEST, LOWEST));
-    CHECK(lowest.Accepts("-9223372036854775808"));
-    CHECK_FALSE(lowest.Accepts("-9223372036854775807"));
+    const std::string lowest = GrammarFor(grammar::IntRange(LOWEST, LOWEST));
+    CHECK(grammar::Check(lowest, "-9223372036854775808").empty());
+    CHECK_FALSE(grammar::Check(lowest, "-9223372036854775807").empty());
 }

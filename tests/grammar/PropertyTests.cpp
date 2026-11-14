@@ -11,7 +11,7 @@
 #include <nlohmann/json.hpp>
 
 #include "core/Text.h"
-#include "grammar/GbnfMatcher.h"
+#include "grammar/Check.h"
 #include "grammar/RandomValue.h"
 #include "grammar/Schema.h"
 #include "grammar/TestSchemas.h"
@@ -24,7 +24,7 @@ namespace {
 // text as a host reads the model's answer, passes Validate, and that the text fits the schema's grammar.
 void CheckRandomValues(const nlohmann::json& schema)
 {
-    const test::GbnfMatcher matcher(grammar::FromSchema(schema));
+    const std::string gbnf = grammar::FromSchema(schema);
     std::mt19937_64 random(test::PROPERTY_SEED);
     for (int i = 0; i < test::PROPERTY_DRAWS; ++i) {
         const std::string text = test::RandomValue(schema, random).dump();
@@ -34,7 +34,7 @@ void CheckRandomValues(const nlohmann::json& schema)
             UNSCOPED_INFO(error.path << ": " << error.message);
         }
         CHECK(errors.empty());
-        CHECK(matcher.Accepts(text));
+        CHECK(grammar::Check(gbnf, text) == "");
     }
 }
 
