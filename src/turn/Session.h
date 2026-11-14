@@ -5,7 +5,6 @@
 #include <filesystem>
 #include <functional>
 #include <optional>
-#include <stdexcept>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -20,22 +19,14 @@
 #include "core/World.h"
 #include "inference/Llm.h"
 #include "store/RunStore.h"
+#include "turn/MemoryUpkeep.h"
 #include "turn/Retrieval.h"
 
 namespace morpheus::turn {
 
-// A turn that cannot run as asked: nothing to undo or regenerate, an empty input, or an input too long for the
-// tail allowance. Nothing changed; the message is for the player.
-class TurnError : public std::runtime_error {
-public:
-    using std::runtime_error::runtime_error;
-};
-
 constexpr std::size_t RETRIEVAL_MAX_HITS = 6; // Retrieval hits in the tail (T2), before retrieval_cap applies.
 constexpr std::size_t LOOKUP_MAX_HITS = 2;    // Hits each assisted-mode lookup adds.
 constexpr int LOOKUP_MAX_TOKENS = 192;        // Generation cap for the lookup call.
-constexpr int FOLD_SUMMARY_DIVISOR = 4;       // A fold summary gets summary_cap / 4 tokens: several fit before a condense.
-constexpr int CONDENSE_SUMMARY_DIVISOR = 2;   // A condensed summary gets summary_cap / 2 tokens, so it fits its cap.
 // Added to a turn's attempt for the seed of its second review, so that seed never equals a regenerated turn's first
 // review seed (attempt + 1). PlayTurn requires attempt < REVIEW_RETRY_OFFSET, which keeps the sum within
 // SamplingSeed's limit of 2^24.
@@ -118,25 +109,14 @@ private:
     std::optional<core::TurnRecord> PlayTurn(const std::string& input, int attempt, const TurnCallbacks& callbacks,
                                              std::stop_token stop);
 
-    // The layers for one call: summaries and unfolded transcript from the store, then the given tail parts.
-    context::ContextInputs Inputs(const nlohmann::json& state, const std::vector<RetrievalHit>& hits,
-                                  const std::string& input, std::string_view instruction);
+    // One pass of the memory upkeep: the prompt for `hits` and the given tail parts, with the summaries and the
+    // unfolded transcript read from the store as it is now, and the transcript entries it shows.
+    FitPass Pass(const nlohmann::json& state, const std::vector<RetrievalHit>& hits, const std::string& input,
+                 std::string_view instruction);
 
-    // Assembles a prompt that fits, shedding hits, condensing and folding as needed (see the loop). nullopt when a
-    // memory call was cancelled.
-    std::optional<context::Assembly> AssembleFitting(const nlohmann::json& state, std::vector<RetrievalHit>& hits,
-                                                     const std::string& input, std::string_view instruction, int turn,
-                                                     int attempt, std::stop_token stop);
-
-    // Folds the oldest half (at least one) of `transcript` into a new summary, or as many of those turns as fit one
-    // call in the context. When not even one turn fits, the engine writes that turn's summary without a model call
-    // (SummarizeFallback). Every call folds at least one turn. False when cancelled.
-    bool FoldOldest(const inference::Message& systemMessage, const std::vector<core::TurnRecord>& transcript, int turn,
-                    int attempt, std::stop_token stop);
-
-    // Replaces every summary with one condensed summary. When the condense call does not fit the context, the engine
-    // writes it without a model call (CondenseFallback). False when cancelled.
-    bool Condense(const inference::Message& systemMessage, int turn, int attempt, std::stop_token stop);
+    // The shared memory upkeep for turn `turn`'s memory calls: a fold's summary joins the store, and the turns it
+    // covers become searchable history.
+    MemoryUpkeep Upkeep(int turn, int attempt);
 
     // The last turn covered by a summary, 0 when none.
     int FoldedThrough();

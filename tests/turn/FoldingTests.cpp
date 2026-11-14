@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <limits>
 #include <optional>
 #include <stop_token>
 #include <string>
@@ -51,6 +52,12 @@ test::ScriptedBackend BlankBackend()
     });
 }
 
+// `turns` as the session renders them for L3 with every narration shown; a fold reads the same.
+std::vector<context::TranscriptEntry> Entries(const std::vector<core::TurnRecord>& turns)
+{
+    return context::TranscriptEntries(turns, std::numeric_limits<int>::max());
+}
+
 } // namespace
 
 TEST_CASE("SummarizeTurns folds turns after the system message and trims the summary", "[folding]")
@@ -63,7 +70,7 @@ TEST_CASE("SummarizeTurns folds turns after the system message and trims the sum
     spec.maxTokens = 64;
 
     const std::optional<core::Summary> summary = turn::SummarizeTurns(
-        system, {Turn(3, "I knock.", "The door creaks."), Turn(4, "I enter.", "It is dark.")}, spec, backend, {});
+        system, Entries({Turn(3, "I knock.", "The door creaks."), Turn(4, "I enter.", "It is dark.")}), spec, backend, {});
     REQUIRE(summary);
     CHECK(summary->fromTurn == 3);
     CHECK(summary->toTurn == 4);
@@ -102,7 +109,7 @@ TEST_CASE("Folding calls return nothing when cancelled and reject empty input", 
     });
     std::stop_source stop;
     stop.request_stop();
-    CHECK_FALSE(turn::SummarizeTurns({inference::Role::System, "S"}, {Turn(1, "a", "b")}, {}, backend, stop.get_token()));
+    CHECK_FALSE(turn::SummarizeTurns({inference::Role::System, "S"}, Entries({Turn(1, "a", "b")}), {}, backend, stop.get_token()));
     CHECK_FALSE(turn::CondenseSummaries({inference::Role::System, "S"}, {{1, 1, "a"}}, {}, backend, stop.get_token()));
 
     // The two cancelled calls reached the backend; the rejected calls must not add any.
@@ -118,7 +125,7 @@ TEST_CASE("Folding calls reject a message that is not a system message", "[foldi
         return std::string("Summary.");
     });
     const inference::Message user = {inference::Role::User, "not a system message"};
-    CHECK_THROWS_AS(turn::SummarizeTurns(user, {Turn(1, "a", "b")}, {}, backend, {}), core::ContractError);
+    CHECK_THROWS_AS(turn::SummarizeTurns(user, Entries({Turn(1, "a", "b")}), {}, backend, {}), core::ContractError);
     CHECK_THROWS_AS(turn::CondenseSummaries(user, {{1, 1, "a"}}, {}, backend, {}), core::ContractError);
     CHECK(backend.Calls().empty());
 }
@@ -132,7 +139,7 @@ TEST_CASE("SummarizeTurns writes a factual fallback when the model writes nothin
     REQUIRE_FALSE(mechanics.empty());
 
     const std::optional<core::Summary> summary =
-        turn::SummarizeTurns({inference::Role::System, "S"}, turns, inference::GenerationSpec{}, backend, {});
+        turn::SummarizeTurns({inference::Role::System, "S"}, Entries(turns), inference::GenerationSpec{}, backend, {});
     REQUIRE(summary);
     CHECK(summary->fromTurn == 3);
     CHECK(summary->toTurn == 4);
@@ -158,7 +165,7 @@ TEST_CASE("A fallback summary is cut to about four bytes per token of the cap", 
     spec.maxTokens = 10;
 
     const std::optional<core::Summary> summary =
-        turn::SummarizeTurns({inference::Role::System, "S"}, {Turn(1, std::string(200, 'x'), "b")}, spec, backend, {});
+        turn::SummarizeTurns({inference::Role::System, "S"}, Entries({Turn(1, std::string(200, 'x'), "b")}), spec, backend, {});
     REQUIRE(summary);
     CHECK(summary->text == "Turn 1: " + std::string(32, 'x')); // 40 bytes in all
 
@@ -179,10 +186,10 @@ TEST_CASE("The fold and condense prompts and fallbacks are the ones the folding 
 
     // The prompts the session measures before a call are the prompts the calls send.
     test::ScriptedBackend backend = BlankBackend();
-    const std::optional<core::Summary> summary = turn::SummarizeTurns(system, turns, spec, backend, {});
+    const std::optional<core::Summary> summary = turn::SummarizeTurns(system, Entries(turns), spec, backend, {});
     const std::optional<core::Summary> merged = turn::CondenseSummaries(system, summaries, spec, backend, {});
     REQUIRE(backend.Calls().size() == 2);
-    const inference::Prompt summarizePrompt = turn::SummarizePrompt(system, turns);
+    const inference::Prompt summarizePrompt = turn::SummarizePrompt(system, Entries(turns));
     const inference::Prompt condensePrompt = turn::CondensePrompt(system);
     REQUIRE(backend.Calls()[0].prompt.messages.size() == summarizePrompt.messages.size());
     for (std::size_t i = 0; i < summarizePrompt.messages.size(); ++i) {
@@ -196,7 +203,7 @@ TEST_CASE("The fold and condense prompts and fallbacks are the ones the folding 
     // The fallbacks, written without a model call, are what the calls write when the model writes nothing.
     REQUIRE(summary);
     REQUIRE(merged);
-    const core::Summary summaryFallback = turn::SummarizeFallback(turns, spec.maxTokens);
+    const core::Summary summaryFallback = turn::SummarizeFallback(Entries(turns), spec.maxTokens);
     const core::Summary condenseFallback = turn::CondenseFallback(summaries, spec.maxTokens);
     CHECK(summaryFallback.fromTurn == 3);
     CHECK(summaryFallback.toTurn == 4);
@@ -212,8 +219,10 @@ TEST_CASE("A fold sees the full narration even of turns with a digest", "[foldin
 {
     core::TurnRecord walked = Turn(1, "I walk.", "You walk the long shore road.");
     walked.digest = "The player walked.";
-    const inference::Prompt prompt =
-        turn::SummarizePrompt({inference::Role::System, "story"}, {walked, Turn(2, "I wait.", "Time passes.")});
+    // proseTurns 1: L3 would show turn 1's digest; the fold still reads its narration.
+    const inference::Prompt prompt = turn::SummarizePrompt(
+        {inference::Role::System, "story"},
+        context::TranscriptEntries({walked, Turn(2, "I wait.", "Time passes.")}, 1));
     REQUIRE(prompt.messages.size() == 1 + 4 + 1);
     CHECK(prompt.messages[2].content == "You walk the long shore road.");
     CHECK(prompt.messages[4].content == "Time passes.");

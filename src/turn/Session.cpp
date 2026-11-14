@@ -7,11 +7,11 @@
 #include <limits>
 #include <utility>
 
+#include "context/Transcript.h"
 #include "core/Dice.h"
 #include "core/Errors.h"
 #include "core/Text.h"
 #include "turn/EngineText.h"
-#include "turn/Folding.h"
 #include "turn/Resolve.h"
 #include "turn/ResolveGrammar.h"
 #include "turn/Review.h"
@@ -43,13 +43,6 @@ nlohmann::json Telemetry(const inference::Completion& completion, const inferenc
                                  {"text", completion.thinking}};
     }
     return telemetry;
-}
-
-// Thrown when a summary is still over summary_cap right after a condense: condensing again would only repeat it.
-core::DataError CondensedOverCap(int summaryCap, int summaryTokens)
-{
-    return core::DataError(std::format("summary_cap {} is too small for even a condensed summary ({} tokens)",
-                                       summaryCap, summaryTokens));
 }
 
 } // namespace
@@ -202,31 +195,12 @@ bool Session::Maintain(std::stop_token stop)
 {
     const int latest = _store.LatestTurn();
     const nlohmann::json state = _store.StateAt(latest);
-    // Every pass condenses or folds. A fold shrinks the transcript, and a summary still over its cap right after a
-    // condense throws, so the loop ends.
-    bool condensed = false; // The summary was just condensed, with nothing folded into it since.
-    for (;;) {
-        // The next input is unknown: a placeholder tail measures the stable layers. The turn checks the real tail.
-        const context::ContextInputs inputs = Inputs(state, {}, std::string(MAINTENANCE_INPUT), RESOLVE_INSTRUCTION);
-        const context::Assembly assembly = context::AssembleResolvePrompt(_world, inputs, _settings.budget, *_pBackend);
-        if (assembly.summaryOverBudget) {
-            if (condensed) {
-                throw CondensedOverCap(_settings.budget.summaryCap, assembly.tokens.summary);
-            }
-            if (!Condense(assembly.prompt.messages.front(), latest, 0, stop)) {
-                return false;
-            }
-            condensed = true;
-            continue;
-        }
-        if (assembly.transcriptOverBudget && !inputs.transcript.empty()) {
-            if (!FoldOldest(assembly.prompt.messages.front(), inputs.transcript, latest, 0, stop)) {
-                return false;
-            }
-            condensed = false;
-            continue;
-        }
-        break;
+    // The next input is unknown: a placeholder tail measures the stable layers. The turn checks the real tail.
+    auto assemble = [&](const std::vector<RetrievalHit>&) {
+        return Pass(state, {}, std::string(MAINTENANCE_INPUT), RESOLVE_INSTRUCTION);
+    };
+    if (!Upkeep(latest, 0).Settle(assemble, stop)) {
+        return false;
     }
     _index.SyncHistory(_store, FoldedThrough(), *_pBackend);
     return true;
@@ -308,8 +282,9 @@ std::optional<core::TurnRecord> Session::PlayTurn(const std::string& input, int 
     // the fit loop sheds them first. lookupSources[i] is the i-th request's source, for the telemetry at commit.
     std::vector<store::EmbeddingKind> lookupSources;
     if (_mode == core::MemoryMode::Assisted) {
-        std::optional<context::Assembly> lookupAssembly =
-            AssembleFitting(state, hits, input, LOOKUP_INSTRUCTION, turn, attempt, stop);
+        std::optional<context::Assembly> lookupAssembly = Upkeep(turn, attempt).Fit(
+            hits, [&](const std::vector<RetrievalHit>& kept) { return Pass(state, kept, input, LOOKUP_INSTRUCTION); },
+            stop);
         if (!lookupAssembly) {
             return std::nullopt;
         }
@@ -358,8 +333,9 @@ std::optional<core::TurnRecord> Session::PlayTurn(const std::string& input, int 
     }
 
     // 2. Resolve.
-    std::optional<context::Assembly> assembly =
-        AssembleFitting(state, hits, input, RESOLVE_INSTRUCTION, turn, attempt, stop);
+    std::optional<context::Assembly> assembly = Upkeep(turn, attempt).Fit(
+        hits, [&](const std::vector<RetrievalHit>& kept) { return Pass(state, kept, input, RESOLVE_INSTRUCTION); },
+        stop);
     if (!assembly) {
         return std::nullopt;
     }
@@ -517,8 +493,8 @@ std::optional<core::TurnRecord> Session::PlayTurn(const std::string& input, int 
     return record;
 }
 
-context::ContextInputs Session::Inputs(const nlohmann::json& state, const std::vector<RetrievalHit>& hits,
-                                       const std::string& input, std::string_view instruction)
+FitPass Session::Pass(const nlohmann::json& state, const std::vector<RetrievalHit>& hits, const std::string& input,
+                      std::string_view instruction)
 {
     context::ContextInputs inputs;
     inputs.engineRules = std::string(ENGINE_RULES);
@@ -526,147 +502,35 @@ context::ContextInputs Session::Inputs(const nlohmann::json& state, const std::v
         inputs.engineRules += "\n\n" + std::string(ASSISTED_RULES);
     }
     inputs.summaries = _store.Summaries();
+    // L3: the unfolded turns. With the compact transcript on, older turns show their digest; otherwise every turn
+    // shows its narration. A fold always reads the full narration (TranscriptEntry::foldMessages).
     const int latest = _store.LatestTurn();
     const int firstUnfolded = FoldedThrough() + 1;
     if (firstUnfolded <= latest) {
-        inputs.transcript = _store.Turns(firstUnfolded, latest);
+        const int proseTurns = _settings.compactTranscript ? _settings.proseTurns : std::numeric_limits<int>::max();
+        inputs.transcript = context::TranscriptEntries(_store.Turns(firstUnfolded, latest), proseTurns);
     }
     inputs.state = state;
-    // With the compact transcript on, older turns show their digest; otherwise every turn shows its narration.
-    inputs.proseTurns = _settings.compactTranscript ? _settings.proseTurns : std::numeric_limits<int>::max();
     for (const RetrievalHit& hit : hits) {
         inputs.retrieved.push_back(hit.text);
     }
     inputs.playerInput = input;
     inputs.instruction = std::string(instruction);
-    return inputs;
+
+    FitPass pass;
+    pass.assembly = context::AssembleResolvePrompt(_world, inputs, _settings.budget, *_pBackend);
+    pass.transcript = std::move(inputs.transcript);
+    return pass;
 }
 
-std::optional<context::Assembly> Session::AssembleFitting(const nlohmann::json& state, std::vector<RetrievalHit>& hits,
-                                                          const std::string& input, std::string_view instruction,
-                                                          int turn, int attempt, std::stop_token stop)
+MemoryUpkeep Session::Upkeep(int turn, int attempt)
 {
-    // Every pass sheds a hit, condenses the summary, or folds turns. Hits and the transcript only shrink, and a
-    // summary still over its cap right after a condense throws, so the loop ends.
-    bool condensed = false; // The summary was just condensed, with nothing folded into it since.
-    for (;;) {
-        const context::ContextInputs inputs = Inputs(state, hits, input, instruction);
-        context::Assembly assembly = context::AssembleResolvePrompt(_world, inputs, _settings.budget, *_pBackend);
-        if (assembly.Fits()) {
-            return assembly;
-        }
-        if (assembly.tailOverBudget) {
-            if (hits.empty()) {
-                throw TurnError(std::format("the input and the state use {} tokens, over tail_allowance {}",
-                                            assembly.tokens.tail, _settings.budget.tailAllowance));
-            }
-            hits.pop_back();
-            continue;
-        }
-        if (assembly.summaryOverBudget) {
-            if (condensed) {
-                throw CondensedOverCap(_settings.budget.summaryCap, assembly.tokens.summary);
-            }
-            if (!Condense(assembly.prompt.messages.front(), turn, attempt, stop)) {
-                return std::nullopt;
-            }
-            condensed = true;
-            continue;
-        }
-        // The transcript is over its budget, or the whole prompt overflows. contextOverflow is the authoritative fit
-        // check: transcriptBudget leaves out a few template tokens that it counts.
-        if (!inputs.transcript.empty()) {
-            if (!FoldOldest(assembly.prompt.messages.front(), inputs.transcript, turn, attempt, stop)) {
-                return std::nullopt;
-            }
-            condensed = false;
-            continue;
-        }
-        if (!hits.empty()) {
-            hits.pop_back();
-            continue;
-        }
-        throw TurnError("the prompt does not fit context_size even without transcript or retrieval");
-    }
-}
-
-bool Session::FoldOldest(const inference::Message& systemMessage, const std::vector<core::TurnRecord>& transcript,
-                         int turn, int attempt, std::stop_token stop)
-{
-    MORPHEUS_REQUIRE(!transcript.empty(), "FoldOldest: there is no transcript to fold");
-    inference::GenerationSpec spec;
-    spec.maxTokens = std::max(1, _settings.budget.summaryCap / FOLD_SUMMARY_DIVISOR);
-    spec.sampling = SamplingFrom(
-        _settings.resolveSampling, core::SamplingSeed(_store.Meta().rngSeed, turn, core::CallKind::Summarize, attempt));
-
-    // The oldest `count` turns of the transcript.
-    auto oldest = [&transcript](std::size_t count) {
-        return std::vector<core::TurnRecord>(transcript.begin(), transcript.begin() + static_cast<std::ptrdiff_t>(count));
-    };
-    // Whether a fold call over the oldest `count` turns fits the context: its prompt plus the summary's max_tokens,
-    // measured exactly as the backend measures a call. The transcript can be far larger than the context (a run
-    // loaded with a smaller context_size, or turns put back by undoing past a condensed summary).
-    auto fits = [&](std::size_t count) {
-        const int promptTokens = _pBackend->CountPromptTokens(SummarizePrompt(systemMessage, oldest(count)));
-        return spec.maxTokens <= _pBackend->ContextSize() - promptTokens;
-    };
-
-    // Fold the oldest half (at least one turn), or the longest prefix of it that fits. More turns never cost fewer
-    // tokens, so a binary search between "fits" and "does not fit" finds that prefix with few token counts.
-    const std::size_t half = std::max<std::size_t>(1, transcript.size() / 2);
-    std::size_t count = half;
-    if (!fits(half)) {
-        std::size_t fitting = 0;  // Longest prefix known to fit; 0 means none is known to.
-        std::size_t tooLong = half; // Shortest prefix known not to fit.
-        while (tooLong - fitting > 1) {
-            const std::size_t middle = fitting + (tooLong - fitting) / 2;
-            if (fits(middle)) {
-                fitting = middle;
-            } else {
-                tooLong = middle;
-            }
-        }
-        count = fitting;
-    }
-
-    std::optional<core::Summary> summary;
-    if (count == 0) {
-        // Not even the oldest turn fits a call: the engine writes its summary, so folding always makes progress.
-        summary = SummarizeFallback(oldest(1), spec.maxTokens);
-    } else {
-        summary = SummarizeTurns(systemMessage, oldest(count), spec, *_pBackend, stop);
-        if (!summary) {
-            return false;
-        }
-    }
-    _store.AddSummary(*summary);
-    // Folded turns leave the transcript, so they become searchable history.
-    _index.SyncHistory(_store, summary->toTurn, *_pBackend);
-    return true;
-}
-
-bool Session::Condense(const inference::Message& systemMessage, int turn, int attempt, std::stop_token stop)
-{
-    inference::GenerationSpec spec;
-    spec.maxTokens = std::max(1, _settings.budget.summaryCap / CONDENSE_SUMMARY_DIVISOR);
-    spec.sampling = SamplingFrom(
-        _settings.resolveSampling, core::SamplingSeed(_store.Meta().rngSeed, turn, core::CallKind::Summarize, attempt));
-    const std::vector<core::Summary> summaries = _store.Summaries();
-
-    // The condense prompt holds every summary in its system message. Summaries written under a larger summary_cap
-    // can make it larger than the context: then the engine condenses them itself, so the loop still makes progress.
-    const int promptTokens = _pBackend->CountPromptTokens(CondensePrompt(systemMessage));
-    std::optional<core::Summary> merged;
-    if (spec.maxTokens <= _pBackend->ContextSize() - promptTokens) {
-        merged = CondenseSummaries(systemMessage, summaries, spec, *_pBackend, stop);
-        if (!merged) {
-            return false;
-        }
-    } else {
-        merged = CondenseFallback(summaries, spec.maxTokens);
-    }
-    _store.ReplaceSummaries(*merged);
-    return true;
+    // A fold's summary joins the store, and the turns it covers leave the transcript and become searchable history.
+    return MemoryUpkeep(_store, *_pBackend, _settings, "the input and the state", turn, attempt,
+                        [this](const core::Summary& summary) {
+                            _store.AddSummary(summary);
+                            _index.SyncHistory(_store, summary.toTurn, *_pBackend);
+                        });
 }
 
 int Session::FoldedThrough()

@@ -1,8 +1,12 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <limits>
+#include <vector>
+
 #include "TestPaths.h"
 #include "context/PromptBuilder.h"
+#include "context/Transcript.h"
 #include "core/Errors.h"
 #include "core/World.h"
 #include "fakes/FakeBackend.h"
@@ -31,7 +35,7 @@ context::ContextInputs Inputs(const core::World& world)
     turn.number = 5;
     turn.input = "I knock.";
     turn.narration = "The door creaks.";
-    inputs.transcript = {turn};
+    inputs.transcript = context::TranscriptEntries({turn}, std::numeric_limits<int>::max());
     inputs.state = world.initialState;
     inputs.retrieved = {"storm: Storms arrive at dusk."};
     inputs.playerInput = "I go inside.";
@@ -155,7 +159,7 @@ TEST_CASE("AssembleResolvePrompt reports budget overruns", "[context]")
     SECTION("transcript one token over its budget")
     {
         context::ContextInputs inputs = Inputs(world);
-        inputs.transcript.front().narration = std::string(400, 'x');
+        inputs.transcript.front().messages.back().content = std::string(400, 'x');
         const Measured measured = Measure(world, inputs, roomy);
         test::FakeBackend backend(ContextSizeFor(roomy, measured, measured.transcriptCost - 1));
         const context::Assembly assembly = context::AssembleResolvePrompt(world, inputs, roomy, backend);
@@ -302,7 +306,7 @@ TEST_CASE("Thinking budgets are reserved with the generations they precede", "[c
     const core::World world = MiniWorld();
     // A transcript longer than both thinking budgets, so reserving them overruns it instead of leaving it no room.
     context::ContextInputs inputs = Inputs(world);
-    inputs.transcript.front().narration = std::string(1200, 'x');
+    inputs.transcript.front().messages.back().content = std::string(1200, 'x');
     const core::BudgetSettings plain = RoomyBudget();
     core::BudgetSettings thinking = plain;
     thinking.resolveThinkingTokens = 96;
@@ -388,17 +392,18 @@ TEST_CASE("Digests shrink the transcript layer", "[context]")
     const core::World world = MiniWorld();
     test::FakeBackend backend(8192);
     context::ContextInputs inputs = Inputs(world);
-    inputs.transcript.clear();
+    std::vector<core::TurnRecord> turns;
     for (int number = 5; number <= 7; ++number) {
         core::TurnRecord turn;
         turn.number = number;
         turn.input = "I walk on.";
         turn.narration = std::string(400, 'n');
         turn.digest = "The player walked on.";
-        inputs.transcript.push_back(turn);
+        turns.push_back(turn);
     }
+    inputs.transcript = context::TranscriptEntries(turns, std::numeric_limits<int>::max());
     const context::Assembly full = context::AssembleResolvePrompt(world, inputs, RoomyBudget(), backend);
-    inputs.proseTurns = 1;
+    inputs.transcript = context::TranscriptEntries(turns, 1);
     const context::Assembly compact = context::AssembleResolvePrompt(world, inputs, RoomyBudget(), backend);
 
     CHECK(compact.tokens.transcript < full.tokens.transcript);
@@ -407,5 +412,5 @@ TEST_CASE("Digests shrink the transcript layer", "[context]")
     CHECK(compact.prompt.messages[2].content == "The player walked on.");
     CHECK(compact.prompt.messages[4].content == "The player walked on.");
     CHECK(compact.prompt.messages[6].content == std::string(400, 'n')); // The newest turn keeps its narration.
-    CHECK(full.prompt.messages[2].content == std::string(400, 'n'));     // The default shows every narration.
+    CHECK(full.prompt.messages[2].content == std::string(400, 'n'));     // Every narration, as with compact_transcript off.
 }

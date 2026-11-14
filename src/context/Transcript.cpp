@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <format>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -77,6 +78,26 @@ std::vector<inference::Message> RenderTranscript(const std::vector<core::TurnRec
         messages.push_back({inference::Role::Assistant, digested ? turn.digest : turn.narration});
     }
     return messages;
+}
+
+std::vector<TranscriptEntry> TranscriptEntries(const std::vector<core::TurnRecord>& turns, int proseTurns)
+{
+    // Two messages per turn in both views: as L3 shows it (older turns may show their digest) and in full, for a fold.
+    const std::vector<inference::Message> shown = RenderTranscript(turns, proseTurns);
+    const std::vector<inference::Message> full = RenderTranscript(turns, std::numeric_limits<int>::max());
+    std::vector<TranscriptEntry> entries;
+    entries.reserve(turns.size());
+    for (std::size_t i = 0; i < turns.size(); ++i) {
+        TranscriptEntry entry;
+        entry.turn = turns[i].number;
+        entry.messages = {shown[2 * i], shown[2 * i + 1]};
+        entry.foldMessages = {full[2 * i], full[2 * i + 1]};
+        // The engine's own account of the turn: its input and, when it has one, its mechanics line.
+        const std::string mechanics = RenderMechanicsLine(turns[i]);
+        entry.fact = mechanics.empty() ? turns[i].input : turns[i].input + " " + mechanics;
+        entries.push_back(std::move(entry));
+    }
+    return entries;
 }
 
 } // namespace morpheus::context

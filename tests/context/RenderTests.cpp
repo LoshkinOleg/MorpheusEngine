@@ -183,3 +183,32 @@ TEST_CASE("A compact transcript keeps its prefix from one turn to the next", "[c
         }
     }
 }
+
+TEST_CASE("TranscriptEntries renders each turn as its L3 messages, its fold messages and its fact", "[context]")
+{
+    std::vector<core::TurnRecord> turns = NumberedTurns(3);
+    turns[0] = TurnWithMechanics();
+    turns[0].number = 1;
+    turns[0].digest = "The player fell.";
+
+    // proseTurns 1: turns 1 and 2 are older and show their digest in L3; a fold reads every narration.
+    const std::vector<context::TranscriptEntry> entries = context::TranscriptEntries(turns, 1);
+    REQUIRE(entries.size() == 3);
+    CHECK(entries[0].turn == 1);
+    CHECK(entries[0].messages[1].content == "The player fell.");
+    CHECK(entries[0].foldMessages[1].content == "You slip and hit the deck.");
+    CHECK(entries[0].fact == "I climb the hull. " + context::RenderMechanicsLine(turns[0]));
+    CHECK(entries[1].messages[1].content == "Digest 2.");
+    CHECK(entries[1].foldMessages[1].content == "Narration 2.");
+    CHECK(entries[1].fact == "Input 2."); // No mechanics: the input alone.
+    CHECK(entries[2].messages[1].content == "Narration 3.");
+
+    // The L3 messages are RenderTranscript's, two per turn, in order.
+    const std::vector<inference::Message> flat = context::RenderTranscript(turns, 1);
+    REQUIRE(flat.size() == 6);
+    for (std::size_t i = 0; i < flat.size(); ++i) {
+        CHECK(entries[i / 2].messages[i % 2].role == flat[i].role);
+        CHECK(entries[i / 2].messages[i % 2].content == flat[i].content);
+    }
+    CHECK_THROWS_AS(context::TranscriptEntries(turns, 0), core::ContractError);
+}

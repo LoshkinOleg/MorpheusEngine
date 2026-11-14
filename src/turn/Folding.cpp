@@ -2,54 +2,53 @@
 
 #include <cstddef>
 #include <format>
-#include <limits>
 #include <string>
 #include <utility>
 
-#include "context/Transcript.h"
 #include "core/Errors.h"
 #include "core/Text.h"
 #include "turn/EngineText.h"
 
 namespace morpheus::turn {
 
-inference::Prompt SummarizePrompt(const inference::Message& systemMessage, const std::vector<core::TurnRecord>& turns)
+inference::Prompt SummarizePrompt(const inference::Message& systemMessage,
+                                  const std::vector<context::TranscriptEntry>& entries)
 {
-    // The system message, then the turns as the transcript renders them (stable, so cached), then the instruction.
-    // Summaries are written from the full narration, digests or not.
+    // The system message, then each turn in full (stable, so cached), then the instruction. Summaries are written
+    // from the full narration, digests or not.
     inference::Prompt prompt;
     prompt.messages.push_back(systemMessage);
-    for (inference::Message& message : context::RenderTranscript(turns, std::numeric_limits<int>::max())) {
-        prompt.messages.push_back(std::move(message));
+    for (const context::TranscriptEntry& entry : entries) {
+        for (const inference::Message& message : entry.foldMessages) {
+            prompt.messages.push_back(message);
+        }
     }
     prompt.stableCount = prompt.messages.size();
     prompt.messages.push_back({inference::Role::User, std::string(SUMMARIZE_INSTRUCTION)});
     return prompt;
 }
 
-core::Summary SummarizeFallback(const std::vector<core::TurnRecord>& turns, int maxTokens)
+core::Summary SummarizeFallback(const std::vector<context::TranscriptEntry>& entries, int maxTokens)
 {
-    MORPHEUS_REQUIRE(!turns.empty() && maxTokens > 0, "SummarizeFallback: needs at least one turn and a token cap");
-    // Each turn's input and mechanics line: the facts the engine knows without a model.
+    MORPHEUS_REQUIRE(!entries.empty() && maxTokens > 0, "SummarizeFallback: needs at least one entry and a token cap");
+    // Each turn's fact: what the engine knows without a model.
     std::string text;
-    for (const core::TurnRecord& turn : turns) {
-        const std::string mechanics = context::RenderMechanicsLine(turn);
-        text += std::format("{}Turn {}: {}{}{}", text.empty() ? "" : "\n", turn.number, turn.input,
-                            mechanics.empty() ? "" : " ", mechanics);
+    for (const context::TranscriptEntry& entry : entries) {
+        text += std::format("{}Turn {}: {}", text.empty() ? "" : "\n", entry.turn, entry.fact);
     }
     // Cut to about the summary's token cap.
     text = core::CutUtf8(text, static_cast<std::size_t>(maxTokens) * FALLBACK_BYTES_PER_TOKEN);
-    return core::Summary{turns.front().number, turns.back().number, std::move(text)};
+    return core::Summary{entries.front().turn, entries.back().turn, std::move(text)};
 }
 
 std::optional<core::Summary> SummarizeTurns(const inference::Message& systemMessage,
-                                            const std::vector<core::TurnRecord>& turns,
+                                            const std::vector<context::TranscriptEntry>& entries,
                                             const inference::GenerationSpec& spec, inference::LlmBackend& backend,
                                             std::stop_token stop)
 {
-    MORPHEUS_REQUIRE(systemMessage.role == inference::Role::System && !turns.empty(),
-                     "SummarizeTurns: needs the system message and at least one turn");
-    const inference::Completion completion = backend.Complete(SummarizePrompt(systemMessage, turns), spec, {}, stop);
+    MORPHEUS_REQUIRE(systemMessage.role == inference::Role::System && !entries.empty(),
+                     "SummarizeTurns: needs the system message and at least one entry");
+    const inference::Completion completion = backend.Complete(SummarizePrompt(systemMessage, entries), spec, {}, stop);
     if (completion.cancelled) {
         return std::nullopt;
     }
@@ -58,9 +57,9 @@ std::optional<core::Summary> SummarizeTurns(const inference::Message& systemMess
     // makes progress.
     std::string text = core::Trim(completion.text);
     if (text.empty()) {
-        return SummarizeFallback(turns, spec.maxTokens);
+        return SummarizeFallback(entries, spec.maxTokens);
     }
-    return core::Summary{turns.front().number, turns.back().number, std::move(text)};
+    return core::Summary{entries.front().turn, entries.back().turn, std::move(text)};
 }
 
 inference::Prompt CondensePrompt(const inference::Message& systemMessage)

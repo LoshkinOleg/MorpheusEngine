@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <limits>
 #include <optional>
 #include <stop_token>
 #include <string>
@@ -9,6 +10,7 @@
 #include "TestPaths.h"
 #include "app/SeatTestSupport.h"
 #include "app/model/ModelSeat.h"
+#include "context/Transcript.h"
 #include "core/Errors.h"
 #include "core/MemoryMode.h"
 #include "core/TurnRecord.h"
@@ -91,7 +93,8 @@ TEST_CASE("SeatLabelOf labels each call the way the session and folding make it"
     played.number = 1;
     played.input = "I climb the cliff.";
     played.narration = "You climb.";
-    CHECK(app::SeatLabelOf(turn::SummarizePrompt(system, {played}), plain) == app::SeatLabel::Summarize);
+    CHECK(app::SeatLabelOf(turn::SummarizePrompt(system, context::TranscriptEntries({played}, std::numeric_limits<int>::max())),
+                           plain) == app::SeatLabel::Summarize);
     CHECK(app::SeatLabelOf(turn::CondensePrompt(system), plain) == app::SeatLabel::Condense);
 
     // CallKindOf takes a summary call to end with exactly the instruction, so a grammar-free call that only quotes
