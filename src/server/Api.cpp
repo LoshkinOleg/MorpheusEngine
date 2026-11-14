@@ -1,11 +1,14 @@
 #include "server/Api.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <format>
+#include <future>
 #include <initializer_list>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <stop_token>
@@ -17,6 +20,7 @@
 #include "core/HostedRecord.h"
 #include "inference/Llm.h"
 #include "server/RunWorker.h"
+#include "server/SentenceSplitter.h"
 #include "server/SlotBackend.h"
 #include "turn/HostedSession.h"
 #include "turn/HostedWorld.h"
@@ -25,6 +29,11 @@
 namespace morpheus::server {
 
 namespace {
+
+// ---- Constants
+
+// How long the handler waits for a turn's first event before it checks that the worker took the turn at all.
+constexpr std::chrono::milliseconds START_POLL = std::chrono::milliseconds(100);
 
 // A request for something that does not exist: an unknown route, or an unknown conversation of an opened run (404).
 class NotFound : public std::runtime_error {
@@ -272,6 +281,107 @@ ApiResponse Api::Handle(std::string_view method, std::string_view path, std::str
                                          {"turns", turns},
                                          {"events", events}};
                     });
+                } else if (post && parts.size() == 6 && parts[5] == "turn") {
+                    // The request, checked for its shape here and for its content by HostedSession on the run's worker.
+                    turn::HostedTurnRequest request;
+                    request.conversationId = conversationId;
+                    request.speakerId = RequiredString(json, "speaker");
+                    if (request.speakerId == "decide") {
+                        throw core::DataError("speaker: \"decide\" (the engine choosing the speaker) is not supported yet");
+                    }
+                    if (json.contains("player_text")) {
+                        if (!json.at("player_text").is_string()) {
+                            throw core::DataError("player_text: expected a string");
+                        }
+                        request.playerText = json.at("player_text").get<std::string>();
+                    }
+                    if (json.contains("events")) {
+                        request.events = ObjectList(json, "events");
+                    }
+                    request.observation = RequiredObject(json, "observation");
+                    if (json.contains("allowed_actions")) {
+                        request.allowedActions = StringList(json, "allowed_actions");
+                    }
+
+                    // The turn runs on the run's worker, on its conversation's slot; its events come back through the
+                    // stream. The stream's stop token stops it when the client leaves (TurnStream::Cancel) or the worker
+                    // stops. The job logs its own 500s: one after the action reaches no handler, which may have
+                    // returned by then, so the job keeps copies of the log and of the route's name.
+                    auto stream = std::make_shared<TurnStream>();
+                    std::future<void> taken = worker().Post(
+                        [stream, request = std::move(request), slotKey = SlotKey(runId, conversationId),
+                         pSlots = _pSlots, log = _log, routeName = std::format("{} {}", method, path)](
+                            turn::HostedSession& session, SlotBackend& backend, std::stop_token workerStop) {
+                            std::stop_callback stopWithWorker(workerStop, [&stream] { stream->Cancel(); });
+                            try {
+                                RequireConversation(session, request.conversationId);
+                                backend.SetSlot(pSlots->Acquire(slotKey));
+                                SentenceSplitter sentences;
+                                turn::HostedCallbacks callbacks;
+                                callbacks.onAction = [&](const core::Adjudication& adjudication) {
+                                    nlohmann::json action = {{"api_version", std::string(API_VERSION)},
+                                                             {"speaker", request.speakerId},
+                                                             {"action", ActionJson(adjudication)}};
+                                    if (!adjudication.requested) {
+                                        action["refused"] = adjudication.reasons;
+                                    }
+                                    stream->Push({"action", std::move(action)});
+                                };
+                                callbacks.onToken = [&](std::string_view piece) {
+                                    // Each piece goes out as it comes, and each sentence as soon as a piece ends it.
+                                    stream->Push({"token", {{"text", std::string(piece)}}});
+                                    for (std::string& sentence : sentences.Add(piece)) {
+                                        stream->Push({"sentence", {{"text", std::move(sentence)}}});
+                                    }
+                                };
+                                const std::optional<core::HostedTurn> record =
+                                    session.RunTurn(request, callbacks, stream->StopToken());
+                                // A cancelled turn committed nothing and ends with no done.
+                                if (record) {
+                                    // The line's last sentence has no whitespace after it: it ends with the line.
+                                    const std::string rest = sentences.Finish();
+                                    if (!rest.empty()) {
+                                        stream->Push({"sentence", {{"text", rest}}});
+                                    }
+                                    stream->Push({"done",
+                                                  {{"speaker", record->speakerId},
+                                                   {"action", ActionJson(record->adjudication)},
+                                                   {"line", record->line},
+                                                   {"turn", record->number},
+                                                   {"events_omitted", record->eventsOmitted},
+                                                   {"timings",
+                                                    {{"resolve", record->timings.at("resolve")},
+                                                     {"speak", record->timings.at("speak")}}}}});
+                                }
+                            } catch (const std::exception& error) {
+                                // Before the action, the handler answers with this error's status; after it, the
+                                // stream ends with it. A 500 is a bug or damaged data, so the operator sees it too.
+                                const int status = StatusOf(error);
+                                if (status == 500) {
+                                    log(std::format("{} failed: {}", routeName, error.what()));
+                                }
+                                stream->Push({"error", {{"status", status}, {"message", error.what()}}});
+                            }
+                            stream->End();
+                        });
+
+                    // The status is known with the first event: an error before the action is that error's JSON
+                    // answer, as for any other request (the job logged it if it is a 500); otherwise the stream starts
+                    // with the action. A turn the worker refused (it is stopping) never runs: its future says so.
+                    while (!stream->WaitStarted(START_POLL)) {
+                        if (taken.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                            taken.get(); // Rethrows the refusal: InferenceError, the server is stopping.
+                        }
+                    }
+                    const std::optional<StreamEvent> first = stream->Front();
+                    if (!first) {
+                        throw inference::InferenceError("the turn was stopped before it began: the server is stopping");
+                    }
+                    if (first->name == "error") {
+                        response = ApiResponse{first->data.at("status").get<int>(), {{"error", first->data}}, nullptr};
+                    } else {
+                        response.stream = stream;
+                    }
                 } else if (post && parts.size() == 6 && parts[5] == "events") {
                     const std::vector<nlohmann::json> events = ObjectList(json, "events");
                     worker().Call([&](turn::HostedSession& session, SlotBackend&, std::stop_token) {
