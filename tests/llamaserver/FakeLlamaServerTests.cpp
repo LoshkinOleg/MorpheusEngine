@@ -236,3 +236,23 @@ TEST_CASE("FakeLlamaServer records each request's connection, answers a raw body
     httplib::Client client(fake->Url());
     REQUIRE(client.Get("/props"));
 }
+
+TEST_CASE("FakeLlamaServer drops the connection under a path's next requests", "[fake-llama-server]")
+{
+    test::FakeLlamaServer fake;
+    fake.DropNextAnswers("/tokenize", 2);
+    httplib::Client client(fake.Url());
+    client.set_keep_alive(true);
+    // The headers, then the connection closes before the body: a read error, each time.
+    for (int drop = 0; drop < 2; ++drop) {
+        const httplib::Result dropped = client.Post("/tokenize", R"({"content":"a"})", "application/json");
+        CHECK_FALSE(dropped);
+        CHECK(dropped.error() == httplib::Error::Read);
+    }
+    // Then the path answers again, and other paths always did.
+    REQUIRE(client.Get("/props"));
+    const httplib::Result answered = client.Post("/tokenize", R"({"content":"a"})", "application/json");
+    REQUIRE(answered);
+    CHECK(answered->status == 200);
+    CHECK(fake.RequestsTo("/tokenize").size() == 3);
+}

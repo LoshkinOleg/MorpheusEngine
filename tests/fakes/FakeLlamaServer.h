@@ -39,7 +39,7 @@ namespace morpheus::test {
 // - POST /embedding: llama-server's own answer, [{"index": 0, "embedding": [vectors]}], with the embedding maker's
 //   vectors (by default the one vector {3, 4}).
 // SetStatus makes a path answer an HTTP error instead, SetRawAnswer a body that is not JSON. Handlers run on the server's threads; every member they use
-// is guarded by one mutex.
+// is guarded by one mutex. DropNextAnswers closes the connection under a path's next requests.
 class FakeLlamaServer {
 public:
     // One request as it arrived.
@@ -96,6 +96,7 @@ private:
     std::deque<CompletionScript> _completions = {};
     std::map<std::string, int> _statuses = {};           // Path -> the HTTP error it answers.
     std::map<std::string, std::string> _rawAnswers = {}; // Path -> the raw body it answers with HTTP 200.
+    std::map<std::string, int> _drops = {};              // Path -> how many of its next requests lose their connection.
     std::vector<Request> _requests = {};
     bool _clientClosedStream = false;
     std::atomic<bool> _stopping = false; // Set by the destructor: held streams end at once.
@@ -352,6 +353,15 @@ public:
         }
     }
 
+    // The next `count` requests to `path` (recorded as usual) lose their connection: the fake sends an answer's status
+    // line and headers, then closes the connection before the body, so the client fails with a read error, as it does
+    // when llama-server closes a kept-alive connection under a request.
+    void DropNextAnswers(const std::string& path, int count = 1)
+    {
+        std::scoped_lock lock(_mutex);
+        _drops[path] += count;
+    }
+
     // Every request so far, in order.
     std::vector<Request> Requests() const
     {
@@ -398,8 +408,8 @@ private:
         return false;
     }
 
-    // Records `request`. Returns false after answering the HTTP error SetStatus set for its path, or the raw body
-    // SetRawAnswer set for it; true otherwise.
+    // Records `request`. Returns false after dropping its connection (DropNextAnswers), or answering the HTTP error
+    // SetStatus set for its path, or the raw body SetRawAnswer set for it; true otherwise.
     bool Record(const httplib::Request& request, httplib::Response& response)
     {
         std::scoped_lock lock(_mutex);
@@ -412,6 +422,16 @@ private:
             }
         }
         _requests.push_back({request.method, request.path, std::move(body), request.remote_port});
+        if (const auto drop = _drops.find(request.path); drop != _drops.end()) {
+            if (--drop->second == 0) {
+                _drops.erase(drop);
+            }
+            // A body of one byte that never comes: cpp-httplib writes the status line and headers, then closes the
+            // connection when the provider fails.
+            response.set_content_provider(1, "application/json",
+                                          [](std::size_t, std::size_t, httplib::DataSink&) { return false; });
+            return false;
+        }
         if (const auto raw = _rawAnswers.find(request.path); raw != _rawAnswers.end()) {
             response.set_content(raw->second, "text/html");
             return false;

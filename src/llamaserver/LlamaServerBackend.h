@@ -33,7 +33,9 @@ struct LlamaServerConfig {
 // /completion as token ids on a slot with cache_prompt; vectors come from the embedding server's POST /embedding.
 // Each server is reached through one kept-alive connection, reused by every request (a new connection per request
 // would cost a TCP connect each, about 2 s on Windows when "localhost" tries ::1 first); cpp-httplib reconnects when
-// the server closed it. The streaming /completion may use a client of its own, so that a cancel can stop it.
+// the server closed it, and a request that fails under a reused connection (llama-server closes one idle for 5 s, and
+// can do so as a request leaves) is sent once more. Each streaming /completion has a client of its own, so that a
+// cancel can stop it without touching the kept connection, and is never sent twice.
 //
 // Thinking models (the chat template has the enable_thinking switch): as LlamaCppBackend, the backend writes the
 // thinking block's markers itself. A call that thinks is two /completion calls on one slot: the block, which stops at
@@ -52,6 +54,8 @@ private:
     };
 
     LlamaServerConfig _config = {};
+    std::string _chatHost = {}; // The chat server's host and port, read from _config.chatUrl: each /completion's
+    int _chatPort = 0;          // client of its own connects there.
     std::unique_ptr<httplib::Client> _pChatClient = nullptr;      // Kept alive to the chat server, for every request.
     std::unique_ptr<httplib::Client> _pEmbeddingClient = nullptr; // Kept alive to the embedding server.
     std::optional<ThinkingMarkers> _thinking = {}; // Set when the chat template has the enable_thinking switch.

@@ -350,6 +350,75 @@ TEST_CASE("LlamaServerBackend keeps one connection to each server and reconnects
     CHECK(chat->RequestsTo("/tokenize").size() == 1);
 }
 
+TEST_CASE("LlamaServerBackend sends a request once more when its kept-alive connection fails under it", "[llamaserver]")
+{
+    test::FakeLlamaServer chat;
+    test::FakeLlamaServer embed;
+    llamaserver::LlamaServerBackend backend(test::ConfigFor(chat, embed));
+    const std::size_t tokenized = chat.RequestsTo("/tokenize").size();
+
+    // llama-server closes a connection idle for 5 s, and a request can leave on it just as it closes: the requests
+    // that change nothing on the server are sent again, over a new connection.
+    SECTION("/tokenize")
+    {
+        chat.DropNextAnswers("/tokenize");
+        CHECK(backend.CountTokens("hello") == 2);
+        CHECK(chat.RequestsTo("/tokenize").size() == tokenized + 2);
+    }
+    SECTION("/apply-template")
+    {
+        chat.DropNextAnswers("/apply-template");
+        CHECK(backend.CountPromptTokens(test::SERVER_PROMPT) == static_cast<int>(test::ServerPromptTokens().size()));
+        CHECK(chat.RequestsTo("/apply-template").size() == 2);
+    }
+    SECTION("/embedding")
+    {
+        embed.DropNextAnswers("/embedding");
+        CHECK(backend.Embed({"a lighthouse"}, inference::EmbedPurpose::Query).size() == 1);
+        CHECK(embed.RequestsTo("/embedding").size() == 2);
+    }
+    SECTION("once only")
+    {
+        chat.DropNextAnswers("/tokenize", 2);
+        CHECK_THROWS_WITH(backend.CountTokens("hello"), ContainsSubstring(chat.Url() + "/tokenize"));
+        CHECK(chat.RequestsTo("/tokenize").size() == tokenized + 2);
+        CHECK(backend.CountTokens("hello") == 2);
+    }
+    SECTION("never for an HTTP error or an answer that cannot be read")
+    {
+        chat.SetStatus("/tokenize", 503);
+        CHECK_THROWS_AS(backend.CountTokens("hello"), inference::InferenceError);
+        CHECK(chat.RequestsTo("/tokenize").size() == tokenized + 1);
+        chat.SetStatus("/tokenize", 0);
+        chat.SetRawAnswer("/tokenize", "<html>busy</html>");
+        CHECK_THROWS_AS(backend.CountTokens("hello"), inference::InferenceError);
+        CHECK(chat.RequestsTo("/tokenize").size() == tokenized + 2);
+    }
+}
+
+TEST_CASE("LlamaServerBackend never sends again a request that failed on a new connection, or a completion",
+          "[llamaserver]")
+{
+    test::FakeLlamaServer chat;
+    test::FakeLlamaServer embed;
+
+    // The embedding server's first request goes over a new connection: its failure is the server's own.
+    embed.DropNextAnswers("/props");
+    CHECK_THROWS_WITH(llamaserver::LlamaServerBackend(test::ConfigFor(chat, embed)),
+                      ContainsSubstring(embed.Url() + "/props"));
+    CHECK(embed.RequestsTo("/props").size() == 1);
+
+    // A completion may have started generating: it is never sent twice.
+    llamaserver::LlamaServerBackend backend(test::ConfigFor(chat, embed));
+    test::FakeLlamaServer::CompletionScript script;
+    script.pieces = {"yes"};
+    chat.QueueCompletion(script);
+    chat.DropNextAnswers("/completion");
+    CHECK_THROWS_WITH(backend.Complete(test::SERVER_PROMPT, inference::GenerationSpec{}, {}, {}),
+                      ContainsSubstring(chat.Url() + "/completion"));
+    CHECK(chat.RequestsTo("/completion").size() == 1);
+}
+
 TEST_CASE("LlamaServerBackend tells a BOS the model adds from an EOS, and refuses more special tokens", "[llamaserver]")
 {
     test::FakeLlamaServer chat;

@@ -4,10 +4,14 @@
 #include <charconv>
 #include <cmath>
 #include <cstddef>
+#include <exception>
 #include <format>
+#include <functional>
 #include <memory>
 #include <optional>
+#include <stop_token>
 #include <string>
+#include <tuple>
 #include <utility>
 
 #include <nlohmann/json.hpp>
@@ -32,6 +36,7 @@ namespace {
 // its first piece, waits longer on a client of its own.
 constexpr int CONNECT_TIMEOUT_SECONDS = 5;
 constexpr int READ_TIMEOUT_SECONDS = 60;
+constexpr int STREAM_READ_TIMEOUT_SECONDS = 600;
 // How much of a server's answer an error message quotes, in bytes.
 constexpr std::size_t QUOTED_ANSWER_BYTES = 300;
 // A server URL is this, then a host with an optional port (DEFAULT_PORT without one): no HTTPS, user or path.
@@ -57,14 +62,42 @@ std::string BodyText(const nlohmann::json& body)
     }
 }
 
+// A client of the llama-server at `url`, connecting to the host and port read from it, that waits at most
+// `readTimeoutSeconds` for the server's next bytes and keeps its connection alive between requests. Throws
+// InferenceError naming the URL if cpp-httplib cannot make it.
+std::unique_ptr<httplib::Client> MakeClient(const std::string& url, const std::string& host, int port,
+                                            int readTimeoutSeconds)
+{
+    auto pClient = std::make_unique<httplib::Client>(host, port);
+    if (!pClient->is_valid()) {
+        throw InferenceError(std::format("cannot make an HTTP client for the llama-server at '{}'", url));
+    }
+    pClient->set_connection_timeout(CONNECT_TIMEOUT_SECONDS, 0);
+    pClient->set_read_timeout(readTimeoutSeconds, 0);
+    pClient->set_keep_alive(true);
+    return pClient;
+}
+
 // Sends GET `path` (no body) or POST `path` with a JSON body through `client`, the kept-alive client of the server at
-// `url`, and reads the JSON answer with `read`. Throws InferenceError naming the URL and path for an unreachable
-// server, an HTTP error, an answer that is not JSON, or one `read` cannot read (a missing field, a wrong type).
+// `url`, and reads the JSON answer with `read`. A request that fails to be written or read under a connection kept
+// from an earlier request is sent once more. Throws InferenceError naming the URL and path for an unreachable server,
+// an HTTP error, an answer that is not JSON, or one `read` cannot read (a missing field, a wrong type).
 template <typename Read>
 auto Ask(httplib::Client& client, const std::string& url, const std::string& path,
          const std::optional<nlohmann::json>& body, Read&& read)
 {
-    const httplib::Result response = body ? client.Post(path, BodyText(*body), "application/json") : client.Get(path);
+    // The server may close a kept connection just as this request leaves on it (llama-server closes one idle for 5 s;
+    // cpp-httplib reconnects only when it sees the close before sending). These requests change nothing on the
+    // server, so a write or read failure under a reused connection is sent once more, over a new one (cpp-httplib
+    // drops the failed connection). A failure to connect, a failure on a new connection, an HTTP error and an answer
+    // that cannot be read are the server's own, and are never repeated.
+    auto send = [&] { return body ? client.Post(path, BodyText(*body), "application/json") : client.Get(path); };
+    const bool reused = client.is_socket_open() != 0;
+    httplib::Result response = send();
+    if (!response && reused &&
+        (response.error() == httplib::Error::Read || response.error() == httplib::Error::Write)) {
+        response = send();
+    }
     if (!response) {
         throw InferenceError(std::format("cannot reach {}{}: {}", url, path, httplib::to_string(response.error())));
     }
@@ -79,6 +112,140 @@ auto Ask(httplib::Client& client, const std::string& url, const std::string& pat
     }
 }
 
+// What one streamed /completion call returned.
+struct StreamResult {
+    bool cancelled = false;    // A stop ended it before its last message.
+    std::string stopType = {}; // Why generation stopped: "eos", "limit" or "word" (a stop string).
+    int promptTokens = 0;      // tokens_evaluated: the prompt's tokens, as the server counted them.
+    int promptEvaluated = 0;   // timings.prompt_n: the prompt tokens it evaluated (the rest came from the slot's cache).
+    int generated = 0;         // timings.predicted_n
+    double promptMs = 0.0;     // timings.prompt_ms
+    double generateMs = 0.0;   // timings.predicted_ms
+};
+
+// Streams one POST /completion to the server at `url` (`host` and `port`, read from it) on a client of its own: each
+// message's text goes to `onPiece` as it arrives, and the last message's stop_type and timings fill the result. A
+// stop closes the connection at once, even while the server is still reading the prompt and sends nothing
+// (llama-server then cancels the task), and the result is `cancelled`. Never sent twice: the server may have started
+// generating. Throws InferenceError naming the URL for an unreachable server, an HTTP error, a line that is not a
+// message, a message without its fields, an error message in the stream, an unknown stop_type, or a stream that ends
+// before its last message.
+StreamResult StreamCompletion(const std::string& url, const std::string& host, int port, const nlohmann::json& body,
+                              const std::function<void(std::string_view)>& onPiece, std::stop_token stop)
+{
+    StreamResult result;
+    if (stop.stop_requested()) {
+        result.cancelled = true;
+        return result;
+    }
+    // The client is this call's alone, so a stop can close its connection from any thread without touching the
+    // backend's kept connection. A stop that comes while it connects, before there is a connection to close, is
+    // seen once the request is written (upload_progress below).
+    const std::unique_ptr<httplib::Client> pClient = MakeClient(url, host, port, STREAM_READ_TIMEOUT_SECONDS);
+    std::stop_callback closeOnStop(stop, [&pClient] { pClient->stop(); });
+
+    // The status arrives before the body: an error's body is kept whole for the message, a stream is read line by
+    // line as it arrives. A failure inside the receiver ends the request and is thrown once cpp-httplib returns.
+    int status = 0;
+    std::string errorBody;
+    std::string pending; // Received bytes after the last complete line.
+    bool finished = false;
+    std::exception_ptr failure = nullptr;
+    httplib::Request request;
+    request.method = "POST";
+    request.path = "/completion";
+    request.body = BodyText(body);
+    request.set_header("Content-Type", "application/json");
+    request.upload_progress = [&stop](std::size_t /*current*/, std::size_t /*total*/) { return !stop.stop_requested(); };
+    request.response_handler = [&status](const httplib::Response& response) {
+        status = response.status;
+        return true;
+    };
+    request.content_receiver = [&](const char* pData, std::size_t length, std::size_t /*offset*/, std::size_t /*total*/) {
+        if (status != 200) {
+            errorBody.append(pData, length);
+            return true;
+        }
+        try {
+            pending.append(pData, length);
+            // Server-sent events: "data: {json}" lines, blank lines between them, and ":" lines (pings) to skip.
+            for (std::size_t end = pending.find('\n'); end != std::string::npos; end = pending.find('\n')) {
+                if (stop.stop_requested()) {
+                    return false;
+                }
+                std::string line = pending.substr(0, end);
+                pending.erase(0, end + 1);
+                if (!line.empty() && line.back() == '\r') {
+                    line.pop_back();
+                }
+                if (line.empty() || line.front() == ':') {
+                    continue;
+                }
+                if (!line.starts_with("data: ")) {
+                    throw InferenceError(std::format("{}/completion sent a line that is not a message: '{}'", url, Quoted(line)));
+                }
+                nlohmann::json message;
+                try {
+                    message = nlohmann::json::parse(std::string_view(line).substr(6));
+                } catch (const nlohmann::json::parse_error&) {
+                    throw InferenceError(std::format("{}/completion sent a message that is not JSON: '{}'", url, Quoted(line)));
+                }
+                if (message.contains("error")) {
+                    throw InferenceError(std::format("{}/completion failed: {}", url, Quoted(message.at("error").dump())));
+                }
+                try {
+                    // Every message carries the prompt's count and a piece of text; the last one says why generation
+                    // stopped and how long each part took.
+                    result.promptTokens = message.at("tokens_evaluated").get<int>();
+                    const std::string& content = message.at("content").get_ref<const std::string&>();
+                    if (!content.empty()) {
+                        onPiece(content);
+                    }
+                    if (message.at("stop").get<bool>()) {
+                        finished = true;
+                        result.stopType = message.at("stop_type").get<std::string>();
+                        const nlohmann::json& timings = message.at("timings");
+                        result.promptEvaluated = timings.at("prompt_n").get<int>();
+                        result.generated = timings.at("predicted_n").get<int>();
+                        result.promptMs = timings.at("prompt_ms").get<double>();
+                        result.generateMs = timings.at("predicted_ms").get<double>();
+                    }
+                } catch (const nlohmann::json::exception& error) {
+                    throw InferenceError(std::format("{}/completion sent a message without its fields ({}): '{}'", url,
+                                                     error.what(), Quoted(line)));
+                }
+                if (finished && result.stopType != "eos" && result.stopType != "limit" && result.stopType != "word") {
+                    throw InferenceError(std::format("{}/completion stopped for an unknown reason '{}'", url, result.stopType));
+                }
+            }
+            return true;
+        } catch (...) {
+            failure = std::current_exception();
+            return false;
+        }
+    };
+
+    const httplib::Result response = pClient->send(request);
+    if (failure) {
+        std::rethrow_exception(failure);
+    }
+    if (!finished && stop.stop_requested()) {
+        // The stop closed the connection (or came as the reply ended): the call is cancelled, as in-process.
+        result.cancelled = true;
+        return result;
+    }
+    if (!response) {
+        throw InferenceError(std::format("cannot reach {}/completion: {}", url, httplib::to_string(response.error())));
+    }
+    if (status != 200) {
+        throw InferenceError(std::format("{}/completion answered HTTP {}: {}", url, status, Quoted(errorBody)));
+    }
+    if (!finished) {
+        throw InferenceError(std::format("the stream from {}/completion ended before its last message", url));
+    }
+    return result;
+}
+
 } // namespace
 
 LlamaServerBackend::LlamaServerBackend(LlamaServerConfig config)
@@ -90,8 +257,8 @@ LlamaServerBackend::LlamaServerBackend(LlamaServerConfig config)
     // One kept-alive client per server. Its URL is "http://", a host (letters, digits, '.' and '-'), then optionally
     // ':' and a port from 1 to 65535, and nothing else: cpp-httplib would quietly drop a path, does not do HTTPS here,
     // and makes an unusable client (one that crashes on first use) from a port it cannot parse, so the URL is read
-    // here and the client made from its host and port.
-    auto connect = [](const std::string& url) {
+    // here and the client made from its host and port. The chat server's are kept for each /completion's client.
+    auto readUrl = [](const std::string& url) {
         const std::string_view rest = std::string_view(url).substr(std::min(url.size(), URL_SCHEME.size()));
         const std::size_t colon = rest.find(':');
         const std::string_view host = rest.substr(0, colon);
@@ -114,17 +281,12 @@ LlamaServerBackend::LlamaServerBackend(LlamaServerConfig config)
                 "and nothing else",
                 url, MAX_PORT));
         }
-        auto pClient = std::make_unique<httplib::Client>(std::string(host), port);
-        if (!pClient->is_valid()) {
-            throw InferenceError(std::format("cannot make an HTTP client for the llama-server at '{}'", url));
-        }
-        pClient->set_connection_timeout(CONNECT_TIMEOUT_SECONDS, 0);
-        pClient->set_read_timeout(READ_TIMEOUT_SECONDS, 0);
-        pClient->set_keep_alive(true);
-        return pClient;
+        return std::pair(std::string(host), port);
     };
-    _pChatClient = connect(_config.chatUrl);
-    _pEmbeddingClient = connect(_config.embeddingUrl);
+    std::tie(_chatHost, _chatPort) = readUrl(_config.chatUrl);
+    _pChatClient = MakeClient(_config.chatUrl, _chatHost, _chatPort, READ_TIMEOUT_SECONDS);
+    const auto [embeddingHost, embeddingPort] = readUrl(_config.embeddingUrl);
+    _pEmbeddingClient = MakeClient(_config.embeddingUrl, embeddingHost, embeddingPort, READ_TIMEOUT_SECONDS);
 
     // The chat server: each slot must hold the context the budgets plan for, and its template tells whether the
     // model thinks.
@@ -199,11 +361,151 @@ int LlamaServerBackend::ContextSize() const
     return _config.contextSize;
 }
 
-inference::Completion LlamaServerBackend::Complete(const inference::Prompt& /*prompt*/,
-                                                   const inference::GenerationSpec& /*spec*/,
-                                                   const inference::TokenCallback& /*onToken*/, std::stop_token /*stop*/)
+inference::Completion LlamaServerBackend::Complete(const inference::Prompt& prompt, const inference::GenerationSpec& spec,
+                                                   const inference::TokenCallback& onToken, std::stop_token stop)
 {
-    throw InferenceError("LlamaServerBackend::Complete is not implemented yet");
+    MORPHEUS_REQUIRE(spec.maxTokens > 0, "Complete: maxTokens must be positive");
+    MORPHEUS_REQUIRE(spec.thinkingMaxTokens >= 0, "Complete: thinkingMaxTokens must not be negative");
+    MORPHEUS_REQUIRE(spec.slot >= -1, "Complete: slot must be -1 (the configured slot) or a server slot");
+
+    // Thinking is asked of the model: it must have a thinking mode, and the budget must hold the closing sentence.
+    const bool think = spec.thinkingMaxTokens > 0;
+    if (think && !_thinking) {
+        throw InferenceError(std::format("the chat model at {} has no thinking mode, so it cannot think before "
+                                         "answering (set the thinking budgets to 0)",
+                                         _config.chatUrl));
+    }
+    MORPHEUS_REQUIRE(!think || spec.thinkingMaxTokens > static_cast<int>(_thinking->close.size()),
+                     "Complete: thinkingMaxTokens is too small to close the thinking block");
+
+    // The prompt's tokens, made once for this call: a thinking model's end with the open block when the call thinks
+    // (in place of the empty block), as in-process. They must leave room for the thinking and the answer.
+    std::vector<std::int32_t> tokens = TokenizePrompt(prompt);
+    if (think) {
+        tokens.resize(tokens.size() - _thinking->skip.size());
+        tokens.insert(tokens.end(), _thinking->open.begin(), _thinking->open.end());
+    }
+    inference::Completion completion;
+    completion.promptTokens = static_cast<int>(tokens.size());
+    if (spec.thinkingMaxTokens + spec.maxTokens > ContextSize() - completion.promptTokens) {
+        throw InferenceError(std::format("prompt ({} tokens) plus thinking ({}) and max_tokens ({}) exceeds the "
+                                         "context size ({})",
+                                         completion.promptTokens, spec.thinkingMaxTokens, spec.maxTokens, ContextSize()));
+    }
+
+    // What every call of this completion sends. The prompt as token ids: /completion evaluates them as they are (it
+    // adds BOS only to a prompt given as text). The sampling is LlamaCppBackend's chain: top-k, top-p keeping at least
+    // one token, temperature, then llama-server's draw with the seed (at temperature 0 only the most likely token is
+    // left: greedy, as in-process). Every other sampler llama-server knows is named neutral, so its command-line
+    // defaults (penalties, DRY, top-n-sigma, typical, min-p, XTC, mirostat, a logit bias) cannot change what the model
+    // writes. Then the slot, whose cache the calls share, and the stream.
+    nlohmann::json body = {{"prompt", tokens},
+                           {"samplers", nlohmann::json::array({"top_k", "top_p", "temperature"})},
+                           {"top_k", spec.sampling.topK},
+                           {"top_p", spec.sampling.topP},
+                           {"min_keep", 1},
+                           {"temperature", spec.sampling.temperature},
+                           {"dynatemp_range", 0.0},
+                           {"dynatemp_exponent", 1.0},
+                           {"seed", spec.sampling.seed},
+                           {"mirostat", 0},
+                           {"min_p", 0.0},
+                           {"typical_p", 1.0},
+                           {"top_n_sigma", -1.0},
+                           {"xtc_probability", 0.0},
+                           {"repeat_penalty", 1.0},
+                           {"repeat_last_n", 0},
+                           {"frequency_penalty", 0.0},
+                           {"presence_penalty", 0.0},
+                           {"dry_multiplier", 0.0},
+                           {"logit_bias", nlohmann::json::array()},
+                           {"ignore_eos", false},
+                           {"n_probs", 0},
+                           {"id_slot", spec.slot == -1 ? _config.slot : spec.slot},
+                           {"cache_prompt", true},
+                           {"stream", true}};
+    // The first call reads the prompt: its numbers are the prompt's. The server must have evaluated exactly the tokens
+    // sent, since the budgets rely on that count.
+    auto takePromptNumbers = [&](const StreamResult& result) {
+        if (result.promptTokens != completion.promptTokens) {
+            throw InferenceError(std::format("{} counted {} prompt tokens where Morpheus sent {}",
+                                             _config.chatUrl, result.promptTokens, completion.promptTokens));
+        }
+        completion.tokensEvaluated = result.promptEvaluated;
+        completion.tokensReused = completion.promptTokens - result.promptEvaluated;
+        completion.promptMs = result.promptMs;
+    };
+
+    // Think: one call without the grammar and without streaming to onToken, stopping at the end marker or at the
+    // budget less the closing sentence. Its text is the thinking.
+    if (think) {
+        nlohmann::json thinking = body;
+        thinking["n_predict"] = spec.thinkingMaxTokens - static_cast<int>(_thinking->close.size());
+        thinking["stop"] = nlohmann::json::array({std::string(inference::THINKING_END_TEXT)});
+        const StreamResult thought =
+            StreamCompletion(_config.chatUrl, _chatHost, _chatPort, thinking,
+                             [&completion](std::string_view piece) { completion.thinking += piece; }, stop);
+        if (thought.cancelled) {
+            completion.cancelled = true;
+            return completion;
+        }
+        takePromptNumbers(thought);
+        completion.thinkingTokens = thought.generated;
+        completion.thinkingMs = thought.generateMs;
+        if (thought.stopType == "eos") {
+            return completion; // The model ended its reply inside the block: there is no answer.
+        }
+        // The answer call continues the same tokens. The stream cannot give the ids the model wrote (llama-server sends
+        // no message for a token that ends inside a UTF-8 character, and in stream mode its last message carries no
+        // ids), so the thinking text is tokenized again, as plain text: where the model's own split differs, the
+        // server's cache reuse stops there.
+        auto append = [&tokens](const std::vector<std::int32_t>& more) { tokens.insert(tokens.end(), more.begin(), more.end()); };
+        if (!completion.thinking.empty()) {
+            append(ServerTokens(completion.thinking, false, false));
+        }
+        if (thought.stopType == "word") {
+            // The model closed the block: the end marker (the stop word, which the server leaves out of the text),
+            // then the blank line its template puts before the answer.
+            append(_thinking->end);
+            append(_thinking->afterEnd);
+            completion.thinkingTokens += static_cast<int>(_thinking->afterEnd.size());
+        } else {
+            // Out of budget ("limit"): close the block for the model.
+            append(_thinking->close);
+            completion.thinkingTokens += static_cast<int>(_thinking->close.size());
+            completion.thinkingStoppedAtLimit = true;
+        }
+        body["prompt"] = tokens;
+    }
+
+    // Answer: under the grammar, each piece streamed to onToken.
+    nlohmann::json answer = body;
+    answer["n_predict"] = spec.maxTokens;
+    if (!spec.grammar.empty()) {
+        answer["grammar"] = spec.grammar;
+    }
+    const StreamResult answered = StreamCompletion(
+        _config.chatUrl, _chatHost, _chatPort, answer,
+        [&](std::string_view piece) {
+            completion.text += piece;
+            if (onToken) {
+                onToken(piece);
+            }
+        },
+        stop);
+    if (answered.cancelled) {
+        completion.cancelled = true;
+        return completion;
+    }
+    if (think) {
+        completion.thinkingMs += answered.promptMs; // Reading the block back is part of thinking.
+    } else {
+        takePromptNumbers(answered);
+    }
+    completion.tokensGenerated = answered.generated;
+    completion.generateMs = answered.generateMs;
+    completion.stoppedAtLimit = answered.stopType == "limit";
+    return completion;
 }
 
 std::vector<std::vector<float>> LlamaServerBackend::Embed(const std::vector<std::string>& texts,
