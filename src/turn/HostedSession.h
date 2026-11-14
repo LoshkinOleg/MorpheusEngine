@@ -98,6 +98,12 @@ public:
     // ended conversation.
     void EndConversation(std::string_view conversationId);
 
+    // Between-turn upkeep, through the shared memory upkeep: folds every remaining turn of each ended conversation into
+    // summaries (in one call when it fits), condensing summaries over their cap on the way, and indexes the folded
+    // turns for retrieval. Returns false when `stop` cancelled it; it can simply run again. Throws DataError when
+    // summary_cap is too small for even a condensed summary. Open conversations are left to their turns' fit loop.
+    bool Maintain(std::stop_token stop);
+
     const store::RunMeta& Meta() const;
     std::optional<core::Conversation> Conversation(std::string_view id);
     std::vector<core::HostedTurn> Turns(std::string_view conversationId);         // Oldest first.

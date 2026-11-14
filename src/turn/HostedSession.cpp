@@ -22,6 +22,8 @@ namespace {
 constexpr std::string_view HOST_LORE_SOURCE = "host data: lore";
 // What a hosted tail holds, for the TurnError when it does not fit tail_allowance.
 constexpr std::string_view HOSTED_TAIL_NAME = "the observation, the events and the player text";
+// The task line of the placeholder tail Maintain measures an ended conversation's prompt with.
+constexpr std::string_view MAINTENANCE_INSTRUCTION = "(the conversation's next turn)";
 // A hosted turn retrieves from the host's lore and the run's folded turns; a hosted run has no notes.
 constexpr std::array<store::EmbeddingKind, 2> HOSTED_SOURCES = {store::EmbeddingKind::Lore, store::EmbeddingKind::Turn};
 // The variables the engine fills in the hosted texts.
@@ -344,6 +346,32 @@ void HostedSession::EndConversation(std::string_view conversationId)
 {
     const core::Conversation conversation = OpenConversation(conversationId);
     _store.EndConversation(conversation.id);
+}
+
+bool HostedSession::Maintain(std::stop_token stop)
+{
+    // Every ended conversation with turns still in L3 is folded whole. Its seeds name the run's latest turn.
+    const int latest = _store.LatestHostedTurn();
+    for (const core::Conversation& conversation : _store.Conversations()) {
+        if (!conversation.ended) {
+            continue;
+        }
+        const std::vector<core::HostedTurn> played = _store.HostedTurns(conversation.id);
+        if (played.empty() || played.back().number <= conversation.foldedThrough) {
+            continue;
+        }
+        // The prompt the conversation's next turn would start with: its last observation and a placeholder task stand
+        // in for the tail, which no fold reads.
+        context::HostedInputs tail;
+        tail.observation = played.back().observation;
+        tail.instruction = std::string(MAINTENANCE_INSTRUCTION);
+        auto assemble = [&](const std::vector<RetrievalHit>&) { return Pass(conversation.id, {}, tail); };
+        // Each fold's summary is stored and its turns indexed as it lands (Upkeep's StoreFold).
+        if (!Upkeep(conversation.id, latest).FoldAll(assemble, stop)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 const store::RunMeta& HostedSession::Meta() const
