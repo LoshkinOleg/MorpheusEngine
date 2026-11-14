@@ -23,6 +23,8 @@ endif()
 option(MORPHEUS_BUILD_APP "Build the morpheus app (needs MORPHEUS_BUILD_LLAMA; fetches SDL3)" ${PROJECT_IS_TOP_LEVEL})
 option(MORPHEUS_BUILD_TESTS "Build morpheus_tests (fetches Catch2, and ImGui's core for the headless UI tests)" ${PROJECT_IS_TOP_LEVEL})
 option(MORPHEUS_BUILD_LLAMA "Build the llama.cpp backend, morpheus_probe and morpheus_play (fetches and builds llama.cpp)" ${PROJECT_IS_TOP_LEVEL})
+# On in every build, vendored ones included: the llama-server backend needs no GPU or model, only cpp-httplib.
+option(MORPHEUS_BUILD_LLAMA_SERVER "Build the llama-server backend, morpheus_llamaserver (fetches cpp-httplib, header-only, no OpenSSL)" ON)
 option(MORPHEUS_WARNINGS_AS_ERRORS "Treat warnings as errors on MorpheusEngine's own targets (/WX or -Werror)" ${PROJECT_IS_TOP_LEVEL})
 option(MORPHEUS_ASAN "Instrument every target with AddressSanitizer (MSVC only)" OFF)
 
@@ -39,6 +41,11 @@ endif()
 
 if(MORPHEUS_BUILD_APP AND NOT MORPHEUS_BUILD_LLAMA)
     message(FATAL_ERROR "MORPHEUS_BUILD_APP needs MORPHEUS_BUILD_LLAMA.")
+endif()
+
+# The app, morpheus_play and morpheus_probe build either backend, as settings.json chooses.
+if(MORPHEUS_BUILD_LLAMA AND NOT MORPHEUS_BUILD_LLAMA_SERVER)
+    message(FATAL_ERROR "MORPHEUS_BUILD_LLAMA (the app, morpheus_play and morpheus_probe) needs MORPHEUS_BUILD_LLAMA_SERVER.")
 endif()
 
 # AddressSanitizer is applied to every target, dependencies included: MSVC refuses to link instrumented and
@@ -100,6 +107,33 @@ target_include_directories(morpheus_sqlite3 SYSTEM PUBLIC ${morpheus_sqlite_SOUR
 target_compile_definitions(morpheus_sqlite3 PRIVATE SQLITE_OMIT_LOAD_EXTENSION SQLITE_DQS=0)
 # Third-party code: never warnings as errors, even when a host sets CMAKE_COMPILE_WARNING_AS_ERROR.
 set_target_properties(morpheus_sqlite3 PROPERTIES COMPILE_WARNING_AS_ERROR OFF)
+
+if(MORPHEUS_BUILD_LLAMA_SERVER)
+    # cpp-httplib (the llama-server backend and the tests' fake server): header-only, used without OpenSSL, zlib,
+    # brotli or zstd. Its own CMakeLists.txt would look for them, so it is not used: SOURCE_SUBDIR names a folder
+    # without one, and FetchContent only downloads. The target is defined here under a name of Morpheus's own, like
+    # SQLite's, so it never meets llama.cpp's vendored cpp-httplib target or a host project's httplib target.
+    FetchContent_Declare(
+        morpheus_cpp_httplib
+        GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
+        GIT_TAG        cf3693cb5cc0d39b0e6f4122ba89bda9edb5ac6b       # commit SHA to get, v0.59.0
+        GIT_SHALLOW    FALSE                                          # Has to be FALSE to be able to use a commit SHA
+        SOURCE_SUBDIR  no-cmake-build                                 # No CMakeLists.txt there: download only
+    )
+    FetchContent_MakeAvailable(morpheus_cpp_httplib)
+    add_library(morpheus_httplib INTERFACE)
+    # SYSTEM: its warnings are not Morpheus's (no /W4 /WX on httplib.h).
+    target_include_directories(morpheus_httplib SYSTEM INTERFACE ${morpheus_cpp_httplib_SOURCE_DIR})
+    find_package(Threads REQUIRED)
+    target_link_libraries(morpheus_httplib INTERFACE Threads::Threads)
+    if(WIN32)
+        target_link_libraries(morpheus_httplib INTERFACE ws2_32)
+    endif()
+    if(MSVC)
+        # httplib.h is about 23,000 lines of inline code: a file that includes it can pass MSVC's section limit.
+        target_compile_options(morpheus_httplib INTERFACE /bigobj)
+    endif()
+endif()
 
 if(MORPHEUS_BUILD_LLAMA)
     # llama.cpp's own backend switches follow MORPHEUS_GPU_BACKEND: GGML_VULKAN only for Vulkan, GGML_CUDA only for
