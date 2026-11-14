@@ -96,6 +96,13 @@ Use `127.0.0.1`, not `localhost`, in both the command lines and `settings.json`:
 - Thinking works as in-process: Morpheus writes the thinking block's markers itself, so the thinking budgets apply unchanged.
 - Connections: Morpheus keeps one connection alive to each server (a second, dedicated one for the streamed `/completion`, so a cancel closes only that one). llama-server closes a connection idle for 5 s, so a non-streaming request, and a `/completion` that got no answer, is sent once more when a stale connection failed it.
 - `morpheus_probe` works with either backend; with llama-server its reuse figures are the server's, so the second run shows what a slot reuses.
+- With a model whose layers are partly linear attention (Qwen3.5 and later), add `--checkpoint-min-step 0`: llama-server can only resume such a model from a saved checkpoint, and by default it saves one at most every 8192 tokens, so a slot reuses little more than its first prompt (see the figures below).
+- To build `llama-server` from the llama.cpp that the `dev` preset fetches (same pinned commit):
+
+  ```
+  cmake -S build/dev/_deps/llama-src -B build/llama-server -DGGML_VULKAN=ON -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_OPENSSL=OFF
+  cmake --build build/llama-server --config Release --target llama-server
+  ```
 
 ### The [server] tests
 
@@ -111,7 +118,17 @@ They complete a resolve call under its grammar and a streamed narrate call, thin
 
 ### Prompt-cache reuse through llama-server
 
-Not measured yet. Run the three-slot `[server]` test with Qwen3-4B-Instruct and with a Qwen3.5 or later model, and record here the reused shares it prints (R2 of the Skyrim integration asks for more than 80% on the second and later calls of a session; for Qwen3.5 this measures what its linear-attention layers allow through llama-server).
+R2 of the Skyrim integration asks for more than 80% of the prompt reused on the second and later calls of a session. Measured on 2026-11-14 with the three-slot `[server]` test (three sessions at once, ten exchanges of an action call and a speech call each). Windows, RTX 3070 Laptop GPU (8 GB), `llama-server` built from the pinned llama.cpp with Vulkan, chat server started with `--parallel 3 --ctx-size 49152 -ngl 99 -fa on -ctk q8_0 -ctv q8_0`:
+
+| Chat model | Server options | Reused share, calls 2-20 | Mean per session |
+|---|---|---|---|
+| `Qwen3-4B-Instruct-2507-Q4_K_M` | as above | 0.97 to 1.00 | 0.99 |
+| `Qwen3.5-9B-Q4_K_M` | as above | falls from about 0.78 to about 0.65 as the session grows | 0.70 to 0.72 |
+| `Qwen3.5-9B-Q4_K_M` | plus `--checkpoint-min-step 0` | rises from about 0.78 to 0.82 as the session grows | 0.79 to 0.80 |
+
+- Qwen3-4B-Instruct has only full-attention layers, so a slot reuses everything up to the first token that differs.
+- Qwen3.5 resumes only from a saved checkpoint. With the default spacing each slot keeps one checkpoint near its first prompt (about 1,900 tokens), so the reused share shrinks as the history grows. With `--checkpoint-min-step 0` a checkpoint is saved after every prompt; what is left to recompute is the previous answer and the new text, so the share grows with the history and reaches 80% from about the tenth call.
+- The thinking test and the `"[server][llama]"` agreement test (with Qwen3-4B-Instruct) passed on the same machine.
 
 ### Performance with Qwen3.8-27B on a 10 GB GPU
 
