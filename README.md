@@ -296,9 +296,12 @@ An example session, in Git Bash or on Linux, with the host data and the observat
 
 ```
 curl -s -X POST http://127.0.0.1:4998/v1/runs/save_1/open -H "Content-Type: application/json" --data @tests/hosted/fixtures/open.json
-curl -s -X POST http://127.0.0.1:4998/v1/runs/save_1/conversations -H "Content-Type: application/json" \n  --data '{"participants": ["0001A6A4", "00000007"], "observation": '"$(cat tests/hosted/fixtures/observation.json)"'}'
-curl -s -X POST http://127.0.0.1:4998/v1/runs/save_1/conversations/c1/events -H "Content-Type: application/json" \n  --data '{"events": [{"type": "heard", "text": "A dragon roars in the distance."}]}'
-curl -N -X POST http://127.0.0.1:4998/v1/runs/save_1/conversations/c1/turn -H "Content-Type: application/json" \n  --data '{"speaker": "0001A6A4", "player_text": "Can you follow me?", "observation": '"$(cat tests/hosted/fixtures/observation.json)"'}'
+curl -s -X POST http://127.0.0.1:4998/v1/runs/save_1/conversations -H "Content-Type: application/json" \
+  --data '{"participants": ["0001A6A4", "00000007"], "observation": '"$(cat tests/hosted/fixtures/observation.json)"'}'
+curl -s -X POST http://127.0.0.1:4998/v1/runs/save_1/conversations/c1/events -H "Content-Type: application/json" \
+  --data '{"events": [{"type": "heard", "text": "A dragon roars in the distance."}]}'
+curl -N -X POST http://127.0.0.1:4998/v1/runs/save_1/conversations/c1/turn -H "Content-Type: application/json" \
+  --data '{"speaker": "0001A6A4", "player_text": "Can you follow me?", "observation": '"$(cat tests/hosted/fixtures/observation.json)"'}'
 curl -s -X POST http://127.0.0.1:4998/v1/runs/save_1/conversations/c1/end -H "Content-Type: application/json" --data '{}'
 ```
 
@@ -327,7 +330,7 @@ Errors answer `{"api_version", "error": {"status", "message"}}` with these statu
 - 503: a llama-server is unreachable or answered an error
 - 500: anything else, logged with its message
 
-The `"[server]"` test (see "The [server] tests") also plays the conversation fixture over HTTP against your servers and prints each turn's time to its first sentence. Measured on 2026-11-14 on this PC (RTX 3070 Laptop GPU, 8 GB, llama-server with Vulkan, Qwen3-4B-Instruct-2507-Q4_K_M with --parallel 3 --ctx-size 49152 -fa on -ctk q8_0 -ctv q8_0, nomic-embed for embeddings): the four turns of conversation.json reached their first sentence after 955, 2522, 1745 and 709 ms. The host's 1.5 s target is for its RTX 3060 Ti with a 9B model.
+The `"[server]"` test (see "The [server] tests") also plays the conversation fixture over HTTP against your servers and prints each turn's time to its first sentence. Measured on 2026-11-14 on Windows with an RTX 3070 Laptop GPU (8 GB; llama-server with Vulkan, Qwen3-4B-Instruct-2507-Q4_K_M with --parallel 3 --ctx-size 49152 -fa on -ctk q8_0 -ctv q8_0, nomic-embed for embeddings): the four turns of conversation.json reached their first sentence after 955, 2522, 1745 and 709 ms. The host's 1.5 s target is for its RTX 3060 Ti with a 9B model.
 
 ## Worlds
 
