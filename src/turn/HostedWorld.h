@@ -118,10 +118,11 @@ public:
     std::string ProposalGrammar(const Observation& observation, const Participants& participants,
                                 const std::vector<std::string>& allowed, std::string_view speakerId) const;
 
-    // What becomes of the model's proposal: parsed (a parse failure is a refusal: the grammar admits lone surrogate
-    // escapes that the JSON parser refuses), then grammar::Validate against `proposalSchema`. A valid proposal is
-    // requested with its action id and params; otherwise it is refused, and the reasons are the parse error or each
-    // validation error as "<pointer>: <message>". Never throws for the model's text.
+    // What becomes of the model's proposal: parsed (a parse failure is a refusal: the grammar admits text the JSON
+    // parser refuses, such as lone surrogate escapes and numbers it cannot hold, like 1e999), then grammar::Validate
+    // against `proposalSchema`. A valid proposal is requested with its action id and params; otherwise it is refused,
+    // and the reasons are the parse error or each validation error as "<pointer>: <message>". Never throws for the
+    // model's text.
     core::Adjudication Adjudicate(const nlohmann::json& proposalSchema, std::string_view modelText) const;
 };
 

@@ -533,7 +533,8 @@ std::string HostedWorld::ProposalGrammar(const Observation& observation, const P
 core::Adjudication HostedWorld::Adjudicate(const nlohmann::json& proposalSchema, std::string_view modelText) const
 {
     core::Adjudication adjudication;
-    // A parse failure is the model's mistake: the grammar admits lone surrogate escapes that the parser refuses.
+    // A parse failure is the model's mistake: the grammar admits text the parser refuses, such as lone surrogate
+    // escapes and numbers it cannot hold (1e999).
     nlohmann::json proposal;
     try {
         proposal = nlohmann::json::parse(modelText.begin(), modelText.end());

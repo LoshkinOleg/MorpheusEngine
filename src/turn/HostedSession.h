@@ -45,7 +45,13 @@ struct HostedCallbacks {
 };
 
 // One open hosted run (hosted-world spec, section 1): the counterpart of turn::Session for a world the host owns and
-// sends as data. Every backend call happens on the caller's thread. Not thread-safe.
+// sends as data. Every backend call happens on the caller's thread.
+//
+// D1's contract: one HostedSession per run file; two sessions on one file are not supported. It is not thread-safe,
+// so its caller serializes every call on a run, turns of different conversations included; Maintain runs between
+// them and stops through its stop token when the next call is due. Every model call uses the backend's default slot
+// (GenerationSpec::slot is left at -1). Choosing a slot per conversation and any concurrency across conversations are
+// left to D2 (morpheus_server), which can add them without changing this API.
 class HostedSession {
 private:
     HostedWorld _world; // Set by the constructor.
@@ -57,10 +63,11 @@ private:
 
 public:
     // Creates the run in `file` when the file does not exist, with `seed` for sampling, and indexes the retrievable
-    // lore; or reopens it: the same host data (equal content hash) reopens as it is, changed host data (a mod update)
-    // replaces the stored copy, and changed lore is re-embedded. The host data is checked first (HostedWorld's
-    // DataError). Throws DataError for a file that holds an owned run, StoreError for a damaged one, and DataError if
-    // lore cannot be embedded (a new file is then removed).
+    // lore; or reopens it: the same host data (equal content hash) reopens as it is; with changed host data (a mod
+    // update) the changed lore is re-embedded first, then the new host data replaces the stored copy. The host data
+    // is checked first (HostedWorld's DataError). Throws DataError for a file that holds an owned run, StoreError for
+    // a damaged one, and DataError if lore cannot be embedded: a new file is then removed, and a reopened run keeps
+    // its stored host data and hash.
     static HostedSession Open(const std::filesystem::path& file, HostData data, core::Settings settings,
                               std::uint64_t seed, inference::LlmBackend& backend);
 
@@ -70,7 +77,9 @@ public:
     std::string StartConversation(const std::vector<std::string>& participantIds, const nlohmann::json& observation);
 
     // Adds events to an open conversation without a turn, in order (HostedWorld::CheckEvents). They come before the
-    // conversation's next turn. Throws DataError naming the field.
+    // conversation's next turn: every event recorded since its last turn joins that turn's tail, and nothing removes
+    // them. If they use more than tail_allowance leaves, every later RunTurn of the conversation throws TurnError
+    // until it ends (EndConversation still works); the host keeps event text short. Throws DataError naming the field.
     void RecordEvents(std::string_view conversationId, const std::vector<nlohmann::json>& events);
 
     // Removes those who `left`, then adds those who `joined` at the end of the join order, with their names and bios
@@ -88,9 +97,11 @@ public:
     // are, as in Session). onAction fires before the line starts, so a turn cancelled during the speak call has
     // already reported its action through onAction and is still not committed: the host must not take a reported
     // action as a committed turn until RunTurn returns one. Throws DataError naming the field for a malformed request
-    // (before any model call), TurnError when the tail does not fit tail_allowance, and InferenceError from the
-    // backend. Model mistakes are not exceptions: a refused action is recorded with its reasons and the turn goes on
-    // with no action.
+    // (before any model call), TurnError when the tail does not fit tail_allowance (before the resolve call), and
+    // InferenceError from the backend. The tail holds the observation, every event recorded since the conversation's
+    // last turn (RecordEvents), the request's events and the player text: when the recorded events alone are over,
+    // every later turn of the conversation is that TurnError until it ends. Model mistakes are not exceptions: a
+    // refused action is recorded with its reasons and the turn goes on with no action.
     std::optional<core::HostedTurn> RunTurn(const HostedTurnRequest& request, const HostedCallbacks& callbacks,
                                             std::stop_token stop);
 

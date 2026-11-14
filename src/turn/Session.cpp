@@ -107,6 +107,12 @@ Session Session::Load(core::World world, core::Settings settings, const std::fil
                       inference::LlmBackend& backend)
 {
     store::RunStore store = store::RunStore::Open(file);
+    // A hosted run (HostedSession's) is no world folder's run and has no state: refused before anything reads it, as
+    // HostedSession::Open refuses an owned run.
+    if (store.Meta().kind != store::RunKind::Owned) {
+        throw core::DataError(
+            std::format("run '{}' is a hosted run, not a run of world '{}'", core::PathText(file), world.id));
+    }
     if (store.Meta().worldId != world.id) {
         throw core::DataError(std::format("run '{}' belongs to world '{}', not '{}'", core::PathText(file),
                                           store.Meta().worldId, world.id));

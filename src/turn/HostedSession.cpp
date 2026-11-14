@@ -100,18 +100,20 @@ HostedSession HostedSession::Open(const std::filesystem::path& file, HostData da
         return HostedSession(std::move(world), std::move(settings), std::move(store), std::move(index), backend);
     }
 
-    // An existing run, which must be hosted. Changed host data replaces the stored copy; SyncLore re-embeds only the
-    // lore whose text changed (by its content hash), and the folded turns are indexed again.
+    // An existing run, which must be hosted. SyncLore re-embeds only the lore whose text changed (by its content
+    // hash); only then does changed host data replace the stored copy, as Session::Load re-embeds before anything
+    // else changes, so an open that fails leaves the stored host data and its hash as they were. Vectors stored
+    // before a failure are keyed by their content hash and harmless. Then the folded turns are indexed again.
     store::RunStore store = store::RunStore::Open(file);
     if (store.Meta().kind != store::RunKind::Hosted) {
         throw core::DataError(std::format("run '{}' is an owned run of world '{}', not a hosted run",
                                           core::PathText(file), store.Meta().worldId));
     }
+    MemoryIndex index(settings.embeddingDocumentPrefix);
+    index.SyncLore(HOST_LORE_SOURCE, data.lore, store, backend);
     if (store.Meta().worldHash != hash) {
         store.ReplaceHostData(stored, hash);
     }
-    MemoryIndex index(settings.embeddingDocumentPrefix);
-    index.SyncLore(HOST_LORE_SOURCE, data.lore, store, backend);
     HostedSession session(std::move(world), std::move(settings), std::move(store), std::move(index), backend);
     session.SyncHistory();
     return session;
@@ -423,7 +425,9 @@ std::vector<context::TranscriptEntry> HostedSession::Entries(const core::Convers
     int previous = 0; // The conversation's turn before the one rendered; 0 before its first.
     for (const core::HostedTurn& turn : _store.HostedTurns(conversation.id)) {
         if ((turn.number <= conversation.foldedThrough) == folded) {
-            // Names from the turn's own observation, as it was when the turn was played.
+            // Names from the turn's own observation, as it was when the turn was played. RunStore::HostedTurns checked
+            // its actors core and that the speaker is among them (a damaged turn is its StoreError), so this read
+            // cannot fail and the speaker and the player are found.
             const std::vector<Actor> actors = HostedWorld::ActorsOf(turn.observation);
             const auto speaker = std::find_if(actors.begin(), actors.end(),
                                               [&turn](const Actor& actor) { return actor.id == turn.speakerId; });

@@ -20,6 +20,7 @@
 #include "core/Settings.h"
 #include "core/World.h"
 #include "fakes/ScriptedBackend.h"
+#include "store/RunStore.h"
 #include "turn/EngineText.h"
 #include "turn/ResolveGrammar.h"
 #include "turn/Review.h"
@@ -397,6 +398,29 @@ TEST_CASE("Load reopens a run and checks it against the world", "[session]")
 
     const core::World other = core::LoadWorld(test::RepoDir() / "game_projects" / "sandcrawler");
     CHECK_THROWS_AS(turn::Session::Load(other, TestSettings(), file, backend), core::DataError);
+}
+
+TEST_CASE("Load refuses a hosted run's file before anything else reads it", "[session]")
+{
+    const fs::path file = NewRunFile("session_load_hosted");
+    store::RunMeta meta;
+    meta.kind = store::RunKind::Hosted;
+    meta.worldId = "hosted";
+    meta.worldHash = "00000000000000aa";
+    {
+        store::RunStore hosted = store::RunStore::CreateHosted(file, meta, nlohmann::json::object());
+    }
+    test::ScriptedBackend backend(16384); // No model call and no embedding is made.
+
+    // Even a world whose id is "hosted" does not open it: a hosted run has no state to check.
+    core::World world = MiniWorld();
+    world.id = "hosted";
+    CHECK_THROWS_AS(turn::Session::Load(world, TestSettings(), file, backend), core::DataError);
+    CHECK_THROWS_WITH(turn::Session::Load(world, TestSettings(), file, backend),
+                      ContainsSubstring("is a hosted run, not a run of world 'hosted'"));
+    CHECK_THROWS_WITH(turn::Session::Load(MiniWorld(), TestSettings(), file, backend),
+                      ContainsSubstring("is a hosted run, not a run of world 'mini'"));
+    CHECK(backend.EmbeddedTexts() == 0);
 }
 
 TEST_CASE("Player input is cleaned and must not be empty", "[session]")

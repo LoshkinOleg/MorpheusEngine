@@ -75,8 +75,8 @@ public:
     static Session Start(core::World world, core::Settings settings, const std::filesystem::path& file,
                          std::uint64_t seed, inference::LlmBackend& backend);
 
-    // Opens a run of `world`. Throws DataError if the run belongs to another world or its latest state no longer
-    // validates against the world's schema. Edited world files set WorldChanged(); edited lore is re-embedded.
+    // Opens a run of `world`. Throws DataError if the file holds a hosted run (checked first), if the run belongs to
+    // another world, or if its latest state no longer validates against the world's schema. Edited world files set WorldChanged(); edited lore is re-embedded.
     static Session Load(core::World world, core::Settings settings, const std::filesystem::path& file,
                         inference::LlmBackend& backend);
 

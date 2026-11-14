@@ -155,7 +155,8 @@ public:
     // its first), in one transaction. Throws ContractError for an unknown conversation.
     void AddConversationEvents(std::string_view id, int afterTurn, const std::vector<nlohmann::json>& events);
 
-    // Conversation `id`'s events in the order they were recorded. Throws StoreError when one is not valid JSON.
+    // Conversation `id`'s events in the order they were recorded. Throws StoreError when one is not valid JSON or not
+    // an object with a string `text`.
     std::vector<core::ConversationEvent> ConversationEvents(std::string_view id);
 
     // Highest committed hosted turn number, 0 before the first.
@@ -165,8 +166,10 @@ public:
     // conversation is unknown.
     void CommitHostedTurn(const core::HostedTurn& record);
 
-    // Conversation `conversationId`'s turns, ascending. Throws StoreError if a stored column is not valid JSON or has
-    // the wrong shape.
+    // Conversation `conversationId`'s turns, ascending. Throws StoreError naming the file, the turn and the column if a
+    // stored column is not valid JSON or has the wrong shape, including an observation without the actors core
+    // HostedWorld::Observe checks (an `actors` array of objects with a non-empty string `id` and `name`, a boolean
+    // `is_player` and an optional string `bio`; unique ids; exactly one player) or a speaker that is not one of them.
     std::vector<core::HostedTurn> HostedTurns(std::string_view conversationId);
 
 private:

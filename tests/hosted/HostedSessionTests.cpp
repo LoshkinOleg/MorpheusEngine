@@ -94,6 +94,30 @@ TEST_CASE("Open with changed host data replaces the stored copy and re-embeds th
     CHECK(stored.Meta().worldHash == turn::HostDataHash(changed));
 }
 
+TEST_CASE("A reopen whose changed lore cannot be embedded leaves the stored host data and its hash unchanged",
+          "[hosted][session]")
+{
+    const std::filesystem::path file = test::HostedRunFile("hosted_reopen_embed_fails");
+    const turn::HostData original = test::FixtureHostData();
+    {
+        test::ScriptedBackend backend(16384);
+        turn::HostedSession session = turn::HostedSession::Open(file, original, test::HostedSettings(), 42, backend);
+    }
+
+    // A mod update whose changed lore entry the embedding model refuses: Embed throws during the re-embed.
+    turn::HostData changed = test::FixtureHostData();
+    changed.lore[2].data = "Hulda has kept the inn for twenty years.";
+    test::ScriptedBackend small(16384);
+    small.SetEmbedLimit(20);
+    CHECK_THROWS_MATCHES(turn::HostedSession::Open(file, changed, test::HostedSettings(), 42, small), core::DataError,
+                         MessageMatches(ContainsSubstring("host data: lore entry 'Hulda' cannot be embedded")));
+
+    // The failed open changed nothing: the run still holds the host data it had, under its hash.
+    store::RunStore stored = store::RunStore::Open(file);
+    CHECK(stored.HostData() == turn::HostDataToJson(original));
+    CHECK(stored.Meta().worldHash == turn::HostDataHash(original));
+}
+
 TEST_CASE("Open refuses a file that holds an owned run", "[hosted][session]")
 {
     const std::filesystem::path file = test::HostedRunFile("hosted_owned");

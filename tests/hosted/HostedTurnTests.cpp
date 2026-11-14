@@ -374,6 +374,38 @@ TEST_CASE("A player text with no room in the tail allowance is a TurnError", "[h
     CHECK(session.Turns(id).empty());
 }
 
+TEST_CASE("Events recorded between turns over the tail allowance make every later turn a TurnError until the "
+          "conversation ends",
+          "[hosted][turn]")
+{
+    test::HostedScript script;
+    script.actions = {NONE};
+    script.lines = {"Welcome."};
+    test::ScriptedBackend backend(16384, script.Responder());
+    turn::HostedSession session = OpenRun("hosted_events_overflow", backend);
+    const std::string id = session.StartConversation({test::HULDA, test::AELA}, test::FixtureObservation());
+    REQUIRE(session.RunTurn(test::Request(id, test::HULDA, "Hello."), {}, {}));
+
+    // About 1200 tokens of event text (the fake counts 4 bytes a token), over tail_allowance 1024: every event recorded
+    // since the conversation's last turn joins its next turn's tail, and nothing removes them.
+    session.RecordEvents(id, {nlohmann::json{{"text", std::string(2400, 'x')}}});
+    session.RecordEvents(id, {nlohmann::json{{"text", std::string(2400, 'y')}}});
+    const std::size_t calls = backend.Calls().size();
+    CHECK_THROWS_MATCHES(session.RunTurn(test::Request(id, test::HULDA, "Still there?"), {}, {}), turn::TurnError,
+                         MessageMatches(ContainsSubstring("the observation, the events and the player text use")));
+    // Without player text it is the same, and so is every later try: the recorded events alone are over.
+    CHECK_THROWS_AS(session.RunTurn(test::Request(id, test::HULDA, ""), {}, {}), turn::TurnError);
+    CHECK_THROWS_AS(session.RunTurn(test::Request(id, test::HULDA, "Hello?"), {}, {}), turn::TurnError);
+    CHECK(backend.Calls().size() == calls); // No model call.
+    CHECK(session.Turns(id).size() == 1);
+
+    // Ending the conversation still works, and Maintain folds its turn: a fold reads no tail.
+    session.EndConversation(id);
+    CHECK(session.Conversation(id)->ended);
+    CHECK(session.Maintain({}));
+    CHECK(session.Conversation(id)->foldedThrough == 1);
+}
+
 TEST_CASE("allowedActions narrows the grammar the resolve call runs under and the schema it is checked against",
           "[hosted][turn]")
 {

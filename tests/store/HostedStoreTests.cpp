@@ -98,7 +98,8 @@ core::HostedTurn TestHostedTurn(int number, const std::string& conversationId)
     turn.listenerIds = {"player"};
     turn.playerText = "Follow me.";
     turn.events = {nlohmann::json{{"type", "ambient"}, {"text", "Rain starts."}}};
-    turn.observation = {{"actors", nlohmann::json::array()}};
+    turn.observation = nlohmann::json::parse(R"({"actors": [{"id": "npc-1", "name": "Hulda", "is_player": false},
+                                                            {"id": "player", "name": "Aela", "is_player": true}]})");
     turn.resolveOutput = R"({"action":"none","params":{}})";
     turn.adjudication = {true, "none", nlohmann::json::object(), {}};
     turn.line = std::format("Line {}.", number);
@@ -453,6 +454,52 @@ TEST_CASE("Damaged saved hosted turns and events are StoreErrors naming the file
     }
 }
 
+TEST_CASE("A stored observation without its actors core, or without the speaker, is a StoreError naming the file, "
+          "the turn and the column",
+          "[store][hosted]")
+{
+    struct Case {
+        const char* observation;
+        const char* column;
+    };
+    // The second actor of each is the player, Aela; the turn's speaker is npc-1.
+    const std::vector<Case> cases = {
+        {R"({"note":"fine"})", "observation"},
+        {R"({"actors":{}})", "observation"},
+        {R"({"actors":[5,{"id":"player","name":"Aela","is_player":true}]})", "observation"},
+        {R"({"actors":[{"id":"npc-1","name":"Hulda","is_player":false}]})", "observation"},
+        {R"({"actors":[{"id":"npc-1","name":"Hulda","is_player":true},{"id":"player","name":"Aela","is_player":true}]})",
+         "observation"},
+        {R"({"actors":[{"id":"","name":"Hulda","is_player":false},{"id":"player","name":"Aela","is_player":true}]})",
+         "observation"},
+        {R"({"actors":[{"id":"npc-1","name":5,"is_player":false},{"id":"player","name":"Aela","is_player":true}]})",
+         "observation"},
+        {R"({"actors":[{"id":"npc-1","name":"Hulda"},{"id":"player","name":"Aela","is_player":true}]})", "observation"},
+        {R"({"actors":[{"id":"npc-1","name":"Hulda","is_player":false,"bio":5},)"
+         R"({"id":"player","name":"Aela","is_player":true}]})",
+         "observation"},
+        {R"({"actors":[{"id":"player","name":"Hulda","is_player":false},{"id":"player","name":"Aela","is_player":true}]})",
+         "observation"},
+        {R"({"actors":[{"id":"npc-2","name":"Saadia","is_player":false},{"id":"player","name":"Aela","is_player":true}]})",
+         "speaker_id"},
+    };
+    for (const Case& damaged : cases) {
+        SECTION(damaged.observation)
+        {
+            const std::filesystem::path file = HostedFile("store_damaged_actors");
+            {
+                store::Database db = store::Database::Open(file, false);
+                db.Prepare("UPDATE hosted_turns SET observation = ?1").Bind(1, std::string(damaged.observation)).Run();
+            }
+            store::RunStore store = store::RunStore::Open(file);
+            CHECK_THROWS_AS(store.HostedTurns("c1"), store::StoreError);
+            CHECK_THROWS_WITH(store.HostedTurns("c1"), ContainsSubstring("run.db") &&
+                                                           ContainsSubstring("hosted turn 1") &&
+                                                           ContainsSubstring(std::string("'") + damaged.column + "'"));
+        }
+    }
+}
+
 TEST_CASE("A failed upgrade names the file and leaves it a version 2 run", "[store][hosted]")
 {
     // A stray table named like a new one makes the upgrade's SQL fail.
@@ -529,7 +576,6 @@ TEST_CASE("A hosted turn whose text is not UTF-8 still commits", "[store][hosted
     turn.playerText = bad;
     turn.listenerIds = {bad};
     turn.events = {nlohmann::json{{"text", "ok"}}};
-    turn.observation = {{"note", "fine"}};
     CHECK_NOTHROW(store.CommitHostedTurn(turn));
     CHECK(store.HostedTurns(id).size() == 1);
 }

@@ -37,21 +37,27 @@ R5's three operations over the host data of one run.
   `Observation` holds the original JSON and the parsed actors (`id`, `name`, `isPlayer`, `bio`) in their order.
 - **`std::string ProposalGrammar(const Observation&, const Participants&, const std::vector<std::string>& allowed, std::string_view speakerId) const`** builds the JSON Schema of the speaker's possible actions (section 3) and returns `grammar::FromSchema` of it.
 - **`Adjudication Adjudicate(const nlohmann::json& proposalSchema, std::string_view modelText) const`**:
-  - parses the model's text (a parse failure is a refusal: the grammar admits lone surrogate escapes that the JSON parser refuses);
+  - parses the model's text (a parse failure is a refusal: the grammar admits text the JSON parser refuses, such as lone surrogate escapes and numbers it cannot hold, like `1e999`);
   - runs `grammar::Validate` against the turn's proposal schema;
   - returns `Adjudication { bool requested; std::string actionId; nlohmann::json params; std::vector<std::string> reasons; }`. A valid action is `requested` with its id and params; otherwise `requested` is false, the reasons are the parse error or the validation errors, and the speaker takes no action.
 - `Adjudication`, the hosted turn record and the conversation types live in `core/HostedRecord.h` (namespace `core`), because `store` stores them and sits below `turn`.
 
 ### `turn::HostedSession` (`turn/HostedSession.h`)
 
-One open hosted run, the counterpart of `turn::Session`. Every backend call happens on the caller's thread. It is not thread-safe.
+One open hosted run, the counterpart of `turn::Session`. Every backend call happens on the caller's thread.
+
+**D1's contract:**
+- One `HostedSession` per run file. Two sessions on one file are not supported.
+- It is not thread-safe: its caller serializes every call on a run, turns of different conversations included. `Maintain` runs between them and stops through its stop token when the next call is due.
+- Every model call uses the backend's default slot (`GenerationSpec::slot` is left at -1).
+- Choosing a slot per conversation and any concurrency across conversations are left to D2 (`morpheus_server`), which can add them without changing this API.
 
 - `static HostedSession Open(const std::filesystem::path& file, HostData data, core::Settings settings, std::uint64_t seed, inference::LlmBackend& backend)` creates the run if the file does not exist, or reopens it:
   - the same host data (equal content hash) reopens as is;
-  - changed host data (a mod update) replaces the stored copy, and changed lore is re-embedded, as edited lore is in Morpheus's own runs;
+  - with changed host data (a mod update), changed lore is re-embedded, as edited lore is in Morpheus's own runs, and only then does the new host data replace the stored copy, so an open that fails leaves the stored host data and its hash unchanged;
   - a file that holds an owned run is a `DataError`.
 - `std::string StartConversation(const std::vector<std::string>& participantIds, const nlohmann::json& observation)` returns a new conversation id. Every participant must be an actor of the observation; their bios are taken from it and stored, in this order.
-- `void RecordEvents(std::string_view conversationId, const std::vector<nlohmann::json>& events)` adds events to an open conversation without a turn.
+- `void RecordEvents(std::string_view conversationId, const std::vector<nlohmann::json>& events)` adds events to an open conversation without a turn. Every event recorded since the conversation's last turn joins its next turn's tail (section 6 for the overflow).
 - `void SetParticipants(std::string_view conversationId, const std::vector<std::string>& joined, const std::vector<std::string>& left, const nlohmann::json& observation)` adds participants (bios from the observation) at the end of the join order, and removes those who left.
 - `std::optional<HostedTurn> RunTurn(const HostedTurnRequest& request, const HostedCallbacks& callbacks, std::stop_token stop)` plays one turn (section 2). It returns the committed turn, or nullopt when `stop` cancelled it.
 - `void EndConversation(std::string_view conversationId)` marks the conversation ended. Its remaining turns are folded by the next `Maintain`.
@@ -194,9 +200,11 @@ The model writes `{"action":"attack","params":{"target":"0001A6A4"}}` (compact).
 
 - **Host data is a `core::DataError` naming the JSON pointer:** a malformed catalog, observation schema, observation, event or participant list, an unknown speaker, conversation or allowed action, and an owned run opened as hosted. D2 answers these with HTTP 400.
 - **A player text that does not fit is a `turn::TurnError`.**
+- **Events recorded between turns that do not fit are a `turn::TurnError` too.** All events recorded since a conversation's last turn go into its next turn's tail, and nothing removes them. If they use more than `tail_allowance` leaves after the observation, every later `RunTurn` of that conversation throws `TurnError` (before the resolve call) until the conversation ends; `EndConversation` and the next `Maintain` still work. The host keeps event text short. A cure (for example showing only the newest recorded events that fit) is a later decision.
 - **Model mistakes are not exceptions.** An action that does not parse or validate is refused and logged with its reasons, and the turn goes on.
 - **Backend failures are `inference::InferenceError`** (D2 answers 503).
 - **A cancel through `stop`** returns nullopt and commits nothing.
+- **Damaged saved data is a `store::StoreError`** naming the file, the turn and the column, including a stored observation without the actors core or a speaker that is not one of its actors. A hosted run's file opened by `Session::Load` is a `DataError`.
 - **Engine bugs are `core::ContractError`.**
 
 ## Tests (written first, Catch2, fake backend)
@@ -230,7 +238,7 @@ The model writes `{"action":"attack","params":{"target":"0001A6A4"}}` (compact).
 
 ## Out of scope
 
-- **D2:** `morpheus_server`, HTTP, SSE and `sentence` events, one slot per conversation, and `model_id` under llama-server.
+- **D2:** `morpheus_server`, HTTP, SSE and `sentence` events, one slot per conversation and any concurrency across conversations (added without changing `HostedSession`'s API; section 1, D1's contract), and `model_id` under llama-server.
 - **E:** per-speaker memory, sharing, and rollback to a game time.
 - **F:** the host's prompt pack and its layer and variable validation.
 - **Later:** R8's `"decide"`, the optional review per turn, and an explicit call tag (R9).
