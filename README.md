@@ -137,7 +137,7 @@ FetchContent_MakeAvailable(morpheus)
 target_link_libraries(my_target PRIVATE Morpheus::turn)
 ```
 
-- Included this way (not the top-level project), Morpheus builds only its engine libraries, `Morpheus::core`, `Morpheus::store`, `Morpheus::inference`, `Morpheus::context`, `Morpheus::grammar` and `Morpheus::turn`, with nlohmann/json, SQLite (as `morpheus_sqlite3`, so it never meets a `sqlite3` target of yours) and cpp-httplib (as `morpheus_httplib`, header-only and without OpenSSL; fetched while `MORPHEUS_BUILD_LLAMA_SERVER` is on, its default, also when vendored). `MORPHEUS_BUILD_APP`, `MORPHEUS_BUILD_TESTS` and `MORPHEUS_BUILD_LLAMA` default to off, so no llama.cpp, SDL3, ImGui or Catch2 is fetched.
+- Included this way (not the top-level project), Morpheus builds only its engine libraries, `Morpheus::core`, `Morpheus::store`, `Morpheus::inference`, `Morpheus::context`, `Morpheus::grammar`, `Morpheus::turn` and `Morpheus::llamaserver` (the llama-server backend, built while `MORPHEUS_BUILD_LLAMA_SERVER` is on), with nlohmann/json, SQLite (as `morpheus_sqlite3`, so it never meets a `sqlite3` target of yours) and cpp-httplib (as `morpheus_httplib`, header-only and without OpenSSL; fetched while `MORPHEUS_BUILD_LLAMA_SERVER` is on, its default, also when vendored). `MORPHEUS_BUILD_APP`, `MORPHEUS_BUILD_TESTS` and `MORPHEUS_BUILD_LLAMA` default to off, so no llama.cpp, SDL3, ImGui or Catch2 is fetched.
 - Link the `Morpheus::` names, not the internal `morpheus_*` ones. For the llama.cpp backend, `Morpheus::llama`, `set(MORPHEUS_BUILD_LLAMA ON)` (and `MORPHEUS_GPU_BACKEND`: `Vulkan`, `CUDA` or `CPU`) before `FetchContent_MakeAvailable`. `Morpheus::app_model` and `Morpheus::app_ui` exist when the app or the tests are built.
 - A project that already provides `nlohmann_json::nlohmann_json` (its own FetchContent or `find_package`) keeps its copy, and Morpheus links the same target. Make yours available BEFORE `FetchContent_MakeAvailable(morpheus)`: Morpheus checks for the target when it is included, so the guard only works in that order.
 - `SYSTEM` makes Morpheus's headers count as system headers in your own files, so your warnings do not fire on them.
@@ -219,6 +219,7 @@ Each path is `entity.field`, a string field of an entity in `initial_state.json`
 - `src/grammar`: bounded-JSON grammars: the GBNF builder, `FromSchema` and `Validate` (no llama.cpp)
 - `src/turn`: turn orchestration: grammar, resolve and apply, retrieval, folding, session, worker, replay
 - `src/llama`: the llama.cpp backend (`dev` and `linux-release` presets only)
+- `src/llamaserver`: the llama-server backend over HTTP (cpp-httplib; every preset, `MORPHEUS_BUILD_LLAMA_SERVER`)
 - `tools/probe`: `morpheus_probe`, a manual model check (`dev` and `linux-release` presets only)
 - `tools/play`: `morpheus_play`, the terminal player (`dev` and `linux-release` presets only)
 - `src/app`: the app. `model/` is its state and actions (no SDL or ImGui), `ui/` its ImGui windows, `main.cpp` the SDL3 window (`dev` and `linux-release` presets only)

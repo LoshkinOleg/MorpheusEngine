@@ -14,9 +14,9 @@ include(FetchContent)
 FetchContent_Declare(morpheus SOURCE_DIR "${MORPHEUS_SOURCE_DIR}" SYSTEM)
 FetchContent_MakeAvailable(morpheus)
 
-# With Morpheus's vendored defaults nothing beyond the six engine libraries and morpheus_httplib (cpp-httplib, fetched
-# while MORPHEUS_BUILD_LLAMA_SERVER is on, as it is by default) exists: no app, tests or tools, no
-# app-model or app-ui library, and none of llama.cpp, SDL3, ImGui or Catch2.
+# With Morpheus's vendored defaults nothing beyond the seven engine libraries (the llama-server backend among them)
+# and morpheus_httplib (cpp-httplib, fetched while MORPHEUS_BUILD_LLAMA_SERVER is on, as it is by default) exists: no
+# app, tests or tools, no app-model or app-ui library, and none of llama.cpp, SDL3, ImGui or Catch2.
 set(MORPHEUS_UNWANTED_TARGETS
     morpheus morpheus_tests morpheus_llama imgui_core SDL3::SDL3 Catch2::Catch2
     morpheus_app_model morpheus_app_ui morpheus_probe morpheus_play llama
@@ -34,6 +34,9 @@ if(NOT TARGET morpheus_httplib)
 endif()
 if(NOT TARGET Morpheus::grammar)
     message(FATAL_ERROR "The vendored Morpheus build does not define Morpheus::grammar.")
+endif()
+if(NOT TARGET Morpheus::llamaserver)
+    message(FATAL_ERROR "The vendored Morpheus build does not define Morpheus::llamaserver.")
 endif()
 
 # The host's own program, with ordinary warnings and no warnings as errors.

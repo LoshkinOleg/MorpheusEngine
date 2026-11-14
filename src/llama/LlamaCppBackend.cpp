@@ -28,10 +28,6 @@ constexpr std::size_t TOKEN_PIECE_BUFFER_BYTES = 256;
 // How much of the text before a rejected token CheckGrammar's reason quotes, in bytes.
 constexpr std::size_t GRAMMAR_CONTEXT_BYTES = 60;
 
-// The first candidate for the marker that stands in for message contents while the chat template renders
-// (TokenizePrompt): ASCII record separator, a byte that ordinary text does not use.
-constexpr char CONTENT_MARKER_BYTE = '\x1E';
-
 // The log sink and the level of the line being logged, shared by every thread llama.cpp logs from.
 struct LogRoute {
     std::mutex mutex = {};
@@ -175,17 +171,17 @@ LlamaCppBackend::LlamaCppBackend(LlamaConfig config)
         pTemplate != nullptr && std::string_view(pTemplate).find("enable_thinking") != std::string_view::npos) {
         const llama_vocab* pVocab = llama_model_get_vocab(_pChatModel.get());
         const std::vector<std::int32_t> start = Tokenize(pVocab, "<think>", false, true);
-        const std::vector<std::int32_t> end = Tokenize(pVocab, "</think>", false, true);
+        const std::vector<std::int32_t> end = Tokenize(pVocab, inference::THINKING_END_TEXT, false, true);
         if (start.size() != 1 || end.size() != 1) {
             throw InferenceError(std::format("'{}' has a thinking switch in its chat template, but '<think>' and "
                                              "'</think>' are not single tokens",
                                              core::PathText(_config.chatModel)));
         }
         ThinkingMarkers markers;
-        markers.open = Tokenize(pVocab, "<think>\n", false, true);
-        markers.skip = Tokenize(pVocab, "<think>\n\n</think>\n\n", false, true);
-        markers.close = Tokenize(pVocab, CLOSE_THINKING_TEXT, false, true);
-        markers.afterEnd = Tokenize(pVocab, "\n\n", false, false);
+        markers.open = Tokenize(pVocab, inference::THINKING_OPEN_TEXT, false, true);
+        markers.skip = Tokenize(pVocab, inference::THINKING_SKIP_TEXT, false, true);
+        markers.close = Tokenize(pVocab, inference::CLOSE_THINKING_TEXT, false, true);
+        markers.afterEnd = Tokenize(pVocab, inference::THINKING_AFTER_END_TEXT, false, false);
         markers.endToken = end.front();
         _thinking = std::move(markers);
     }
@@ -663,58 +659,26 @@ std::string LlamaCppBackend::RenderPrompt(const inference::Prompt& prompt) const
 
 std::vector<std::int32_t> LlamaCppBackend::TokenizePrompt(const inference::Prompt& prompt) const
 {
-    // Message contents are text, never control tokens: "<|im_end|>" typed by a player must not end its message. So
-    // the template is rendered with a marker in place of each content, and the pieces are tokenized apart:
-    // template text with parse_special (its control tokens are real), contents without it. This assumes the chat
-    // template copies each content verbatim (true for chatml/Qwen3); a template that trims or rewrites contents is
-    // rejected only if a marker goes missing or repeats.
-    //
-    // No byte is reserved: the marker is chosen per call, as the first of "\x1E", "\x1E" "1\x1E", "\x1E" "2\x1E", ...
-    // that no content contains. Each occurrence of a candidate in a content starts at its own "\x1E" byte, so the
-    // search ends within one more candidate than the contents hold such bytes.
-    auto anyContentHas = [&prompt](const std::string& candidate) {
-        return std::any_of(prompt.messages.begin(), prompt.messages.end(), [&candidate](const inference::Message& message) {
-            return message.content.find(candidate) != std::string::npos;
-        });
-    };
-    std::string marker(1, CONTENT_MARKER_BYTE);
-    for (int candidate = 1; anyContentHas(marker); ++candidate) {
-        marker = std::format("{}{}{}", CONTENT_MARKER_BYTE, candidate, CONTENT_MARKER_BYTE);
-    }
-    inference::Prompt marked = prompt;
-    for (inference::Message& message : marked.messages) {
-        message.content = marker;
-    }
-    const std::string rendered = RenderPrompt(marked);
+    // Message contents are text, never control tokens: the template is rendered with a marker in place of each
+    // content, and the pieces are tokenized apart: template text with parse_special (its control tokens are real),
+    // contents without it.
+    const std::string marker = inference::ContentMarker(prompt);
+    const std::vector<std::string> pieces =
+        inference::TemplatePieces(RenderPrompt(inference::MarkContents(prompt, marker)), marker, prompt.messages.size());
 
     const llama_vocab* pVocab = llama_model_get_vocab(_pChatModel.get());
     // BOS is added when the model expects one; if the template already wrote it, the duplicate is dropped below.
     const bool addBos = llama_vocab_get_add_bos(pVocab);
     std::vector<std::int32_t> tokens;
     auto append = [&tokens](const std::vector<std::int32_t>& more) { tokens.insert(tokens.end(), more.begin(), more.end()); };
-    std::size_t start = 0;
-    std::size_t message = 0;
-    for (;;) {
-        const std::size_t found = rendered.find(marker, start);
-        const std::string_view templateText =
-            std::string_view(rendered).substr(start, found == std::string::npos ? std::string::npos : found - start);
-        if (!templateText.empty() || (start == 0 && addBos)) {
-            append(Tokenize(pVocab, templateText, start == 0 && addBos, true));
+    for (std::size_t piece = 0; piece < pieces.size(); ++piece) {
+        // The template's text before content `piece` (after the last content, for the last piece).
+        if (!pieces[piece].empty() || (piece == 0 && addBos)) {
+            append(Tokenize(pVocab, pieces[piece], piece == 0 && addBos, true));
         }
-        if (found == std::string::npos) {
-            break;
+        if (piece < prompt.messages.size() && !prompt.messages[piece].content.empty()) {
+            append(Tokenize(pVocab, prompt.messages[piece].content, false, false));
         }
-        if (message == prompt.messages.size()) {
-            throw InferenceError("the chat template repeats a message's content");
-        }
-        if (!prompt.messages[message].content.empty()) {
-            append(Tokenize(pVocab, prompt.messages[message].content, false, false));
-        }
-        ++message;
-        start = found + marker.size();
-    }
-    if (message != prompt.messages.size()) {
-        throw InferenceError("the chat template drops a message's content");
     }
     if (addBos && tokens.size() >= 2 && tokens[0] == llama_vocab_bos(pVocab) && tokens[1] == tokens[0]) {
         tokens.erase(tokens.begin());

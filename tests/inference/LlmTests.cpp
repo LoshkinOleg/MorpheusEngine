@@ -1,6 +1,9 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <string>
 #include <type_traits>
+#include <vector>
 
 #include "core/Errors.h"
 #include "fakes/FakeBackend.h"
@@ -51,4 +54,33 @@ TEST_CASE("LlmBackend is the union of Tokenizer, ChatModel and Embedder", "[infe
 TEST_CASE("GenerationSpec's slot defaults to the backend's default slot", "[inference]")
 {
     CHECK(GenerationSpec{}.slot == -1);
+}
+
+TEST_CASE("ContentMarker picks a marker no content contains, and MarkContents puts it in every content", "[inference]")
+{
+    Prompt prompt;
+    prompt.messages = {{Role::System, "rules"}, {Role::User, "hello"}};
+    prompt.stableCount = 1;
+    CHECK(ContentMarker(prompt) == "\x1E");
+    prompt.messages[1].content = "a \x1E b";
+    CHECK(ContentMarker(prompt) == "\x1E" "1\x1E");
+    prompt.messages[0].content = "\x1E" "1\x1E";
+    CHECK(ContentMarker(prompt) == "\x1E" "2\x1E");
+
+    const Prompt marked = MarkContents(prompt, "\x1E" "2\x1E");
+    REQUIRE(marked.messages.size() == 2);
+    CHECK(marked.messages[0].role == Role::System);
+    CHECK(marked.messages[0].content == "\x1E" "2\x1E");
+    CHECK(marked.messages[1].content == "\x1E" "2\x1E");
+    CHECK(marked.stableCount == 1);
+}
+
+TEST_CASE("TemplatePieces cuts a rendered prompt at its content markers", "[inference]")
+{
+    CHECK(TemplatePieces("<s>A:\x1E|B:\x1E|", "\x1E", 2) == std::vector<std::string>{"<s>A:", "|B:", "|"});
+    CHECK(TemplatePieces("\x1E\x1E", "\x1E", 2) == std::vector<std::string>{"", "", ""});
+    CHECK(TemplatePieces("only text", "\x1E", 0) == std::vector<std::string>{"only text"});
+    CHECK_THROWS_AS(TemplatePieces("A:\x1E|B:\x1E|C:\x1E", "\x1E", 2), InferenceError);
+    CHECK_THROWS_WITH(TemplatePieces("A:\x1E|B:\x1E|C:\x1E", "\x1E", 2), "the chat template repeats a message's content");
+    CHECK_THROWS_WITH(TemplatePieces("A:\x1E|", "\x1E", 2), "the chat template drops a message's content");
 }

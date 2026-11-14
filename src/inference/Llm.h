@@ -76,6 +76,40 @@ enum class EmbedPurpose { Query, Document };
 // Receives generated text as it streams. Pieces never split a UTF-8 character.
 using TokenCallback = std::function<void(std::string_view piece)>;
 
+// The thinking block of a thinking model (one whose chat template has the enable_thinking switch, Qwen3 and later),
+// as its template writes it. Every backend writes these itself: a prompt ends with THINKING_SKIP_TEXT when the call
+// does not think, or with THINKING_OPEN_TEXT when it may. The model ends its block with THINKING_END_TEXT, which
+// THINKING_AFTER_END_TEXT follows before the answer; a block that reaches its budget is closed by the backend with
+// CLOSE_THINKING_TEXT: a nudge to answer from the thinking so far (the wording Qwen documents for budget-limited
+// thinking), then the end marker and the blank line before the answer.
+constexpr std::string_view THINKING_OPEN_TEXT = "<think>\n";
+constexpr std::string_view THINKING_SKIP_TEXT = "<think>\n\n</think>\n\n";
+constexpr std::string_view THINKING_END_TEXT = "</think>";
+constexpr std::string_view THINKING_AFTER_END_TEXT = "\n\n";
+constexpr std::string_view CLOSE_THINKING_TEXT =
+    "\n\nConsidering the limited time, I have to give the solution based on the thinking directly now.\n</think>\n\n";
+
+// Message contents are text, never control tokens: "<|im_end|>" typed by a player must not end its message. A chat
+// template writes each content verbatim, so a backend renders the template with a marker in place of every content
+// (MarkContents with ContentMarker), cuts the rendered text at the markers (TemplatePieces), and tokenizes the
+// template's pieces with special tokens parsed (its control tokens are real) and the contents as plain text, whatever
+// bytes they hold. This assumes the template copies each content verbatim (true for chatml and Qwen3); one that trims
+// or rewrites contents is refused only if a marker goes missing or repeats.
+
+// The marker for `prompt`: the first of "\x1E", "\x1E" "1\x1E", "\x1E" "2\x1E", ... that no content contains (ASCII
+// record separator, a byte that ordinary text does not use). Each occurrence of a candidate in a content starts at its
+// own "\x1E" byte, so the search ends within one more candidate than the contents hold such bytes.
+std::string ContentMarker(const Prompt& prompt);
+
+// `prompt` with every message's content replaced by `marker`.
+Prompt MarkContents(const Prompt& prompt, std::string_view marker);
+
+// The template's text around the contents of a prompt rendered with `marker` in place of each of its `contentCount`
+// contents: contentCount + 1 pieces in order (before the first content, between contents, after the last), any of
+// them possibly empty. Throws InferenceError "the chat template repeats a message's content" when the marker appears
+// more often, and "the chat template drops a message's content" when it appears less often.
+std::vector<std::string> TemplatePieces(std::string_view rendered, std::string_view marker, std::size_t contentCount);
+
 // Counts tokens as the chat model reads them (architecture spec, "Inference interface").
 class Tokenizer {
 public:

@@ -17,7 +17,7 @@ if(MORPHEUS_BUILD_LLAMA)
     target_link_libraries(morpheus_tests PRIVATE morpheus_llama)
 endif()
 if(MORPHEUS_BUILD_LLAMA_SERVER)
-    target_link_libraries(morpheus_tests PRIVATE morpheus_httplib) # The fake llama-server.
+    target_link_libraries(morpheus_tests PRIVATE morpheus_llamaserver morpheus_httplib) # morpheus_httplib: the fake llama-server.
 endif()
 target_include_directories(morpheus_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(morpheus_tests PRIVATE
