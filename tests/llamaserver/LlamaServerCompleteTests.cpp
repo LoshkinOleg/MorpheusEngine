@@ -420,3 +420,105 @@ TEST_CASE("A stop ends LlamaServerBackend::Complete mid-stream and closes the co
     CHECK(early.cancelled);
     CHECK(chat.RequestsTo("/completion").size() == 1);
 }
+
+TEST_CASE("LlamaServerBackend::Complete keeps its connection and sends a request once more when it fails unanswered",
+          "[llamaserver]")
+{
+    test::FakeLlamaServer chat;
+    test::FakeLlamaServer embed;
+    llamaserver::LlamaServerBackend backend(test::ConfigFor(chat, embed));
+    test::FakeLlamaServer::CompletionScript script;
+    script.pieces = {"yes"};
+    chat.QueueCompletion(script);
+    chat.QueueCompletion(script);
+    chat.QueueCompletion(script);
+
+    // Two calls in a row share one kept-alive connection.
+    CHECK(backend.Complete(test::SERVER_PROMPT, inference::GenerationSpec{}, {}, {}).text == "yes");
+    CHECK(backend.Complete(test::SERVER_PROMPT, inference::GenerationSpec{}, {}, {}).text == "yes");
+    std::vector<test::FakeLlamaServer::Request> requests = chat.RequestsTo("/completion");
+    REQUIRE(requests.size() == 2);
+    CHECK(requests[1].remotePort == requests[0].remotePort);
+
+    // The server closes that connection as the next request leaves on it (llama-server closes one idle for 5 s, as
+    // between two turns): not a byte of answer came, so the request goes again, over a new connection.
+    chat.DropNextAnswers("/completion");
+    CHECK(backend.Complete(test::SERVER_PROMPT, inference::GenerationSpec{}, {}, {}).text == "yes");
+    requests = chat.RequestsTo("/completion");
+    REQUIRE(requests.size() == 4);
+    CHECK(requests[2].remotePort == requests[0].remotePort);
+    CHECK(requests[3].remotePort != requests[0].remotePort);
+}
+
+TEST_CASE("LlamaServerBackend::Complete never sends again a request whose answer had begun", "[llamaserver]")
+{
+    test::FakeLlamaServer chat;
+    test::FakeLlamaServer embed;
+    llamaserver::LlamaServerBackend backend(test::ConfigFor(chat, embed));
+    test::FakeLlamaServer::CompletionScript script;
+    script.pieces = {"yes"};
+    chat.QueueCompletion(script);
+    CHECK(backend.Complete(test::SERVER_PROMPT, inference::GenerationSpec{}, {}, {}).text == "yes");
+
+    // Over the kept connection, the stream breaks after its first piece: the server had started generating.
+    test::FakeLlamaServer::CompletionScript broken;
+    broken.pieces = {"The "};
+    broken.dropAfterPieces = true;
+    chat.QueueCompletion(broken);
+    chat.QueueCompletion(script);
+    std::string streamed;
+    CHECK_THROWS_WITH(backend.Complete(test::SERVER_PROMPT, inference::GenerationSpec{},
+                                       [&](std::string_view piece) { streamed += piece; }, {}),
+                      ContainsSubstring(chat.Url() + "/completion"));
+    CHECK(streamed == "The ");
+    CHECK(chat.RequestsTo("/completion").size() == 2);
+}
+
+TEST_CASE("A stop from another thread ends LlamaServerBackend::Complete while the server sends nothing", "[llamaserver]")
+{
+    test::FakeLlamaServer chat;
+    test::FakeLlamaServer embed;
+    llamaserver::LlamaServerBackend backend(test::ConfigFor(chat, embed));
+    test::FakeLlamaServer::CompletionScript script;
+    script.silent = true; // A server still reading a long prompt: no piece, no ping.
+    chat.QueueCompletion(script);
+
+    std::stop_source source;
+    const auto start = std::chrono::steady_clock::now();
+    std::jthread stopper([&source] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        source.request_stop();
+    });
+    const inference::Completion completion =
+        backend.Complete(test::SERVER_PROMPT, inference::GenerationSpec{}, {}, source.get_token());
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+    CHECK(completion.cancelled);
+    // The stop closed the connection at once, not when the silent server gave up (10 s).
+    CHECK(elapsed < std::chrono::seconds(5));
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!chat.ClientClosedStream() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    CHECK(chat.ClientClosedStream());
+}
+
+TEST_CASE("LlamaServerBackend::Complete checks the server's count of the answer's prompt after thinking", "[llamaserver]")
+{
+    test::FakeLlamaServer chat;
+    test::FakeLlamaServer embed;
+    chat.SetProps(test::ThinkingProps());
+    llamaserver::LlamaServerBackend backend(test::ConfigFor(chat, embed));
+    test::FakeLlamaServer::CompletionScript thought;
+    thought.pieces = {"The gate is shut."};
+    thought.stopType = "word";
+    chat.QueueCompletion(thought);
+    test::FakeLlamaServer::CompletionScript answer;
+    answer.pieces = {"no"};
+    answer.tokensEvaluated = 999;
+    chat.QueueCompletion(answer);
+
+    inference::GenerationSpec spec;
+    spec.thinkingMaxTokens = 256;
+    CHECK_THROWS_WITH(backend.Complete(test::SERVER_PROMPT, spec, {}, {}),
+                      ContainsSubstring("999") && ContainsSubstring("prompt tokens"));
+}

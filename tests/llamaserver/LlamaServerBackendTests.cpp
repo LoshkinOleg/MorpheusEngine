@@ -396,8 +396,7 @@ TEST_CASE("LlamaServerBackend sends a request once more when its kept-alive conn
     }
 }
 
-TEST_CASE("LlamaServerBackend never sends again a request that failed on a new connection, or a completion",
-          "[llamaserver]")
+TEST_CASE("LlamaServerBackend never sends again a request that failed on a new connection", "[llamaserver]")
 {
     test::FakeLlamaServer chat;
     test::FakeLlamaServer embed;
@@ -408,7 +407,8 @@ TEST_CASE("LlamaServerBackend never sends again a request that failed on a new c
                       ContainsSubstring(embed.Url() + "/props"));
     CHECK(embed.RequestsTo("/props").size() == 1);
 
-    // A completion may have started generating: it is never sent twice.
+    // The completion stream's first request goes over a new connection of its own: its failure is not repeated
+    // either.
     llamaserver::LlamaServerBackend backend(test::ConfigFor(chat, embed));
     test::FakeLlamaServer::CompletionScript script;
     script.pieces = {"yes"};

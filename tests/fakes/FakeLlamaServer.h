@@ -39,7 +39,8 @@ namespace morpheus::test {
 // - POST /embedding: llama-server's own answer, [{"index": 0, "embedding": [vectors]}], with the embedding maker's
 //   vectors (by default the one vector {3, 4}).
 // SetStatus makes a path answer an HTTP error instead, SetRawAnswer a body that is not JSON. Handlers run on the server's threads; every member they use
-// is guarded by one mutex. DropNextAnswers closes the connection under a path's next requests.
+// is guarded by one mutex. DropNextAnswers closes the connection under a path's next requests without a byte of
+// answer.
 class FakeLlamaServer {
 public:
     // One request as it arrived.
@@ -63,6 +64,10 @@ public:
         std::string extraLine = {}; // Sent as a line of its own after the pieces, when not empty (a malformed stream).
         bool endEarly = false;      // End the stream after the pieces, without the last message.
         bool holdOpen = false;      // After the pieces, keep the stream open (pinging) until the client closes it.
+        bool dropAfterPieces = false; // After the pieces, close the connection mid-stream (a read error).
+        // Before anything else, send nothing (no piece, no ping) until the client closes the stream, as a server
+        // still reading a long prompt; then end.
+        bool silent = false;
     };
 
     using Tokenizer = std::function<std::vector<int>(const std::string& content, bool addSpecial, bool parseSpecial)>;
@@ -72,7 +77,8 @@ public:
 private:
     static constexpr int DEFAULT_CONTEXT_SIZE = 16384; // The default /props: tokens per slot.
     static constexpr int DEFAULT_SLOTS = 3;            // The default /props: total_slots.
-    static constexpr int HOLD_LIMIT_SECONDS = 10;      // A held stream ends after this long, closed or not.
+    static constexpr int HOLD_LIMIT_SECONDS = 10;      // A held or silent stream ends after this long, closed or not.
+    static constexpr const char* DROP_HEADER = "X-Fake-Drop"; // Marks an answer whose connection is dropped unsent.
     static constexpr int PING_INTERVAL_MS = 10;        // Pause between the pings of a held stream.
 
     mutable std::mutex _mutex = {};
@@ -109,6 +115,13 @@ public:
     explicit FakeLlamaServer(int port = 0)
     {
         // Each handler records its request, then answers from the script, or with the status SetStatus gave its path.
+        // An answer Record marked with DROP_HEADER is never written: the connection closes without a byte.
+        _server.set_header_writer([](httplib::Stream& stream, httplib::Headers& headers) -> ssize_t {
+            if (headers.find(DROP_HEADER) != headers.end()) {
+                return -1;
+            }
+            return httplib::detail::write_headers(stream, headers);
+        });
         _server.Get("/props", [this](const httplib::Request& request, httplib::Response& response) {
             if (!Record(request, response)) {
                 return;
@@ -190,6 +203,20 @@ public:
             response.set_chunked_content_provider(
                 "text/event-stream", [this, script, promptTokens, slot](std::size_t, httplib::DataSink& sink) {
                     auto send = [&sink](const std::string& text) { return sink.write(text.data(), text.size()); };
+                    if (script.silent) {
+                        // Nothing at all until the client closes (seen without writing), bounded like a held stream.
+                        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(HOLD_LIMIT_SECONDS);
+                        bool closed = false;
+                        while (!closed && !_stopping && std::chrono::steady_clock::now() < deadline) {
+                            closed = !sink.is_writable();
+                            std::this_thread::sleep_for(std::chrono::milliseconds(PING_INTERVAL_MS));
+                        }
+                        if (closed) {
+                            std::scoped_lock lock(_mutex);
+                            _clientClosedStream = true;
+                        }
+                        return false;
+                    }
                     // One message per piece, as llama-server sends one per token.
                     for (std::size_t i = 0; i < script.pieces.size(); ++i) {
                         const nlohmann::json message = {{"index", 0},
@@ -204,6 +231,9 @@ public:
                         }
                     }
                     if (!script.extraLine.empty() && !send(script.extraLine + "\n\n")) {
+                        return false;
+                    }
+                    if (script.dropAfterPieces) {
                         return false;
                     }
                     if (script.holdOpen) {
@@ -353,11 +383,14 @@ public:
         }
     }
 
-    // The next `count` requests to `path` (recorded as usual) lose their connection: the fake sends an answer's status
-    // line and headers, then closes the connection before the body, so the client fails with a read error, as it does
-    // when llama-server closes a kept-alive connection under a request.
+    // The next `count` requests to `path` (recorded as usual) lose their connection: the fake closes it without
+    // writing a byte of answer, so the client fails with a read error, as it does when llama-server closes a
+    // kept-alive connection under a request. Throws std::invalid_argument for a count below 1.
     void DropNextAnswers(const std::string& path, int count = 1)
     {
+        if (count < 1) {
+            throw std::invalid_argument("FakeLlamaServer::DropNextAnswers: the count must be at least 1");
+        }
         std::scoped_lock lock(_mutex);
         _drops[path] += count;
     }
@@ -379,7 +412,8 @@ public:
         return matching;
     }
 
-    // Whether a client closed a held stream (CompletionScript::holdOpen) before the fake gave up on it.
+    // Whether a client closed a held or silent stream (CompletionScript::holdOpen, silent) before the fake gave up on
+    // it.
     bool ClientClosedStream() const
     {
         std::scoped_lock lock(_mutex);
@@ -426,10 +460,8 @@ private:
             if (--drop->second == 0) {
                 _drops.erase(drop);
             }
-            // A body of one byte that never comes: cpp-httplib writes the status line and headers, then closes the
-            // connection when the provider fails.
-            response.set_content_provider(1, "application/json",
-                                          [](std::size_t, std::size_t, httplib::DataSink&) { return false; });
+            // The header writer refuses this answer: cpp-httplib closes the connection without writing anything.
+            response.set_header(DROP_HEADER, "1");
             return false;
         }
         if (const auto raw = _rawAnswers.find(request.path); raw != _rawAnswers.end()) {

@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstddef>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -243,7 +244,7 @@ TEST_CASE("FakeLlamaServer drops the connection under a path's next requests", "
     fake.DropNextAnswers("/tokenize", 2);
     httplib::Client client(fake.Url());
     client.set_keep_alive(true);
-    // The headers, then the connection closes before the body: a read error, each time.
+    // Not a byte of answer, then the connection closes: a read error, each time.
     for (int drop = 0; drop < 2; ++drop) {
         const httplib::Result dropped = client.Post("/tokenize", R"({"content":"a"})", "application/json");
         CHECK_FALSE(dropped);
@@ -255,4 +256,32 @@ TEST_CASE("FakeLlamaServer drops the connection under a path's next requests", "
     REQUIRE(answered);
     CHECK(answered->status == 200);
     CHECK(fake.RequestsTo("/tokenize").size() == 3);
+
+    // A count below 1 is a mistake in the test, not "drop forever".
+    CHECK_THROWS_AS(fake.DropNextAnswers("/tokenize", 0), std::invalid_argument);
+}
+
+TEST_CASE("FakeLlamaServer can close a stream after its pieces", "[fake-llama-server]")
+{
+    test::FakeLlamaServer fake;
+    test::FakeLlamaServer::CompletionScript script;
+    script.pieces = {"The "};
+    script.dropAfterPieces = true;
+    fake.QueueCompletion(script);
+    httplib::Client client(fake.Url());
+    std::string received;
+    httplib::Request request;
+    request.method = "POST";
+    request.path = "/completion";
+    request.body = R"({"prompt":[1,2],"stream":true})";
+    request.set_header("Content-Type", "application/json");
+    request.content_receiver = [&received](const char* pData, std::size_t length, std::size_t, std::size_t) {
+        received.append(pData, length);
+        return true;
+    };
+    const httplib::Result result = client.send(request);
+    CHECK_FALSE(result);
+    CHECK(result.error() == httplib::Error::Read);
+    CHECK(received.find(R"("content":"The ")") != std::string::npos);
+    CHECK(received.find(R"("stop":true)") == std::string::npos);
 }

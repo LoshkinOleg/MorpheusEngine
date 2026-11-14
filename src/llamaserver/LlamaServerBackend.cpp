@@ -11,7 +11,6 @@
 #include <optional>
 #include <stop_token>
 #include <string>
-#include <tuple>
 #include <utility>
 
 #include <nlohmann/json.hpp>
@@ -33,7 +32,7 @@ namespace {
 
 // How long a request may take to connect, and to wait for the server's next bytes. These requests (/props,
 // /tokenize, /apply-template, /embedding) answer at once; the streaming /completion, which reads a long prompt before
-// its first piece, waits longer on a client of its own.
+// its first piece, waits longer on a kept client of its own.
 constexpr int CONNECT_TIMEOUT_SECONDS = 5;
 constexpr int READ_TIMEOUT_SECONDS = 60;
 constexpr int STREAM_READ_TIMEOUT_SECONDS = 600;
@@ -89,8 +88,10 @@ auto Ask(httplib::Client& client, const std::string& url, const std::string& pat
     // The server may close a kept connection just as this request leaves on it (llama-server closes one idle for 5 s;
     // cpp-httplib reconnects only when it sees the close before sending). These requests change nothing on the
     // server, so a write or read failure under a reused connection is sent once more, over a new one (cpp-httplib
-    // drops the failed connection). A failure to connect, a failure on a new connection, an HTTP error and an answer
-    // that cannot be read are the server's own, and are never repeated.
+    // drops the failed connection). cpp-httplib reports a read timeout as a read failure too, so a request that hangs
+    // on a reused connection is also sent once more: it fails after two read timeouts. A failure to connect, a
+    // failure on a new connection, an HTTP error and an answer that cannot be read are the server's own, and are never
+    // repeated.
     auto send = [&] { return body ? client.Post(path, BodyText(*body), "application/json") : client.Get(path); };
     const bool reused = client.is_socket_open() != 0;
     httplib::Result response = send();
@@ -123,14 +124,14 @@ struct StreamResult {
     double generateMs = 0.0;   // timings.predicted_ms
 };
 
-// Streams one POST /completion to the server at `url` (`host` and `port`, read from it) on a client of its own: each
-// message's text goes to `onPiece` as it arrives, and the last message's stop_type and timings fill the result. A
-// stop closes the connection at once, even while the server is still reading the prompt and sends nothing
-// (llama-server then cancels the task), and the result is `cancelled`. Never sent twice: the server may have started
-// generating. Throws InferenceError naming the URL for an unreachable server, an HTTP error, a line that is not a
-// message, a message without its fields, an error message in the stream, an unknown stop_type, or a stream that ends
-// before its last message.
-StreamResult StreamCompletion(const std::string& url, const std::string& host, int port, const nlohmann::json& body,
+// Streams one POST /completion through `client`, the kept-alive client the backend uses for /completion only, to the
+// server at `url`: each message's text goes to `onPiece` as it arrives, and the last message's stop_type and timings
+// fill the result. A stop closes the connection at once, even while the server is still reading the prompt and sends
+// nothing (llama-server then cancels the task), and the result is `cancelled`. A request that fails under the reused
+// connection before a byte of answer arrived is sent once more; any other failure is not. Throws InferenceError
+// naming the URL for an unreachable server, an HTTP error, a line that is not a message, a message without its
+// fields, an error message in the stream, an unknown stop_type, or a stream that ends before its last message.
+StreamResult StreamCompletion(httplib::Client& client, const std::string& url, const nlohmann::json& body,
                               const std::function<void(std::string_view)>& onPiece, std::stop_token stop)
 {
     StreamResult result;
@@ -138,11 +139,11 @@ StreamResult StreamCompletion(const std::string& url, const std::string& host, i
         result.cancelled = true;
         return result;
     }
-    // The client is this call's alone, so a stop can close its connection from any thread without touching the
-    // backend's kept connection. A stop that comes while it connects, before there is a connection to close, is
-    // seen once the request is written (upload_progress below).
-    const std::unique_ptr<httplib::Client> pClient = MakeClient(url, host, port, STREAM_READ_TIMEOUT_SECONDS);
-    std::stop_callback closeOnStop(stop, [&pClient] { pClient->stop(); });
+    // The client serves /completion alone, so a stop can shut its connection down from any thread without touching
+    // the other requests' connection; the next call connects again. cpp-httplib holds the client's socket lock while
+    // it connects, so a stop that comes during a connect waits for it (up to the connect timeout) on the stopping
+    // thread, then finds no request in flight to stop: the request sees it once written (upload_progress below).
+    std::stop_callback closeOnStop(stop, [&client] { client.stop(); });
 
     // The status arrives before the body: an error's body is kept whole for the message, a stream is read line by
     // line as it arrives. A failure inside the receiver ends the request and is thrown once cpp-httplib returns.
@@ -225,7 +226,17 @@ StreamResult StreamCompletion(const std::string& url, const std::string& host, i
         }
     };
 
-    const httplib::Result response = pClient->send(request);
+    // The connection kept from the previous call may have been closed by the server as this request left on it
+    // (llama-server closes one idle for 5 s, as between two turns). A write or read failure on that reused
+    // connection before a byte of answer arrived (no status) means the server never answered it, so it is sent once
+    // more, over a new connection (cpp-httplib drops the failed one). A failure after any byte of answer (the server
+    // may have started generating), a stop, and a failure on a new connection are never repeated.
+    const bool reused = client.is_socket_open() != 0;
+    httplib::Result response = client.send(request);
+    if (!response && reused && status == 0 && !failure && !stop.stop_requested() &&
+        (response.error() == httplib::Error::Read || response.error() == httplib::Error::Write)) {
+        response = client.send(request);
+    }
     if (failure) {
         std::rethrow_exception(failure);
     }
@@ -257,7 +268,8 @@ LlamaServerBackend::LlamaServerBackend(LlamaServerConfig config)
     // One kept-alive client per server. Its URL is "http://", a host (letters, digits, '.' and '-'), then optionally
     // ':' and a port from 1 to 65535, and nothing else: cpp-httplib would quietly drop a path, does not do HTTPS here,
     // and makes an unusable client (one that crashes on first use) from a port it cannot parse, so the URL is read
-    // here and the client made from its host and port. The chat server's are kept for each /completion's client.
+    // here and the clients made from its host and port. The chat server gets two: one for /completion alone, so a
+    // stop can close its connection without touching the other requests', with the longer read timeout.
     auto readUrl = [](const std::string& url) {
         const std::string_view rest = std::string_view(url).substr(std::min(url.size(), URL_SCHEME.size()));
         const std::size_t colon = rest.find(':');
@@ -283,8 +295,9 @@ LlamaServerBackend::LlamaServerBackend(LlamaServerConfig config)
         }
         return std::pair(std::string(host), port);
     };
-    std::tie(_chatHost, _chatPort) = readUrl(_config.chatUrl);
-    _pChatClient = MakeClient(_config.chatUrl, _chatHost, _chatPort, READ_TIMEOUT_SECONDS);
+    const auto [chatHost, chatPort] = readUrl(_config.chatUrl);
+    _pChatClient = MakeClient(_config.chatUrl, chatHost, chatPort, READ_TIMEOUT_SECONDS);
+    _pStreamClient = MakeClient(_config.chatUrl, chatHost, chatPort, STREAM_READ_TIMEOUT_SECONDS);
     const auto [embeddingHost, embeddingPort] = readUrl(_config.embeddingUrl);
     _pEmbeddingClient = MakeClient(_config.embeddingUrl, embeddingHost, embeddingPort, READ_TIMEOUT_SECONDS);
 
@@ -424,13 +437,16 @@ inference::Completion LlamaServerBackend::Complete(const inference::Prompt& prom
                            {"id_slot", spec.slot == -1 ? _config.slot : spec.slot},
                            {"cache_prompt", true},
                            {"stream", true}};
-    // The first call reads the prompt: its numbers are the prompt's. The server must have evaluated exactly the tokens
-    // sent, since the budgets rely on that count.
-    auto takePromptNumbers = [&](const StreamResult& result) {
-        if (result.promptTokens != completion.promptTokens) {
-            throw InferenceError(std::format("{} counted {} prompt tokens where Morpheus sent {}",
-                                             _config.chatUrl, result.promptTokens, completion.promptTokens));
+    // Each call's prompt is `tokens` as it was sent: the server must have evaluated exactly those, since the budgets
+    // rely on that count.
+    auto checkPromptCount = [&](const StreamResult& result) {
+        if (result.promptTokens != static_cast<int>(tokens.size())) {
+            throw InferenceError(std::format("{} counted {} prompt tokens where Morpheus sent {}", _config.chatUrl,
+                                             result.promptTokens, tokens.size()));
         }
+    };
+    // The first call reads the prompt: its numbers are the prompt's.
+    auto takePromptNumbers = [&](const StreamResult& result) {
         completion.tokensEvaluated = result.promptEvaluated;
         completion.tokensReused = completion.promptTokens - result.promptEvaluated;
         completion.promptMs = result.promptMs;
@@ -443,12 +459,13 @@ inference::Completion LlamaServerBackend::Complete(const inference::Prompt& prom
         thinking["n_predict"] = spec.thinkingMaxTokens - static_cast<int>(_thinking->close.size());
         thinking["stop"] = nlohmann::json::array({std::string(inference::THINKING_END_TEXT)});
         const StreamResult thought =
-            StreamCompletion(_config.chatUrl, _chatHost, _chatPort, thinking,
+            StreamCompletion(*_pStreamClient, _config.chatUrl, thinking,
                              [&completion](std::string_view piece) { completion.thinking += piece; }, stop);
         if (thought.cancelled) {
             completion.cancelled = true;
             return completion;
         }
+        checkPromptCount(thought);
         takePromptNumbers(thought);
         completion.thinkingTokens = thought.generated;
         completion.thinkingMs = thought.generateMs;
@@ -485,7 +502,7 @@ inference::Completion LlamaServerBackend::Complete(const inference::Prompt& prom
         answer["grammar"] = spec.grammar;
     }
     const StreamResult answered = StreamCompletion(
-        _config.chatUrl, _chatHost, _chatPort, answer,
+        *_pStreamClient, _config.chatUrl, answer,
         [&](std::string_view piece) {
             completion.text += piece;
             if (onToken) {
@@ -497,6 +514,7 @@ inference::Completion LlamaServerBackend::Complete(const inference::Prompt& prom
         completion.cancelled = true;
         return completion;
     }
+    checkPromptCount(answered);
     if (think) {
         completion.thinkingMs += answered.promptMs; // Reading the block back is part of thinking.
     } else {
