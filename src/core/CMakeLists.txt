@@ -1,6 +1,7 @@
 add_library(morpheus_core STATIC
     ContentHash.cpp
     Csv.cpp
+    HostedRecord.cpp
     JsonInt.cpp
     MemoryMode.cpp
     Settings.cpp

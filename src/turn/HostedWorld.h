@@ -31,23 +31,15 @@ HostData HostDataFromJson(const nlohmann::json& json);
 // data, such as a mod update, has another.
 std::string HostDataHash(const HostData& data);
 
-// One actor of an observation, as the engine reads it.
-struct Actor {
-    std::string id = {};
-    std::string name = {};
-    bool isPlayer = false;
-    std::string bio = {}; // Empty when the observation gives none.
-};
-
 // An observation that passed HostedWorld::Observe: the host's JSON as sent, and its actors in their order.
 struct Observation {
     nlohmann::json json = nlohmann::json::object();
-    std::vector<Actor> actors = {};
+    std::vector<core::Actor> actors = {};
 
     // The actor with `id`, or nullptr when it is not in the observation.
-    const Actor* Find(std::string_view id) const;
+    const core::Actor* Find(std::string_view id) const;
     // The one actor that is the player. Throws ContractError for an observation without one (Observe refuses those).
-    const Actor& Player() const;
+    const core::Actor& Player() const;
 };
 
 // A conversation's participants, in join order.
@@ -96,9 +88,10 @@ public:
     // "observation at <pointer>: <problem>; observation at ...".
     Observation Observe(const nlohmann::json& observation) const;
 
-    // The core actors of `observation`, read as Observe reads them but without the host's schema, so a stored
-    // observation still reads after the host data changed. Throws Observe's DataError for a fault of the core.
-    static std::vector<Actor> ActorsOf(const nlohmann::json& observation);
+    // The core actors of `observation`, read as Observe reads them (core::ReadActors) but without the host's schema,
+    // so a stored observation still reads after the host data changed. Throws Observe's DataError for a fault of the
+    // core.
+    static std::vector<core::Actor> ActorsOf(const nlohmann::json& observation);
 
     // Events are JSON objects with a `text` string; their other fields are the host's. Throws DataError
     // "events/<i>: ..." or "events/<i>/text: ..." for the first that is not.

@@ -168,8 +168,8 @@ public:
 
     // Conversation `conversationId`'s turns, ascending. Throws StoreError naming the file, the turn and the column if a
     // stored column is not valid JSON or has the wrong shape, including an observation without the actors core
-    // HostedWorld::Observe checks (an `actors` array of objects with a non-empty string `id` and `name`, a boolean
-    // `is_player` and an optional string `bio`; unique ids; exactly one player) or a speaker that is not one of them.
+    // (core::ReadActors, the rules HostedWorld::Observe applies; each fault named by its pointer) or a speaker that is
+    // not one of its actors.
     std::vector<core::HostedTurn> HostedTurns(std::string_view conversationId);
 
 private:

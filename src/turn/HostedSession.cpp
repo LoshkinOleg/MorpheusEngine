@@ -129,7 +129,7 @@ std::string HostedSession::StartConversation(const std::vector<std::string>& par
     // Each participant is an actor of the observation, once; its name and bio come from there.
     std::vector<core::Participant> participants;
     for (std::size_t i = 0; i < participantIds.size(); ++i) {
-        const Actor* pActor = observed.Find(participantIds[i]);
+        const core::Actor* pActor = observed.Find(participantIds[i]);
         if (pActor == nullptr) {
             throw core::DataError(
                 std::format("participants/{}: '{}' is not an actor of the observation", i, participantIds[i]));
@@ -180,7 +180,7 @@ void HostedSession::SetParticipants(std::string_view conversationId, const std::
             throw core::DataError(std::format("joined/{}: '{}' is already a participant of conversation '{}'", i,
                                               joined[i], conversation.id));
         }
-        const Actor* pActor = observed.Find(joined[i]);
+        const core::Actor* pActor = observed.Find(joined[i]);
         if (pActor == nullptr) {
             throw core::DataError(std::format("joined/{}: '{}' is not an actor of the observation", i, joined[i]));
         }
@@ -206,7 +206,7 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
         throw core::DataError(std::format("speaker: '{}' is not a participant of conversation '{}'", request.speakerId,
                                           conversation.id));
     }
-    const Actor* pSpeaker = observation.Find(request.speakerId);
+    const core::Actor* pSpeaker = observation.Find(request.speakerId);
     if (pSpeaker == nullptr) {
         throw core::DataError(std::format("speaker: '{}' is not an actor of the observation", request.speakerId));
     }
@@ -233,7 +233,7 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
 
     // The instructions name the speaker and the player. The speak instruction must fit narrate_allowance, which the
     // prompt reserves for it; the names come from the host.
-    const Actor& player = observation.Player();
+    const core::Actor& player = observation.Player();
     const std::string resolveInstruction = FillVariables(HOSTED_RESOLVE_INSTRUCTION, pSpeaker->name, player.name);
     const std::string speakMessage = FillVariables(HOSTED_SPEAK_INSTRUCTION, pSpeaker->name, player.name);
     const int speakTokens = _pBackend->CountTokens(speakMessage);
@@ -428,10 +428,10 @@ std::vector<context::TranscriptEntry> HostedSession::Entries(const core::Convers
             // Names from the turn's own observation, as it was when the turn was played. RunStore::HostedTurns checked
             // its actors core and that the speaker is among them (a damaged turn is its StoreError), so this read
             // cannot fail and the speaker and the player are found.
-            const std::vector<Actor> actors = HostedWorld::ActorsOf(turn.observation);
+            const std::vector<core::Actor> actors = HostedWorld::ActorsOf(turn.observation);
             const auto speaker = std::find_if(actors.begin(), actors.end(),
-                                              [&turn](const Actor& actor) { return actor.id == turn.speakerId; });
-            const auto player = std::find_if(actors.begin(), actors.end(), [](const Actor& actor) { return actor.isPlayer; });
+                                              [&turn](const core::Actor& actor) { return actor.id == turn.speakerId; });
+            const auto player = std::find_if(actors.begin(), actors.end(), [](const core::Actor& actor) { return actor.isPlayer; });
             MORPHEUS_REQUIRE(speaker != actors.end() && player != actors.end(),
                              "HostedSession::Entries: a stored turn's speaker or player is not in its observation");
 

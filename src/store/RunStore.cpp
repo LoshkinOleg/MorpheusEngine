@@ -1,11 +1,11 @@
 #include "store/RunStore.h"
 
+#include <algorithm>
 #include <array>
 #include <charconv>
 #include <chrono>
 #include <format>
 #include <map>
-#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -843,37 +843,21 @@ std::vector<core::HostedTurn> RunStore::HostedTurns(std::string_view conversatio
         if (!turn.observation.is_object()) {
             throw damaged("observation", "is not an object");
         }
-        // The actors core a hosted session reads back from every stored turn, as HostedWorld::Observe checks it: an
-        // `actors` array of objects, each with a non-empty string `id` and `name`, a boolean `is_player` and an
-        // optional string `bio`; ids unique; exactly one player. The turn's speaker is one of them.
-        if (!turn.observation.contains("actors") || !turn.observation.at("actors").is_array()) {
-            throw damaged("observation", "has no 'actors' array");
-        }
-        std::set<std::string> actorIds;
-        int players = 0;
-        for (const nlohmann::json& actor : turn.observation.at("actors")) {
-            // A required non-empty string field of the actor.
-            auto text = [&actor](const char* key) {
-                return actor.contains(key) && actor.at(key).is_string() &&
-                       !actor.at(key).get_ref<const std::string&>().empty();
-            };
-            const bool whole = actor.is_object() && text("id") && text("name") && actor.contains("is_player") &&
-                               actor.at("is_player").is_boolean() &&
-                               (!actor.contains("bio") || actor.at("bio").is_string());
-            if (!whole) {
-                throw damaged("observation", "holds an actor that is not an object with a non-empty string id and "
-                                             "name, a boolean is_player and an optional string bio");
+        // The actors core a hosted session reads back from every stored turn, read by the same rules as
+        // HostedWorld::Observe (core::ReadActors): each fault is named by its pointer. The speaker is one of them.
+        const core::ActorsCore actors = core::ReadActors(turn.observation);
+        if (!actors.faults.empty()) {
+            std::string faults;
+            for (const core::ObservationFault& fault : actors.faults) {
+                faults += std::format("{}at {}: {}", faults.empty() ? "" : "; ",
+                                      fault.pointer.empty() ? "the root" : fault.pointer, fault.problem);
             }
-            const std::string& id = actor.at("id").get_ref<const std::string&>();
-            if (!actorIds.insert(id).second) {
-                throw damaged("observation", std::format("repeats the actor id '{}'", id));
-            }
-            players += actor.at("is_player").get<bool>() ? 1 : 0;
+            throw damaged("observation", "does not hold the actors core: " + faults);
         }
-        if (players != 1) {
-            throw damaged("observation", std::format("has {} player actors, not exactly one", players));
-        }
-        if (!actorIds.contains(turn.speakerId)) {
+        const bool speakerPresent =
+            std::any_of(actors.actors.begin(), actors.actors.end(),
+                        [&turn](const core::Actor& actor) { return actor.id == turn.speakerId; });
+        if (!speakerPresent) {
             throw damaged("speaker_id", std::format("names '{}', who is not an actor of the turn's observation",
                                                     turn.speakerId));
         }

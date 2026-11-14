@@ -4,7 +4,6 @@
 #include <cstddef>
 #include <format>
 #include <limits>
-#include <map>
 #include <optional>
 #include <set>
 #include <utility>
@@ -19,88 +18,11 @@ namespace morpheus::turn {
 
 namespace {
 
-// One fault of an observation: where it is ("" for the observation itself) and what is wrong.
-struct Fault {
-    std::string pointer = {};
-    std::string problem = {};
-};
-
-// Reads the observation's core (its actors), adding a Fault for every mistake, and returns the actors read whole, in
-// order. Observe and ActorsOf both read the core with it.
-std::vector<Actor> ReadActors(const nlohmann::json& observation, std::vector<Fault>& faults)
-{
-    std::vector<Actor> actors;
-    if (!observation.is_object()) {
-        faults.push_back({"", "the observation must be a JSON object"});
-        return actors;
-    }
-    if (!observation.contains("actors") || !observation.at("actors").is_array()) {
-        faults.push_back({"/actors", "the observation needs 'actors', an array"});
-        return actors;
-    }
-    const nlohmann::json& list = observation.at("actors");
-    std::map<std::string, std::size_t> seen; // Actor id -> the index that has it first.
-    int players = 0;                         // Actors whose is_player is true.
-    for (std::size_t i = 0; i < list.size(); ++i) {
-        const std::string at = std::format("/actors/{}", i);
-        const nlohmann::json& entry = list[i];
-        if (!entry.is_object()) {
-            faults.push_back({at, "an actor must be a JSON object"});
-            continue;
-        }
-        // A required non-empty string field; "" with a fault when it is missing or wrong.
-        auto text = [&](const char* key) {
-            const bool good = entry.contains(key) && entry.at(key).is_string() &&
-                              !entry.at(key).get_ref<const std::string&>().empty();
-            if (!good) {
-                faults.push_back({at + "/" + key, std::format("an actor needs '{}', a non-empty string", key)});
-                return std::string();
-            }
-            return entry.at(key).get<std::string>();
-        };
-        Actor actor;
-        actor.id = text("id");
-        actor.name = text("name");
-        bool whole = !actor.id.empty() && !actor.name.empty();
-        if (!entry.contains("is_player") || !entry.at("is_player").is_boolean()) {
-            faults.push_back({at + "/is_player", "an actor needs 'is_player', true or false"});
-            whole = false;
-        } else {
-            actor.isPlayer = entry.at("is_player").get<bool>();
-            players += actor.isPlayer ? 1 : 0;
-        }
-        if (entry.contains("bio")) {
-            if (entry.at("bio").is_string()) {
-                actor.bio = entry.at("bio").get<std::string>();
-            } else {
-                faults.push_back({at + "/bio", "'bio' must be a string"});
-                whole = false;
-            }
-        }
-        // Ids are unique: the engine names actors by them.
-        if (!actor.id.empty()) {
-            const auto [first, inserted] = seen.emplace(actor.id, i);
-            if (!inserted) {
-                faults.push_back({at + "/id", std::format("the id '{}' is repeated: /actors/{} has it too", actor.id,
-                                                          first->second)});
-                whole = false;
-            }
-        }
-        if (whole) {
-            actors.push_back(std::move(actor));
-        }
-    }
-    if (players != 1) {
-        faults.push_back({"/actors", std::format("exactly one actor must be the player, not {}", players)});
-    }
-    return actors;
-}
-
 // The DataError for an observation's faults: "observation at <pointer>: <problem>", joined by "; ".
-core::DataError ObservationError(const std::vector<Fault>& faults)
+core::DataError ObservationError(const std::vector<core::ObservationFault>& faults)
 {
     std::string message;
-    for (const Fault& fault : faults) {
+    for (const core::ObservationFault& fault : faults) {
         message += std::format("{}observation at {}: {}", message.empty() ? "" : "; ",
                                fault.pointer.empty() ? "the root" : fault.pointer, fault.problem);
     }
@@ -183,15 +105,15 @@ std::string HostDataHash(const HostData& data)
     return hash.Hex();
 }
 
-const Actor* Observation::Find(std::string_view id) const
+const core::Actor* Observation::Find(std::string_view id) const
 {
-    const auto it = std::find_if(actors.begin(), actors.end(), [id](const Actor& actor) { return actor.id == id; });
+    const auto it = std::find_if(actors.begin(), actors.end(), [id](const core::Actor& actor) { return actor.id == id; });
     return it == actors.end() ? nullptr : &*it;
 }
 
-const Actor& Observation::Player() const
+const core::Actor& Observation::Player() const
 {
-    const auto it = std::find_if(actors.begin(), actors.end(), [](const Actor& actor) { return actor.isPlayer; });
+    const auto it = std::find_if(actors.begin(), actors.end(), [](const core::Actor& actor) { return actor.isPlayer; });
     MORPHEUS_REQUIRE(it != actors.end(), "Observation::Player: an observation that passed Observe has its player");
     return *it;
 }
@@ -415,26 +337,25 @@ std::vector<std::string> HostedWorld::ActionIds() const
 
 Observation HostedWorld::Observe(const nlohmann::json& observation) const
 {
-    // The core first, then the host's schema; every fault of both is collected.
-    std::vector<Fault> faults;
-    std::vector<Actor> actors = ReadActors(observation, faults);
+    // The core first (core::ReadActors), then the host's schema; every fault of both is collected.
+    core::ActorsCore read = core::ReadActors(observation);
     for (const grammar::ValidationError& error : grammar::Validate(observation, _observationSchema)) {
-        faults.push_back({error.path, error.message});
+        read.faults.push_back({error.path, error.message});
     }
-    if (!faults.empty()) {
-        throw ObservationError(faults);
+    if (!read.faults.empty()) {
+        throw ObservationError(read.faults);
     }
-    return Observation{observation, std::move(actors)};
+    return Observation{observation, std::move(read.actors)};
 }
 
-std::vector<Actor> HostedWorld::ActorsOf(const nlohmann::json& observation)
+std::vector<core::Actor> HostedWorld::ActorsOf(const nlohmann::json& observation)
 {
-    std::vector<Fault> faults;
-    std::vector<Actor> actors = ReadActors(observation, faults);
-    if (!faults.empty()) {
-        throw ObservationError(faults);
+    // The core alone, read as Observe reads it: a stored observation still reads after the host's schema changed.
+    core::ActorsCore read = core::ReadActors(observation);
+    if (!read.faults.empty()) {
+        throw ObservationError(read.faults);
     }
-    return actors;
+    return std::move(read.actors);
 }
 
 void HostedWorld::CheckEvents(const std::vector<nlohmann::json>& events)
@@ -472,7 +393,7 @@ nlohmann::json HostedWorld::ProposalSchema(const Observation& observation, const
     auto actorsIn = [&](Scope scope) {
         std::vector<std::string> ids;
         std::set<std::string> taken;
-        for (const Actor& actor : observation.actors) {
+        for (const core::Actor& actor : observation.actors) {
             if (actor.id == speakerId) {
                 continue;
             }

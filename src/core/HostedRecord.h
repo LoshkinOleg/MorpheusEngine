@@ -16,6 +16,33 @@ struct Participant {
     std::string bio = {}; // Empty when the observation gave none.
 };
 
+// One actor of a hosted observation, as the engine reads it.
+struct Actor {
+    std::string id = {};
+    std::string name = {};
+    bool isPlayer = false;
+    std::string bio = {}; // Empty when the observation gives none.
+};
+
+// One fault of an observation: where it is (a JSON pointer; "" for the observation itself) and what is wrong.
+struct ObservationFault {
+    std::string pointer = {};
+    std::string problem = {};
+};
+
+// An observation's actors core as ReadActors read it: the actors read whole, in order, and every fault found. The
+// core is sound only when `faults` is empty.
+struct ActorsCore {
+    std::vector<Actor> actors = {};
+    std::vector<ObservationFault> faults = {};
+};
+
+// Reads the fixed core of a hosted observation that the engine needs whatever the host's schema says (hosted-world
+// spec, section 1): an object with `actors`, an array of objects each with `id` and `name` (non-empty strings),
+// `is_player` (a boolean) and an optional `bio` (a string); ids unique; exactly one player. Every mistake is a fault;
+// never throws. turn::HostedWorld turns the faults into its DataError, store::RunStore into its StoreError.
+ActorsCore ReadActors(const nlohmann::json& observation);
+
 // One conversation of a hosted run (hosted-world spec, section 5).
 struct Conversation {
     std::string id = {};
