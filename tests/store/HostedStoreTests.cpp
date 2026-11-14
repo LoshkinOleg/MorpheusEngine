@@ -323,3 +323,213 @@ TEST_CASE("Hosted methods refuse an owned run, a turn out of order and an unknow
     CHECK_THROWS_AS(hosted.AddConversationEvents("c9", 0, {nlohmann::json{{"text", "x"}}}), core::ContractError);
     CHECK(hosted.LatestHostedTurn() == 0);
 }
+
+namespace {
+
+// Runs raw SQL against a closed run file, to damage what the store saved.
+void Damage(const std::filesystem::path& file, const char* sql)
+{
+    store::Database db = store::Database::Open(file, false);
+    db.Exec(sql);
+}
+
+// A hosted run file with one conversation (c1) holding one committed turn, one event and the host data; closed again.
+std::filesystem::path HostedFile(const char* name)
+{
+    const std::filesystem::path file = test::FreshTempDir(name) / "run.db";
+    store::RunStore store = store::RunStore::CreateHosted(file, HostedMeta(), TestHostData());
+    const std::string id = store.CreateConversation(TwoParticipants());
+    store.AddConversationEvents(id, 0, {nlohmann::json{{"text", "A door opens."}}});
+    store.CommitHostedTurn(TestHostedTurn(1, id));
+    return file;
+}
+
+// A version 2 run file with only its meta rows, closed again. `extraSql` runs after the schema.
+std::filesystem::path V2File(const char* name, const char* extraSql)
+{
+    const std::filesystem::path file = test::FreshTempDir(name) / "run.db";
+    store::Database db = store::Database::Open(file, true);
+    db.Exec(V2_SCHEMA_SQL);
+    db.Exec(extraSql);
+    const std::vector<std::pair<std::string, std::string>> meta = {
+        {"schema_version", "2"},   {"world_id", "mini"}, {"world_hash", "0123456789abcdef"},
+        {"model_id", "old-model"}, {"rng_seed", "42"},   {"settings", "{}"},
+        {"created_at", "2026-11-01T10:00:00Z"}};
+    for (const auto& [key, value] : meta) {
+        db.Prepare("INSERT INTO run_meta (key, value) VALUES (?1, ?2)").Bind(1, key).Bind(2, value).Run();
+    }
+    return file;
+}
+
+} // namespace
+
+TEST_CASE("Damaged saved host data and conversations are StoreErrors naming the file and the column",
+          "[store][hosted]")
+{
+    SECTION("host data that is not JSON")
+    {
+        const std::filesystem::path file = HostedFile("store_damaged_host");
+        Damage(file, "UPDATE host_data SET data = 'nope'");
+        store::RunStore store = store::RunStore::Open(file);
+        CHECK_THROWS_AS(store.HostData(), store::StoreError);
+        CHECK_THROWS_WITH(store.HostData(), ContainsSubstring("run.db") && ContainsSubstring("host data"));
+    }
+    SECTION("host data missing")
+    {
+        const std::filesystem::path file = HostedFile("store_missing_host");
+        Damage(file, "DELETE FROM host_data");
+        store::RunStore store = store::RunStore::Open(file);
+        CHECK_THROWS_AS(store.HostData(), store::StoreError);
+        CHECK_THROWS_WITH(store.HostData(), ContainsSubstring("run.db") && ContainsSubstring("no host data"));
+    }
+    for (const char* participants : {"nope", "{}", R"([{"id":"a","name":"A"}])", R"([5])"}) {
+        SECTION(std::string("participants ") + participants)
+        {
+            const std::filesystem::path file = HostedFile("store_damaged_participants");
+            store::Database db = store::Database::Open(file, false);
+            db.Prepare("UPDATE conversations SET participants = ?1").Bind(1, std::string(participants)).Run();
+            store::RunStore store = store::RunStore::Open(file);
+            CHECK_THROWS_AS(store.Conversations(), store::StoreError);
+            CHECK_THROWS_WITH(store.Conversations(), ContainsSubstring("run.db") && ContainsSubstring("'participants'"));
+        }
+    }
+    SECTION("a missing kind")
+    {
+        const std::filesystem::path file = HostedFile("store_missing_kind");
+        Damage(file, "DELETE FROM run_meta WHERE key = 'kind'");
+        CHECK_THROWS_AS(store::RunStore::Open(file), store::StoreError);
+        CHECK_THROWS_WITH(store::RunStore::Open(file), ContainsSubstring("run.db") && ContainsSubstring("'kind'"));
+    }
+}
+
+TEST_CASE("Damaged saved hosted turns and events are StoreErrors naming the file and the column", "[store][hosted]")
+{
+    struct Case {
+        const char* sql;
+        const char* column;
+    };
+    const std::vector<Case> turnCases = {
+        {"UPDATE hosted_turns SET listener_ids = 'x'", "listener_ids"},
+        {"UPDATE hosted_turns SET listener_ids = '{}'", "listener_ids"},
+        {"UPDATE hosted_turns SET listener_ids = '[1]'", "listener_ids"},
+        {"UPDATE hosted_turns SET player_text = '5'", "player_text"},
+        {"UPDATE hosted_turns SET events = 'x'", "events"},
+        {"UPDATE hosted_turns SET events = '{}'", "events"},
+        {"UPDATE hosted_turns SET events = '[1]'", "events"},
+        {R"(UPDATE hosted_turns SET events = '[{"type":"ambient"}]')", "events"},
+        {R"(UPDATE hosted_turns SET events = '[{"text":5}]')", "events"},
+        {"UPDATE hosted_turns SET observation = 'x'", "observation"},
+        {"UPDATE hosted_turns SET observation = '[]'", "observation"},
+        {"UPDATE hosted_turns SET adjudication = '{}'", "adjudication"},
+        {R"(UPDATE hosted_turns SET adjudication = '{"requested":true,"action_id":"a","params":[],"reasons":[]}')",
+         "adjudication"},
+        {R"(UPDATE hosted_turns SET adjudication = '{"requested":true,"action_id":"a","params":{},"reasons":[1]}')",
+         "adjudication"},
+        {"UPDATE hosted_turns SET timings = 'x'", "timings"},
+    };
+    for (const Case& damaged : turnCases) {
+        SECTION(damaged.sql)
+        {
+            const std::filesystem::path file = HostedFile("store_damaged_turn");
+            Damage(file, damaged.sql);
+            store::RunStore store = store::RunStore::Open(file);
+            CHECK_THROWS_AS(store.HostedTurns("c1"), store::StoreError);
+            CHECK_THROWS_WITH(store.HostedTurns("c1"),
+                              ContainsSubstring("run.db") && ContainsSubstring(std::string("'") + damaged.column + "'"));
+        }
+    }
+
+    const std::vector<const char*> eventCases = {"x", "5", "[]", R"({"type":"ambient"})", R"({"text":5})"};
+    for (const char* event : eventCases) {
+        SECTION(std::string("conversation event ") + event)
+        {
+            const std::filesystem::path file = HostedFile("store_damaged_event");
+            store::Database db = store::Database::Open(file, false);
+            db.Prepare("UPDATE conversation_events SET event = ?1").Bind(1, std::string(event)).Run();
+            store::RunStore store = store::RunStore::Open(file);
+            CHECK_THROWS_AS(store.ConversationEvents("c1"), store::StoreError);
+            CHECK_THROWS_WITH(store.ConversationEvents("c1"), ContainsSubstring("run.db") && ContainsSubstring("c1"));
+        }
+    }
+}
+
+TEST_CASE("A failed upgrade names the file and leaves it a version 2 run", "[store][hosted]")
+{
+    // A stray table named like a new one makes the upgrade's SQL fail.
+    const std::filesystem::path file = V2File("store_upgrade_fails", "CREATE TABLE conversations (x INTEGER);");
+    CHECK_THROWS_AS(store::RunStore::Open(file), store::StoreError);
+    CHECK_THROWS_WITH(store::RunStore::Open(file), ContainsSubstring("run.db") && ContainsSubstring("version 2"));
+
+    store::Database db = store::Database::Open(file, false);
+    store::Statement version = db.Prepare("SELECT value FROM run_meta WHERE key = 'schema_version'");
+    REQUIRE(version.Step());
+    CHECK(version.ColumnText(0) == "2");
+    store::Statement kind = db.Prepare("SELECT COUNT(*) FROM run_meta WHERE key = 'kind'");
+    REQUIRE(kind.Step());
+    CHECK(kind.ColumnInt(0) == 0);
+    store::Statement tables = db.Prepare("SELECT COUNT(*) FROM sqlite_master WHERE name = 'host_data'");
+    REQUIRE(tables.Step());
+    CHECK(tables.ColumnInt(0) == 0); // The rollback also took back the tables added before the failure.
+}
+
+TEST_CASE("New and upgraded files index hosted rows by conversation", "[store][hosted]")
+{
+    const std::filesystem::path created = HostedFile("store_index_created");
+    const std::filesystem::path upgraded = V2File("store_index_upgraded", "");
+    store::RunStore::Open(upgraded);
+    for (const std::filesystem::path& file : {created, upgraded}) {
+        store::Database db = store::Database::Open(file, false);
+        store::Statement indexes = db.Prepare("SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name IN "
+                                              "('hosted_turns_conversation', 'conversation_events_conversation')");
+        REQUIRE(indexes.Step());
+        CHECK(indexes.ColumnInt(0) == 2);
+    }
+}
+
+TEST_CASE("FoldConversation moves the folded mark only forward and not past the latest hosted turn",
+          "[store][hosted]")
+{
+    store::RunStore store =
+        store::RunStore::CreateHosted(test::FreshTempDir("store_fold_bounds") / "run.db", HostedMeta(), TestHostData());
+    const std::string id = store.CreateConversation(TwoParticipants());
+    store.CommitHostedTurn(TestHostedTurn(1, id));
+    store.CommitHostedTurn(TestHostedTurn(2, id));
+
+    CHECK_THROWS_AS(store.FoldConversation("c9", {1, 1, "x"}), core::ContractError);
+    CHECK_THROWS_AS(store.FoldConversation(id, {1, 3, "Past the latest turn."}), core::ContractError);
+    store.FoldConversation(id, {1, 2, "Both."});
+    CHECK_THROWS_AS(store.FoldConversation(id, {1, 1, "Backwards."}), core::ContractError);
+    CHECK_THROWS_AS(store.FoldConversation(id, {1, 2, "Again."}), core::ContractError);
+    CHECK(store.Summaries().size() == 1);
+    CHECK(store.Conversation(id)->foldedThrough == 2);
+}
+
+TEST_CASE("Owned writers refuse a hosted run, and hosted methods refuse an owned run", "[store][hosted]")
+{
+    const std::filesystem::path dir = test::FreshTempDir("store_kind_guards");
+    store::RunStore hosted = store::RunStore::CreateHosted(dir / "hosted.db", HostedMeta(), TestHostData());
+    CHECK_THROWS_AS(hosted.CommitTurn(core::TurnRecord{}, nlohmann::json::object()), core::ContractError);
+    CHECK_THROWS_AS(hosted.TruncateAfter(0), core::ContractError);
+
+    store::RunMeta ownedMeta = HostedMeta();
+    ownedMeta.kind = store::RunKind::Owned;
+    store::RunStore owned = store::RunStore::Create(dir / "owned.db", ownedMeta, nlohmann::json::object());
+    CHECK_THROWS_AS(owned.ReplaceHostData(TestHostData(), "00000000000000bb"), core::ContractError);
+    CHECK_THROWS_AS(owned.HostedTurns("c1"), core::ContractError);
+    CHECK_THROWS_AS(owned.ConversationEvents("c1"), core::ContractError);
+}
+
+TEST_CASE("A hosted turn whose text is not UTF-8 still commits", "[store][hosted]")
+{
+    store::RunStore store =
+        store::RunStore::CreateHosted(test::FreshTempDir("store_bad_utf8") / "run.db", HostedMeta(), TestHostData());
+    const std::string id = store.CreateConversation(TwoParticipants());
+    const std::string bad = std::string("a") + static_cast<char>(0xFF) + "b";
+    core::HostedTurn turn = TestHostedTurn(1, id);
+    turn.playerText = bad;
+    turn.listenerIds = {bad};
+    turn.events = {nlohmann::json{{"text", "ok"}}};
+    turn.observation = {{"note", "fine"}};
+    CHECK_NOTHROW(store.CommitHostedTurn(turn));
+    CHECK(store.HostedTurns(id).size() == 1);
+}

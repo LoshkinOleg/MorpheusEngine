@@ -22,7 +22,7 @@ enum class RunKind { Owned, Hosted };
 
 struct RunMeta {
     std::string worldId = {};
-    std::string worldHash = {}; // World content hash at run creation.
+    std::string worldHash = {}; // World content hash at run creation; a hosted run's host data hash, kept current.
     std::string modelId = {};
     std::uint64_t rngSeed = 0;
     nlohmann::json settings = nlohmann::json::object();
@@ -84,7 +84,7 @@ public:
 
     // Appends turn LatestTurn()+1, the state it produced and the notes it wrote (record.notes, stored with
     // turn = record.number), in one transaction: either all of it commits or none of it does.
-    // Throws ContractError if record.number is not LatestTurn()+1.
+    // Throws ContractError if record.number is not LatestTurn()+1, and on a hosted run.
     void CommitTurn(const core::TurnRecord& record, const nlohmann::json& stateAfter);
 
     // nullopt when the turn does not exist. record.notes holds that turn's notes in the order they were written.
@@ -97,7 +97,7 @@ public:
     std::vector<core::TurnRecord> Turns(int fromTurn, int toTurn);
 
     // Undo: removes every turn, snapshot and note after `turn`, every turn and note embedding whose turn is after it,
-    // and every summary that ends after it. Throws ContractError if turn < 0.
+    // and every summary that ends after it. Throws ContractError if turn < 0, and on a hosted run.
     void TruncateAfter(int turn);
 
     // Throws ContractError unless 1 <= fromTurn <= toTurn.
@@ -147,7 +147,8 @@ public:
     void EndConversation(std::string_view id);
 
     // Adds `summary` and sets conversation `id`'s folded_through to summary.toTurn, in one transaction. Throws
-    // ContractError for an unknown conversation or unless 1 <= fromTurn <= toTurn.
+    // ContractError for an unknown conversation, unless 1 <= fromTurn <= toTurn, and unless toTurn is past the
+    // conversation's folded_through and at most LatestHostedTurn().
     void FoldConversation(std::string_view id, const core::Summary& summary);
 
     // Appends `events` to conversation `id`, in order, each with `afterTurn` (the conversation's latest turn, 0 before
@@ -175,6 +176,9 @@ private:
     // transaction. A failure part way removes the file.
     static RunStore CreateWith(const std::filesystem::path& file, RunMeta meta,
                                const std::function<void(Database& db)>& fill);
+
+    // Throws ContractError naming `method` unless this is an owned run (CommitTurn and TruncateAfter).
+    void RequireOwned(const char* method) const;
 
     // Throws ContractError naming `method` unless this is a hosted run.
     void RequireHosted(const char* method) const;

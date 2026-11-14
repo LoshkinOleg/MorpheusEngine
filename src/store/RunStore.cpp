@@ -90,6 +90,8 @@ CREATE TABLE conversation_events (
     after_turn      INTEGER NOT NULL,
     event           TEXT NOT NULL
 );
+CREATE INDEX hosted_turns_conversation ON hosted_turns (conversation_id);
+CREATE INDEX conversation_events_conversation ON conversation_events (conversation_id);
 )sql";
 
 // Stored spelling of a run kind, run_meta 'kind'.
@@ -102,6 +104,19 @@ const char* RunKindName(RunKind kind)
         return "hosted";
     }
     throw morpheus::core::ContractError("RunKindName: unhandled RunKind");
+}
+
+// Whether a stored event is what the host sent: a JSON object with a string `text`.
+bool EventIsWhole(const nlohmann::json& event)
+{
+    return event.is_object() && event.contains("text") && event.at("text").is_string();
+}
+
+// JSON as stored text. Text that is not UTF-8 (a player's, a reason quoting model output) becomes U+FFFD instead of
+// throwing at commit.
+std::string DumpText(const nlohmann::json& json)
+{
+    return json.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 }
 
 // A conversation's participants as stored: [{"id": ..., "name": ..., "bio": ...}] in join order.
@@ -234,13 +249,21 @@ RunStore RunStore::Open(const std::filesystem::path& file)
     // A version 2 run is upgraded in place: the hosted tables are added and it is marked owned, in one transaction.
     // Its data is not touched. Any other version is refused.
     if (value("schema_version") == "2") {
-        db.Transaction([&] {
-            db.Exec(HOSTED_SCHEMA_SQL);
-            db.Prepare("INSERT INTO run_meta (key, value) VALUES ('kind', ?1)").Bind(1, RunKindName(RunKind::Owned)).Run();
-            db.Prepare("UPDATE run_meta SET value = ?1 WHERE key = 'schema_version'")
-                .Bind(1, std::to_string(SCHEMA_VERSION))
-                .Run();
-        });
+        try {
+            db.Transaction([&] {
+                db.Exec(HOSTED_SCHEMA_SQL);
+                db.Prepare("INSERT INTO run_meta (key, value) VALUES ('kind', ?1)")
+                    .Bind(1, RunKindName(RunKind::Owned))
+                    .Run();
+                db.Prepare("UPDATE run_meta SET value = ?1 WHERE key = 'schema_version'")
+                    .Bind(1, std::to_string(SCHEMA_VERSION))
+                    .Run();
+            });
+        } catch (const StoreError& error) {
+            // The transaction rolled back: the file is still a version 2 run.
+            throw StoreError(std::format("'{}': cannot upgrade from schema version 2 to {}: {}", core::PathText(file),
+                                         SCHEMA_VERSION, error.what()));
+        }
         values["schema_version"] = std::to_string(SCHEMA_VERSION);
         values["kind"] = RunKindName(RunKind::Owned);
     }
@@ -312,6 +335,7 @@ nlohmann::json RunStore::StateAt(int turn)
 
 void RunStore::CommitTurn(const core::TurnRecord& record, const nlohmann::json& stateAfter)
 {
+    RequireOwned("CommitTurn");
     const int expected = LatestTurn() + 1;
     MORPHEUS_REQUIRE(record.number == expected,
                      std::format("CommitTurn: expected turn {}, got {}", expected, record.number));
@@ -436,6 +460,7 @@ std::vector<core::TurnRecord> RunStore::Turns(int fromTurn, int toTurn)
 
 void RunStore::TruncateAfter(int turn)
 {
+    RequireOwned("TruncateAfter");
     MORPHEUS_REQUIRE(turn >= 0, "TruncateAfter: turn must be >= 0");
 
     // Everything that happened after `turn` goes, in one transaction. Summaries that end at or before `turn`
@@ -653,7 +678,15 @@ void RunStore::FoldConversation(std::string_view id, const core::Summary& summar
     RequireHosted("FoldConversation");
     MORPHEUS_REQUIRE(summary.fromTurn >= 1 && summary.fromTurn <= summary.toTurn,
                      std::format("FoldConversation: bad turn range {}..{}", summary.fromTurn, summary.toTurn));
-    MORPHEUS_REQUIRE(Conversation(id).has_value(), "FoldConversation: no such conversation");
+    const std::optional<core::Conversation> conversation = Conversation(id);
+    MORPHEUS_REQUIRE(conversation.has_value(), "FoldConversation: no such conversation");
+    // The folded mark only moves forward, and never past a turn that exists.
+    MORPHEUS_REQUIRE(summary.toTurn > conversation->foldedThrough,
+                     std::format("FoldConversation: turn {} is already folded through {}", summary.toTurn,
+                                 conversation->foldedThrough));
+    MORPHEUS_REQUIRE(summary.toTurn <= LatestHostedTurn(),
+                     std::format("FoldConversation: turn {} is past the latest turn {}", summary.toTurn,
+                                 LatestHostedTurn()));
     // The summary and the conversation's folded mark land together: a turn is never both folded and shown in L3.
     _db.Transaction([&] {
         _db.Prepare("INSERT INTO summaries (from_turn, to_turn, text) VALUES (?1, ?2, ?3)")
@@ -696,6 +729,10 @@ std::vector<core::ConversationEvent> RunStore::ConversationEvents(std::string_vi
             throw StoreError(std::format("'{}': an event of conversation '{}' is not valid JSON: {}",
                                          core::PathText(_file), id, error.what()));
         }
+        if (!EventIsWhole(event.event)) {
+            throw StoreError(std::format("'{}': an event of conversation '{}' is not an object with a string text",
+                                         core::PathText(_file), id));
+        }
         events.push_back(std::move(event));
     }
     return events;
@@ -718,7 +755,7 @@ void RunStore::CommitHostedTurn(const core::HostedTurn& record)
                      std::format("CommitHostedTurn: expected turn {}, got {}", expected, record.number));
     MORPHEUS_REQUIRE(Conversation(record.conversationId).has_value(), "CommitHostedTurn: no such conversation");
 
-    // JSON columns. The replace handler keeps a reason quoting text that is not UTF-8 from throwing.
+    // JSON columns. DumpText keeps text that is not UTF-8 from throwing.
     const nlohmann::json listeners = record.listenerIds;
     const nlohmann::json playerText = record.playerText ? nlohmann::json(*record.playerText) : nlohmann::json(nullptr);
     nlohmann::json events = nlohmann::json::array();
@@ -735,14 +772,14 @@ void RunStore::CommitHostedTurn(const core::HostedTurn& record)
         .Bind(1, record.number)
         .Bind(2, record.conversationId)
         .Bind(3, record.speakerId)
-        .Bind(4, listeners.dump())
-        .Bind(5, playerText.dump())
-        .Bind(6, events.dump())
-        .Bind(7, record.observation.dump())
+        .Bind(4, DumpText(listeners))
+        .Bind(5, DumpText(playerText))
+        .Bind(6, DumpText(events))
+        .Bind(7, DumpText(record.observation))
         .Bind(8, record.resolveOutput)
-        .Bind(9, adjudication.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace))
+        .Bind(9, DumpText(adjudication))
         .Bind(10, record.line)
-        .Bind(11, record.timings.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace))
+        .Bind(11, DumpText(record.timings))
         .Run();
 }
 
@@ -795,15 +832,22 @@ std::vector<core::HostedTurn> RunStore::HostedTurns(std::string_view conversatio
             throw damaged("events", "is not an array");
         }
         for (const nlohmann::json& event : events) {
+            if (!EventIsWhole(event)) {
+                throw damaged("events", "holds an event that is not an object with a string text");
+            }
             turn.events.push_back(event);
         }
         turn.observation = parseColumn(5, "observation");
+        if (!turn.observation.is_object()) {
+            throw damaged("observation", "is not an object");
+        }
         turn.resolveOutput = query.ColumnText(6);
 
         const nlohmann::json adjudication = parseColumn(7, "adjudication");
         const bool whole = adjudication.is_object() && adjudication.contains("requested") &&
                            adjudication.at("requested").is_boolean() && adjudication.contains("action_id") &&
                            adjudication.at("action_id").is_string() && adjudication.contains("params") &&
+                           adjudication.at("params").is_object() &&
                            adjudication.contains("reasons") && adjudication.at("reasons").is_array();
         if (!whole) {
             throw damaged("adjudication", "is malformed");
@@ -823,6 +867,11 @@ std::vector<core::HostedTurn> RunStore::HostedTurns(std::string_view conversatio
         turns.push_back(std::move(turn));
     }
     return turns;
+}
+
+void RunStore::RequireOwned(const char* method) const
+{
+    MORPHEUS_REQUIRE(_meta.kind == RunKind::Owned, std::format("RunStore::{}: this is a hosted run", method));
 }
 
 void RunStore::RequireHosted(const char* method) const
