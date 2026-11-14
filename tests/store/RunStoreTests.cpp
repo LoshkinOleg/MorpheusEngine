@@ -520,7 +520,7 @@ TEST_CASE("A turn's digest round-trips", "[store]")
 
 TEST_CASE("RunStore refuses a version-1 run, naming the file and both versions", "[store]")
 {
-    CHECK(RunStore::SCHEMA_VERSION == 3);
+    CHECK(RunStore::SCHEMA_VERSION == 4);
     const std::filesystem::path file = FreshDbPath("store_version_1");
     {
         RunStore store = RunStore::Create(file, TestMeta(), TestInitialState());
@@ -530,6 +530,6 @@ TEST_CASE("RunStore refuses a version-1 run, naming the file and both versions",
         db.Exec("UPDATE run_meta SET value = '1' WHERE key = 'schema_version'");
     }
     CHECK_THROWS_AS(RunStore::Open(file), StoreError);
-    CHECK_THROWS_WITH(RunStore::Open(file), ContainsSubstring("schema version 1 is not the supported version 3"));
+    CHECK_THROWS_WITH(RunStore::Open(file), ContainsSubstring("schema version 1 is not the supported version 4"));
     CHECK_THROWS_WITH(RunStore::Open(file), ContainsSubstring("run.db"));
 }

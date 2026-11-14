@@ -80,6 +80,9 @@ struct HostedTurn {
     std::string resolveOutput = {};                  // The resolve call's text exactly as the model wrote it.
     Adjudication adjudication = {};
     std::string line = {};                           // The spoken line, trimmed.
+    // How many of the events before the turn (recorded since the conversation's previous turn, then the request's)
+    // its prompt left out, the oldest first, because the tail was over tail_allowance. The store keeps them all.
+    int eventsOmitted = 0;
     nlohmann::json timings = nlohmann::json::object();
 };
 

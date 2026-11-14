@@ -229,7 +229,7 @@ TEST_CASE("FoldConversation adds the summary and moves folded_through together; 
     CHECK(store.Conversation(id)->ended);
 }
 
-TEST_CASE("A version 2 run is upgraded in place to an owned version 3 run, its data unchanged", "[store][hosted]")
+TEST_CASE("A version 2 run is upgraded in place to an owned version 4 run, its data unchanged", "[store][hosted]")
 {
     const std::filesystem::path file = test::FreshTempDir("store_upgrade") / "run.db";
     {
@@ -271,12 +271,12 @@ INSERT INTO notes (turn, text) VALUES (1, 'The rope is frayed.');
         CHECK(summaries[0].text == "A climb.");
     }
 
-    // The file now says version 3 and owned, has the hosted tables, and opens again as it is.
+    // The file now says version 4 and owned, has the hosted tables, and opens again as it is.
     {
         store::Database db = store::Database::Open(file, false);
         store::Statement version = db.Prepare("SELECT value FROM run_meta WHERE key = 'schema_version'");
         REQUIRE(version.Step());
-        CHECK(version.ColumnText(0) == "3");
+        CHECK(version.ColumnText(0) == "4");
         store::Statement kind = db.Prepare("SELECT value FROM run_meta WHERE key = 'kind'");
         REQUIRE(kind.Step());
         CHECK(kind.ColumnText(0) == "owned");
@@ -578,4 +578,65 @@ TEST_CASE("A hosted turn whose text is not UTF-8 still commits", "[store][hosted
     turn.events = {nlohmann::json{{"text", "ok"}}};
     CHECK_NOTHROW(store.CommitHostedTurn(turn));
     CHECK(store.HostedTurns(id).size() == 1);
+}
+
+TEST_CASE("A hosted turn keeps how many events its prompt left out", "[store][hosted]")
+{
+    const std::filesystem::path file = test::FreshTempDir("store_events_omitted") / "run.db";
+    std::string id;
+    {
+        store::RunStore store = store::RunStore::CreateHosted(file, HostedMeta(), TestHostData());
+        id = store.CreateConversation(TwoParticipants());
+        core::HostedTurn turn = TestHostedTurn(1, id);
+        turn.eventsOmitted = 3;
+        store.CommitHostedTurn(turn);
+        store.CommitHostedTurn(TestHostedTurn(2, id));
+    }
+    store::RunStore reopened = store::RunStore::Open(file);
+    const std::vector<core::HostedTurn> turns = reopened.HostedTurns(id);
+    REQUIRE(turns.size() == 2);
+    CHECK(turns[0].eventsOmitted == 3);
+    CHECK(turns[1].eventsOmitted == 0);
+}
+
+TEST_CASE("A version 3 run is upgraded in place to version 4, its turns with no events left out", "[store][hosted]")
+{
+    // A version 3 file as RunStore wrote it: a version 4 file without the new column, marked version 3.
+    const std::filesystem::path file = HostedFile("store_upgrade_v3");
+    Damage(file, "ALTER TABLE hosted_turns DROP COLUMN events_omitted;"
+                 "UPDATE run_meta SET value = '3' WHERE key = 'schema_version';");
+    {
+        store::RunStore store = store::RunStore::Open(file);
+        CHECK(store.Meta().kind == store::RunKind::Hosted);
+        const std::vector<core::HostedTurn> turns = store.HostedTurns("c1");
+        REQUIRE(turns.size() == 1);
+        CHECK(turns[0].eventsOmitted == 0);
+        CHECK(store.ConversationEvents("c1").size() == 1);
+    }
+    store::Database db = store::Database::Open(file, false);
+    store::Statement version = db.Prepare("SELECT value FROM run_meta WHERE key = 'schema_version'");
+    REQUIRE(version.Step());
+    CHECK(version.ColumnText(0) == "4");
+}
+
+TEST_CASE("A failed upgrade from version 3 names the file and leaves it a version 3 run", "[store][hosted]")
+{
+    // The column already exists, so adding it fails and the transaction rolls back.
+    const std::filesystem::path file = HostedFile("store_upgrade_v3_fails");
+    Damage(file, "UPDATE run_meta SET value = '3' WHERE key = 'schema_version'");
+    CHECK_THROWS_AS(store::RunStore::Open(file), store::StoreError);
+    CHECK_THROWS_WITH(store::RunStore::Open(file), ContainsSubstring("run.db") && ContainsSubstring("version 3"));
+    store::Database db = store::Database::Open(file, false);
+    store::Statement version = db.Prepare("SELECT value FROM run_meta WHERE key = 'schema_version'");
+    REQUIRE(version.Step());
+    CHECK(version.ColumnText(0) == "3");
+}
+
+TEST_CASE("A negative events_omitted is a StoreError naming the file and the column", "[store][hosted]")
+{
+    const std::filesystem::path file = HostedFile("store_damaged_omitted");
+    Damage(file, "UPDATE hosted_turns SET events_omitted = -1");
+    store::RunStore store = store::RunStore::Open(file);
+    CHECK_THROWS_AS(store.HostedTurns("c1"), store::StoreError);
+    CHECK_THROWS_WITH(store.HostedTurns("c1"), ContainsSubstring("run.db") && ContainsSubstring("events_omitted"));
 }

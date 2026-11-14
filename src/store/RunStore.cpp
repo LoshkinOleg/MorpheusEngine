@@ -59,8 +59,8 @@ CREATE TABLE embeddings (
 );
 )sql";
 
-// The tables version 3 adds: a hosted run's host data, its conversations, its turns and the events recorded between
-// them. Created in every file, so a version 2 file is upgraded by adding them.
+// The tables version 3 adds, with version 4's events_omitted: a hosted run's host data, its conversations, its turns
+// and the events recorded between them. Created in every file, so a version 2 file is upgraded by adding them.
 constexpr const char* HOSTED_SCHEMA_SQL = R"sql(
 CREATE TABLE host_data (
     id   INTEGER PRIMARY KEY CHECK (id = 1),
@@ -84,7 +84,8 @@ CREATE TABLE hosted_turns (
     resolve_output  TEXT NOT NULL,
     adjudication    TEXT NOT NULL,
     line            TEXT NOT NULL,
-    timings         TEXT NOT NULL
+    timings         TEXT NOT NULL,
+    events_omitted  INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE conversation_events (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -95,6 +96,11 @@ CREATE TABLE conversation_events (
 CREATE INDEX hosted_turns_conversation ON hosted_turns (conversation_id);
 CREATE INDEX conversation_events_conversation ON conversation_events (conversation_id);
 )sql";
+
+// What version 4 adds to a version 3 file: each hosted turn's count of the events its prompt left out, 0 for the
+// turns already played.
+constexpr const char* EVENTS_OMITTED_SQL =
+    "ALTER TABLE hosted_turns ADD COLUMN events_omitted INTEGER NOT NULL DEFAULT 0;";
 
 // Stored spelling of a run kind, run_meta 'kind'.
 const char* RunKindName(RunKind kind)
@@ -248,26 +254,34 @@ RunStore RunStore::Open(const std::filesystem::path& file)
         return it->second;
     };
 
-    // A version 2 run is upgraded in place: the hosted tables are added and it is marked owned, in one transaction.
-    // Its data is not touched. Any other version is refused.
-    if (value("schema_version") == "2") {
+    // An older run is upgraded in place, in one transaction, its data untouched: version 2 gains the hosted tables
+    // (already with version 4's column) and is marked owned; version 3 gains hosted_turns.events_omitted, 0 for the
+    // turns it holds. Any other version is refused below.
+    const std::string version = value("schema_version"); // A copy: `values` changes below.
+    if (version == "2" || version == "3") {
         try {
             db.Transaction([&] {
-                db.Exec(HOSTED_SCHEMA_SQL);
-                db.Prepare("INSERT INTO run_meta (key, value) VALUES ('kind', ?1)")
-                    .Bind(1, RunKindName(RunKind::Owned))
-                    .Run();
+                if (version == "2") {
+                    db.Exec(HOSTED_SCHEMA_SQL);
+                    db.Prepare("INSERT INTO run_meta (key, value) VALUES ('kind', ?1)")
+                        .Bind(1, RunKindName(RunKind::Owned))
+                        .Run();
+                } else {
+                    db.Exec(EVENTS_OMITTED_SQL);
+                }
                 db.Prepare("UPDATE run_meta SET value = ?1 WHERE key = 'schema_version'")
                     .Bind(1, std::to_string(SCHEMA_VERSION))
                     .Run();
             });
         } catch (const StoreError& error) {
-            // The transaction rolled back: the file is still a version 2 run.
-            throw StoreError(std::format("'{}': cannot upgrade from schema version 2 to {}: {}", core::PathText(file),
-                                         SCHEMA_VERSION, error.what()));
+            // The transaction rolled back: the file is still at its old version.
+            throw StoreError(std::format("'{}': cannot upgrade from schema version {} to {}: {}",
+                                         core::PathText(file), version, SCHEMA_VERSION, error.what()));
         }
         values["schema_version"] = std::to_string(SCHEMA_VERSION);
-        values["kind"] = RunKindName(RunKind::Owned);
+        if (version == "2") {
+            values["kind"] = RunKindName(RunKind::Owned);
+        }
     }
     if (value("schema_version") != std::to_string(SCHEMA_VERSION)) {
         throw StoreError(std::format("'{}': schema version {} is not the supported version {}",
@@ -756,6 +770,7 @@ void RunStore::CommitHostedTurn(const core::HostedTurn& record)
     MORPHEUS_REQUIRE(record.number == expected,
                      std::format("CommitHostedTurn: expected turn {}, got {}", expected, record.number));
     MORPHEUS_REQUIRE(Conversation(record.conversationId).has_value(), "CommitHostedTurn: no such conversation");
+    MORPHEUS_REQUIRE(record.eventsOmitted >= 0, "RunStore::CommitHostedTurn: eventsOmitted must not be negative");
 
     // JSON columns. DumpText keeps text that is not UTF-8 from throwing.
     const nlohmann::json listeners = record.listenerIds;
@@ -769,8 +784,8 @@ void RunStore::CommitHostedTurn(const core::HostedTurn& record)
                                          {"params", record.adjudication.params},
                                          {"reasons", record.adjudication.reasons}};
     _db.Prepare("INSERT INTO hosted_turns (number, conversation_id, speaker_id, listener_ids, player_text, events, "
-                "observation, resolve_output, adjudication, line, timings) "
-                "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)")
+                "observation, resolve_output, adjudication, line, timings, events_omitted) "
+                "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)")
         .Bind(1, record.number)
         .Bind(2, record.conversationId)
         .Bind(3, record.speakerId)
@@ -782,6 +797,7 @@ void RunStore::CommitHostedTurn(const core::HostedTurn& record)
         .Bind(9, DumpText(adjudication))
         .Bind(10, record.line)
         .Bind(11, DumpText(record.timings))
+        .Bind(12, record.eventsOmitted)
         .Run();
 }
 
@@ -789,7 +805,7 @@ std::vector<core::HostedTurn> RunStore::HostedTurns(std::string_view conversatio
 {
     RequireHosted("HostedTurns");
     Statement query = _db.Prepare("SELECT number, speaker_id, listener_ids, player_text, events, observation, "
-                                  "resolve_output, adjudication, line, timings FROM hosted_turns "
+                                  "resolve_output, adjudication, line, timings, events_omitted FROM hosted_turns "
                                   "WHERE conversation_id = ?1 ORDER BY number");
     query.Bind(1, conversationId);
     std::vector<core::HostedTurn> turns;
@@ -884,6 +900,10 @@ std::vector<core::HostedTurn> RunStore::HostedTurns(std::string_view conversatio
 
         turn.line = query.ColumnText(8);
         turn.timings = parseColumn(9, "timings");
+        turn.eventsOmitted = static_cast<int>(query.ColumnInt(10));
+        if (turn.eventsOmitted < 0) {
+            throw damaged("events_omitted", "is negative");
+        }
         turns.push_back(std::move(turn));
     }
     return turns;

@@ -49,9 +49,9 @@ struct EmbeddingRow {
 // kinds, and turn numbers run across the whole run.
 class RunStore {
 public:
-    // 3: run_meta.kind and the hosted tables. 2: turns.digest (it also covers turns.attempt). A version 2 run is
-    // upgraded in place on open; any other version is refused.
-    static constexpr int SCHEMA_VERSION = 3;
+    // 4: hosted_turns.events_omitted. 3: run_meta.kind and the hosted tables. 2: turns.digest (it also covers
+    // turns.attempt). A version 2 or 3 run is upgraded in place on open; any other version is refused.
+    static constexpr int SCHEMA_VERSION = 4;
 
 private:
     Database _db;
@@ -68,8 +68,9 @@ public:
     // is removed.
     static RunStore CreateHosted(const std::filesystem::path& file, RunMeta meta, const nlohmann::json& hostData);
 
-    // Opens an existing run. A version 2 file is first upgraded in place to version 3 (the hosted tables are added
-    // and it is marked owned, in one transaction; its data is not touched). Throws StoreError if it is missing or was
+    // Opens an existing run. A version 2 file is first upgraded in place to version 4 (the hosted tables are added
+    // and it is marked owned, in one transaction; its data is not touched), a version 3 file to version 4 (it gains
+    // hosted_turns.events_omitted). Throws StoreError if it is missing or was
     // written with another schema version, or its meta (rng_seed, settings, kind) is damaged.
     static RunStore Open(const std::filesystem::path& file);
 
