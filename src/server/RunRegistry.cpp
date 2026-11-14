@@ -89,7 +89,12 @@ bool RunRegistry::Open(const std::string& runId, turn::HostData data, std::uint6
         throw store::StoreError(std::format("cannot check '{}': {}", core::PathText(file), error.message()));
     }
     auto pWorker = std::make_unique<RunWorker>(runId, file, std::move(data), _settings, seed, _makeBackend(), _log);
+    // Checked again: StopAll takes only _mutex, so it may have run while the worker was being built. An unregistered
+    // worker is idle; letting it go here stops and joins it.
     std::scoped_lock lock(_mutex);
+    if (_stopping) {
+        throw inference::InferenceError("the server is stopping");
+    }
     _runs.emplace(runId, std::move(pWorker));
     return !existed;
 }

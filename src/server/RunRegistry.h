@@ -34,7 +34,7 @@ private:
     BackendFactory _makeBackend = {};
     Log _log = {};
     std::mutex _openMutex = {};     // One open at a time: two opens of one new run make one worker.
-    mutable std::mutex _mutex = {}; // Guards _runs.
+    mutable std::mutex _mutex = {}; // Guards _runs and _stopping.
     std::map<std::string, std::unique_ptr<RunWorker>, std::less<>> _runs = {};
     bool _stopping = false;         // Set by StopAll, under _mutex: no run opens after it.
 
@@ -48,8 +48,6 @@ public:
     RunRegistry& operator=(const RunRegistry&) = delete;
 
     // Throws DataError "run_id: ..." unless `runId` is 1 to MAX_RUN_ID_LENGTH characters of A-Z, a-z, 0-9, '_' and '-'.
-    // Ids are case-sensitive here but name files, which may not be (Windows, default macOS): Open refuses an id that
-    // differs from an opened run's only in case.
     static void CheckRunId(std::string_view runId);
 
     // "<runs dir>/<run_id>.morpheus". Checks the id first (CheckRunId).
