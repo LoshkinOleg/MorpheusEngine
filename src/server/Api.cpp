@@ -313,6 +313,15 @@ ApiResponse Api::Handle(std::string_view method, std::string_view path, std::str
                         [stream, request = std::move(request), slotKey = SlotKey(runId, conversationId),
                          pSlots = _pSlots, log = _log, routeName = std::format("{} {}", method, path)](
                             turn::HostedSession& session, SlotBackend& backend, std::stop_token workerStop) {
+                            // The stream ends on every exit of the job, an escaping exception's included, so the
+                            // handler or the writer reading it never waits forever.
+                            struct EndStream {
+                                TurnStream* _pStream = nullptr;
+                                ~EndStream()
+                                {
+                                    _pStream->End();
+                                }
+                            } endStream{stream.get()};
                             std::stop_callback stopWithWorker(workerStop, [&stream] { stream->Cancel(); });
                             try {
                                 RequireConversation(session, request.conversationId);
@@ -337,7 +346,12 @@ ApiResponse Api::Handle(std::string_view method, std::string_view path, std::str
                                 };
                                 const std::optional<core::HostedTurn> record =
                                     session.RunTurn(request, callbacks, stream->StopToken());
-                                // A cancelled turn committed nothing and ends with no done.
+                                // A cancelled turn committed nothing and ends with no done. Stopped by the server's
+                                // shutdown, it ends with an error the client can read; a client that left reads
+                                // nothing, so its cancel stays silent.
+                                if (!record && workerStop.stop_requested()) {
+                                    stream->Push({"error", {{"status", 503}, {"message", "the server is stopping"}}});
+                                }
                                 if (record) {
                                     // The line's last sentence has no whitespace after it: it ends with the line.
                                     const std::string rest = sentences.Finish();
@@ -363,7 +377,6 @@ ApiResponse Api::Handle(std::string_view method, std::string_view path, std::str
                                 }
                                 stream->Push({"error", {{"status", status}, {"message", error.what()}}});
                             }
-                            stream->End();
                         },
                         RunWorker::Preempt::Fold);
 

@@ -273,7 +273,7 @@ To run it, start the two llama-servers as in "Models through llama-server", the 
 ./build/dev/bin/Release/morpheus_server --port 4998 --runs runs --settings settings.json
 ```
 
-The flags and their defaults are `--port 4998`, `--runs ./runs` and `--settings ./settings.json`. The server listens on 127.0.0.1 only and owns its port alone: a port already in use ends it at startup with a message. A run's file is `<runs>/<run_id>.morpheus`. Ctrl+C stops it; turns still running commit nothing. A `run_id` is 1 to 64 characters of `A-Z a-z 0-9 _ -`; one that differs from an opened run's only in case is refused with 400, and so is any `open` once shutdown has begun (503).
+The flags and their defaults are `--port 4998`, `--runs ./runs` and `--settings ./settings.json`. The server listens on 127.0.0.1 only and owns its port alone: a port already in use ends it at startup with a message. A run's file is `<runs>/<run_id>.morpheus`. Ctrl+C stops it; turns still running commit nothing, and their streams end with `error` 503 ("the server is stopping"). A `run_id` is 1 to 64 characters of `A-Z a-z 0-9 _ -`; one that differs from an opened run's only in case is refused with 400, and so is any `open` once shutdown has begun (503).
 
 Every response carries `"api_version": "1.0.0"` (the changes are in `CHANGELOG.md`). The endpoints:
 

@@ -3,7 +3,7 @@
 The morpheus_server API's versions (`api_version` on every response). A breaking change bumps the major version and
 gets an entry here with a migration note.
 
-## API 1.0.0
+## API 1.0.0 (unreleased)
 
 The first version (design: `docs/superpowers/specs/2026-11-16-morpheus-server-design.md`).
 
@@ -14,3 +14,5 @@ The first version (design: `docs/superpowers/specs/2026-11-16-morpheus-server-de
 - Errors: 400 (a malformed request, naming the field), 404, 409 (a run not opened in this process), 422 (the
   observation and player text do not fit the tail), 503 (a llama-server unreachable), 500.
 - `speaker: "decide"` is refused with 400 until a later version.
+- A turn stopped by the server's shutdown ends its stream with `error` 503 ("the server is stopping"); every stream
+  ends with `done` or `error`, except for a client that disconnected.

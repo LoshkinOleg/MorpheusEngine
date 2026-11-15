@@ -301,3 +301,37 @@ TEST_CASE("A turn during a background fold stops it and runs promptly; the fold 
     CHECK(test::WaitUntil([&] { return FoldedThrough(harness) == 1; }));
     CHECK(foldCalls.load() >= 2);
 }
+
+TEST_CASE("A turn stopped by shutdown mid-line ends its stream with a 503 error, and commits nothing",
+          "[hosted-server][api]")
+{
+    test::HostedScript script;
+    script.actions = {NONE};
+    script.lines = {"A long answer that streams slowly, piece by piece, for a while."};
+    test::ApiHarness harness("api_turn_shutdown", script.Responder());
+    harness.pieceDelay = std::chrono::milliseconds(100);
+    OpenWithConversation(harness);
+
+    const server::ApiResponse response = harness.Post(TURN, TurnBody(test::HULDA, "Hello."));
+    REQUIRE(response.stream != nullptr);
+    // Read up to the first token, then the server stops.
+    bool sawToken = false;
+    for (int i = 0; i < 100 && !sawToken; ++i) {
+        if (std::optional<server::StreamEvent> event = response.stream->Next(std::chrono::milliseconds(100))) {
+            sawToken = event->name == "token";
+        }
+    }
+    REQUIRE(sawToken);
+    harness.runs.StopAll();
+
+    // The stream ends with the error, and no done.
+    const std::vector<server::StreamEvent> rest = test::ReadAll(*response.stream);
+    CHECK(response.stream->Ended());
+    REQUIRE_FALSE(rest.empty());
+    for (const server::StreamEvent& event : rest) {
+        CHECK(event.name != "done");
+    }
+    CHECK(rest.back().name == "error");
+    CHECK(rest.back().data.at("status") == 503);
+    CHECK_THAT(rest.back().data.at("message").get<std::string>(), ContainsSubstring("the server is stopping"));
+}

@@ -101,7 +101,7 @@ Errors before a stream starts are JSON with an HTTP status: `{api_version, error
 
 ### Shutdown
 
-Ctrl+C (SIGINT) or SIGTERM: the server stops accepting connections, stops running turns (nothing committed) and running folds through their stop tokens, joins the workers, and closes the stores.
+Ctrl+C (SIGINT) or SIGTERM: the server stops accepting connections, stops running turns (nothing committed; a stream already started ends with `error` 503, "the server is stopping") and running folds through their stop tokens, joins the workers, and closes the stores.
 
 ### Settings and flags
 
