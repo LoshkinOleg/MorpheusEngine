@@ -18,6 +18,14 @@ public:
     using std::runtime_error::runtime_error;
 };
 
+// The backend refused this input itself: an HTTP 4xx answer for it, or a text too long for the model's context.
+// Sending it again cannot help, unlike a backend that could not be reached or failed (a plain InferenceError). A caller
+// that does not tell the two apart catches InferenceError.
+class InputRefused : public InferenceError {
+public:
+    using InferenceError::InferenceError;
+};
+
 enum class Role { System, User, Assistant };
 
 // Role spelling used by chat templates: "system", "user", "assistant".

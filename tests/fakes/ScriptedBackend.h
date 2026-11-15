@@ -65,7 +65,7 @@ public:
         return _embeddedTexts;
     }
 
-    // Embed throws InferenceError for a text longer than `bytes` (an embedding context that is too small).
+    // Embed throws InputRefused for a text longer than `bytes` (an embedding context that is too small).
     void SetEmbedLimit(std::size_t bytes)
     {
         _embedLimit = bytes;
@@ -142,7 +142,7 @@ public:
         std::vector<std::vector<float>> vectors;
         for (const std::string& text : texts) {
             if (_embedLimit != 0 && text.size() > _embedLimit) {
-                throw inference::InferenceError(std::format("text of {} bytes is over the embedding limit", text.size()));
+                throw inference::InputRefused(std::format("text of {} bytes is over the embedding limit", text.size()));
             }
             ++_embeddedTexts;
             std::vector<float> vector(EMBED_DIMS, 0.0f);

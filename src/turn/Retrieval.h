@@ -76,8 +76,9 @@ public:
 
     // Indexes every entry of `lore` that is not always on as "subject: data", embedding entries one at a time where
     // the stored vector is missing or stale. `source` names the lore in errors ("world 'mini': lore.csv", "host data:
-    // lore"). Throws DataError naming the source and the subject when an entry cannot be embedded (too long for the
-    // embedding model) or a subject appears twice.
+    // lore"). Throws DataError naming the source and the subject when the backend refuses an entry (InputRefused: too
+    // long for the embedding model) or a subject appears twice, and InferenceError when the backend cannot be reached
+    // or fails.
     void SyncLore(std::string_view source, const std::vector<core::LoreEntry>& lore, store::RunStore& store,
                   inference::LlmBackend& backend);
 

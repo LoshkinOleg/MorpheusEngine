@@ -202,7 +202,7 @@ The model writes `{"action":"attack","params":{"target":"0001A6A4"}}` (compact).
 - **A player text that does not fit is a `turn::TurnError`.**
 - **Events recorded between turns that do not fit leave the prompt, oldest first.** This replaced D1's `TurnError` in sub-project D2 (`docs/superpowers/specs/2026-11-16-morpheus-server-design.md`, section 3): the newest events that fit stay in the tail, the turn records how many it left out (`eventsOmitted`), its L3 entry leaves out the same ones, and the store keeps them all. The observation, the player text and the instruction must still fit on their own, or the turn is a `TurnError`.
 - **Model mistakes are not exceptions.** An action that does not parse or validate is refused and logged with its reasons, and the turn goes on.
-- **Backend failures are `inference::InferenceError`** (D2 answers 503).
+- **Backend failures are `inference::InferenceError`** (D2 answers 503), embedding lore at `Open` included. Only a lore entry the backend refuses (`inference::InputRefused`: an HTTP 4xx answer for it, or a text too long for the embedding context) is a `DataError` naming the entry.
 - **A cancel through `stop`** returns nullopt and commits nothing.
 - **Damaged saved data is a `store::StoreError`** naming the file, the turn and the column, including a stored observation without the actors core or a speaker that is not one of its actors. A hosted run's file opened by `Session::Load` is a `DataError`.
 - **Engine bugs are `core::ContractError`.**

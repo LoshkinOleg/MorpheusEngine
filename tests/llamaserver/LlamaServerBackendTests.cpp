@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <optional>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -296,6 +297,45 @@ TEST_CASE("LlamaServerBackend refuses an embedding answer that is not one vector
         embed.SetStatus("/embedding", 500);
         CHECK_THROWS_WITH(backend.Embed({"a"}, inference::EmbedPurpose::Query),
                           ContainsSubstring(embed.Url() + "/embedding") && ContainsSubstring("500"));
+    }
+}
+
+TEST_CASE("LlamaServerBackend tells a text the server refused (HTTP 4xx) from a server that failed or cannot be reached",
+          "[llamaserver]")
+{
+    test::FakeLlamaServer chat;
+    test::FakeLlamaServer embed;
+    llamaserver::LlamaServerBackend backend(test::ConfigFor(chat, embed));
+    // Whether embedding "a" fails with InputRefused, or with an InferenceError of another kind.
+    auto refused = [&backend] {
+        try {
+            backend.Embed({"a"}, inference::EmbedPurpose::Document);
+        } catch (const inference::InputRefused&) {
+            return true;
+        } catch (const inference::InferenceError&) {
+            return false;
+        }
+        throw std::logic_error("the embedding did not fail");
+    };
+
+    SECTION("an HTTP 4xx answer refuses the text")
+    {
+        embed.SetStatus("/embedding", 400);
+        CHECK(refused());
+        embed.SetStatus("/embedding", 413);
+        CHECK(refused());
+    }
+    SECTION("an HTTP 5xx answer is the server's failure")
+    {
+        embed.SetStatus("/embedding", 500);
+        CHECK_FALSE(refused());
+        embed.SetStatus("/embedding", 503);
+        CHECK_FALSE(refused());
+    }
+    SECTION("a connection closed without an answer is the server's failure")
+    {
+        embed.DropNextAnswers("/embedding", 2);
+        CHECK_FALSE(refused());
     }
 }
 

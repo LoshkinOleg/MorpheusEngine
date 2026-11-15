@@ -294,9 +294,10 @@ std::vector<std::vector<float>> MemoryIndex::Vectors(store::EmbeddingKind kind, 
             vectors.push_back(it->second.vector);
             continue;
         }
-        // A lore entry that cannot be embedded is a problem of its source (too long for the embedding model): a DataError
-        // naming its subject. History and note texts are cut by the engine, so their failures are the backend's and
-        // stay InferenceError.
+        // A lore entry the backend refuses (InputRefused: too long for the embedding model) is a problem of its
+        // source: a DataError naming its subject. A backend that cannot be reached or failed stays InferenceError, so
+        // the caller can try again later. History and note texts are cut by the engine, so their failures are the
+        // backend's and stay InferenceError.
         auto embed = [&backend, &document] {
             return backend.Embed({document.text}, inference::EmbedPurpose::Document).at(0);
         };
@@ -306,7 +307,7 @@ std::vector<std::vector<float>> MemoryIndex::Vectors(store::EmbeddingKind kind, 
         } else {
             try {
                 vector = embed();
-            } catch (const inference::InferenceError& error) {
+            } catch (const inference::InputRefused& error) {
                 throw core::DataError(
                     std::format("{} entry '{}' cannot be embedded: {}", loreSource, document.refId, error.what()));
             }

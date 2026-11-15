@@ -527,8 +527,9 @@ std::vector<std::vector<float>> LlamaCppBackend::Embed(const std::vector<std::st
     for (const std::string& text : texts) {
         const std::vector<std::int32_t> tokens = Tokenize(pVocab, prefix + text, true, false);
         if (tokens.empty() || tokens.size() > static_cast<std::size_t>(_config.embeddingContextSize)) {
-            throw InferenceError(std::format("a text to embed has {} tokens; the embedding context holds {}",
-                                             tokens.size(), _config.embeddingContextSize));
+            // The text itself does not fit: sending it again cannot help.
+            throw inference::InputRefused(std::format("a text to embed has {} tokens; the embedding context holds {}",
+                                                      tokens.size(), _config.embeddingContextSize));
         }
 
         // Each text is embedded alone, from an empty cache (encoder-only models have no cache at all).

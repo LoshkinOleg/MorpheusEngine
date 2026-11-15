@@ -112,6 +112,12 @@ auto Ask(httplib::Client& client, const std::string& url, const std::string& pat
     if (!response) {
         throw InferenceError(std::format("cannot reach {}{}: {}", url, path, httplib::to_string(response.error())));
     }
+    // A 4xx answer refuses this request's input (a text too long for the server's context answers 400); any other
+    // error is the server's own failure.
+    if (response->status >= 400 && response->status < 500) {
+        throw inference::InputRefused(
+            std::format("{}{} answered HTTP {}: {}", url, path, response->status, Quoted(response->body)));
+    }
     if (response->status != 200) {
         throw InferenceError(std::format("{}{} answered HTTP {}: {}", url, path, response->status, Quoted(response->body)));
     }

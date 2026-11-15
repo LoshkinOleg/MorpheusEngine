@@ -325,11 +325,11 @@ data: {"action":{"id":"follow","params":{}},"events_omitted":0,"line":"Lead the 
 
 Errors answer `{"api_version", "error": {"status", "message"}}` with these statuses:
 
-- 400: a malformed body or field (the message names it), a bad `run_id`, or `speaker: "decide"` (not supported yet)
+- 400: a malformed body or field (the message names it), a bad `run_id`, `speaker: "decide"` (not supported yet), or a lore entry the embedding server refuses (too long for its context)
 - 404: an unknown route, or an unknown conversation of an opened run
 - 409: a run not opened in this server process
 - 422: the observation and player text do not fit the tail
-- 503: a llama-server is unreachable or answered an error
+- 503: a llama-server is unreachable or failed, also while it embeds lore at `open`; try again later
 - 500: anything else, logged with its message
 
 The `"[server]"` test (see "The [server] tests") also plays the conversation fixture over HTTP against your servers and prints each turn's time to its first sentence. Measured on 2026-11-14 on Windows with an RTX 3070 Laptop GPU (8 GB; llama-server with Vulkan, Qwen3-4B-Instruct-2507-Q4_K_M with --parallel 3 --ctx-size 49152 -fa on -ctk q8_0 -ctv q8_0, nomic-embed for embeddings): the four turns of conversation.json reached their first sentence after 955, 2522, 1745 and 709 ms. The host's 1.5 s target is for its RTX 3060 Ti with a 9B model.

@@ -66,8 +66,9 @@ public:
     // lore; or reopens it: the same host data (equal content hash) reopens as it is; with changed host data (a mod
     // update) the changed lore is re-embedded first, then the new host data replaces the stored copy. The host data
     // is checked first (HostedWorld's DataError). Throws DataError for a file that holds an owned run, StoreError for
-    // a damaged one, and DataError if lore cannot be embedded: a new file is then removed, and a reopened run keeps
-    // its stored host data and hash.
+    // a damaged one, DataError if the backend refuses a lore entry (too long to embed), and InferenceError if the
+    // backend cannot be reached or fails while embedding: either way a new file is then removed, and a reopened run
+    // keeps its stored host data and hash.
     static HostedSession Open(const std::filesystem::path& file, HostData data, core::Settings settings,
                               std::uint64_t seed, inference::LlmBackend& backend);
 

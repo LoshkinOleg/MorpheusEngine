@@ -279,6 +279,35 @@ TEST_CASE("Two runs play at once, each conversation on its own slot, and folding
     CHECK(completions.back().body.at("id_slot") == server::SlotPool::UPKEEP_SLOT);
 }
 
+TEST_CASE("Opening a run whose lore cannot be embedded: 503 when the embedding server fails, 400 when it refuses the text",
+          "[hosted-server][http]")
+{
+    // Each case opens a new run, whose retrievable lore is embedded at the open.
+    struct Case {
+        const char* name = "";
+        int status = 0;   // The fake embedding server's answer to /embedding; 0: it drops the connection.
+        int expected = 0; // The open's status.
+    };
+    for (const Case& failure : {Case{"answers 500", 500, 503}, Case{"drops the connection", 0, 503},
+                                Case{"refuses the text", 400, 400}}) {
+        INFO(failure.name);
+        test::HttpHarness harness(std::string("http_embed_") + std::to_string(failure.status));
+        if (failure.status == 0) {
+            harness.embed.DropNextAnswers("/embedding", 4);
+        } else {
+            harness.embed.SetStatus("/embedding", failure.status);
+        }
+        httplib::Client client = harness.Client();
+        const test::HttpJson opened = test::JsonPost(client, "/v1/runs/r/open", test::ReadFixture("open.json"));
+        CHECK(opened.status == failure.expected);
+        CHECK(opened.body.at("api_version") == "1.0.0");
+        CHECK(opened.body.at("error").at("status") == failure.expected);
+        if (failure.expected == 400) {
+            CHECK_THAT(opened.body.at("error").at("message").get<std::string>(), ContainsSubstring("cannot be embedded"));
+        }
+    }
+}
+
 TEST_CASE("HttpServer refuses a port another server listens on", "[hosted-server][http]")
 {
     test::HttpHarness harness("http_port");

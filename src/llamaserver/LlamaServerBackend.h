@@ -41,6 +41,10 @@ struct LlamaServerConfig {
 // read timeout during a long prompt read is retried, so a hung server takes about two read timeouts (about 1200 s) to
 // fail, and a retried prompt runs again on the same slot, mostly from its cache.
 //
+// An HTTP 4xx answer to a request other than /completion (a text too long for the server's context among them) throws
+// inference::InputRefused: the input was refused, and sending it again cannot help. A server that cannot be reached,
+// fails (5xx) or answers what cannot be read throws a plain InferenceError.
+//
 // Thinking models (the chat template has the enable_thinking switch): as LlamaCppBackend, the backend writes the
 // thinking block's markers itself. A call that thinks is two /completion calls on one slot: the block, which stops at
 // "</think>" or at its budget, then the answer, whose prompt extends the first one's, so the server reuses its cache.

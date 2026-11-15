@@ -70,11 +70,11 @@ Errors before a stream starts are JSON with an HTTP status: `{api_version, error
 
 | Status | When |
 |---|---|
-| 400 | A malformed body or field: D1's `core::DataError` (its message names the JSON pointer), a bad `run_id`, a missing or unknown field type, or `speaker: "decide"` ("not supported yet") |
+| 400 | A malformed body or field: D1's `core::DataError` (its message names the JSON pointer), a bad `run_id`, a missing or unknown field type, or `speaker: "decide"` ("not supported yet"); a lore entry the embedding server refuses (an HTTP 4xx answer for it, such as a text too long for its context: `inference::InputRefused`, a DataError naming the entry) |
 | 404 | An unknown route or an unknown conversation of an opened run |
 | 409 | A run used before its `open` in this server process (its host data comes with `open`) |
 | 422 | `turn::TurnError`: the observation and player text alone do not fit the tail |
-| 503 | `inference::InferenceError`: a llama-server is unreachable or answered an error |
+| 503 | `inference::InferenceError`: a llama-server is unreachable or failed (a 5xx answer, a dropped connection, an answer that cannot be read), embedding lore at `open` included, so the host can try again |
 | 500 | Anything else (`core::ContractError`, `store::StoreError`); logged with its message |
 
 ## 2. Runs, workers and slots

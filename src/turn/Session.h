@@ -71,7 +71,8 @@ private:
 
 public:
     // Starts a new run in `file` from the world's initial state, with `seed` for dice and sampling, and indexes the
-    // lore. Throws StoreError if the file exists, and DataError if lore cannot be embedded (then no file is left).
+    // lore. Throws StoreError if the file exists, DataError if the backend refuses a lore entry (too long to embed),
+    // and InferenceError if the backend cannot be reached or fails while embedding (either way no file is left).
     static Session Start(core::World world, core::Settings settings, const std::filesystem::path& file,
                          std::uint64_t seed, inference::LlmBackend& backend);
 
