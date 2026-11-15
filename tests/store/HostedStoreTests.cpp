@@ -830,3 +830,68 @@ TEST_CASE("A hosted summary row without its actor is a StoreError naming the fil
     CHECK_THROWS_AS(store.HostedSummaries(), store::StoreError);
     CHECK_THROWS_WITH(store.HostedSummaries(), ContainsSubstring("run.db") && ContainsSubstring("actor_id"));
 }
+
+TEST_CASE("A version 4 summary over turns of two conversations is upgraded to each NPC witness with no conversation",
+          "[store][hosted][memory]")
+{
+    // c1 (Hulda and Aela) has turns 1 and 3; c2 (Saadia and Aela) has turn 2. One run-wide summary covers turns 1-3, as
+    // a D1 condense over both conversations wrote it; another covers c1's turn 1 alone.
+    const std::filesystem::path file = test::FreshTempDir("store_upgrade_v4_two") / "run.db";
+    {
+        store::RunStore store = store::RunStore::CreateHosted(file, HostedMeta(), TestHostData());
+        const std::string c1 = store.CreateConversation(TwoParticipants());
+        const std::string c2 = store.CreateConversation({{"npc-2", "Saadia", ""}, {"player", "Aela", ""}});
+        store.CommitHostedTurn(TestHostedTurn(1, c1));
+        core::HostedTurn saadia = TestHostedTurn(2, c2);
+        saadia.speakerId = "npc-2";
+        saadia.observation = nlohmann::json::parse(R"({"actors": [{"id": "npc-2", "name": "Saadia", "is_player": false},
+                                                                  {"id": "player", "name": "Aela", "is_player": true}]})");
+        store.CommitHostedTurn(saadia);
+        store.CommitHostedTurn(TestHostedTurn(3, c1));
+    }
+    Damage(file, "UPDATE conversations SET folded_through = 3 WHERE id = 'c1';"
+                 "UPDATE conversations SET folded_through = 2 WHERE id = 'c2';"
+                 "INSERT INTO summaries (from_turn, to_turn, text) VALUES (1, 1, 'Hulda greeted Aela.');"
+                 "INSERT INTO summaries (from_turn, to_turn, text) VALUES (1, 3, 'Both talks.');");
+    Damage(file, DROP_VERSION_5_SQL);
+    Damage(file, "UPDATE run_meta SET value = '4' WHERE key = 'schema_version';");
+
+    store::RunStore store = store::RunStore::Open(file);
+    // Hulda keeps the label of the summary over c1 alone; the one over both conversations has none.
+    const std::vector<core::Summary> hulda = store.ActorSummaries("npc-1", true);
+    REQUIRE(hulda.size() == 2);
+    CHECK(hulda[0].text == "Hulda greeted Aela.");
+    CHECK(hulda[0].conversationId == "c1");
+    CHECK(hulda[1].text == "Both talks.");
+    CHECK(hulda[1].conversationId.empty());
+    // Saadia witnessed turn 2, in the range of the summary over both.
+    const std::vector<core::Summary> saadia = store.ActorSummaries("npc-2", true);
+    REQUIRE(saadia.size() == 1);
+    CHECK(saadia[0].text == "Both talks.");
+    CHECK(saadia[0].conversationId.empty());
+    CHECK(store.ActorSummaries("player", true).empty());
+    CHECK(store.RememberedThrough("c1", "npc-1") == 3);
+    CHECK(store.RememberedThrough("c2", "npc-2") == 2);
+}
+
+TEST_CASE("A version 4 summary whose range holds no turn fails the upgrade, naming the file and the summary",
+          "[store][hosted][memory]")
+{
+    // Turn 1 is the run's only turn: a summary of turns 5-6 covers none.
+    const std::filesystem::path file = HostedFile("store_upgrade_v4_no_turn");
+    Damage(file, "INSERT INTO summaries (from_turn, to_turn, text) VALUES (5, 6, 'Nothing happened.');");
+    Damage(file, DROP_VERSION_5_SQL);
+    Damage(file, "UPDATE run_meta SET value = '4' WHERE key = 'schema_version';");
+    CHECK_THROWS_AS(store::RunStore::Open(file), store::StoreError);
+    CHECK_THROWS_WITH(store::RunStore::Open(file), ContainsSubstring("run.db") && ContainsSubstring("summary 1") &&
+                                                       ContainsSubstring("version 4"));
+
+    // The upgrade rolled back: still version 4, its run-wide summary kept.
+    store::Database db = store::Database::Open(file, false);
+    store::Statement version = db.Prepare("SELECT value FROM run_meta WHERE key = 'schema_version'");
+    REQUIRE(version.Step());
+    CHECK(version.ColumnText(0) == "4");
+    store::Statement summaries = db.Prepare("SELECT COUNT(*) FROM summaries");
+    REQUIRE(summaries.Step());
+    CHECK(summaries.ColumnInt(0) == 1);
+}

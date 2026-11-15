@@ -354,11 +354,19 @@ RunStore RunStore::Open(const std::filesystem::path& file)
         // Each one copied to the NPC witnesses of its range, then removed.
         for (const RunWide& summary : runWide) {
             std::set<std::string> npcs;
-            std::string conversationId;
+            std::set<std::string> conversationIds;
             for (auto it = turns.lower_bound(summary.fromTurn); it != turns.end() && it->first <= summary.toTurn; ++it) {
-                conversationId = it->second.conversationId;
+                conversationIds.insert(it->second.conversationId);
                 npcs.insert(it->second.npcs.begin(), it->second.npcs.end());
             }
+            // Every fold covers turns that exist: a summary over none is damaged data, and the upgrade rolls back.
+            if (conversationIds.empty()) {
+                throw StoreError(std::format("'{}': summary {} covers turns {}..{}, which hold no hosted turn",
+                                             core::PathText(file), summary.id, summary.fromTurn, summary.toTurn));
+            }
+            // A summary over one conversation's turns keeps that conversation; one over several (a run-wide condense)
+            // is condensed, and a condensed summary has no conversation.
+            const std::string conversationId = conversationIds.size() == 1 ? *conversationIds.begin() : std::string();
             for (const std::string& npc : npcs) {
                 db.Prepare("INSERT INTO summaries (from_turn, to_turn, text, actor_id, conversation_id) "
                            "VALUES (?1, ?2, ?3, ?4, ?5)")
