@@ -38,6 +38,13 @@
      "expect": {"prompt_absent": ["takes bribes", "back to his shop"]}},
     {"turn": {"speaker": "0001B07C", "player_text": "And you, Saadia?"},
      "model": {"resolve": "{\"action\":\"none\",\"params\":{}}", "line": "I know nothing of him."},
-     "expect": {"prompt_absent": ["takes bribes"]}}
+     "expect": {"prompt_absent": ["takes bribes"]}},
+    {"share": {"from": "0001A6A4", "to": "0001B07C", "pending": false}},
+    {"memories": {"actor": "0001B07C", "contains": ["takes bribes"], "told_by": {"takes bribes": "0001A6A4"}}},
+    {"turn": {"speaker": "0001B07C", "player_text": "Anything new about the guard captain?"},
+     "model": {"resolve": "{\"action\":\"none\",\"params\":{}}", "line": "Hulda says he takes bribes."},
+     "expect": {"prompt_contains": ["(told by Hulda)", "takes bribes"]}},
+    {"share": {"from": "0001A6A4", "to": "0001B07C", "shared": 0, "pending": false}},
+    {"memories": {"actor": "0001B07D", "absent": ["takes bribes"]}}
   ]
 }

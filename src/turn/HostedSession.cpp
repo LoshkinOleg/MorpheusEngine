@@ -3,8 +3,9 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
-#include <map>
 #include <format>
+#include <map>
+#include <set>
 #include <system_error>
 #include <utility>
 
@@ -311,7 +312,7 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
     // The fit loop sheds retrieved hits first. When the tail is still over tail_allowance with none left, the oldest
     // events leave the prompt one by one until it fits (the store keeps them all; the record counts them). The
     // observation, the player text and the instruction must fit on their own: with no event left, an over-long tail
-    // is the fit loop's TurnError, before any model call.
+    // is the fit loop's TurnError, before the resolve call (folds the catch-up and the fit loop finished stay).
     // The speaker's L3 is the conversation's unfolded turns it witnessed, read again each pass (a fold moves the
     // conversation's mark); a fold during this turn is the speaker's memory and cuts the shared transcript.
     auto speakerPass = [&](const std::vector<RetrievalHit>& kept) {
@@ -432,7 +433,48 @@ bool HostedSession::Maintain(std::stop_token stop)
             }
         }
     }
+
+    // Shares waiting for their teller: applied once the conversation ended and the teller caught up, then removed.
+    for (const core::PendingShare& share : _store.PendingShares()) {
+        const std::optional<core::Conversation> conversation = _store.Conversation(share.conversationId);
+        const std::vector<core::HostedTurn> turns = _store.HostedTurns(share.conversationId);
+        const bool complete = conversation && conversation->ended && !turns.empty() &&
+                              _store.RememberedThrough(share.conversationId, share.fromActor) >= turns.back().number;
+        if (complete) {
+            ApplyShare(share.fromActor, share.toActor, share.conversationId);
+            _store.RemovePendingShare(share.id);
+        }
+    }
     return true;
+}
+
+ShareResult HostedSession::ShareMemories(const std::string& fromActorId, const std::string& toActorId,
+                                         const std::string& conversationId)
+{
+    // The conversation, the teller (an NPC witness of it) and the listener (another actor).
+    const std::optional<core::Conversation> conversation = _store.Conversation(conversationId);
+    if (!conversation) {
+        throw core::DataError(std::format("conversation_id: there is no conversation '{}'", conversationId));
+    }
+    const std::vector<core::HostedTurn> turns = _store.HostedTurns(conversationId);
+    const std::vector<std::string> npcs = NpcWitnesses(turns);
+    if (std::find(npcs.begin(), npcs.end(), fromActorId) == npcs.end()) {
+        throw core::DataError(std::format("from: '{}' witnessed no turn of conversation '{}' as an NPC", fromActorId,
+                                          conversationId));
+    }
+    if (toActorId.empty() || toActorId == fromActorId) {
+        throw core::DataError(std::format("to: '{}' must be another actor than the teller '{}'", toActorId, fromActorId));
+    }
+
+    // The teller's memory of it is complete once the conversation ended and the teller caught up to its last turn;
+    // until then the share waits. The teller witnessed a turn, so the conversation has one.
+    const bool complete =
+        conversation->ended && _store.RememberedThrough(conversationId, fromActorId) >= turns.back().number;
+    if (!complete) {
+        _store.AddPendingShare({0, fromActorId, toActorId, conversationId});
+        return {0, true};
+    }
+    return {ApplyShare(fromActorId, toActorId, conversationId), false};
 }
 
 const store::RunMeta& HostedSession::Meta() const
@@ -704,6 +746,39 @@ bool HostedSession::CatchUp(const std::string& conversationId, const std::string
         _store.SetRememberedThrough(conversationId, actorId, throughTurn);
     }
     return true;
+}
+
+int HostedSession::ApplyShare(const std::string& fromActorId, const std::string& toActorId,
+                              const std::string& conversationId)
+{
+    // What the listener already has from these summaries: copies are keyed by their source.
+    std::set<std::int64_t> copied;
+    for (const core::Summary& summary : _store.ActorSummaries(toActorId, true)) {
+        if (summary.sourceId != 0) {
+            copied.insert(summary.sourceId);
+        }
+    }
+    // The teller's own summaries of the conversation (what it saw, not what it was told), as snapshots, oldest first.
+    int shared = 0;
+    for (const core::Summary& summary : _store.ActorSummaries(fromActorId, true)) {
+        if (summary.conversationId != conversationId || !summary.toldBy.empty() || copied.contains(summary.id)) {
+            continue;
+        }
+        core::Summary copy;
+        copy.fromTurn = summary.fromTurn;
+        copy.toTurn = summary.toTurn;
+        copy.text = summary.text;
+        copy.actorId = toActorId;
+        copy.conversationId = conversationId;
+        copy.toldBy = fromActorId;
+        copy.sourceId = summary.id;
+        _store.AddActorSummary(copy);
+        ++shared;
+    }
+    if (shared > 0) {
+        SyncHistory(); // The copies are searchable by their new owner.
+    }
+    return shared;
 }
 
 std::vector<std::string> HostedSession::NpcWitnesses(const std::vector<core::HostedTurn>& turns)

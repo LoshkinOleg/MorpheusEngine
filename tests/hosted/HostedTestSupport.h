@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
@@ -183,7 +184,7 @@ inline ScriptedBackend::Responder MemoryEchoResponder(HostedScript& script)
 }
 
 // Plays memory fixture `name` (format: fixtures/README.md, "Memory fixtures") on a fresh run with the echo responder,
-// checking each step's expectations. Task 6 adds the share step.
+// checking each step's expectations.
 inline void PlayMemoryFixture(const std::string& name)
 {
     const nlohmann::json fixture = ReadFixture(name);
@@ -201,6 +202,7 @@ inline void PlayMemoryFixture(const std::string& name)
         turn::HostedSession::Open(HostedRunFile("hosted_memory_fixture_" + name), FixtureHostData(), HostedSettings(), 42,
                                   backend);
     std::string id = session.StartConversation(fixture.at("participants").get<std::vector<std::string>>(), observation);
+    const std::string firstId = id; // A share step's default conversation.
 
     for (std::size_t i = 0; i < fixture.at("steps").size(); ++i) {
         const nlohmann::json& step = fixture.at("steps")[i];
@@ -252,8 +254,32 @@ inline void PlayMemoryFixture(const std::string& name)
             if (check.contains("count")) {
                 CHECK(memories.size() == check.at("count").get<std::size_t>());
             }
+            // For each substring, the first memory that holds it is told by that teller. The checks are a local:
+            // items() of a temporary would dangle in the range-for.
+            const nlohmann::json toldBy = check.value("told_by", nlohmann::json::object());
+            for (const auto& item : toldBy.items()) {
+                const std::string substring = item.key();
+                const auto it = std::find_if(memories.begin(), memories.end(), [&substring](const core::Summary& memory) {
+                    return memory.text.find(substring) != std::string::npos;
+                });
+                REQUIRE(it != memories.end());
+                CHECK(it->toldBy == item.value().get<std::string>());
+            }
         } else if (step.contains("start")) {
             id = session.StartConversation(step.at("start").get<std::vector<std::string>>(), observation);
+        } else if (step.contains("share")) {
+            // A share of the teller's memories of a conversation (the first one by default), its result checked when
+            // the step gives it.
+            const nlohmann::json& share = step.at("share");
+            const turn::ShareResult result =
+                session.ShareMemories(share.at("from").get<std::string>(), share.at("to").get<std::string>(),
+                                      share.value("conversation", firstId));
+            if (share.contains("shared")) {
+                CHECK(result.shared == share.at("shared").get<int>());
+            }
+            if (share.contains("pending")) {
+                CHECK(result.pending == share.at("pending").get<bool>());
+            }
         } else {
             FAIL("unknown step kind");
         }

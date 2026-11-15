@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <algorithm>
 #include <cstddef>
 #include <filesystem>
 #include <optional>
@@ -233,4 +234,100 @@ TEST_CASE("An NPC behind in a conversation is caught up before it speaks", "[hos
     REQUIRE_FALSE(saadia.empty());
     CHECK(saadia.back().toTurn <= folded);
     CHECK(saadia[0].text.find("aaaa") != std::string::npos); // She witnessed the first turn.
+    // The catch-up ran before she spoke: her resolve prompt's tail holds that memory.
+    const std::string& tail = session.LastAssembly().prompt.messages.back().content;
+    CHECK_THAT(tail, ContainsSubstring("# What Saadia remembers"));
+    CHECK_THAT(tail, ContainsSubstring("aaaa"));
+}
+
+TEST_CASE("A share made while the conversation is open waits, then applies once it ended and the teller caught up",
+          "[hosted][memory]")
+{
+    test::HostedScript script;
+    script.actions = {NONE};
+    script.lines = {"The well is poisoned."};
+    test::ScriptedBackend backend(16384, test::MemoryEchoResponder(script));
+    turn::HostedSession session = turn::HostedSession::Open(test::HostedRunFile("hosted_share_pending"),
+                                                            test::FixtureHostData(), test::HostedSettings(), 42, backend);
+    const std::string id = session.StartConversation({test::HULDA, test::AELA}, test::FixtureObservation());
+    REQUIRE(session.RunTurn(test::Request(id, test::HULDA, "Any news?"), {}, {}));
+
+    const turn::ShareResult early = session.ShareMemories(test::HULDA, test::SAADIA, id);
+    CHECK(early.pending);
+    CHECK(early.shared == 0);
+    CHECK(session.Memories(test::SAADIA).empty());
+
+    session.EndConversation(id);
+    REQUIRE(session.Maintain({}));
+    const std::vector<core::Summary> saadia = session.Memories(test::SAADIA);
+    REQUIRE(saadia.size() == 1);
+    CHECK(saadia[0].toldBy == test::HULDA);
+    CHECK(saadia[0].text.find("poisoned") != std::string::npos);
+    // Applied once: another pass copies nothing more.
+    REQUIRE(session.Maintain({}));
+    CHECK(session.Memories(test::SAADIA).size() == 1);
+}
+
+TEST_CASE("A share refuses a teller who witnessed nothing, the same actor, and an unknown conversation",
+          "[hosted][memory]")
+{
+    test::HostedScript script;
+    script.actions = {NONE};
+    script.lines = {"Hello."};
+    test::ScriptedBackend backend(16384, test::MemoryEchoResponder(script));
+    turn::HostedSession session = turn::HostedSession::Open(test::HostedRunFile("hosted_share_refused"),
+                                                            test::FixtureHostData(), test::HostedSettings(), 42, backend);
+    const std::string id = session.StartConversation({test::HULDA, test::AELA}, test::FixtureObservation());
+    REQUIRE(session.RunTurn(test::Request(id, test::HULDA, "Hi."), {}, {}));
+    CHECK_THROWS_WITH(session.ShareMemories(test::SAADIA, test::HULDA, id), ContainsSubstring("from"));
+    CHECK_THROWS_WITH(session.ShareMemories(test::AELA, test::HULDA, id), ContainsSubstring("from")); // The player.
+    CHECK_THROWS_WITH(session.ShareMemories(test::HULDA, test::HULDA, id), ContainsSubstring("to"));
+    CHECK_THROWS_WITH(session.ShareMemories(test::HULDA, "", id), ContainsSubstring("to"));
+    CHECK_THROWS_WITH(session.ShareMemories(test::HULDA, test::SAADIA, "c9"), ContainsSubstring("conversation_id"));
+}
+
+TEST_CASE("A shared memory is a snapshot: the teller's later condense leaves it as it was", "[hosted][memory]")
+{
+    // Folds echo what they read; a condense writes "Condensed." (an echo would stay over the small cap). A line of 240
+    // bytes (a memory of about 65 tokens) puts Hulda's memories over summary_cap 64 after each later conversation.
+    test::HostedScript script;
+    script.actions = {NONE, NONE, NONE};
+    script.lines = {"The well is poisoned.", std::string(240, 'x'), std::string(240, 'y')};
+    const test::ScriptedBackend::Responder echo = test::MemoryEchoResponder(script);
+    test::ScriptedBackend backend(16384, [&echo](const inference::Prompt& prompt, const inference::GenerationSpec& spec) {
+        return prompt.messages.back().content.find("Condense what") != std::string::npos ? std::string("Condensed.")
+                                                                                         : echo(prompt, spec);
+    });
+    core::Settings settings = test::HostedSettings();
+    settings.budget.summaryCap = 64;
+    turn::HostedSession session = turn::HostedSession::Open(test::HostedRunFile("hosted_share_snapshot"),
+                                                            test::FixtureHostData(), settings, 42, backend);
+
+    // The first conversation, remembered by Hulda and shared to Saadia.
+    const std::string first = session.StartConversation({test::HULDA, test::AELA}, test::FixtureObservation());
+    REQUIRE(session.RunTurn(test::Request(first, test::HULDA, "News?"), {}, {}));
+    session.EndConversation(first);
+    REQUIRE(session.Maintain({}));
+    REQUIRE(session.ShareMemories(test::HULDA, test::SAADIA, first).shared == 1);
+    const core::Summary copy = session.Memories(test::SAADIA).at(0);
+
+    // Two more conversations put Hulda's memories over summary_cap 64: the upkeep condenses them.
+    for (int i = 0; i < 2; ++i) {
+        const std::string next = session.StartConversation({test::HULDA, test::AELA}, test::FixtureObservation());
+        REQUIRE(session.RunTurn(test::Request(next, test::HULDA, "More?"), {}, {}));
+        session.EndConversation(next);
+        REQUIRE(session.Maintain({}));
+    }
+    const std::vector<core::Summary> hulda = session.Memories(test::HULDA);
+    const auto shown = std::count_if(hulda.begin(), hulda.end(), [](const core::Summary& s) { return !s.superseded; });
+    CHECK(shown == 1);
+    REQUIRE_FALSE(hulda.empty());
+    CHECK(hulda.front().superseded); // Her first summary is kept, superseded.
+
+    // Saadia's copy is as it was.
+    const std::vector<core::Summary> saadia = session.Memories(test::SAADIA);
+    REQUIRE(saadia.size() == 1);
+    CHECK(saadia[0].text == copy.text);
+    CHECK(saadia[0].toldBy == test::HULDA);
+    CHECK(saadia[0].sourceId == copy.sourceId);
 }

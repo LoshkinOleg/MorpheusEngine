@@ -44,6 +44,13 @@ struct HostedCallbacks {
     inference::TokenCallback onToken = {};
 };
 
+// What a share did: how many summaries it copied now, and whether it waits for the teller's memory (per-speaker
+// memory spec, section 2).
+struct ShareResult {
+    int shared = 0;
+    bool pending = false;
+};
+
 // One open hosted run (hosted-world spec, section 1): the counterpart of turn::Session for a world the host owns and
 // sends as data. Every backend call happens on the caller's thread.
 //
@@ -97,13 +104,14 @@ public:
     // adjudicates and reports the action through onAction, speaks on a prompt that extends the resolve prompt
     // (streamed through onToken), and commits the record. Player text is cleaned as Session cleans input
     // (CleanInput); nothing left means none. Returns the committed turn, or nullopt when `stop` cancelled it:
-    // then no turn is committed and the request's events are not kept (folds the fit loop finished before the stop
-    // are, as in Session). onAction fires before the line starts, so a turn cancelled during the speak call has
-    // already reported its action through onAction and is still not committed: the host must not take a reported
-    // action as a committed turn until RunTurn returns one. Throws DataError naming the field for a malformed request
-    // (before any model call), TurnError when the observation, the player text and the instruction alone do not fit
-    // tail_allowance (before the resolve call), and InferenceError from the backend. The tail holds the observation,
-    // every event recorded since the conversation's last turn (RecordEvents), the request's events and the player text:
+    // then no turn is committed and the request's events are not kept (folds the catch-up and the fit loop finished
+    // before the stop are, as in Session). onAction fires before the line starts, so a turn cancelled during the
+    // speak call has already reported its action through onAction and is still not committed: the host must not take
+    // a reported action as a committed turn until RunTurn returns one. Throws DataError naming the field for a
+    // malformed request (before any model call), TurnError when the observation, the player text and the instruction
+    // alone do not fit tail_allowance (before the resolve call; folds the catch-up and the fit loop finished before
+    // it stay), and InferenceError from the backend. The tail holds the observation, every event recorded since the
+    // conversation's last turn (RecordEvents), the request's events and the player text:
     // when it is over tail_allowance with no retrieved snippet left to shed, the oldest events leave the prompt one by
     // one until it fits. The record's eventsOmitted counts them; the store keeps them, and the turn's L3 entry leaves
     // them out as its prompt did. Model mistakes are not exceptions: a refused action is recorded with its reasons and
@@ -119,9 +127,19 @@ public:
     // conversation. An ended conversation is first folded through its last turn (its turns become searchable history),
     // then each NPC witness's memory of it is written (in one call when it fits); in an open conversation each NPC
     // witness's memory reaches the transcript's cut. An NPC's memories over summary_cap are condensed on the way.
+    // Then every pending share (ShareMemories) whose teller's memory is now complete is applied and removed.
     // Returns false when `stop` cancelled it; it can simply run again. Throws DataError when summary_cap is too small
     // for even a condensed summary.
     bool Maintain(std::stop_token stop);
+
+    // `toActorId` learns what `fromActorId` remembers of conversation `conversationId`: copies of `fromActorId`'s own
+    // summaries of it (superseded or not, shared copies excluded), each told by `fromActorId`, oldest first. A copy is
+    // a snapshot, and a summary already copied to `toActorId` is not copied again. While the conversation is open or
+    // `fromActorId` is behind in it, the share waits and Maintain applies it once the conversation ended and
+    // `fromActorId` caught up. Throws DataError "conversation_id: ..." for an unknown conversation, "from: ..." when
+    // `fromActorId` witnessed none of its turns as an NPC, and "to: ..." for an empty `toActorId` or the teller itself.
+    ShareResult ShareMemories(const std::string& fromActorId, const std::string& toActorId,
+                              const std::string& conversationId);
 
     const store::RunMeta& Meta() const;
     std::optional<core::Conversation> Conversation(std::string_view id);
@@ -169,6 +187,10 @@ private:
     // `stop` cancelled it (what it folded before stays).
     bool CatchUp(const std::string& conversationId, const std::string& actorId, int throughTurn, int seedTurn,
                  std::stop_token stop);
+
+    // Copies to `toActorId` the summaries of `fromActorId`'s own memory of conversation `conversationId` it does not
+    // have yet (ShareMemories, and Maintain for a pending share), and returns how many.
+    int ApplyShare(const std::string& fromActorId, const std::string& toActorId, const std::string& conversationId);
 
     // Every NPC who spoke or listened in `turns`, in first-seen order. A listener who is the player in its turn's
     // observation is left out.

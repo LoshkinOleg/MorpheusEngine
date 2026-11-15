@@ -76,10 +76,16 @@ with `participants` (in this join order) and plays `steps` in order. A step is o
   observation.
 - **`{"end": true}`**: the conversation ends (`EndConversation`).
 - **`{"maintain": true}`**: background upkeep until nothing is left (`Maintain` until it returns true).
-- **`{"memories": {"actor", "contains", "absent", "count"}}`**: checks the memories of `actor` (an id), every summary
-  of it, superseded included. `contains` (optional, strings): substrings that must appear in some summary's text;
-  `absent` (optional, strings): substrings that must appear in none; `count` (optional): how many summaries it has.
+- **`{"memories": {"actor", "contains", "absent", "count", "told_by"}}`**: checks the memories of `actor` (an id),
+  every summary of it, superseded included. `contains` (optional, strings): substrings that must appear in some
+  summary's text; `absent` (optional, strings): substrings that must appear in none; `count` (optional): how many
+  summaries it has; `told_by` (optional, `{"<substring>": "<teller id>"}`): for each substring, the first summary whose
+  text contains it must be told by that teller.
 - **`{"start": [ids]}`**: a new conversation of those participants (in this join order), which later steps use.
+- **`{"share": {"from", "to", "conversation", "shared", "pending"}}`**: `to` (an id) learns what `from` (an NPC id)
+  remembers of a conversation (`ShareMemories`). `conversation` (optional) defaults to the fixture's first
+  conversation; `shared` (optional, a number) and `pending` (optional, a boolean) are checked against the share's
+  result when given.
 
 The fixture's model replies are used in step order, for resolve and speak calls only. Memory calls (folds and
 condenses) are answered by the test's echo responder (`test::MemoryEchoResponder`), which repeats the lines the call
