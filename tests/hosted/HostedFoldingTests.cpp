@@ -38,13 +38,14 @@ std::vector<int> Numbers(const std::vector<core::HostedTurn>& turns)
     return numbers;
 }
 
-// Delegates every call to a ScriptedBackend; once armed, it requests `stop` after each Embed. In Maintain the only
-// embeds index a landed fold's turns as history, so the stop lands right after the first fold, before the next.
+// Delegates every call to a ScriptedBackend; once armed with a count, it requests `stop` after that many more Embed
+// calls. In Maintain the only embeds index an ended conversation's turns as history and each landed memory, so a count
+// can place the stop right after a given fold.
 class StopAfterEmbed final : public inference::LlmBackend {
 private:
     test::ScriptedBackend* _pInner = nullptr; // Not owned; outlives this.
     std::stop_source* _pStop = nullptr;       // Not owned; outlives this.
-    bool _armed = false;
+    int _embedsLeft = -1; // Embeds before the stop; -1 when not armed.
 
 public:
     StopAfterEmbed(test::ScriptedBackend& inner, std::stop_source& stop)
@@ -53,9 +54,9 @@ public:
     {
     }
 
-    void Arm()
+    void Arm(int embeds)
     {
-        _armed = true;
+        _embedsLeft = embeds;
     }
 
     int CountTokens(std::string_view text) override
@@ -92,7 +93,7 @@ public:
     std::vector<std::vector<float>> Embed(const std::vector<std::string>& texts, inference::EmbedPurpose purpose) override
     {
         std::vector<std::vector<float>> vectors = _pInner->Embed(texts, purpose);
-        if (_armed) {
+        if (_embedsLeft > 0 && --_embedsLeft == 0) {
             _pStop->request_stop();
         }
         return vectors;
@@ -183,7 +184,7 @@ TEST_CASE("EndConversation and Maintain fold the rest, and a later conversation 
                                  "is under the bar.\n"));
 }
 
-TEST_CASE("A cancelled Maintain folds nothing and can simply run again", "[hosted][folding]")
+TEST_CASE("A cancelled Maintain writes no memory and can simply run again", "[hosted][folding]")
 {
     test::HostedScript script;
     script.actions = {NONE, NONE};
@@ -200,7 +201,8 @@ TEST_CASE("A cancelled Maintain folds nothing and can simply run again", "[hoste
     stop.request_stop();
     CHECK_FALSE(session.Maintain(stop.get_token()));
     CHECK(session.Memories(test::HULDA).empty());
-    CHECK(session.Conversation(id)->foldedThrough == 0);
+    // The ended conversation's turns left the shared transcript before Hulda's memory of them was written.
+    CHECK(session.Conversation(id)->foldedThrough == 2);
 
     CHECK(session.Maintain({}));
     REQUIRE(session.Memories(test::HULDA).size() == 1);
@@ -294,7 +296,7 @@ TEST_CASE("Two open conversations interleave their turns; ending one folds only 
     CHECK(session.Conversation(c1)->foldedThrough == 3);
     CHECK(session.Conversation(c2)->foldedThrough == 0);
 
-    // The summary is Hulda's, who spoke c1's last turn; Saadia has none.
+    // The summary is Hulda's, c1's only NPC witness; Saadia has none.
     CHECK(session.Memories(test::SAADIA).empty());
 
     // c2's next turn (Saadia's) shows no memory of c1 and its own turns still in L3, and does not retrieve c1's
@@ -329,20 +331,22 @@ TEST_CASE("A stop between two ended conversations in one Maintain keeps the firs
     session.EndConversation(c1);
     session.EndConversation(c2);
 
-    // The stop is requested once c1's fold has landed and its turn is indexed: c2's fold call is cancelled.
-    backend.Arm();
+    // The stop is requested once c1's turn is indexed and Hulda's memory of it has landed (the second embed): c2's
+    // turn still leaves the shared transcript, and Saadia's fold call is cancelled.
+    backend.Arm(2);
     CHECK_FALSE(session.Maintain(stop.get_token()));
     REQUIRE(session.Memories(test::HULDA).size() == 1);
     CHECK(session.Memories(test::HULDA)[0].fromTurn == 1);
     CHECK(session.Memories(test::HULDA)[0].toTurn == 1);
+    CHECK(session.Memories(test::SAADIA).empty());
     CHECK(session.Conversation(c1)->foldedThrough == 1);
-    CHECK(session.Conversation(c2)->foldedThrough == 0);
+    CHECK(session.Conversation(c2)->foldedThrough == 2);
 
-    // The next Maintain folds only what is left: c2.
+    // The next Maintain writes only what is left: Saadia's memory of c2.
     const std::size_t calls = inner.Calls().size();
     CHECK(session.Maintain({}));
     CHECK(inner.Calls().size() == calls + 1);
-    // c1's fold is Hulda's, who spoke its last turn; c2's is Saadia's.
+    // c1's fold is Hulda's, its only NPC witness; c2's is Saadia's.
     CHECK(session.Memories(test::HULDA).size() == 1);
     const std::vector<core::Summary> summaries = session.Memories(test::SAADIA);
     REQUIRE(summaries.size() == 1);

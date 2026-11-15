@@ -147,3 +147,8 @@ TEST_CASE("Each invalid request fixture is a DataError naming its field, before 
     CHECK(backend.Calls().empty());
     CHECK(session.Turns(open).empty());
 }
+
+TEST_CASE("The three-actor fixture: nobody remembers what it did not witness", "[hosted][fixtures][memory]")
+{
+    test::PlayMemoryFixture("three_actors.json");
+}

@@ -206,3 +206,31 @@ TEST_CASE("A hosted condense shows a memory told by another NPC under the teller
     }
     CHECK(condensed);
 }
+
+TEST_CASE("An NPC behind in a conversation is caught up before it speaks", "[hosted][memory]")
+{
+    // A fold during Hulda's turn leaves Saadia behind; her next turn writes her memory of those turns first. With a
+    // 2500 context and HostedSettings' budgets L3 gets about 680 tokens: one line of 1600 bytes (400 tokens) fits, two
+    // do not, and an echoed memory of one (about 410 tokens) stays within summary_cap 512.
+    test::HostedScript script;
+    script.actions = {NONE, NONE, NONE, NONE};
+    script.lines = {std::string(1600, 'a'), std::string(1600, 'b'), "Short.", "Saadia here."};
+    test::ScriptedBackend backend(2500, test::MemoryEchoResponder(script));
+    core::Settings settings = test::HostedSettings();
+    settings.contextSize = 2500;
+    turn::HostedSession session = turn::HostedSession::Open(test::HostedRunFile("hosted_memory_catchup"),
+                                                            test::FixtureHostData(), settings, 42, backend);
+    const std::string id = session.StartConversation({test::HULDA, test::SAADIA, test::AELA}, test::FixtureObservation());
+    REQUIRE(session.RunTurn(test::Request(id, test::HULDA, "One."), {}, {}));
+    REQUIRE(session.RunTurn(test::Request(id, test::HULDA, "Two."), {}, {}));
+    REQUIRE(session.RunTurn(test::Request(id, test::HULDA, "Three."), {}, {}));
+    const int folded = session.Conversation(id)->foldedThrough;
+    REQUIRE(folded >= 1);
+    CHECK(session.Memories(test::SAADIA).empty());
+
+    REQUIRE(session.RunTurn(test::Request(id, test::SAADIA, "Saadia?"), {}, {}));
+    const std::vector<core::Summary> saadia = session.Memories(test::SAADIA);
+    REQUIRE_FALSE(saadia.empty());
+    CHECK(saadia.back().toTurn <= folded);
+    CHECK(saadia[0].text.find("aaaa") != std::string::npos); // She witnessed the first turn.
+}

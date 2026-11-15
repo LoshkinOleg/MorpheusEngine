@@ -9,11 +9,14 @@
 #include <string_view>
 #include <vector>
 
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 #include <nlohmann/json.hpp>
 
 #include "TestPaths.h"
 #include "core/Errors.h"
 #include "core/Settings.h"
+#include "core/TurnRecord.h"
 #include "fakes/ScriptedBackend.h"
 #include "turn/EngineText.h"
 #include "turn/HostedSession.h"
@@ -25,6 +28,8 @@ namespace morpheus::test {
 inline const std::string HULDA = "0001A6A4";
 inline const std::string SAADIA = "0001B07C";
 inline const std::string AELA = "00000007";
+// Belethor, the third NPC of three_actors.json.
+inline const std::string BELETHOR = "0001B07D";
 
 // tests/hosted/fixtures in the source tree: host data and requests written from section 5 of the integration
 // requirements. The host's recorded fixtures can replace them later.
@@ -137,6 +142,122 @@ inline turn::HostedTurnRequest Request(const std::string& conversationId, const 
     }
     request.observation = FixtureObservation();
     return request;
+}
+
+// A scripted model for memory tests: resolve and speak calls as HostedScript answers them, and memory calls echo what
+// they read, so a memory holds exactly the lines its NPC witnessed. A fold call (IsHostedFold) answers the assistant
+// messages of the turns it folds, joined by " "; a condense call (IsHostedCondense) answers its memory lines ("- ..."
+// in its last message, without the "- " and any "(told by X) "), joined by " ".
+inline ScriptedBackend::Responder MemoryEchoResponder(HostedScript& script)
+{
+    return [&script](const inference::Prompt& prompt, const inference::GenerationSpec& spec) -> std::string {
+        if (IsHostedFold(prompt)) {
+            // The folded turns sit between the system message and the instruction.
+            std::string echoed;
+            for (std::size_t k = 1; k + 1 < prompt.messages.size(); ++k) {
+                if (prompt.messages[k].role == inference::Role::Assistant) {
+                    echoed += (echoed.empty() ? "" : " ") + prompt.messages[k].content;
+                }
+            }
+            return echoed;
+        }
+        if (IsHostedCondense(prompt)) {
+            // The first memory line follows the heading line (RenderMemories), so every memory line starts after a
+            // newline.
+            const std::string& last = prompt.messages.back().content;
+            std::string echoed;
+            std::size_t at = 0;
+            while ((at = last.find("\n- ", at)) != std::string::npos) {
+                const std::size_t end = last.find('\n', at + 1);
+                std::string line = last.substr(at + 3, end - (at + 3));
+                if (line.starts_with("(told by ")) {
+                    line = line.substr(line.find(") ") + 2);
+                }
+                echoed += (echoed.empty() ? "" : " ") + line;
+                at = end;
+            }
+            return echoed;
+        }
+        return script.Responder()(prompt, spec);
+    };
+}
+
+// Plays memory fixture `name` (format: fixtures/README.md, "Memory fixtures") on a fresh run with the echo responder,
+// checking each step's expectations. Task 6 adds the share step.
+inline void PlayMemoryFixture(const std::string& name)
+{
+    const nlohmann::json fixture = ReadFixture(name);
+    const nlohmann::json& observation = fixture.at("observation");
+    // The fixture's model replies, in step order.
+    HostedScript script;
+    for (const nlohmann::json& step : fixture.at("steps")) {
+        if (step.contains("model")) {
+            script.actions.push_back(step.at("model").at("resolve").get<std::string>());
+            script.lines.push_back(step.at("model").at("line").get<std::string>());
+        }
+    }
+    ScriptedBackend backend(16384, MemoryEchoResponder(script));
+    turn::HostedSession session =
+        turn::HostedSession::Open(HostedRunFile("hosted_memory_fixture_" + name), FixtureHostData(), HostedSettings(), 42,
+                                  backend);
+    std::string id = session.StartConversation(fixture.at("participants").get<std::vector<std::string>>(), observation);
+
+    for (std::size_t i = 0; i < fixture.at("steps").size(); ++i) {
+        const nlohmann::json& step = fixture.at("steps")[i];
+        INFO(name << " step " << i);
+        if (step.contains("turn")) {
+            const nlohmann::json& turnJson = step.at("turn");
+            turn::HostedTurnRequest request;
+            request.conversationId = id;
+            request.speakerId = turnJson.at("speaker").get<std::string>();
+            if (turnJson.contains("player_text")) {
+                request.playerText = turnJson.at("player_text").get<std::string>();
+            }
+            request.observation = observation;
+            REQUIRE(session.RunTurn(request, {}, {}));
+            // Every message of the turn's resolve prompt, for the expectations.
+            std::string prompt;
+            for (const inference::Message& message : session.LastAssembly().prompt.messages) {
+                prompt += message.content + "\n";
+            }
+            const nlohmann::json expect = step.value("expect", nlohmann::json::object());
+            for (const nlohmann::json& absent : expect.value("prompt_absent", nlohmann::json::array())) {
+                CHECK_THAT(prompt, !Catch::Matchers::ContainsSubstring(absent.get<std::string>()));
+            }
+            for (const nlohmann::json& present : expect.value("prompt_contains", nlohmann::json::array())) {
+                CHECK_THAT(prompt, Catch::Matchers::ContainsSubstring(present.get<std::string>()));
+            }
+        } else if (step.contains("leave")) {
+            session.SetParticipants(id, {}, step.at("leave").get<std::vector<std::string>>(), observation);
+        } else if (step.contains("join")) {
+            session.SetParticipants(id, step.at("join").get<std::vector<std::string>>(), {}, observation);
+        } else if (step.contains("end")) {
+            session.EndConversation(id);
+        } else if (step.contains("maintain")) {
+            REQUIRE(session.Maintain({}));
+        } else if (step.contains("memories")) {
+            // Every summary's text of the actor, superseded included, one per line.
+            const nlohmann::json& check = step.at("memories");
+            std::string texts;
+            const std::vector<core::Summary> memories = session.Memories(check.at("actor").get<std::string>());
+            for (const core::Summary& memory : memories) {
+                texts += memory.text + "\n";
+            }
+            for (const nlohmann::json& present : check.value("contains", nlohmann::json::array())) {
+                CHECK_THAT(texts, Catch::Matchers::ContainsSubstring(present.get<std::string>()));
+            }
+            for (const nlohmann::json& absent : check.value("absent", nlohmann::json::array())) {
+                CHECK_THAT(texts, !Catch::Matchers::ContainsSubstring(absent.get<std::string>()));
+            }
+            if (check.contains("count")) {
+                CHECK(memories.size() == check.at("count").get<std::size_t>());
+            }
+        } else if (step.contains("start")) {
+            id = session.StartConversation(step.at("start").get<std::vector<std::string>>(), observation);
+        } else {
+            FAIL("unknown step kind");
+        }
+    }
 }
 
 } // namespace morpheus::test

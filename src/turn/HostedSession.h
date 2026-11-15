@@ -91,11 +91,12 @@ public:
     void SetParticipants(std::string_view conversationId, const std::vector<std::string>& joined,
                          const std::vector<std::string>& left, const nlohmann::json& observation);
 
-    // Plays one turn (hosted-world spec, section 2): checks the request, retrieves from lore and the run's folded
-    // turns, resolves under the proposal grammar (the fit loop folding the conversation's oldest turns when L3 is
-    // over its budget), adjudicates and reports the action through onAction, speaks on a prompt that extends the
-    // resolve prompt (streamed through onToken), and commits the record. Player text is cleaned as Session cleans
-    // input (CleanInput); nothing left means none. Returns the committed turn, or nullopt when `stop` cancelled it:
+    // Plays one turn (hosted-world spec, section 2): checks the request, catches the speaker's memory of the
+    // conversation up to its transcript's cut (CatchUp), retrieves from lore and the run's folded turns, resolves
+    // under the proposal grammar (the fit loop folding the conversation's oldest turns when L3 is over its budget),
+    // adjudicates and reports the action through onAction, speaks on a prompt that extends the resolve prompt
+    // (streamed through onToken), and commits the record. Player text is cleaned as Session cleans input
+    // (CleanInput); nothing left means none. Returns the committed turn, or nullopt when `stop` cancelled it:
     // then no turn is committed and the request's events are not kept (folds the fit loop finished before the stop
     // are, as in Session). onAction fires before the line starts, so a turn cancelled during the speak call has
     // already reported its action through onAction and is still not committed: the host must not take a reported
@@ -114,11 +115,12 @@ public:
     // ended conversation.
     void EndConversation(std::string_view conversationId);
 
-    // Between-turn upkeep, through the shared memory upkeep: folds every remaining turn of each ended conversation into
-    // summaries of its last turn's speaker (in one call when it fits), condensing summaries over their cap on the way,
-    // and indexes the folded turns for retrieval. Returns false when `stop` cancelled it; it can simply run again.
-    // Throws DataError when summary_cap is too small for even a condensed summary. Open conversations are left to their
-    // turns' fit loop.
+    // Between-turn upkeep, through the shared memory upkeep: every NPC catches up on what it witnessed in every
+    // conversation. An ended conversation is first folded through its last turn (its turns become searchable history),
+    // then each NPC witness's memory of it is written (in one call when it fits); in an open conversation each NPC
+    // witness's memory reaches the transcript's cut. An NPC's memories over summary_cap are condensed on the way.
+    // Returns false when `stop` cancelled it; it can simply run again. Throws DataError when summary_cap is too small
+    // for even a condensed summary.
     bool Maintain(std::stop_token stop);
 
     const store::RunMeta& Meta() const;
@@ -160,6 +162,17 @@ private:
     // the actor's own (a catch-up).
     MemoryUpkeep Upkeep(const std::string& conversationId, const std::string& actorId,
                         const nlohmann::json& observation, int turn, bool foldsConversation);
+
+    // Catches `actorId` up on conversation `conversationId` (RunTurn, before the actor speaks, and Maintain): the turns
+    // it witnessed after its remembered-through mark through `throughTurn` fold into its memory, the memory calls'
+    // seeds naming turn `seedTurn`; then its mark is `throughTurn`, the turns it did not witness included. False when
+    // `stop` cancelled it (what it folded before stays).
+    bool CatchUp(const std::string& conversationId, const std::string& actorId, int throughTurn, int seedTurn,
+                 std::stop_token stop);
+
+    // Every NPC who spoke or listened in `turns`, in first-seen order. A listener who is the player in its turn's
+    // observation is left out.
+    std::vector<std::string> NpcWitnesses(const std::vector<core::HostedTurn>& turns);
 };
 
 } // namespace morpheus::turn

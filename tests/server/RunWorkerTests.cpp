@@ -183,13 +183,14 @@ TEST_CASE("A job that does not preempt waits for a running fold, which lands fir
     std::unique_ptr<server::RunWorker> worker =
         SlowFoldWorker("worker_fold_wait", std::chrono::milliseconds(100), script, foldCalls, &pBackend, id);
 
-    // While the fold streams, a job arrives: it runs once the fold has landed, which was not started over.
+    // While the fold streams, a job arrives: it runs once the fold has landed as Hulda's memory, which was not started
+    // over.
     REQUIRE(test::WaitUntil([&] { return foldCalls.load() >= 1; }));
-    int through = 0;
+    std::size_t memories = 0;
     worker->Call([&](turn::HostedSession& session, server::SlotBackend&, std::stop_token) {
-        through = session.Conversation(id)->foldedThrough;
+        memories = session.Memories(test::HULDA).size();
     });
-    CHECK(through == 1);
+    CHECK(memories == 1);
     CHECK(foldCalls.load() == 1);
 }
 
@@ -222,13 +223,13 @@ TEST_CASE("A preempting job stops a running fold at once, also from behind a job
     CHECK(std::chrono::steady_clock::now() - start < std::chrono::milliseconds(1000));
     CHECK(order == std::vector<int>{1, 2});
 
-    // Then the fold runs again, now without the delay, and lands.
+    // Then the fold runs again, now without the delay, and lands as Hulda's memory.
     const bool folded = test::WaitUntil([&] {
-        int through = 0;
+        std::size_t memories = 0;
         worker->Call([&](turn::HostedSession& session, server::SlotBackend&, std::stop_token) {
-            through = session.Conversation(id)->foldedThrough;
+            memories = session.Memories(test::HULDA).size();
         });
-        return through == 1;
+        return memories == 1;
     });
     CHECK(folded);
     CHECK(foldCalls.load() >= 2);

@@ -297,9 +297,10 @@ TEST_CASE("A turn during a background fold stops it and runs promptly; the fold 
     REQUIRE_FALSE(events.empty());
     CHECK(events.back().name == "done");
 
-    // The fold runs again afterwards and lands (the GET waits for it).
-    CHECK(test::WaitUntil([&] { return FoldedThrough(harness) == 1; }));
-    CHECK(foldCalls.load() >= 2);
+    // The fold runs again afterwards and lands: c1's turn left its transcript before the first fold call, and a GET
+    // waits for the running fold.
+    CHECK(test::WaitUntil([&] { return foldCalls.load() >= 2; }));
+    CHECK(FoldedThrough(harness) == 1);
 }
 
 TEST_CASE("A turn stopped by shutdown mid-line ends its stream with a 503 error, and commits nothing",

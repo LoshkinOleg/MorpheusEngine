@@ -1,0 +1,43 @@
+{
+  "description": "R6's acceptance: Hulda, Saadia and Belethor with Aela, the player. Belethor leaves halfway; Hulda tells Aela a secret while Saadia is away. Nobody may remember what they did not witness.",
+  "observation": {
+    "game_time": {"days_passed": 213.42, "hour": 14},
+    "location": "Whiterun, The Bannered Mare",
+    "actors": [
+      {"id": "0001A6A4", "name": "Hulda", "is_player": false, "bio": "Owner of the Bannered Mare."},
+      {"id": "0001B07C", "name": "Saadia", "is_player": false, "bio": "A Redguard working at the inn."},
+      {"id": "0001B07D", "name": "Belethor", "is_player": false, "bio": "A Breton trader."},
+      {"id": "00000007", "name": "Aela", "is_player": true}
+    ]
+  },
+  "participants": ["0001A6A4", "0001B07C", "0001B07D", "00000007"],
+  "steps": [
+    {"turn": {"speaker": "0001A6A4", "player_text": "Good evening, everyone."},
+     "model": {"resolve": "{\"action\":\"none\",\"params\":{}}", "line": "Welcome to the Bannered Mare, all of you."}},
+    {"turn": {"speaker": "0001B07D", "player_text": "What do you sell?"},
+     "model": {"resolve": "{\"action\":\"none\",\"params\":{}}", "line": "My wares are the finest in Whiterun."}},
+    {"leave": ["0001B07D"]},
+    {"turn": {"speaker": "0001A6A4", "player_text": "Where did Belethor go?"},
+     "model": {"resolve": "{\"action\":\"none\",\"params\":{}}", "line": "Belethor went back to his shop."}},
+    {"leave": ["0001B07C"]},
+    {"turn": {"speaker": "0001A6A4", "player_text": "Tell me a secret."},
+     "model": {"resolve": "{\"action\":\"none\",\"params\":{}}", "line": "The guard captain takes bribes from the Thieves Guild."}},
+    {"join": ["0001B07C"]},
+    {"turn": {"speaker": "0001B07C", "player_text": "Welcome back, Saadia."},
+     "model": {"resolve": "{\"action\":\"none\",\"params\":{}}", "line": "Did I miss anything?"},
+     "expect": {"prompt_absent": ["takes bribes"]}},
+    {"end": true},
+    {"maintain": true},
+    {"memories": {"actor": "0001B07D", "contains": ["finest in Whiterun"], "absent": ["back to his shop", "takes bribes"]}},
+    {"memories": {"actor": "0001B07C", "contains": ["back to his shop"], "absent": ["takes bribes"]}},
+    {"memories": {"actor": "0001A6A4", "contains": ["takes bribes", "Did I miss anything"]}},
+    {"memories": {"actor": "00000007", "count": 0}},
+    {"start": ["0001B07D", "0001B07C", "00000007"]},
+    {"turn": {"speaker": "0001B07D", "player_text": "What do you know about the guard captain?"},
+     "model": {"resolve": "{\"action\":\"none\",\"params\":{}}", "line": "Only that he buys nothing from me."},
+     "expect": {"prompt_absent": ["takes bribes", "back to his shop"]}},
+    {"turn": {"speaker": "0001B07C", "player_text": "And you, Saadia?"},
+     "model": {"resolve": "{\"action\":\"none\",\"params\":{}}", "line": "I know nothing of him."},
+     "expect": {"prompt_absent": ["takes bribes"]}}
+  ]
+}

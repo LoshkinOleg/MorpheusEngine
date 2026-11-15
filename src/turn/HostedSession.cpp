@@ -23,7 +23,7 @@ namespace {
 constexpr std::string_view HOST_LORE_SOURCE = "host data: lore";
 // What a hosted tail holds, for the TurnError when it does not fit tail_allowance.
 constexpr std::string_view HOSTED_TAIL_NAME = "the observation, the events and the player text";
-// The task line of the placeholder tail Maintain measures an ended conversation's prompt with.
+// The task line of the placeholder tail a catch-up (CatchUp) measures an NPC's prompt with.
 constexpr std::string_view MAINTENANCE_INSTRUCTION = "(the conversation's next turn)";
 // A hosted turn retrieves from the host's lore and the run's folded turns; a hosted run has no notes.
 constexpr std::array<store::EmbeddingKind, 3> HOSTED_SOURCES = {store::EmbeddingKind::Lore, store::EmbeddingKind::Turn,
@@ -286,6 +286,12 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
         newEvents.push_back(event.at("text").get<std::string>());
     }
 
+    // The speaker's own memory of this conversation reaches the transcript's cut before it speaks, so nothing it
+    // witnessed is in neither its L3 nor its memory.
+    if (!CatchUp(conversation.id, request.speakerId, conversation.foldedThrough, turn, stop)) {
+        return std::nullopt;
+    }
+
     // 1. Retrieve from lore, the folded turns the speaker witnessed (this and earlier conversations) and its own
     // summaries, with the player text, the speaker's name and the previous line.
     RetrievalQuery query;
@@ -403,33 +409,27 @@ void HostedSession::EndConversation(std::string_view conversationId)
 
 bool HostedSession::Maintain(std::stop_token stop)
 {
-    // Every ended conversation with turns still in L3 is folded whole. Its seeds name the run's latest turn.
+    // Every NPC catches up in every conversation: an ended conversation is folded through its last turn first, for
+    // every NPC witness; an open one through its current cut. Condensing happens in the upkeep, per NPC, when an NPC's
+    // memories pass summary_cap. Seeds name the run's latest turn.
     const int latest = _store.LatestHostedTurn();
     for (const core::Conversation& conversation : _store.Conversations()) {
-        if (!conversation.ended) {
+        const std::vector<core::HostedTurn> turns = _store.HostedTurns(conversation.id);
+        if (turns.empty()) {
             continue;
         }
-        const std::vector<core::HostedTurn> played = _store.HostedTurns(conversation.id);
-        if (played.empty() || played.back().number <= conversation.foldedThrough) {
-            continue;
+        // An ended conversation's remaining turns leave the shared transcript at once and become searchable history;
+        // each witness's memory of them is written below.
+        int through = conversation.foldedThrough;
+        if (conversation.ended && turns.back().number > through) {
+            through = turns.back().number;
+            _store.MarkFolded(conversation.id, through);
+            SyncHistory();
         }
-        // The prompt the conversation's next turn would start with: its last observation and a placeholder task stand
-        // in for the tail, which no fold reads.
-        context::HostedInputs tail;
-        tail.observation = played.back().observation;
-        tail.instruction = std::string(MAINTENANCE_INSTRUCTION);
-        // The conversation is folded as its last turn's speaker: the summaries are that speaker's memories, of the
-        // unfolded turns it witnessed, read again each pass (a fold moves the conversation's mark).
-        const std::string& lastSpeaker = played.back().speakerId;
-        auto assemble = [&](const std::vector<RetrievalHit>&) {
-            const std::optional<core::Conversation> now = _store.Conversation(conversation.id);
-            MORPHEUS_REQUIRE(now.has_value(), "HostedSession::Maintain: the conversation is not in the store");
-            return Pass(conversation.id, lastSpeaker, Entries(*now, now->foldedThrough, latest, lastSpeaker), {},
-                        tail);
-        };
-        // Each fold's summary is stored and its turns indexed as it lands (the scope's storeFold).
-        if (!Upkeep(conversation.id, lastSpeaker, tail.observation, latest, true).FoldAll(assemble, stop)) {
-            return false;
+        for (const std::string& npc : NpcWitnesses(turns)) {
+            if (!CatchUp(conversation.id, npc, through, latest, stop)) {
+                return false;
+            }
         }
     }
     return true;
@@ -672,6 +672,64 @@ MemoryUpkeep HostedSession::Upkeep(const std::string& conversationId, const std:
         return context::RenderMemories(name, lines) + "\n" + instruction;
     };
     return MemoryUpkeep(_store, *_pBackend, _settings, std::string(HOSTED_TAIL_NAME), turn, 0, std::move(scope));
+}
+
+bool HostedSession::CatchUp(const std::string& conversationId, const std::string& actorId, int throughTurn,
+                            int seedTurn, std::stop_token stop)
+{
+    // Nothing to do when the actor's memory already reaches throughTurn.
+    if (_store.RememberedThrough(conversationId, actorId) >= throughTurn) {
+        return true;
+    }
+    // The actor's witnessed turns after its mark through throughTurn fold into its memory (FoldAll: in one call when
+    // they fit), each pass reading the mark again: a fold moves it. The conversation's last observation names the
+    // actors, and a placeholder task stands in for the tail, which no fold reads.
+    const std::vector<core::HostedTurn> turns = _store.HostedTurns(conversationId);
+    const nlohmann::json observation = turns.empty() ? nlohmann::json::object() : turns.back().observation;
+    auto assemble = [&](const std::vector<RetrievalHit>&) {
+        const std::optional<core::Conversation> now = _store.Conversation(conversationId);
+        MORPHEUS_REQUIRE(now.has_value(), "HostedSession::CatchUp: the conversation is not in the store");
+        context::HostedInputs inputs;
+        inputs.observation = observation;
+        inputs.instruction = std::string(MAINTENANCE_INSTRUCTION);
+        return Pass(conversationId, actorId,
+                    Entries(*now, _store.RememberedThrough(conversationId, actorId), throughTurn, actorId), {}, inputs);
+    };
+    // Each fold's summary is the actor's and moves only its own mark (a catch-up); its turns are indexed as it lands.
+    if (!Upkeep(conversationId, actorId, observation, seedTurn, false).FoldAll(assemble, stop)) {
+        return false;
+    }
+    // Turns it did not witness need no memory: its mark reaches throughTurn.
+    if (_store.RememberedThrough(conversationId, actorId) < throughTurn) {
+        _store.SetRememberedThrough(conversationId, actorId, throughTurn);
+    }
+    return true;
+}
+
+std::vector<std::string> HostedSession::NpcWitnesses(const std::vector<core::HostedTurn>& turns)
+{
+    // Who spoke or listened, as an NPC: a turn's player is in its observation.
+    std::vector<std::string> npcs;
+    auto add = [&npcs](const std::string& id) {
+        if (std::find(npcs.begin(), npcs.end(), id) == npcs.end()) {
+            npcs.push_back(id);
+        }
+    };
+    for (const core::HostedTurn& turn : turns) {
+        const std::vector<core::Actor> actors = HostedWorld::ActorsOf(turn.observation);
+        auto isPlayer = [&actors](const std::string& id) {
+            return std::any_of(actors.begin(), actors.end(),
+                               [&id](const core::Actor& actor) { return actor.id == id && actor.isPlayer; });
+        };
+        // The speaker is never the player (RunTurn refuses that).
+        add(turn.speakerId);
+        for (const std::string& listener : turn.listenerIds) {
+            if (!isPlayer(listener)) {
+                add(listener);
+            }
+        }
+    }
+    return npcs;
 }
 
 } // namespace morpheus::turn

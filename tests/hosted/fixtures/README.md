@@ -14,6 +14,8 @@ fixtures may replace any of these files, as long as they keep the format below.
   refused action, a turn without player text).
 - `radiant.json`: two NPCs talking for six turns with no player text.
 - `invalid_requests.json`: requests that must fail with a `DataError` before any model call.
+- `three_actors.json`: a memory fixture (R6's acceptance): Hulda, Saadia and Belethor with Aela, the player. Belethor
+  leaves halfway and Hulda tells a secret while Saadia is away; nobody may remember what it did not witness.
 
 Every fixture may carry a `description` string; the tests ignore it.
 
@@ -58,3 +60,27 @@ A request is `{"name", "conversation", "turn", "error"}`:
 - `error`: a substring the `DataError` message must contain (the field or JSON pointer at fault).
 
 The test also checks that no model call was made and that no turn was committed.
+
+## Memory fixtures (`three_actors.json`)
+
+`{"observation": {...}, "participants": [ids], "steps": [...]}`. `observation` is the fixture's own observation: every
+request and every participants change uses it (a step has no observation of its own). The test starts one conversation
+with `participants` (in this join order) and plays `steps` in order. A step is one of these kinds.
+
+- **A turn step**: `{"turn": {...}, "model": {...}, "expect": {...}}`, as in conversation fixtures (`turn` with
+  `speaker` and optionally `player_text`; `model` with `resolve` and `line`). `expect` is optional and holds
+  substrings checked against every message of the turn's resolve prompt:
+  - `prompt_absent` (optional, strings): none may appear.
+  - `prompt_contains` (optional, strings): each must appear.
+- **`{"leave": [ids]}`** and **`{"join": [ids]}`**: a participants change (`SetParticipants`), with the fixture's
+  observation.
+- **`{"end": true}`**: the conversation ends (`EndConversation`).
+- **`{"maintain": true}`**: background upkeep until nothing is left (`Maintain` until it returns true).
+- **`{"memories": {"actor", "contains", "absent", "count"}}`**: checks the memories of `actor` (an id), every summary
+  of it, superseded included. `contains` (optional, strings): substrings that must appear in some summary's text;
+  `absent` (optional, strings): substrings that must appear in none; `count` (optional): how many summaries it has.
+- **`{"start": [ids]}`**: a new conversation of those participants (in this join order), which later steps use.
+
+The fixture's model replies are used in step order, for resolve and speak calls only. Memory calls (folds and
+condenses) are answered by the test's echo responder (`test::MemoryEchoResponder`), which repeats the lines the call
+reads, so a memory holds exactly what its NPC witnessed; the responder is part of the test, not of the format.
