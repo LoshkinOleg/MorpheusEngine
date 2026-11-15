@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -39,6 +40,14 @@ struct Summary {
     int fromTurn = 0;
     int toTurn = 0;
     std::string text = {};
+    // Hosted runs (per-speaker memory spec): whose memory this is, and from which conversation. The owned game leaves
+    // them empty. A condensed summary has no conversation; a shared copy names its teller and the summary it copies.
+    std::string actorId = {};
+    std::string conversationId = {};
+    std::string toldBy = {};
+    std::int64_t sourceId = 0; // The summary a shared copy was made from; 0 otherwise.
+    bool superseded = false;   // Condensed into a later summary: kept, but no longer shown.
+    std::int64_t id = 0;       // The store's row id; 0 before it is stored.
 };
 
 // A model-written memory from assisted memory mode. Notes exist only for committed turns.

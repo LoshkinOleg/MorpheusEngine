@@ -131,8 +131,8 @@ TEST_CASE("A conversation over its transcript budget folds its oldest turns duri
         CHECK(session.LastAssembly().Fits());
     }
 
-    // The oldest turns went into run-wide summaries, and the conversation's folded mark moved with them.
-    const std::vector<core::Summary> summaries = session.Summaries();
+    // The oldest turns went into the speaker's summaries, and the conversation's folded mark moved with them.
+    const std::vector<core::Summary> summaries = session.Memories(test::HULDA);
     REQUIRE_FALSE(summaries.empty());
     CHECK(summaries.front().fromTurn == 1);
     CHECK(session.Conversation(id)->foldedThrough >= 1);
@@ -155,12 +155,12 @@ TEST_CASE("EndConversation and Maintain fold the rest, and a later conversation 
 
     // While the conversation is open, Maintain leaves it alone.
     CHECK(session.Maintain({}));
-    CHECK(session.Summaries().empty());
+    CHECK(session.Memories(test::HULDA).empty());
 
     // Ended, its remaining turns fold in one call.
     session.EndConversation(first);
     CHECK(session.Maintain({}));
-    const std::vector<core::Summary> summaries = session.Summaries();
+    const std::vector<core::Summary> summaries = session.Memories(test::HULDA);
     REQUIRE(summaries.size() == 1);
     CHECK(summaries[0].fromTurn == 1);
     CHECK(summaries[0].toTurn == 2);
@@ -197,11 +197,11 @@ TEST_CASE("A cancelled Maintain folds nothing and can simply run again", "[hoste
     std::stop_source stop;
     stop.request_stop();
     CHECK_FALSE(session.Maintain(stop.get_token()));
-    CHECK(session.Summaries().empty());
+    CHECK(session.Memories(test::HULDA).empty());
     CHECK(session.Conversation(id)->foldedThrough == 0);
 
     CHECK(session.Maintain({}));
-    REQUIRE(session.Summaries().size() == 1);
+    REQUIRE(session.Memories(test::HULDA).size() == 1);
     CHECK(session.Conversation(id)->foldedThrough == 2);
 }
 
@@ -281,17 +281,20 @@ TEST_CASE("Two open conversations interleave their turns; ending one folds only 
     CHECK_THAT(folded, ContainsSubstring("Hulda [none]: The silver key is under the bar."));
     CHECK_THAT(folded, ContainsSubstring("Hulda [none]: Nobody else knows about the silver key."));
     CHECK_THAT(folded, !ContainsSubstring("Saadia") && !ContainsSubstring("bard"));
-    const std::vector<core::Summary> summaries = session.Summaries();
+    const std::vector<core::Summary> summaries = session.Memories(test::HULDA);
     REQUIRE(summaries.size() == 1);
     CHECK(summaries[0].fromTurn == 1);
     CHECK(summaries[0].toTurn == 3);
     CHECK(session.Conversation(c1)->foldedThrough == 3);
     CHECK(session.Conversation(c2)->foldedThrough == 0);
 
-    // c2's next turn has the summary in L2 and its own turns still in L3, and retrieves c1's folded turns.
+    // The summary is Hulda's, who spoke c1's last turn; Saadia has none.
+    CHECK(session.Memories(test::SAADIA).empty());
+
+    // c2's next turn (Saadia's) has no summary of c1 in L2 and its own turns still in L3, and retrieves c1's folded
+    // turns.
     REQUIRE(session.RunTurn(test::Request(c2, test::SAADIA, "Where is the silver key?"), {}, {})->number == 5);
-    CHECK_THAT(session.LastAssembly().prompt.messages.front().content,
-               ContainsSubstring("# Story so far\nTurns 1-3: Summary.\n"));
+    CHECK_THAT(session.LastAssembly().prompt.messages.front().content, !ContainsSubstring("# Story so far"));
     CHECK(transcript() == std::vector<std::string>{"(A bard tunes a lute.)\nAela: Any rumours tonight?",
                                                    "Saadia [none]: Only about the bard.",
                                                    "(The fire crackles.)\nAela: Tell me about the bard.",
@@ -324,9 +327,9 @@ TEST_CASE("A stop between two ended conversations in one Maintain keeps the firs
     // The stop is requested once c1's fold has landed and its turn is indexed: c2's fold call is cancelled.
     backend.Arm();
     CHECK_FALSE(session.Maintain(stop.get_token()));
-    REQUIRE(session.Summaries().size() == 1);
-    CHECK(session.Summaries()[0].fromTurn == 1);
-    CHECK(session.Summaries()[0].toTurn == 1);
+    REQUIRE(session.Memories(test::HULDA).size() == 1);
+    CHECK(session.Memories(test::HULDA)[0].fromTurn == 1);
+    CHECK(session.Memories(test::HULDA)[0].toTurn == 1);
     CHECK(session.Conversation(c1)->foldedThrough == 1);
     CHECK(session.Conversation(c2)->foldedThrough == 0);
 
@@ -334,10 +337,13 @@ TEST_CASE("A stop between two ended conversations in one Maintain keeps the firs
     const std::size_t calls = inner.Calls().size();
     CHECK(session.Maintain({}));
     CHECK(inner.Calls().size() == calls + 1);
-    const std::vector<core::Summary> summaries = session.Summaries();
-    REQUIRE(summaries.size() == 2);
-    CHECK(summaries[1].fromTurn == 2);
-    CHECK(summaries[1].toTurn == 2);
+    // c1's fold is Hulda's, who spoke its last turn; c2's is Saadia's.
+    CHECK(session.Memories(test::HULDA).size() == 1);
+    const std::vector<core::Summary> summaries = session.Memories(test::SAADIA);
+    REQUIRE(summaries.size() == 1);
+    CHECK(summaries[0].fromTurn == 2);
+    CHECK(summaries[0].toTurn == 2);
+    CHECK(summaries[0].conversationId == c2);
     CHECK(session.Conversation(c1)->foldedThrough == 1);
     CHECK(session.Conversation(c2)->foldedThrough == 2);
 }

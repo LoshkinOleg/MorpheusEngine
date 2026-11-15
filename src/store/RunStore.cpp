@@ -6,6 +6,7 @@
 #include <chrono>
 #include <format>
 #include <map>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -39,10 +40,15 @@ CREATE TABLE state_snapshots (
     state TEXT NOT NULL
 );
 CREATE TABLE summaries (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    from_turn INTEGER NOT NULL,
-    to_turn   INTEGER NOT NULL,
-    text      TEXT NOT NULL
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_turn       INTEGER NOT NULL,
+    to_turn         INTEGER NOT NULL,
+    text            TEXT NOT NULL,
+    actor_id        TEXT NOT NULL DEFAULT '',
+    conversation_id TEXT NOT NULL DEFAULT '',
+    told_by         TEXT NOT NULL DEFAULT '',
+    source_id       INTEGER NOT NULL DEFAULT 0,
+    superseded      INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE notes (
     id   INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -102,6 +108,39 @@ CREATE INDEX conversation_events_conversation ON conversation_events (conversati
 constexpr const char* EVENTS_OMITTED_SQL =
     "ALTER TABLE hosted_turns ADD COLUMN events_omitted INTEGER NOT NULL DEFAULT 0;";
 
+// What version 5 adds to a version 4 file (per-speaker memory spec, section 5), in two parts. The summaries' per-actor
+// columns, which a new file has from SCHEMA_SQL: for upgrades only. A hosted run's run-wide summaries are then moved to
+// their NPC witnesses (RunStore::Open).
+constexpr const char* PER_ACTOR_COLUMNS_SQL = R"sql(
+ALTER TABLE summaries ADD COLUMN actor_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE summaries ADD COLUMN conversation_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE summaries ADD COLUMN told_by TEXT NOT NULL DEFAULT '';
+ALTER TABLE summaries ADD COLUMN source_id INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE summaries ADD COLUMN superseded INTEGER NOT NULL DEFAULT 0;
+)sql";
+
+// The per-speaker memory tables and the summaries' actor index: for new files and upgrades. actor_memory holds how far
+// each NPC remembers each conversation; pending_shares the shares waiting for the teller's memory to be complete.
+constexpr const char* PER_ACTOR_TABLES_SQL = R"sql(
+CREATE TABLE actor_memory (
+    conversation_id    TEXT NOT NULL,
+    actor_id           TEXT NOT NULL,
+    remembered_through INTEGER NOT NULL,
+    PRIMARY KEY (conversation_id, actor_id)
+);
+CREATE TABLE pending_shares (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_actor      TEXT NOT NULL,
+    to_actor        TEXT NOT NULL,
+    conversation_id TEXT NOT NULL
+);
+CREATE INDEX summaries_actor ON summaries (actor_id);
+)sql";
+
+// The columns ReadSummaryRow reads, in its order.
+constexpr const char* SUMMARY_COLUMNS =
+    "id, from_turn, to_turn, text, actor_id, conversation_id, told_by, source_id, superseded";
+
 // Stored spelling of a run kind, run_meta 'kind'.
 const char* RunKindName(RunKind kind)
 {
@@ -147,6 +186,8 @@ const char* KindName(EmbeddingKind kind)
         return "turn";
     case EmbeddingKind::Note:
         return "note";
+    case EmbeddingKind::Summary:
+        return "summary";
     }
     throw morpheus::core::ContractError("KindName: unhandled EmbeddingKind");
 }
@@ -200,6 +241,7 @@ RunStore RunStore::CreateWith(const std::filesystem::path& file, RunMeta meta,
         db.Transaction([&] {
             db.Exec(SCHEMA_SQL);
             db.Exec(HOSTED_SCHEMA_SQL);
+            db.Exec(PER_ACTOR_TABLES_SQL);
 
             const std::array<std::pair<const char*, std::string>, 8> metaRows = {{
                 {"schema_version", std::to_string(SCHEMA_VERSION)},
@@ -254,20 +296,132 @@ RunStore RunStore::Open(const std::filesystem::path& file)
         return it->second;
     };
 
-    // An older run is upgraded in place, in one transaction, its data untouched: version 2 gains the hosted tables
-    // (already with version 4's column) and is marked owned; version 3 gains hosted_turns.events_omitted, 0 for the
-    // turns it holds. Any other version is refused below.
+    // Version 5's move of a version 3 or 4 hosted run's summaries, inside the upgrade's transaction. Each run-wide
+    // summary goes to every NPC who witnessed a turn in its range, with that turn's conversation; the run-wide row
+    // goes. Each NPC witness's mark in a conversation starts at the conversation's folded_through.
+    auto moveSummaries = [&db, &file] {
+        struct Witnessed {
+            std::string conversationId = {};
+            std::vector<std::string> npcs = {};
+        };
+        // Every turn's conversation and NPC witnesses (the speaker and the listeners who are not the player).
+        std::map<int, Witnessed> turns;
+        {
+            Statement turnQuery = db.Prepare("SELECT number, conversation_id, speaker_id, listener_ids, observation "
+                                             "FROM hosted_turns ORDER BY number");
+            while (turnQuery.Step()) {
+                const int number = static_cast<int>(turnQuery.ColumnInt(0));
+                const nlohmann::json listeners = nlohmann::json::parse(turnQuery.ColumnText(3), nullptr, false);
+                const nlohmann::json observation = nlohmann::json::parse(turnQuery.ColumnText(4), nullptr, false);
+                const core::ActorsCore actorsCore = core::ReadActors(observation);
+                if (listeners.is_discarded() || !listeners.is_array() || !actorsCore.faults.empty()) {
+                    throw StoreError(std::format("'{}': hosted turn {} cannot be upgraded: its listener_ids or "
+                                                 "observation is damaged",
+                                                 core::PathText(file), number));
+                }
+                auto isPlayer = [&actorsCore](const std::string& id) {
+                    return std::any_of(actorsCore.actors.begin(), actorsCore.actors.end(),
+                                       [&id](const core::Actor& actor) { return actor.id == id && actor.isPlayer; });
+                };
+                Witnessed witnessed;
+                witnessed.conversationId = turnQuery.ColumnText(1);
+                witnessed.npcs.push_back(turnQuery.ColumnText(2));
+                for (const nlohmann::json& listener : listeners) {
+                    if (listener.is_string() && !isPlayer(listener.get<std::string>())) {
+                        witnessed.npcs.push_back(listener.get<std::string>());
+                    }
+                }
+                turns.emplace(number, std::move(witnessed));
+            }
+        }
+
+        // The run-wide summaries, read whole before any insert into the same table.
+        struct RunWide {
+            std::int64_t id = 0;
+            int fromTurn = 0;
+            int toTurn = 0;
+            std::string text = {};
+        };
+        std::vector<RunWide> runWide;
+        {
+            Statement summaryQuery = db.Prepare("SELECT id, from_turn, to_turn, text FROM summaries ORDER BY id");
+            while (summaryQuery.Step()) {
+                runWide.push_back({summaryQuery.ColumnInt(0), static_cast<int>(summaryQuery.ColumnInt(1)),
+                                   static_cast<int>(summaryQuery.ColumnInt(2)), summaryQuery.ColumnText(3)});
+            }
+        }
+
+        // Each one copied to the NPC witnesses of its range, then removed.
+        for (const RunWide& summary : runWide) {
+            std::set<std::string> npcs;
+            std::string conversationId;
+            for (auto it = turns.lower_bound(summary.fromTurn); it != turns.end() && it->first <= summary.toTurn; ++it) {
+                conversationId = it->second.conversationId;
+                npcs.insert(it->second.npcs.begin(), it->second.npcs.end());
+            }
+            for (const std::string& npc : npcs) {
+                db.Prepare("INSERT INTO summaries (from_turn, to_turn, text, actor_id, conversation_id) "
+                           "VALUES (?1, ?2, ?3, ?4, ?5)")
+                    .Bind(1, summary.fromTurn)
+                    .Bind(2, summary.toTurn)
+                    .Bind(3, summary.text)
+                    .Bind(4, npc)
+                    .Bind(5, conversationId)
+                    .Run();
+            }
+            db.Prepare("DELETE FROM summaries WHERE id = ?1").Bind(1, summary.id).Run();
+        }
+
+        // Each NPC witness's mark: how far its conversation is folded. The conversations are read whole first too.
+        std::vector<std::pair<std::string, int>> conversations;
+        {
+            Statement conversationQuery = db.Prepare("SELECT id, folded_through FROM conversations ORDER BY position");
+            while (conversationQuery.Step()) {
+                conversations.emplace_back(conversationQuery.ColumnText(0),
+                                           static_cast<int>(conversationQuery.ColumnInt(1)));
+            }
+        }
+        for (const auto& [conversationId, foldedThrough] : conversations) {
+            std::set<std::string> npcs;
+            for (const auto& [number, witnessed] : turns) {
+                if (witnessed.conversationId == conversationId && number <= foldedThrough) {
+                    npcs.insert(witnessed.npcs.begin(), witnessed.npcs.end());
+                }
+            }
+            for (const std::string& npc : npcs) {
+                db.Prepare("INSERT INTO actor_memory (conversation_id, actor_id, remembered_through) VALUES (?1, ?2, ?3)")
+                    .Bind(1, conversationId)
+                    .Bind(2, npc)
+                    .Bind(3, foldedThrough)
+                    .Run();
+            }
+        }
+    };
+
+    // An older run is upgraded in place to version 5, in one transaction, step by step: version 2 gains the hosted
+    // tables (already with version 4's column) and is marked owned; version 3 gains hosted_turns.events_omitted, 0 for
+    // the turns it holds; every one of them gains version 5's per-actor columns and tables, and a hosted run's
+    // run-wide summaries move to their NPC witnesses. An owned run's data is untouched. Any other version is refused
+    // below.
     const std::string version = value("schema_version"); // A copy: `values` changes below.
-    if (version == "2" || version == "3") {
+    if (version == "2" || version == "3" || version == "4") {
         try {
+            // A version 2 file is owned; a later one says its kind.
+            const bool hosted = version != "2" && value("kind") == RunKindName(RunKind::Hosted);
             db.Transaction([&] {
                 if (version == "2") {
                     db.Exec(HOSTED_SCHEMA_SQL);
                     db.Prepare("INSERT INTO run_meta (key, value) VALUES ('kind', ?1)")
                         .Bind(1, RunKindName(RunKind::Owned))
                         .Run();
-                } else {
+                }
+                if (version == "3") {
                     db.Exec(EVENTS_OMITTED_SQL);
+                }
+                db.Exec(PER_ACTOR_COLUMNS_SQL);
+                db.Exec(PER_ACTOR_TABLES_SQL);
+                if (hosted) {
+                    moveSummaries();
                 }
                 db.Prepare("UPDATE run_meta SET value = ?1 WHERE key = 'schema_version'")
                     .Bind(1, std::to_string(SCHEMA_VERSION))
@@ -495,6 +649,7 @@ void RunStore::TruncateAfter(int turn)
 
 void RunStore::AddSummary(const core::Summary& summary)
 {
+    RequireOwned("AddSummary");
     MORPHEUS_REQUIRE(summary.fromTurn >= 1 && summary.fromTurn <= summary.toTurn,
                      std::format("AddSummary: bad turn range {}..{}", summary.fromTurn, summary.toTurn));
     _db.Prepare("INSERT INTO summaries (from_turn, to_turn, text) VALUES (?1, ?2, ?3)")
@@ -506,13 +661,14 @@ void RunStore::AddSummary(const core::Summary& summary)
 
 void RunStore::ReplaceSummaries(const core::Summary& merged)
 {
+    RequireOwned("ReplaceSummaries");
     MORPHEUS_REQUIRE(merged.fromTurn >= 1 && merged.fromTurn <= merged.toTurn,
                      std::format("ReplaceSummaries: bad turn range {}..{}", merged.fromTurn, merged.toTurn));
 
-    // The old summaries go and the merged one arrives together, so a failure never leaves the run without
+    // The old run-wide summaries go and the merged one arrives together, so a failure never leaves the run without
     // its story so far.
     _db.Transaction([&] {
-        _db.Prepare("DELETE FROM summaries").Run();
+        _db.Prepare("DELETE FROM summaries WHERE actor_id = ''").Run();
         _db.Prepare("INSERT INTO summaries (from_turn, to_turn, text) VALUES (?1, ?2, ?3)")
             .Bind(1, merged.fromTurn)
             .Bind(2, merged.toTurn)
@@ -523,7 +679,9 @@ void RunStore::ReplaceSummaries(const core::Summary& merged)
 
 std::vector<core::Summary> RunStore::Summaries()
 {
-    Statement query = _db.Prepare("SELECT from_turn, to_turn, text FROM summaries ORDER BY from_turn, id");
+    RequireOwned("Summaries");
+    Statement query =
+        _db.Prepare("SELECT from_turn, to_turn, text FROM summaries WHERE actor_id = '' ORDER BY from_turn, id");
     std::vector<core::Summary> summaries;
     while (query.Step()) {
         summaries.push_back({static_cast<int>(query.ColumnInt(0)), static_cast<int>(query.ColumnInt(1)),
@@ -689,29 +847,174 @@ void RunStore::EndConversation(std::string_view id)
     _db.Prepare("UPDATE conversations SET ended = 1 WHERE id = ?1").Bind(1, id).Run();
 }
 
-void RunStore::FoldConversation(std::string_view id, const core::Summary& summary)
+std::int64_t RunStore::FoldConversation(std::string_view id, const core::Summary& summary)
 {
     RequireHosted("FoldConversation");
-    MORPHEUS_REQUIRE(summary.fromTurn >= 1 && summary.fromTurn <= summary.toTurn,
-                     std::format("FoldConversation: bad turn range {}..{}", summary.fromTurn, summary.toTurn));
-    const std::optional<core::Conversation> conversation = Conversation(id);
-    MORPHEUS_REQUIRE(conversation.has_value(), "FoldConversation: no such conversation");
-    // The folded mark only moves forward, and never past a turn that exists.
-    MORPHEUS_REQUIRE(summary.toTurn > conversation->foldedThrough,
-                     std::format("FoldConversation: turn {} is already folded through {}", summary.toTurn,
-                                 conversation->foldedThrough));
-    MORPHEUS_REQUIRE(summary.toTurn <= LatestHostedTurn(),
-                     std::format("FoldConversation: turn {} is past the latest turn {}", summary.toTurn,
-                                 LatestHostedTurn()));
-    // The summary and the conversation's folded mark land together: a turn is never both folded and shown in L3.
+    MORPHEUS_REQUIRE(!summary.actorId.empty(), "FoldConversation: the summary needs its actor");
+    MORPHEUS_REQUIRE(summary.conversationId == id,
+                     std::format("FoldConversation: the summary is of conversation '{}', not '{}'",
+                                 summary.conversationId, id));
+    // The summary, the conversation's folded mark and the actor's own mark land together: a turn is never both folded
+    // and shown in L3. Each step checks its own contract (the turn range, the marks only moving forward and never past
+    // a turn that exists); a failed one rolls the others back.
+    std::int64_t summaryId = 0;
     _db.Transaction([&] {
-        _db.Prepare("INSERT INTO summaries (from_turn, to_turn, text) VALUES (?1, ?2, ?3)")
-            .Bind(1, summary.fromTurn)
-            .Bind(2, summary.toTurn)
-            .Bind(3, summary.text)
-            .Run();
-        _db.Prepare("UPDATE conversations SET folded_through = ?1 WHERE id = ?2").Bind(1, summary.toTurn).Bind(2, id).Run();
+        summaryId = AddActorSummary(summary);
+        MoveFoldedThrough("FoldConversation", id, summary.toTurn);
+        SetRememberedThrough(id, summary.actorId, summary.toTurn);
     });
+    return summaryId;
+}
+
+void RunStore::MarkFolded(std::string_view id, int turn)
+{
+    RequireHosted("MarkFolded");
+    MoveFoldedThrough("MarkFolded", id, turn);
+}
+
+std::vector<core::Summary> RunStore::ActorSummaries(std::string_view actorId, bool includeSuperseded)
+{
+    RequireHosted("ActorSummaries");
+    MORPHEUS_REQUIRE(!actorId.empty(), "ActorSummaries: an actor is needed");
+    // The actor's rows, the superseded ones only when asked for, oldest range first.
+    Statement query = _db.Prepare(std::format("SELECT {} FROM summaries WHERE actor_id = ?1{} ORDER BY from_turn, id",
+                                              SUMMARY_COLUMNS, includeSuperseded ? "" : " AND superseded = 0"));
+    query.Bind(1, actorId);
+    std::vector<core::Summary> summaries;
+    while (query.Step()) {
+        summaries.push_back(ReadSummaryRow(query));
+    }
+    return summaries;
+}
+
+std::vector<core::Summary> RunStore::HostedSummaries()
+{
+    RequireHosted("HostedSummaries");
+    // Every row: in a hosted run each one has its actor, and ReadSummaryRow refuses one without.
+    Statement query = _db.Prepare(std::format("SELECT {} FROM summaries ORDER BY from_turn, id", SUMMARY_COLUMNS));
+    std::vector<core::Summary> summaries;
+    while (query.Step()) {
+        summaries.push_back(ReadSummaryRow(query));
+    }
+    return summaries;
+}
+
+std::int64_t RunStore::AddActorSummary(const core::Summary& summary)
+{
+    RequireHosted("AddActorSummary");
+    MORPHEUS_REQUIRE(!summary.actorId.empty(), "AddActorSummary: the summary needs its actor");
+    MORPHEUS_REQUIRE(summary.fromTurn >= 1 && summary.fromTurn <= summary.toTurn,
+                     std::format("AddActorSummary: bad turn range {}..{}", summary.fromTurn, summary.toTurn));
+    // Every column but the id, which SQLite assigns and the caller gets back. One statement: callers that change more
+    // than this row hold the transaction.
+    _db.Prepare("INSERT INTO summaries (from_turn, to_turn, text, actor_id, conversation_id, told_by, source_id, "
+                "superseded) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)")
+        .Bind(1, summary.fromTurn)
+        .Bind(2, summary.toTurn)
+        .Bind(3, summary.text)
+        .Bind(4, summary.actorId)
+        .Bind(5, summary.conversationId)
+        .Bind(6, summary.toldBy)
+        .Bind(7, summary.sourceId)
+        .Bind(8, summary.superseded ? 1 : 0)
+        .Run();
+    Statement inserted = _db.Prepare("SELECT last_insert_rowid()");
+    const bool hasRow = inserted.Step();
+    MORPHEUS_REQUIRE(hasRow, "AddActorSummary: last_insert_rowid returned no row");
+    return inserted.ColumnInt(0);
+}
+
+std::int64_t RunStore::RememberFold(const core::Summary& summary)
+{
+    RequireHosted("RememberFold");
+    MORPHEUS_REQUIRE(!summary.conversationId.empty(), "RememberFold: the summary needs its conversation");
+    // The summary and the actor's mark land together; the conversation's folded mark is the speaker's to move.
+    std::int64_t summaryId = 0;
+    _db.Transaction([&] {
+        summaryId = AddActorSummary(summary);
+        SetRememberedThrough(summary.conversationId, summary.actorId, summary.toTurn);
+    });
+    return summaryId;
+}
+
+std::int64_t RunStore::CondenseActorSummaries(std::string_view actorId, const core::Summary& condensed)
+{
+    RequireHosted("CondenseActorSummaries");
+    MORPHEUS_REQUIRE(condensed.actorId == actorId,
+                     std::format("CondenseActorSummaries: the condensed summary is '{}''s, not '{}''s",
+                                 condensed.actorId, actorId));
+    MORPHEUS_REQUIRE(condensed.conversationId.empty() && condensed.toldBy.empty(),
+                     "CondenseActorSummaries: a condensed summary has no conversation and no teller");
+    // The shown summaries become superseded (kept, retrieved, found by shares) and the condensed one arrives, together,
+    // so the actor never shows both or neither.
+    std::int64_t summaryId = 0;
+    _db.Transaction([&] {
+        _db.Prepare("UPDATE summaries SET superseded = 1 WHERE actor_id = ?1 AND superseded = 0").Bind(1, actorId).Run();
+        summaryId = AddActorSummary(condensed);
+    });
+    return summaryId;
+}
+
+int RunStore::RememberedThrough(std::string_view conversationId, std::string_view actorId)
+{
+    RequireHosted("RememberedThrough");
+    Statement query = _db.Prepare(
+        "SELECT remembered_through FROM actor_memory WHERE conversation_id = ?1 AND actor_id = ?2");
+    query.Bind(1, conversationId).Bind(2, actorId);
+    // No row: the actor remembers none of the conversation yet.
+    return query.Step() ? static_cast<int>(query.ColumnInt(0)) : 0;
+}
+
+void RunStore::SetRememberedThrough(std::string_view conversationId, std::string_view actorId, int turn)
+{
+    RequireHosted("SetRememberedThrough");
+    MORPHEUS_REQUIRE(!actorId.empty(), "SetRememberedThrough: an actor is needed");
+    MORPHEUS_REQUIRE(Conversation(conversationId).has_value(), "SetRememberedThrough: no such conversation");
+    // The mark only moves forward.
+    const int current = RememberedThrough(conversationId, actorId);
+    MORPHEUS_REQUIRE(turn > current, std::format("SetRememberedThrough: '{}' already remembers '{}' through turn {}, "
+                                                 "not before {}",
+                                                 actorId, conversationId, current, turn));
+    _db.Prepare("INSERT INTO actor_memory (conversation_id, actor_id, remembered_through) VALUES (?1, ?2, ?3) "
+                "ON CONFLICT(conversation_id, actor_id) DO UPDATE SET remembered_through = excluded.remembered_through")
+        .Bind(1, conversationId)
+        .Bind(2, actorId)
+        .Bind(3, turn)
+        .Run();
+}
+
+std::int64_t RunStore::AddPendingShare(const core::PendingShare& share)
+{
+    RequireHosted("AddPendingShare");
+    MORPHEUS_REQUIRE(!share.fromActor.empty() && !share.toActor.empty() && !share.conversationId.empty(),
+                     "AddPendingShare: a share needs its teller, its listener and its conversation");
+    // The id SQLite assigns is the share's, read back on the same connection right after the insert.
+    _db.Prepare("INSERT INTO pending_shares (from_actor, to_actor, conversation_id) VALUES (?1, ?2, ?3)")
+        .Bind(1, share.fromActor)
+        .Bind(2, share.toActor)
+        .Bind(3, share.conversationId)
+        .Run();
+    Statement inserted = _db.Prepare("SELECT last_insert_rowid()");
+    const bool hasRow = inserted.Step();
+    MORPHEUS_REQUIRE(hasRow, "AddPendingShare: last_insert_rowid returned no row");
+    return inserted.ColumnInt(0);
+}
+
+std::vector<core::PendingShare> RunStore::PendingShares()
+{
+    RequireHosted("PendingShares");
+    Statement query = _db.Prepare("SELECT id, from_actor, to_actor, conversation_id FROM pending_shares ORDER BY id");
+    std::vector<core::PendingShare> shares;
+    while (query.Step()) {
+        shares.push_back({query.ColumnInt(0), query.ColumnText(1), query.ColumnText(2), query.ColumnText(3)});
+    }
+    return shares;
+}
+
+void RunStore::RemovePendingShare(std::int64_t id)
+{
+    RequireHosted("RemovePendingShare");
+    _db.Prepare("DELETE FROM pending_shares WHERE id = ?1").Bind(1, id).Run();
 }
 
 void RunStore::AddConversationEvents(std::string_view id, int afterTurn, const std::vector<nlohmann::json>& events)
@@ -917,6 +1220,39 @@ void RunStore::RequireOwned(const char* method) const
 void RunStore::RequireHosted(const char* method) const
 {
     MORPHEUS_REQUIRE(_meta.kind == RunKind::Hosted, std::format("RunStore::{}: this is an owned run", method));
+}
+
+core::Summary RunStore::ReadSummaryRow(Statement& query) const
+{
+    core::Summary summary;
+    summary.id = query.ColumnInt(0);
+    summary.fromTurn = static_cast<int>(query.ColumnInt(1));
+    summary.toTurn = static_cast<int>(query.ColumnInt(2));
+    summary.text = query.ColumnText(3);
+    summary.actorId = query.ColumnText(4);
+    summary.conversationId = query.ColumnText(5);
+    summary.toldBy = query.ColumnText(6);
+    summary.sourceId = query.ColumnInt(7);
+    summary.superseded = query.ColumnInt(8) != 0;
+    // Every hosted summary is some NPC's: one without its actor is damaged saved data.
+    if (summary.actorId.empty()) {
+        throw StoreError(std::format("'{}': summary {}: actor_id is empty in a hosted run", core::PathText(_file),
+                                     summary.id));
+    }
+    return summary;
+}
+
+void RunStore::MoveFoldedThrough(const char* method, std::string_view id, int turn)
+{
+    const std::optional<core::Conversation> conversation = Conversation(id);
+    MORPHEUS_REQUIRE(conversation.has_value(), std::format("{}: no such conversation", method));
+    // The folded mark only moves forward, and never past a turn that exists.
+    MORPHEUS_REQUIRE(turn > conversation->foldedThrough,
+                     std::format("{}: turn {} is already folded through {}", method, turn,
+                                 conversation->foldedThrough));
+    const int latest = LatestHostedTurn();
+    MORPHEUS_REQUIRE(turn <= latest, std::format("{}: turn {} is past the latest turn {}", method, turn, latest));
+    _db.Prepare("UPDATE conversations SET folded_through = ?1 WHERE id = ?2").Bind(1, turn).Bind(2, id).Run();
 }
 
 RunStore::RunStore(Database db, RunMeta meta, std::filesystem::path file)

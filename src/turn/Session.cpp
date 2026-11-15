@@ -269,6 +269,8 @@ std::optional<core::TurnRecord> Session::PlayTurn(const std::string& input, int 
             return "history";
         case store::EmbeddingKind::Note:
             return "notes";
+        case store::EmbeddingKind::Summary:
+            break; // A hosted run's source: the owned game never retrieves summaries.
         }
         throw core::ContractError("PlayTurn: unhandled EmbeddingKind");
     };

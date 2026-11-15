@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
@@ -55,6 +56,15 @@ struct Conversation {
 struct ConversationEvent {
     int afterTurn = 0; // The conversation's latest turn when it was recorded; 0 before its first.
     nlohmann::json event = nlohmann::json::object();
+};
+
+// A share of one NPC's memories of a conversation with another, waiting until the teller's memory of it is complete
+// (per-speaker memory spec, section 2).
+struct PendingShare {
+    std::int64_t id = 0;
+    std::string fromActor = {};
+    std::string toActor = {};
+    std::string conversationId = {};
 };
 
 // What became of the speaker's proposed action (turn::HostedWorld::Adjudicate). A requested action is the host's to

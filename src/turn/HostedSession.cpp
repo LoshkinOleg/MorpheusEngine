@@ -278,13 +278,13 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
     // events leave the prompt one by one until it fits (the store keeps them all; the record counts them). The
     // observation, the player text and the instruction must fit on their own: with no event left, an over-long tail
     // is the fit loop's TurnError, before any model call.
-    std::optional<context::Assembly> assembly = Upkeep(conversation.id, turn).Fit(
+    std::optional<context::Assembly> assembly = Upkeep(conversation.id, request.speakerId, turn).Fit(
         hits,
         [&](const std::vector<RetrievalHit>& kept) {
-            FitPass pass = Pass(conversation.id, kept, tail);
+            FitPass pass = Pass(conversation.id, request.speakerId, kept, tail);
             while (pass.assembly.tailOverBudget && kept.empty() && !tail.events.empty()) {
                 tail.events.erase(tail.events.begin());
-                pass = Pass(conversation.id, kept, tail);
+                pass = Pass(conversation.id, request.speakerId, kept, tail);
             }
             return pass;
         },
@@ -381,9 +381,11 @@ bool HostedSession::Maintain(std::stop_token stop)
         context::HostedInputs tail;
         tail.observation = played.back().observation;
         tail.instruction = std::string(MAINTENANCE_INSTRUCTION);
-        auto assemble = [&](const std::vector<RetrievalHit>&) { return Pass(conversation.id, {}, tail); };
+        // The conversation is folded as its last turn's speaker: the summaries are that speaker's memories.
+        const std::string& speakerId = played.back().speakerId;
+        auto assemble = [&](const std::vector<RetrievalHit>&) { return Pass(conversation.id, speakerId, {}, tail); };
         // Each fold's summary is stored and its turns indexed as it lands (Upkeep's StoreFold).
-        if (!Upkeep(conversation.id, latest).FoldAll(assemble, stop)) {
+        if (!Upkeep(conversation.id, speakerId, latest).FoldAll(assemble, stop)) {
             return false;
         }
     }
@@ -410,9 +412,9 @@ std::vector<core::ConversationEvent> HostedSession::Events(std::string_view conv
     return _store.ConversationEvents(conversationId);
 }
 
-std::vector<core::Summary> HostedSession::Summaries()
+std::vector<core::Summary> HostedSession::Memories(std::string_view actorId)
 {
-    return _store.Summaries();
+    return _store.ActorSummaries(actorId, true);
 }
 
 const context::Assembly& HostedSession::LastAssembly() const
@@ -517,8 +519,8 @@ void HostedSession::SyncHistory()
     _index.SyncEntries(folded, _store, *_pBackend);
 }
 
-FitPass HostedSession::Pass(std::string_view conversationId, const std::vector<RetrievalHit>& hits,
-                            context::HostedInputs inputs)
+FitPass HostedSession::Pass(std::string_view conversationId, std::string_view speakerId,
+                            const std::vector<RetrievalHit>& hits, context::HostedInputs inputs)
 {
     // The conversation as the store holds it now: a fold since the last pass moved its folded mark.
     const std::optional<core::Conversation> conversation = _store.Conversation(conversationId);
@@ -526,7 +528,7 @@ FitPass HostedSession::Pass(std::string_view conversationId, const std::vector<R
     inputs.systemText = std::string(HOSTED_SYSTEM_TEXT);
     inputs.lore = _world.Lore();
     inputs.participants = conversation->participants;
-    inputs.summaries = _store.Summaries();
+    inputs.summaries = _store.ActorSummaries(speakerId, false); // The speaker's own shown memories.
     inputs.transcript = Entries(*conversation, false);
     inputs.retrieved.clear();
     for (const RetrievalHit& hit : hits) {
@@ -539,12 +541,16 @@ FitPass HostedSession::Pass(std::string_view conversationId, const std::vector<R
     return pass;
 }
 
-MemoryUpkeep HostedSession::Upkeep(const std::string& conversationId, int turn)
+MemoryUpkeep HostedSession::Upkeep(const std::string& conversationId, const std::string& speakerId, int turn)
 {
-    // A fold's summary joins the store with the conversation's folded mark, and the folded turns become history.
+    // A fold's summary joins the store as the speaker's memory of this conversation, with the conversation's folded
+    // mark and the speaker's own, and the folded turns become history.
     return MemoryUpkeep(_store, *_pBackend, _settings, std::string(HOSTED_TAIL_NAME), turn, 0,
-                        [this, conversationId](const core::Summary& summary) {
-                            _store.FoldConversation(conversationId, summary);
+                        [this, conversationId, speakerId](const core::Summary& summary) {
+                            core::Summary speakers = summary;
+                            speakers.actorId = speakerId;
+                            speakers.conversationId = conversationId;
+                            _store.FoldConversation(conversationId, speakers);
                             SyncHistory();
                         });
 }

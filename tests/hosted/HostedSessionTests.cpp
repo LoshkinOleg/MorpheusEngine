@@ -49,7 +49,7 @@ TEST_CASE("Open creates a hosted run with its host data and indexes the retrieva
     CHECK(session.Meta().rngSeed == 42u);
     CHECK(session.Meta().modelId == "chat");
     CHECK(backend.EmbeddedTexts() == 2); // Hulda and Saadia; Whiterun and the inn are always on.
-    CHECK(session.Summaries().empty());
+    CHECK(session.Memories(test::HULDA).empty());
     CHECK(std::filesystem::exists(file));
 }
 

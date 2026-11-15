@@ -114,7 +114,7 @@ public:
     void EndConversation(std::string_view conversationId);
 
     // Between-turn upkeep, through the shared memory upkeep: folds every remaining turn of each ended conversation into
-    // summaries (in one call when it fits), condensing summaries over their cap on the way, and indexes the folded
+    // summaries of its last turn's speaker (in one call when it fits), condensing summaries over their cap on the way, and indexes the folded
     // turns for retrieval. Returns false when `stop` cancelled it; it can simply run again. Throws DataError when
     // summary_cap is too small for even a condensed summary. Open conversations are left to their turns' fit loop.
     bool Maintain(std::stop_token stop);
@@ -123,7 +123,7 @@ public:
     std::optional<core::Conversation> Conversation(std::string_view id);
     std::vector<core::HostedTurn> Turns(std::string_view conversationId);         // Oldest first.
     std::vector<core::ConversationEvent> Events(std::string_view conversationId); // Recorded between turns, in order.
-    std::vector<core::Summary> Summaries();
+    std::vector<core::Summary> Memories(std::string_view actorId); // Every summary of the actor, superseded included.
     const context::Assembly& LastAssembly() const; // The last resolve prompt, for the inspector and the tests.
 
 private:
@@ -143,14 +143,17 @@ private:
     // Indexes every conversation's folded turns as searchable history.
     void SyncHistory();
 
-    // One pass of the memory upkeep for a turn of conversation `conversationId`: the hosted prompt for `hits`, with
-    // the tail parts `inputs` already holds (observation, events, player line, instruction) and the conversation, the
-    // summaries and its unfolded entries read from the store as it is now; and the entries its L3 shows.
-    FitPass Pass(std::string_view conversationId, const std::vector<RetrievalHit>& hits, context::HostedInputs inputs);
+    // One pass of the memory upkeep for a turn of conversation `conversationId` spoken by `speakerId`: the hosted
+    // prompt for `hits`, with the tail parts `inputs` already holds (observation, events, player line, instruction) and
+    // the conversation, the speaker's shown summaries and its unfolded entries read from the store as it is now; and
+    // the entries its L3 shows.
+    FitPass Pass(std::string_view conversationId, std::string_view speakerId, const std::vector<RetrievalHit>& hits,
+                 context::HostedInputs inputs);
 
-    // The shared memory upkeep for turn `turn` of conversation `conversationId`: a fold's summary joins the store with
-    // the conversation's folded mark, and the folded turns become searchable history.
-    MemoryUpkeep Upkeep(const std::string& conversationId, int turn);
+    // The shared memory upkeep for turn `turn` of conversation `conversationId` spoken by `speakerId`: a fold's summary
+    // joins the store as the speaker's, with the conversation's folded mark and the speaker's own, and the folded turns
+    // become searchable history.
+    MemoryUpkeep Upkeep(const std::string& conversationId, const std::string& speakerId, int turn);
 };
 
 } // namespace morpheus::turn
