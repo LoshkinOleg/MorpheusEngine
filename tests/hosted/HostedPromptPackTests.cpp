@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_exception.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <cstddef>
@@ -20,6 +21,7 @@
 
 using namespace morpheus;
 using Catch::Matchers::ContainsSubstring;
+using Catch::Matchers::MessageMatches;
 
 namespace {
 
@@ -204,4 +206,36 @@ TEST_CASE("Reopening with a changed pack replaces the stored host data; the next
     CHECK(session.Meta().worldHash == turn::HostDataHash(changed));
     REQUIRE(session.RunTurn(test::Request(id, test::HULDA, "Again."), {}, {}));
     CHECK(session.LastAssembly().prompt.messages.back().content.ends_with("# Task\nPACK RESOLVE TWO: Hulda acts."));
+}
+
+TEST_CASE("A resolve text over tail_allowance is a TurnError naming prompts/resolve", "[hosted][prompts]")
+{
+    test::HostedScript script; // No reply: a model call would fail the test.
+    test::ScriptedBackend backend(16384, script.Responder());
+    std::map<std::string, std::string> pack = CustomPack();
+    // The fake counts 4 bytes a token: 4400 characters are over the tail's 1024 tokens on their own.
+    pack["resolve"] = "PACK RESOLVE: {speaker} " + std::string(4400, 'r');
+    turn::HostedSession session = turn::HostedSession::Open(test::HostedRunFile("hosted_pack_resolve_over"),
+                                                            PackHostData(pack), test::HostedSettings(), 42, backend);
+    const std::string id = session.StartConversation({test::HULDA, test::AELA}, test::FixtureObservation());
+    CHECK_THROWS_MATCHES(session.RunTurn(test::Request(id, test::HULDA, "Hi."), {}, {}), turn::TurnError,
+                         MessageMatches(ContainsSubstring("(prompts/resolve) use") &&
+                                        ContainsSubstring("over tail_allowance")));
+    CHECK(session.Turns(id).empty());
+}
+
+TEST_CASE("A speak text over narrate_allowance is a DataError naming prompts/speak", "[hosted][prompts]")
+{
+    test::HostedScript script; // No reply: a model call would fail the test.
+    test::ScriptedBackend backend(16384, script.Responder());
+    std::map<std::string, std::string> pack = CustomPack();
+    // 128 tokens at 4 bytes a token: 700 characters are over narrate_allowance.
+    pack["speak"] = "PACK SPEAK: {speaker} " + std::string(700, 's');
+    turn::HostedSession session = turn::HostedSession::Open(test::HostedRunFile("hosted_pack_speak_over"),
+                                                            PackHostData(pack), test::HostedSettings(), 42, backend);
+    const std::string id = session.StartConversation({test::HULDA, test::AELA}, test::FixtureObservation());
+    CHECK_THROWS_MATCHES(session.RunTurn(test::Request(id, test::HULDA, "Hi."), {}, {}), core::DataError,
+                         MessageMatches(ContainsSubstring("prompts/speak: the speak instruction for 'Hulda' uses") &&
+                                        ContainsSubstring("over narrate_allowance 128")));
+    CHECK(session.Turns(id).empty());
 }

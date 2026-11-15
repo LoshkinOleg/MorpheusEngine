@@ -44,7 +44,12 @@ The open body (and `turn::HostData`) gains an optional `prompts` object:
 ## 3. Checks against the budget
 
 - The system text (the host's or the default) must fit `engine_rules_cap`. `HostedSession::Open` counts it with the run's backend after the host data and settings checks and before it creates or touches the file; over the cap is a `DataError` "prompts/system: <n> tokens, over engine_rules_cap <cap>". `AssembleHostedPrompt` keeps its `MORPHEUS_REQUIRE`, which can then fail only through an engine bug.
-- The speak instruction must fit `narrate_allowance` once filled. Names change per turn, so this stays the per-turn `DataError` `RunTurn` raises today.
+- The speak instruction must fit `narrate_allowance` once filled. Names change per turn, so this stays the per-turn `DataError` `RunTurn` raises, now starting "prompts/speak: the speak instruction for '<speaker>' uses <n> tokens, over narrate_allowance <cap>".
+- Not checked at open (the names they hold are only known at a turn):
+  - `resolve` sits in the tail and counts against `tail_allowance`; a turn over it is the `TurnError` "the observation, the events, the player text and the resolve instruction (prompts/resolve) use <n> tokens, over tail_allowance <cap>", which names `prompts/resolve`.
+  - `speak`: the per-turn `DataError` above.
+  - `turn_cue` counts in L3's entries: it counts in the transcript, which folds.
+  - `summarize` and `condense` are not budget-checked; an oversize text makes the fold or the condense take the engine's existing fallback summary, as any over-long memory call does.
 
 ## 4. Components
 

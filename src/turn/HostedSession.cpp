@@ -14,7 +14,6 @@
 #include "core/Errors.h"
 #include "core/Text.h"
 #include "grammar/Schema.h"
-#include "turn/EngineText.h"
 #include "turn/PromptPack.h"
 #include "turn/Session.h"
 
@@ -25,7 +24,8 @@ namespace {
 // The names of the host's lore in errors.
 constexpr std::string_view HOST_LORE_SOURCE = "host data: lore";
 // What a hosted tail holds, for the TurnError when it does not fit tail_allowance.
-constexpr std::string_view HOSTED_TAIL_NAME = "the observation, the events and the player text";
+constexpr std::string_view HOSTED_TAIL_NAME =
+    "the observation, the events, the player text and the resolve instruction (prompts/resolve)";
 // The task line of the placeholder tail a catch-up (CatchUp) measures an NPC's prompt with.
 constexpr std::string_view MAINTENANCE_INSTRUCTION = "(the conversation's next turn)";
 // A hosted turn retrieves from the host's lore and the run's folded turns; a hosted run has no notes.
@@ -261,7 +261,7 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
     const std::string speakMessage = PromptPack::Fill(_world.Prompts().speak, names);
     const int speakTokens = _pBackend->CountTokens(speakMessage);
     if (speakTokens > _settings.budget.narrateAllowance) {
-        throw core::DataError(std::format("speaker: the speak instruction for '{}' uses {} tokens, over "
+        throw core::DataError(std::format("prompts/speak: the speak instruction for '{}' uses {} tokens, over "
                                           "narrate_allowance {}",
                                           pSpeaker->name, speakTokens, _settings.budget.narrateAllowance));
     }

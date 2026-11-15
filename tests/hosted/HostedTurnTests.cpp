@@ -346,7 +346,7 @@ TEST_CASE("A speak instruction over narrate_allowance is a DataError naming the 
                                                             test::FixtureHostData(), settings, 42, backend);
     const std::string id = session.StartConversation({test::HULDA, test::AELA}, test::FixtureObservation());
     CHECK_THROWS_MATCHES(session.RunTurn(test::Request(id, test::HULDA, "Hi."), {}, {}), core::DataError,
-                         MessageMatches(ContainsSubstring("speaker: the speak instruction for 'Hulda' uses") &&
+                         MessageMatches(ContainsSubstring("prompts/speak: the speak instruction for 'Hulda' uses") &&
                                         ContainsSubstring("over narrate_allowance 4")));
     CHECK(backend.Calls().empty());
     CHECK(session.Turns(id).empty());
@@ -372,7 +372,7 @@ TEST_CASE("A player text with no room in the tail allowance is a TurnError", "[h
     const turn::HostedTurnRequest request = test::Request(id, test::HULDA, std::string(5000, 'x'));
     CHECK_THROWS_AS(session.RunTurn(request, {}, {}), turn::TurnError);
     CHECK_THROWS_WITH(session.RunTurn(request, {}, {}),
-                      ContainsSubstring("the observation, the events and the player text use"));
+                      ContainsSubstring("the observation, the events, the player text and the resolve instruction (prompts/resolve) use"));
     CHECK(backend.Calls().empty());
     CHECK(session.Turns(id).empty());
 }
@@ -466,7 +466,7 @@ TEST_CASE("A tail over the allowance even without its events is still a TurnErro
     session.RecordEvents(id, {nlohmann::json{{"text", "A door opens."}}});
     const turn::HostedTurnRequest request = test::Request(id, test::HULDA, std::string(5000, 'x'));
     CHECK_THROWS_MATCHES(session.RunTurn(request, {}, {}), turn::TurnError,
-                         MessageMatches(ContainsSubstring("the observation, the events and the player text use")));
+                         MessageMatches(ContainsSubstring("the observation, the events, the player text and the resolve instruction (prompts/resolve) use")));
     CHECK(backend.Calls().empty());
     CHECK(session.Turns(id).empty());
     CHECK(session.Events(id).size() == 1);
