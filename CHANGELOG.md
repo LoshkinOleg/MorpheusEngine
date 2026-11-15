@@ -17,6 +17,8 @@ The first version (design: `docs/superpowers/specs/2026-11-16-morpheus-server-de
 - Lore that cannot be embedded at `open` because the embedding server is unreachable or failed (5xx, a dropped
   connection) is 503, so the host can try again; only a text the server refuses (an HTTP 4xx answer, such as a text
   too long for its context) is 400, naming the lore entry.
+- A `run_id` that is a Windows device name (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`, in any case) is
+  refused with 400.
 - Every answer is JSON with `api_version`, those cpp-httplib makes itself included (OPTIONS or an unknown method, a
   malformed request, an exception that escaped a handler: `{"api_version", "error": {"status", "message"}}`).
 - A turn stopped by the server's shutdown ends its stream with `error` 503 ("the server is stopping"); every stream

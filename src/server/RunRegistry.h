@@ -47,7 +47,9 @@ public:
     RunRegistry(const RunRegistry&) = delete;
     RunRegistry& operator=(const RunRegistry&) = delete;
 
-    // Throws DataError "run_id: ..." unless `runId` is 1 to MAX_RUN_ID_LENGTH characters of A-Z, a-z, 0-9, '_' and '-'.
+    // Throws DataError "run_id: ..." unless `runId` is 1 to MAX_RUN_ID_LENGTH characters of A-Z, a-z, 0-9, '_' and '-',
+    // and when it is a Windows device name in any case (CON, PRN, AUX, NUL, COM1-COM9, LPT1-LPT9): its file would name
+    // the device.
     static void CheckRunId(std::string_view runId);
 
     // "<runs dir>/<run_id>.morpheus". Checks the id first (CheckRunId).

@@ -1,6 +1,7 @@
 #include "server/RunRegistry.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <format>
 #include <system_error>
@@ -11,6 +12,15 @@
 #include "store/Sqlite.h"
 
 namespace morpheus::server {
+
+namespace {
+
+// Windows names these devices in every folder, with any extension ("CON.morpheus" is the console), in any case.
+constexpr std::array<std::string_view, 22> DEVICE_NAMES = {
+    "CON",  "PRN",  "AUX",  "NUL",  "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
+    "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"};
+
+} // namespace
 
 RunRegistry::RunRegistry(std::filesystem::path runsDir, core::Settings settings, BackendFactory makeBackend, Log log)
     : _runsDir(std::move(runsDir))
@@ -43,6 +53,17 @@ void RunRegistry::CheckRunId(std::string_view runId)
     if (runId.empty() || runId.size() > MAX_RUN_ID_LENGTH || !allowed) {
         throw core::DataError(std::format("run_id: '{}' is not 1 to {} characters of A-Z, a-z, 0-9, '_' and '-'", runId,
                                           MAX_RUN_ID_LENGTH));
+    }
+    // A device name would make the run's file the device on Windows; refused everywhere, so ids work on every system.
+    const bool device = std::ranges::any_of(DEVICE_NAMES, [runId](std::string_view name) {
+        return std::ranges::equal(runId, name, [](char a, char b) {
+            return std::toupper(static_cast<unsigned char>(a)) == static_cast<unsigned char>(b);
+        });
+    });
+    if (device) {
+        throw core::DataError(std::format("run_id: '{}' is a Windows device name (CON, PRN, AUX, NUL, COM1-COM9, "
+                                          "LPT1-LPT9), which cannot name a file",
+                                          runId));
     }
 }
 

@@ -3,6 +3,7 @@
 #include <exception>
 #include <format>
 #include <string_view>
+#include <thread>
 #include <utility>
 
 #include "core/Errors.h"
@@ -128,11 +129,17 @@ std::future<void> RunWorker::Post(Job job, Preempt preempt)
 
 void RunWorker::Call(Job job)
 {
+    // On the worker's own thread (from inside a job) the wait could never end: the job waits for itself.
+    MORPHEUS_REQUIRE(std::this_thread::get_id() != _thread.get_id(),
+                     "RunWorker::Call: called from the worker's own thread, it would wait for itself");
     Post(std::move(job)).get();
 }
 
 void RunWorker::Reopen(turn::HostData data, std::uint64_t seed)
 {
+    // On the worker's own thread (from inside a job) the wait could never end: the job waits for itself.
+    MORPHEUS_REQUIRE(std::this_thread::get_id() != _thread.get_id(),
+                     "RunWorker::Reopen: called from the worker's own thread, it would wait for itself");
     // Not preempting: reopening waits for a running fold's pass, like every job but a turn.
     Enqueue([this, data = std::move(data), seed](std::stop_token) mutable {
         // Changed data is checked before the open run is touched; the same data changes nothing.

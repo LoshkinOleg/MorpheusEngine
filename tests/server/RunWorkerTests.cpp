@@ -234,6 +234,33 @@ TEST_CASE("A preempting job stops a running fold at once, also from behind a job
     CHECK(foldCalls.load() >= 2);
 }
 
+TEST_CASE("Call and Reopen from a job, on the worker's own thread, fail fast instead of waiting forever",
+          "[hosted-server][worker]")
+{
+    test::HostedScript script;
+    std::unique_ptr<server::RunWorker> worker =
+        test::MakeWorker("worker_reentry", test::HostedRunFile("worker_reentry"), script.Responder());
+    // What each nested call threw, kept here: Catch2's macros run on the test's thread only.
+    bool callRefused = false;
+    bool reopenRefused = false;
+    worker->Call([&](turn::HostedSession&, server::SlotBackend&, std::stop_token) {
+        try {
+            worker->Call(Nothing);
+        } catch (const core::ContractError&) {
+            callRefused = true;
+        }
+        try {
+            worker->Reopen(test::FixtureHostData(), 42);
+        } catch (const core::ContractError&) {
+            reopenRefused = true;
+        }
+    });
+    CHECK(callRefused);
+    CHECK(reopenRefused);
+    // The worker goes on.
+    CHECK_NOTHROW(worker->Call(Nothing));
+}
+
 TEST_CASE("Stopping the worker stops a running turn, which commits nothing, and refuses later jobs",
           "[hosted-server][worker]")
 {

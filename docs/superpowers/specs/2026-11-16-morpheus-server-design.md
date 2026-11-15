@@ -40,7 +40,7 @@ Conversations sit under their run: their ids are short and per run (`c1`, `c2`, 
 | `POST /v1/tokenize` | `{content}` | `{tokens}`: the exact count from the chat model |
 | `POST /v1/embeddings` | `{input: [texts], purpose: "query" or "document"}` | `{embeddings: [[...]], model}` |
 
-`run_id` is 1 to 64 characters of `[A-Za-z0-9_-]`.
+`run_id` is 1 to 64 characters of `[A-Za-z0-9_-]`, and not a Windows device name in any case (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`: its file would name the device).
 
 ### The turn stream
 

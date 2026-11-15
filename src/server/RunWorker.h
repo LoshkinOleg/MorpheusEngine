@@ -81,7 +81,8 @@ public:
     // After RequestStop the job never runs, and the future holds InferenceError "the server is stopping".
     std::future<void> Post(Job job, Preempt preempt = Preempt::None);
 
-    // Post (not preempting), then wait: rethrows what the job threw.
+    // Post (not preempting), then wait: rethrows what the job threw. Throws ContractError on the worker's own thread
+    // (from inside a job), where it would wait for itself.
     void Call(Job job);
 
     // Opens the run again with `data`, on the worker's thread after the queued jobs (not preempting), and waits. The same host data
@@ -89,7 +90,7 @@ public:
     // untouched); then the session closes and the run opens again (HostedSession::Open re-embeds the changed lore,
     // then replaces the stored host data). If that open fails, the run opens again with its previous data and the
     // error is rethrown; if even that fails, the run stays closed (logged) until a Reopen succeeds. `seed` matters only
-    // when the file is missing.
+    // when the file is missing. Throws ContractError on the worker's own thread, where it would wait for itself.
     void Reopen(turn::HostData data, std::uint64_t seed);
 
     // Stops the worker without waiting: the running job's stop token and a running Maintain fire, and queued and later

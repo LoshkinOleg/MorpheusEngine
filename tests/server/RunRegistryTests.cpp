@@ -42,6 +42,20 @@ TEST_CASE("RunRegistry accepts run ids of 1 to 64 letters, digits, '_' and '-'",
     }
 }
 
+TEST_CASE("RunRegistry refuses Windows device names as run ids, in any case", "[hosted-server][registry]")
+{
+    for (const std::string bad : {"CON", "con", "Prn", "AUX", "nul", "COM1", "com9", "LPT1", "lpt9"}) {
+        INFO(bad);
+        CHECK_THROWS_AS(server::RunRegistry::CheckRunId(bad), core::DataError);
+        CHECK_THROWS_WITH(server::RunRegistry::CheckRunId(bad), ContainsSubstring("run_id"));
+    }
+    // Only the names themselves: longer ids that start with one are fine.
+    for (const std::string good : {"CON1", "console", "COM0", "COM10", "LPT", "nul_save", "aux-2"}) {
+        INFO(good);
+        CHECK_NOTHROW(server::RunRegistry::CheckRunId(good));
+    }
+}
+
 TEST_CASE("RunRegistry creates its runs folder and names each run's file after its id", "[hosted-server][registry]")
 {
     test::HostedScript script;
