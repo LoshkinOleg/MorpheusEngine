@@ -51,6 +51,16 @@ struct ShareResult {
     bool pending = false;
 };
 
+// What a rewind (HostedSession::Rewind) changed, net: whether the open rollback changed, the turns it hid and the turns
+// it showed again (a turn shown by the undo and hidden again by the new rollback counts as neither), and the game time
+// of the rollback open after it (none when it left none open).
+struct RewindResult {
+    bool rewound = false;
+    int hiddenTurns = 0;
+    int restoredTurns = 0;
+    std::optional<double> rollbackTime = {};
+};
+
 // One open hosted run (hosted-world spec, section 1): the counterpart of turn::Session for a world the host owns and
 // sends as data. Every backend call happens on the caller's thread.
 //
@@ -80,6 +90,10 @@ public:
     // removed, and a reopened run keeps its stored host data and hash.
     static HostedSession Open(const std::filesystem::path& file, HostData data, core::Settings settings,
                               std::uint64_t seed, inference::LlmBackend& backend);
+
+    // Every writer of a new record below (StartConversation, RecordEvents, SetParticipants, RunTurn once its request
+    // passed its checks, EndConversation, ShareMemories once it passed its checks) first abandons an open rollback: its
+    // hidden records stay hidden for good (Rewind).
 
     // Starts a conversation of `participantIds` (in this join order) and returns its id. Every participant must be an
     // actor of the observation, once; their names and bios are taken from it and stored. Throws DataError naming the
@@ -147,6 +161,13 @@ public:
     ShareResult ShareMemories(const std::string& fromActorId, const std::string& toActorId,
                               const std::string& conversationId);
 
+    // The run as it was at game time `gameTime` (rollback spec, section 3): the host calls it on every save load. It
+    // undoes the open rollback, if any, then applies one to `gameTime` when that is before the latest live clock; a
+    // rewind to the open rollback's own time changes nothing. Hidden records are kept; a later rewind restores them
+    // until a new record abandons them. The background upkeep then refolds what NPCs are missing. Throws DataError
+    // "game_time: ..." when the host data names no clock or `gameTime` is not finite.
+    RewindResult Rewind(double gameTime);
+
     const store::RunMeta& Meta() const;
     std::optional<core::Conversation> Conversation(std::string_view id);
     std::vector<core::HostedTurn> Turns(std::string_view conversationId);         // Oldest first.
@@ -160,6 +181,10 @@ private:
 
     // Conversation `conversationId`, which must exist and be open. Throws DataError "conversation_id: ..." otherwise.
     core::Conversation OpenConversation(std::string_view conversationId);
+
+    // A new record while a rollback is open: the hidden future is abandoned first (rollback spec, "Playing on"). Every
+    // writer of a new record calls it after its checks and before its first write; Maintain never does.
+    void AbandonRollbackForNewRecord();
 
     // Of `turns` (the conversation's turns as the store holds them, oldest first), those with afterTurn < number <=
     // throughTurn as transcript entries, oldest first, only those `witnessId` witnessed (its speaker or a listener)

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <format>
 #include <map>
@@ -169,7 +170,8 @@ std::string HostedSession::StartConversation(const std::vector<std::string>& par
         }
         participants.push_back({pActor->id, pActor->name, pActor->bio});
     }
-    // It starts at the observation's game time.
+    // It starts at the observation's game time, after an open rollback is abandoned.
+    AbandonRollbackForNewRecord();
     return _store.CreateConversation(participants, observed.clock);
 }
 
@@ -177,6 +179,7 @@ void HostedSession::RecordEvents(std::string_view conversationId, const std::vec
 {
     const core::Conversation conversation = OpenConversation(conversationId);
     HostedWorld::CheckEvents(events);
+    AbandonRollbackForNewRecord();
     // They follow the conversation's latest turn (0 before its first), so they come before its next. With no
     // observation of their own, they are dated with the run's latest seen clock.
     const std::vector<core::HostedTurn> played = _store.HostedTurns(conversation.id);
@@ -220,7 +223,8 @@ void HostedSession::SetParticipants(std::string_view conversationId, const std::
     if (participants.empty()) {
         throw core::DataError(std::format("left: conversation '{}' would have no participant left", conversation.id));
     }
-    // The change happens at the observation's game time.
+    // The change happens at the observation's game time, after an open rollback is abandoned.
+    AbandonRollbackForNewRecord();
     _store.SetParticipants(conversation.id, participants, observed.clock);
 }
 
@@ -274,6 +278,8 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
                                           "narrate_allowance {}",
                                           pSpeaker->name, speakTokens, _settings.budget.narrateAllowance));
     }
+    // The request passed: an open rollback is abandoned before anything is written, the catch-up's folds included.
+    AbandonRollbackForNewRecord();
 
     // Run-wide, shared with the summaries' ranges, and never reused: one past every turn stored, hidden ones included.
     const int turn = _store.NextHostedTurn();
@@ -418,6 +424,7 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
 void HostedSession::EndConversation(std::string_view conversationId)
 {
     const core::Conversation conversation = OpenConversation(conversationId);
+    AbandonRollbackForNewRecord();
     // With no observation of its own, the end is dated with the run's latest seen clock.
     _store.EndConversation(conversation.id, _store.LatestClock());
 }
@@ -526,6 +533,8 @@ ShareResult HostedSession::ShareMemories(const std::string& fromActorId, const s
             throw core::DataError(std::format("to: '{}' is the player; only NPCs keep memories", toActorId));
         }
     }
+    // The share passed its checks: an open rollback is abandoned before it stores a pending share or copies.
+    AbandonRollbackForNewRecord();
 
     // The teller's memory of it is complete once the conversation ended and the teller caught up to its last turn;
     // until then the share waits, stored once however often it is asked for. The teller witnessed a turn, so the
@@ -545,6 +554,41 @@ ShareResult HostedSession::ShareMemories(const std::string& fromActorId, const s
         return {0, true};
     }
     return {ApplyShare(fromActorId, toActorId, conversationId), false};
+}
+
+RewindResult HostedSession::Rewind(double gameTime)
+{
+    if (!_world.HasClock()) {
+        throw core::DataError("game_time: the host data names no clock, so the run cannot be rewound");
+    }
+    if (!std::isfinite(gameTime)) {
+        throw core::DataError("game_time: expected a finite number");
+    }
+    // The same time as the open rollback: nothing to do.
+    const std::optional<store::Rollback> open = _store.OpenRollback();
+    if (open && open->gameTime == gameTime) {
+        return {false, 0, 0, gameTime};
+    }
+    // Undo the open rollback, then apply one when the time is before the latest live record.
+    RewindResult result;
+    if (open) {
+        result.restoredTurns = _store.UndoRollback().restoredTurns;
+    }
+    const std::optional<double> latest = _store.LatestClock();
+    if (latest && gameTime < *latest) {
+        result.hiddenTurns = _store.ApplyRollback(gameTime).hiddenTurns;
+        result.rollbackTime = gameTime;
+    }
+    // The host sees the net change. Both rollbacks hide every turn clocked after their time, so one of the two sets
+    // holds the other: a turn restored by the undo and hidden again by the new rollback counts as neither.
+    const int both = std::min(result.restoredTurns, result.hiddenTurns);
+    result.restoredTurns -= both;
+    result.hiddenTurns -= both;
+    // Rewound: the open rollback changed (one was undone, applied, or both; the same time returned early above).
+    result.rewound = open.has_value() || result.rollbackTime.has_value();
+    // Turns, folded marks and summaries all changed: the searchable history and memories are indexed again.
+    SyncHistory();
+    return result;
 }
 
 const store::RunMeta& HostedSession::Meta() const
@@ -587,6 +631,14 @@ core::Conversation HostedSession::OpenConversation(std::string_view conversation
         throw core::DataError(std::format("conversation_id: conversation '{}' has ended", conversationId));
     }
     return std::move(*conversation);
+}
+
+void HostedSession::AbandonRollbackForNewRecord()
+{
+    // Playing on after a rewind: what the open rollback hid stays hidden for good, and the new record is written live.
+    if (_store.OpenRollback()) {
+        _store.AbandonRollback();
+    }
 }
 
 std::vector<context::TranscriptEntry> HostedSession::Entries(const core::Conversation& conversation,

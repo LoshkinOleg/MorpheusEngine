@@ -152,3 +152,9 @@ TEST_CASE("The three-actor fixture: nobody remembers what it did not witness", "
 {
     test::PlayMemoryFixture("three_actors.json");
 }
+
+TEST_CASE("The reload fixture: a rewind hides what came after, a roll-forward restores it, playing on abandons it",
+          "[hosted][fixtures][rewind]")
+{
+    test::PlayMemoryFixture("reload.json");
+}

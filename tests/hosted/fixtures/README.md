@@ -16,6 +16,9 @@ fixtures may replace any of these files, as long as they keep the format below.
 - `invalid_requests.json`: requests that must fail with a `DataError` before any model call.
 - `three_actors.json`: a memory fixture (R6's acceptance): Hulda, Saadia and Belethor with Aela, the player. Belethor
   leaves halfway and Hulda tells a secret while Saadia is away; nobody may remember what it did not witness.
+- `reload.json`: a memory fixture with a clock (R6's rollback acceptance): a conversation over several game times with
+  events, a participant change, a share and an end. A rewind to the middle hides what came after and NPCs forget it; a
+  rewind to the end restores it exactly; playing on after a rewind abandons the hidden future.
 
 Every fixture may carry a `description` string; the tests ignore it.
 
@@ -61,11 +64,15 @@ A request is `{"name", "conversation", "turn", "error"}`:
 
 The test also checks that no model call was made and that no turn was committed.
 
-## Memory fixtures (`three_actors.json`)
+## Memory fixtures (`three_actors.json`, `reload.json`)
 
-`{"observation": {...}, "participants": [ids], "steps": [...]}`. `observation` is the fixture's own observation: every
-request and every participants change uses it (a step has no observation of its own). The test starts one conversation
-with `participants` (in this join order) and plays `steps` in order. A step is one of these kinds.
+`{"observation": {...}, "participants": [ids], "steps": [...], "clock"}`. `observation` is the fixture's own
+observation: every request and every participants change uses it (a step has no observation of its own). `clock`
+(optional) is a JSON pointer into it, the host data's clock (`open.json`'s host data with this `clock`); a run without
+one cannot be rewound. A turn, leave, join or start step may then carry a `"clock"` number: that step uses a copy of
+the observation with the number written at the pointer (its game time). The test starts one conversation with
+`participants` (in this join order) at the observation as it is, and plays `steps` in order. A step is one of these
+kinds.
 
 - **A turn step**: `{"turn": {...}, "model": {...}, "expect": {...}}`, as in conversation fixtures (`turn` with
   `speaker` and optionally `player_text`; `model` with `resolve` and `line`). `expect` is optional and holds
@@ -86,6 +93,15 @@ with `participants` (in this join order) and plays `steps` in order. A step is o
   remembers of a conversation (`ShareMemories`). `conversation` (optional) defaults to the fixture's first
   conversation; `shared` (optional, a number) and `pending` (optional, a boolean) are checked against the share's
   result when given.
+- **`{"events": [event objects]}`**: events recorded between turns of the current conversation (`RecordEvents`), as in
+  conversation fixtures.
+- **`{"rewind": {"game_time", "rewound", "hidden_turns", "restored_turns"}}`**: the run as it was at `game_time` (a
+  number; `Rewind`), as on a save load. `rewound` (optional, a boolean), `hidden_turns` and `restored_turns` (optional,
+  numbers) are checked against its result when given.
+- **`{"turns": {"count"}}`**: the current conversation has `count` visible turns.
+- **`{"conversation": {"ended", "participants", "events"}}`**: checks the current conversation as it is now. `ended`
+  (optional, a boolean); `participants` (optional, ids): its participants in join order; `events` (optional, a
+  number): how many visible events it has.
 
 The fixture's model replies are used in step order, for resolve and speak calls only. Memory calls (folds and
 condenses) are answered by the test's echo responder (`test::MemoryEchoResponder`), which repeats the lines the call

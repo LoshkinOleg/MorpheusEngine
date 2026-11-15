@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -16,6 +17,7 @@
 
 #include "TestPaths.h"
 #include "core/Errors.h"
+#include "core/HostedRecord.h"
 #include "core/Settings.h"
 #include "core/TurnRecord.h"
 #include "fakes/ScriptedBackend.h"
@@ -200,7 +202,8 @@ inline HostedScript ScriptOf(const nlohmann::json& fixture)
 // `settings`, checking each step's expectations. With `echoedMemories` true the backend echoes what it witnessed
 // (MemoryEchoResponder), so the memories' texts are known and every expectation is checked. With it false a real
 // model writes the memories and the lines, and only what cannot depend on its words is checked: every prompt_absent,
-// every memories absent and count, a share's pending, and that each turn commits. prompt_contains, memories contains,
+// every memories absent and count, a share's pending, the rewind, turns and conversation steps, and that each turn
+// commits. prompt_contains, memories contains,
 // told_by and a share's shared are skipped, and the fixture's "model" replies are ignored. A prompt_absent or memories
 // absent failing then means a real leak, or a model that wrote the text unprompted where its NPC never heard it.
 inline void PlayMemoryFixture(const std::string& name, inference::LlmBackend& backend, const core::Settings& settings,
@@ -208,8 +211,21 @@ inline void PlayMemoryFixture(const std::string& name, inference::LlmBackend& ba
 {
     const nlohmann::json fixture = ReadFixture(name);
     const nlohmann::json& observation = fixture.at("observation");
+    // A fixture with a "clock" names the pointer of the game time in its observations: the host data's clock.
+    turn::HostData data = FixtureHostData();
+    if (fixture.contains("clock")) {
+        data.clock = fixture.at("clock").get<std::string>();
+    }
     turn::HostedSession session =
-        turn::HostedSession::Open(HostedRunFile("hosted_memory_fixture_" + name), FixtureHostData(), settings, 42, backend);
+        turn::HostedSession::Open(HostedRunFile("hosted_memory_fixture_" + name), data, settings, 42, backend);
+    // A step's observation: the fixture's, with the step's "clock" (when it has one) written at the clock's pointer.
+    auto observationOf = [&](const nlohmann::json& step) {
+        nlohmann::json observed = observation;
+        if (step.contains("clock")) {
+            observed[nlohmann::json::json_pointer(fixture.at("clock").get<std::string>())] = step.at("clock");
+        }
+        return observed;
+    };
     std::string id = session.StartConversation(fixture.at("participants").get<std::vector<std::string>>(), observation);
     const std::string firstId = id; // A share step's default conversation.
 
@@ -224,7 +240,7 @@ inline void PlayMemoryFixture(const std::string& name, inference::LlmBackend& ba
             if (turnJson.contains("player_text")) {
                 request.playerText = turnJson.at("player_text").get<std::string>();
             }
-            request.observation = observation;
+            request.observation = observationOf(step);
             REQUIRE(session.RunTurn(request, {}, {}));
             // Every message of the turn's resolve prompt, for the expectations.
             std::string prompt;
@@ -241,9 +257,9 @@ inline void PlayMemoryFixture(const std::string& name, inference::LlmBackend& ba
                 }
             }
         } else if (step.contains("leave")) {
-            session.SetParticipants(id, {}, step.at("leave").get<std::vector<std::string>>(), observation);
+            session.SetParticipants(id, {}, step.at("leave").get<std::vector<std::string>>(), observationOf(step));
         } else if (step.contains("join")) {
-            session.SetParticipants(id, step.at("join").get<std::vector<std::string>>(), {}, observation);
+            session.SetParticipants(id, step.at("join").get<std::vector<std::string>>(), {}, observationOf(step));
         } else if (step.contains("end")) {
             session.EndConversation(id);
         } else if (step.contains("maintain")) {
@@ -280,7 +296,7 @@ inline void PlayMemoryFixture(const std::string& name, inference::LlmBackend& ba
                 CHECK(it->toldBy == item.value().get<std::string>());
             }
         } else if (step.contains("start")) {
-            id = session.StartConversation(step.at("start").get<std::vector<std::string>>(), observation);
+            id = session.StartConversation(step.at("start").get<std::vector<std::string>>(), observationOf(step));
         } else if (step.contains("share")) {
             // A share of the teller's memories of a conversation (the first one by default), its result checked when
             // the step gives it.
@@ -294,6 +310,43 @@ inline void PlayMemoryFixture(const std::string& name, inference::LlmBackend& ba
             if (share.contains("pending")) {
                 CHECK(result.pending == share.at("pending").get<bool>());
             }
+        } else if (step.contains("rewind")) {
+            // The run as it was at a game time (a save load), the result checked where the step gives it.
+            const nlohmann::json rewind = step.at("rewind");
+            const turn::RewindResult result = session.Rewind(rewind.at("game_time").get<double>());
+            if (rewind.contains("rewound")) {
+                CHECK(result.rewound == rewind.at("rewound").get<bool>());
+            }
+            if (rewind.contains("hidden_turns")) {
+                CHECK(result.hiddenTurns == rewind.at("hidden_turns").get<int>());
+            }
+            if (rewind.contains("restored_turns")) {
+                CHECK(result.restoredTurns == rewind.at("restored_turns").get<int>());
+            }
+        } else if (step.contains("turns")) {
+            // The current conversation's visible turns.
+            CHECK(session.Turns(id).size() == step.at("turns").at("count").get<std::size_t>());
+        } else if (step.contains("conversation")) {
+            // The current conversation as it is now: its end, its participants in join order, its visible events.
+            const nlohmann::json expected = step.at("conversation");
+            const std::optional<core::Conversation> conversation = session.Conversation(id);
+            REQUIRE(conversation);
+            if (expected.contains("ended")) {
+                CHECK(conversation->ended == expected.at("ended").get<bool>());
+            }
+            if (expected.contains("participants")) {
+                std::vector<std::string> ids;
+                for (const core::Participant& participant : conversation->participants) {
+                    ids.push_back(participant.id);
+                }
+                CHECK(ids == expected.at("participants").get<std::vector<std::string>>());
+            }
+            if (expected.contains("events")) {
+                CHECK(session.Events(id).size() == expected.at("events").get<std::size_t>());
+            }
+        } else if (step.contains("events")) {
+            // Events recorded between turns of the current conversation.
+            session.RecordEvents(id, step.at("events").get<std::vector<nlohmann::json>>());
         } else {
             FAIL("unknown step kind");
         }

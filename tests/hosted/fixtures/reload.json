@@ -1,0 +1,59 @@
+{
+  "description": "R6's rollback acceptance: a conversation over several game times with events, a participant change, a share and an end. A rewind to the middle hides what came after and NPCs forget it; a rewind to the end restores it exactly; playing on after a rewind abandons the hidden future.",
+  "clock": "/game_time/days_passed",
+  "observation": {
+    "game_time": {"days_passed": 1.0, "hour": 14},
+    "location": "Whiterun, The Bannered Mare",
+    "actors": [
+      {"id": "0001A6A4", "name": "Hulda", "is_player": false, "bio": "Owner of the Bannered Mare."},
+      {"id": "0001B07C", "name": "Saadia", "is_player": false, "bio": "A Redguard working at the inn."},
+      {"id": "00000007", "name": "Aela", "is_player": true}
+    ]
+  },
+  "participants": ["0001A6A4", "0001B07C", "00000007"],
+  "steps": [
+    {"turn": {"speaker": "0001A6A4", "player_text": "Good evening."}, "clock": 1.0,
+     "model": {"resolve": "{\"action\":\"none\",\"params\":{}}", "line": "Welcome to the Bannered Mare."}},
+    {"events": [{"text": "A bard starts to sing."}]},
+    {"turn": {"speaker": "0001B07C", "player_text": "How is business?"}, "clock": 2.0,
+     "model": {"resolve": "{\"action\":\"none\",\"params\":{}}", "line": "Business is slow this week."}},
+    {"leave": ["0001B07C"], "clock": 3.0},
+    {"events": [{"text": "Saadia climbs the stairs."}]},
+    {"turn": {"speaker": "0001A6A4", "player_text": "Where is Saadia?"}, "clock": 4.0,
+     "model": {"resolve": "{\"action\":\"none\",\"params\":{}}", "line": "Saadia has gone upstairs to rest."}},
+    {"end": true},
+    {"maintain": true},
+    {"turns": {"count": 3}},
+    {"conversation": {"ended": true, "participants": ["0001A6A4", "00000007"], "events": 2}},
+    {"memories": {"actor": "0001A6A4", "contains": ["gone upstairs"], "count": 1}},
+    {"share": {"from": "0001A6A4", "to": "0001B07C", "shared": 1, "pending": false}},
+    {"memories": {"actor": "0001B07C", "contains": ["gone upstairs"], "told_by": {"gone upstairs": "0001A6A4"}}},
+
+    {"rewind": {"game_time": 2.5, "rewound": true, "hidden_turns": 1}},
+    {"turns": {"count": 2}},
+    {"conversation": {"ended": false, "participants": ["0001A6A4", "0001B07C", "00000007"], "events": 1}},
+    {"memories": {"actor": "0001A6A4", "absent": ["gone upstairs"]}},
+    {"memories": {"actor": "0001B07C", "absent": ["gone upstairs"]}},
+    {"maintain": true},
+    {"memories": {"actor": "0001A6A4", "contains": ["Business is slow"], "absent": ["gone upstairs"]}},
+
+    {"rewind": {"game_time": 10.0, "rewound": true, "restored_turns": 1}},
+    {"turns": {"count": 3}},
+    {"conversation": {"ended": true, "participants": ["0001A6A4", "00000007"], "events": 2}},
+    {"memories": {"actor": "0001A6A4", "contains": ["gone upstairs"], "count": 1}},
+    {"memories": {"actor": "0001B07C", "contains": ["gone upstairs"], "told_by": {"gone upstairs": "0001A6A4"}}},
+    {"rewind": {"game_time": 10.0, "rewound": false}},
+
+    {"rewind": {"game_time": 2.5, "rewound": true, "hidden_turns": 1}},
+    {"turn": {"speaker": "0001B07C", "player_text": "Still here, Saadia?"}, "clock": 2.6,
+     "model": {"resolve": "{\"action\":\"none\",\"params\":{}}", "line": "I am still here."},
+     "expect": {"prompt_absent": ["gone upstairs", "climbs the stairs"]}},
+    {"rewind": {"game_time": 10.0, "rewound": false, "restored_turns": 0}},
+    {"turns": {"count": 3}},
+    {"conversation": {"ended": false, "participants": ["0001A6A4", "0001B07C", "00000007"], "events": 1}},
+    {"end": true},
+    {"maintain": true},
+    {"memories": {"actor": "0001A6A4", "contains": ["still here"], "absent": ["gone upstairs"]}},
+    {"memories": {"actor": "0001B07C", "absent": ["gone upstairs"]}}
+  ]
+}
