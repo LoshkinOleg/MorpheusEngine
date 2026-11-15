@@ -78,7 +78,7 @@ You voice the characters of a role-playing game that a host game runs. The host 
 
 Every turn has two steps.
 
-Step 1, act. Reply with one JSON object and nothing else: "action" is one of the actions the turn allows, and "params" holds that action's parameters. A parameter that names an actor takes the actor's id from the observation. Choose what the speaker would do now. The host decides whether it happens; its outcome arrives later as an event.
+Step 1, act. Reply with one JSON object and nothing else: "action" is one of the actions the turn allows, and "params" holds that action's parameters. A parameter that names an actor takes the actor's id from the observation. Choose what the speaker would do now. Most turns need no action: when the speaker would only talk, choose the action that does nothing, if the turn allows one. The host decides whether it happens; its outcome arrives later as an event.
 
 Step 2, speak. Write only what the speaker says aloud: no name in front, no quotation marks, no narration and no description of actions. Stay in character and in the world. One to three sentences.
 
@@ -92,7 +92,7 @@ inline constexpr std::string_view HOSTED_RESOLVE_INSTRUCTION =
 // The user message the speak call appends after the resolve output; it must fit narrate_allowance. PromptPack's
 // default `speak`.
 inline constexpr std::string_view HOSTED_SPEAK_INSTRUCTION =
-    "Step 2: write what {speaker} says now. Spoken words only, in character. {player} is the player's character.";
+    "Step 2: write what {speaker} says now. Spoken words only, in character.";
 
 // L3's user message for a turn that had no events and no player text before the speaker's line. PromptPack's default
 // `turn_cue`.

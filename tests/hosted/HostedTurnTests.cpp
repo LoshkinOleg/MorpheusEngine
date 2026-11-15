@@ -107,7 +107,7 @@ TEST_CASE("A hosted turn resolves, adjudicates, speaks streamed and commits its 
     CHECK(speak.messages[speak.messages.size() - 2].role == inference::Role::Assistant);
     CHECK(speak.messages[speak.messages.size() - 2].content == FOLLOW);
     CHECK(speak.messages.back().content ==
-          "Step 2: write what Hulda says now. Spoken words only, in character. Aela is the player's character.");
+          "Step 2: write what Hulda says now. Spoken words only, in character.");
     CHECK(calls[1].spec.grammar.empty());
     CHECK(calls[1].spec.maxTokens == 256);
     CHECK(session.LastAssembly().prompt.messages.size() == calls[0].prompt.messages.size());

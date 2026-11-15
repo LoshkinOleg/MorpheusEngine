@@ -248,7 +248,6 @@ TEST_CASE("The default hosted texts are generic, fit their cap and use only the 
     CHECK(turn::HOSTED_SYSTEM_TEXT.find('{') == std::string_view::npos);
     CHECK(turn::HOSTED_RESOLVE_INSTRUCTION.find("{speaker}") != std::string_view::npos);
     CHECK(turn::HOSTED_SPEAK_INSTRUCTION.find("{speaker}") != std::string_view::npos);
-    CHECK(turn::HOSTED_SPEAK_INSTRUCTION.find("{player}") != std::string_view::npos);
     CHECK(std::string(turn::HOSTED_TURN_CUE) == "({speaker} speaks.)");
     // Every brace opens one of the two variables the engine fills.
     for (const std::string_view text :

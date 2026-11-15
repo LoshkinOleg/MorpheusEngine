@@ -2,6 +2,7 @@
 
 #include <map>
 #include <string>
+#include <string_view>
 
 #include "core/Errors.h"
 #include "turn/EngineText.h"
@@ -110,4 +111,14 @@ TEST_CASE("Fill puts the names in every variable a text takes", "[prompts]")
     // A variable with no value, or one the engine does not fill, is an engine bug: FromHost refused it.
     CHECK_THROWS_AS(turn::PromptPack::Fill("{speaker} speaks.", {}), core::ContractError);
     CHECK_THROWS_AS(turn::PromptPack::Fill("{location}", {.speaker = "Hulda"}), core::ContractError);
+}
+
+TEST_CASE("The default texts do not invite naming the player and say most turns need no action", "[prompts]")
+{
+    CHECK(std::string(turn::HOSTED_SPEAK_INSTRUCTION) ==
+          "Step 2: write what {speaker} says now. Spoken words only, in character.");
+    CHECK(std::string(turn::HOSTED_SYSTEM_TEXT)
+              .find("Choose what the speaker would do now. Most turns need no action: when the speaker would only talk, "
+                    "choose the action that does nothing, if the turn allows one. The host decides whether it happens") !=
+          std::string::npos);
 }
