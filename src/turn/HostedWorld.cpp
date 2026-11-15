@@ -43,6 +43,10 @@ nlohmann::json HostDataToJson(const HostData& data)
     if (!data.clock.empty()) {
         json["clock"] = data.clock;
     }
+    // Only the texts the host sent, and no key at all without one: a run without a pack keeps the hash it had.
+    if (!data.prompts.empty()) {
+        json["prompts"] = data.prompts;
+    }
     return json;
 }
 
@@ -56,7 +60,7 @@ HostData HostDataFromJson(const nlohmann::json& json)
     }
     for (auto it = json.begin(); it != json.end(); ++it) {
         if (it.key() != "catalog" && it.key() != "observation_schema" && it.key() != "lore" &&
-            it.key() != "clock") {
+            it.key() != "clock" && it.key() != "prompts") {
             throw fault("/" + grammar::PointerToken(it.key()), std::format("unknown key '{}'", it.key()));
         }
     }
@@ -78,6 +82,19 @@ HostData HostDataFromJson(const nlohmann::json& json)
             throw fault("/clock", "'clock' must not be empty; a run without a clock omits it");
         }
         data.clock = json.at("clock").get<std::string>();
+    }
+    // The host's prompt texts: an object of strings. Its keys and texts are PromptPack's to check (HostedWorld).
+    if (json.contains("prompts")) {
+        const nlohmann::json& prompts = json.at("prompts");
+        if (!prompts.is_object()) {
+            throw fault("/prompts", "'prompts' must be a JSON object of texts");
+        }
+        for (auto it = prompts.begin(); it != prompts.end(); ++it) {
+            if (!it.value().is_string()) {
+                throw fault("/prompts/" + grammar::PointerToken(it.key()), "a prompt text must be a string");
+            }
+            data.prompts[it.key()] = it.value().get<std::string>();
+        }
     }
     if (!json.contains("lore")) {
         return data;
@@ -347,6 +364,9 @@ HostedWorld::HostedWorld(const HostData& data)
         }
         _hasClock = true;
     }
+
+    // 5. The prompt pack: the host's texts over the defaults, each checked (PromptPack::FromHost's DataError).
+    _prompts = PromptPack::FromHost(data.prompts);
 }
 
 const std::vector<core::LoreEntry>& HostedWorld::Lore() const
@@ -357,6 +377,11 @@ const std::vector<core::LoreEntry>& HostedWorld::Lore() const
 bool HostedWorld::HasClock() const
 {
     return _hasClock;
+}
+
+const PromptPack& HostedWorld::Prompts() const
+{
+    return _prompts;
 }
 
 std::vector<std::string> HostedWorld::ActionIds() const

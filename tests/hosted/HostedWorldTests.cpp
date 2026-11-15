@@ -2,6 +2,7 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <cstddef>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -130,6 +131,46 @@ TEST_CASE("Host data reads and writes its JSON form and hashes its content", "[h
     CHECK_THROWS_WITH(turn::HostDataFromJson(
                           R"({"catalog": {}, "observation_schema": {}, "lore": [{"subject": "a", "data": "b", "always_on": "yes"}]})"_json),
                       "host data at /lore/0/always_on: 'always_on' must be true or false");
+}
+
+TEST_CASE("Host data carries the host's prompt texts; without them it hashes as before packs", "[hosted][prompts]")
+{
+    // Without a pack the JSON form has no "prompts" and the hash is the one open.json had before packs existed.
+    const turn::HostData plain = test::FixtureHostData();
+    CHECK(plain.prompts.empty());
+    CHECK_FALSE(turn::HostDataToJson(plain).contains("prompts"));
+    CHECK(turn::HostDataHash(plain) == "35856ce76ac0af2e");
+    // An empty pack is no pack.
+    nlohmann::json emptyPack = test::ReadFixture("open.json");
+    emptyPack["prompts"] = nlohmann::json::object();
+    CHECK(turn::HostDataHash(turn::HostDataFromJson(emptyPack)) == turn::HostDataHash(plain));
+
+    // A pack round-trips with only the texts sent, and changes the hash.
+    nlohmann::json withPack = test::ReadFixture("open.json");
+    withPack["prompts"] = {{"speak", "Talk, {speaker}."}, {"turn_cue", "({speaker} goes on.)"}};
+    const turn::HostData data = turn::HostDataFromJson(withPack);
+    CHECK(data.prompts ==
+          std::map<std::string, std::string>{{"speak", "Talk, {speaker}."}, {"turn_cue", "({speaker} goes on.)"}});
+    CHECK(turn::HostDataToJson(data) == withPack);
+    CHECK(turn::HostDataHash(data) != turn::HostDataHash(plain));
+
+    // A wrong shape names its pointer.
+    nlohmann::json notObject = test::ReadFixture("open.json");
+    notObject["prompts"] = "speak";
+    CHECK_THROWS_WITH(turn::HostDataFromJson(notObject), "host data at /prompts: 'prompts' must be a JSON object of texts");
+    nlohmann::json notString = test::ReadFixture("open.json");
+    notString["prompts"] = {{"speak", 3}};
+    CHECK_THROWS_WITH(turn::HostDataFromJson(notString), "host data at /prompts/speak: a prompt text must be a string");
+
+    // HostedWorld checks the content and keeps the pack: the sent texts over the defaults.
+    const turn::HostedWorld world(data);
+    CHECK(world.Prompts().speak == "Talk, {speaker}.");
+    CHECK(world.Prompts().turnCue == "({speaker} goes on.)");
+    CHECK(world.Prompts().resolve == std::string(turn::HOSTED_RESOLVE_INSTRUCTION));
+    CHECK(turn::HostedWorld(plain).Prompts().speak == std::string(turn::HOSTED_SPEAK_INSTRUCTION));
+    turn::HostData bad = test::FixtureHostData();
+    bad.prompts = {{"speak", "Talk to {location}."}};
+    CHECK(OpenError(bad) == "prompts/speak: unknown variable {location}; this text takes {speaker}, {player}");
 }
 
 TEST_CASE("The catalog gives the proposal schema of section 3, and its grammar takes the right strings", "[hosted]")

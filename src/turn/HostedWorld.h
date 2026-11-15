@@ -1,5 +1,6 @@
 #pragma once
 
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -9,6 +10,7 @@
 
 #include "core/HostedRecord.h"
 #include "core/World.h"
+#include "turn/PromptPack.h"
 
 namespace morpheus::turn {
 
@@ -21,16 +23,22 @@ struct HostData {
     // The game's clock (rollback spec, section 1): a JSON pointer to a number in every observation, e.g.
     // "/game_time/days_passed". Empty: no clock, and a run cannot be rewound.
     std::string clock = {};
+    // The host's prompt texts by pack key (prompt pack spec, section 1): any of system, resolve, speak, turn_cue,
+    // summarize, condense, as sent. A key left out takes the engine's default (PromptPack). Empty: no pack.
+    std::map<std::string, std::string> prompts = {};
 };
 
 // HostData as a hosted run stores it and as the fixtures write it:
-// {"catalog": ..., "observation_schema": ..., "lore": [{"subject": ..., "data": ..., "always_on": ...}], "clock": ...};
-// "clock" (a string) is written only when the host data names one.
+// {"catalog": ..., "observation_schema": ..., "lore": [{"subject": ..., "data": ..., "always_on": ...}], "clock": ...,
+// "prompts": {...}};
+// "clock" (a string) is written only when the host data names one; "prompts" (an object of strings) only when the host
+// sent at least one text, and then only the texts it sent.
 nlohmann::json HostDataToJson(const HostData& data);
 
 // Reads HostDataToJson's form; "lore" may be absent (no lore), "clock" may be absent (no clock; when present it is a
-// non-empty string) and "always_on" defaults to false. Checks the shape only (HostedWorld checks the content): throws
-// DataError "host data at <pointer>: <problem>".
+// non-empty string), "prompts" may be absent (no pack; when present it is an object whose values are strings, its
+// keys and texts checked by HostedWorld through PromptPack) and "always_on" defaults to false. Checks the shape only
+// (HostedWorld checks the content): throws DataError "host data at <pointer>: <problem>".
 HostData HostDataFromJson(const nlohmann::json& json);
 
 // The content hash of `data` (core::ContentHash over HostDataToJson's text) that a hosted run stores: changed host
@@ -78,18 +86,23 @@ private:
     std::vector<core::LoreEntry> _lore = {};
     nlohmann::json::json_pointer _clock = nlohmann::json::json_pointer(""); // The whole document: no clock.
     bool _hasClock = false;                   // A default pointer is the whole document, so this says one was named.
+    PromptPack _prompts = {};                 // The host's texts over the engine's defaults.
 
 public:
     // Checks the host data and keeps it. Throws DataError naming the first fault: "catalog at <pointer>: ...",
     // "observation_schema: schema at <pointer>: ..." (the schema must be in grammar::Validate's extended subset) or
-    // "lore at /<index>/<field>: ..." (subjects non-empty and unique, data non-empty) or "host data at /clock: ..."
-    // (the clock must be a well-formed JSON pointer).
+    // "lore at /<index>/<field>: ..." (subjects non-empty and unique, data non-empty), "host data at /clock: ..."
+    // (the clock must be a well-formed JSON pointer) or PromptPack::FromHost's "prompts/<key>: ..." (the host's prompt
+    // texts, checked; a text that fails is never replaced by its default).
     explicit HostedWorld(const HostData& data);
 
     const std::vector<core::LoreEntry>& Lore() const;
 
     // True when the host data names a clock: every observation then holds a finite number at its pointer.
     bool HasClock() const;
+
+    // The run's prompt pack: the host's texts over the engine's defaults, checked.
+    const PromptPack& Prompts() const;
 
     // Every action id of the catalog, in order: what a turn allows when the host names no allowed actions.
     std::vector<std::string> ActionIds() const;
