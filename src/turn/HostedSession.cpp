@@ -169,16 +169,19 @@ std::string HostedSession::StartConversation(const std::vector<std::string>& par
         }
         participants.push_back({pActor->id, pActor->name, pActor->bio});
     }
-    return _store.CreateConversation(participants);
+    // It starts at the observation's game time.
+    return _store.CreateConversation(participants, observed.clock);
 }
 
 void HostedSession::RecordEvents(std::string_view conversationId, const std::vector<nlohmann::json>& events)
 {
     const core::Conversation conversation = OpenConversation(conversationId);
     HostedWorld::CheckEvents(events);
-    // They follow the conversation's latest turn (0 before its first), so they come before its next.
+    // They follow the conversation's latest turn (0 before its first), so they come before its next. With no
+    // observation of their own, they are dated with the run's latest seen clock.
     const std::vector<core::HostedTurn> played = _store.HostedTurns(conversation.id);
-    _store.AddConversationEvents(conversation.id, played.empty() ? 0 : played.back().number, events);
+    _store.AddConversationEvents(conversation.id, played.empty() ? 0 : played.back().number, events,
+                                 _store.LatestClock());
 }
 
 void HostedSession::SetParticipants(std::string_view conversationId, const std::vector<std::string>& joined,
@@ -217,7 +220,8 @@ void HostedSession::SetParticipants(std::string_view conversationId, const std::
     if (participants.empty()) {
         throw core::DataError(std::format("left: conversation '{}' would have no participant left", conversation.id));
     }
-    _store.SetParticipants(conversation.id, participants);
+    // The change happens at the observation's game time.
+    _store.SetParticipants(conversation.id, participants, observed.clock);
 }
 
 std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& request,
@@ -271,7 +275,8 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
                                           pSpeaker->name, speakTokens, _settings.budget.narrateAllowance));
     }
 
-    const int turn = _store.LatestHostedTurn() + 1; // Run-wide, shared with the summaries' ranges.
+    // Run-wide, shared with the summaries' ranges, and never reused: one past every turn stored, hidden ones included.
+    const int turn = _store.NextHostedTurn();
     const std::uint64_t seed = _store.Meta().rngSeed;
     const std::vector<core::HostedTurn> played = _store.HostedTurns(conversation.id);
     const int lastTurn = played.empty() ? 0 : played.back().number;
@@ -405,6 +410,7 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
                                         {"reasons", hit.reasons}});
     }
     record.timings = std::move(timings);
+    record.clock = observation.clock; // The game time it was played at.
     _store.CommitHostedTurn(record);
     return record;
 }
@@ -412,7 +418,8 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
 void HostedSession::EndConversation(std::string_view conversationId)
 {
     const core::Conversation conversation = OpenConversation(conversationId);
-    _store.EndConversation(conversation.id);
+    // With no observation of its own, the end is dated with the run's latest seen clock.
+    _store.EndConversation(conversation.id, _store.LatestClock());
 }
 
 bool HostedSession::Maintain(std::stop_token stop, std::stop_token yield)
@@ -460,7 +467,8 @@ bool HostedSession::Maintain(std::stop_token stop, std::stop_token yield)
         }
     }
 
-    // Shares waiting for their teller: applied once the conversation ended and the teller caught up, then removed.
+    // Shares waiting for their teller: applied once the conversation ended and the teller caught up, then marked
+    // applied at the run's latest seen clock (the row stays).
     // Each applied share may embed its copies, so a stop is honoured before each one, and a yield before each one
     // after a step.
     for (const core::PendingShare& share : _store.PendingShares()) {
@@ -483,7 +491,7 @@ bool HostedSession::Maintain(std::stop_token stop, std::stop_token yield)
                 return false;
             }
             ApplyShare(share.fromActor, share.toActor, share.conversationId);
-            _store.RemovePendingShare(share.id);
+            _store.MarkShareApplied(share.id, _store.LatestClock());
             stepped = true;
         }
     }
@@ -531,7 +539,8 @@ ShareResult HostedSession::ShareMemories(const std::string& fromActorId, const s
                    share.conversationId == conversationId;
         });
         if (!stored) {
-            _store.AddPendingShare({0, fromActorId, toActorId, conversationId});
+            // Created at the run's latest seen clock.
+            _store.AddPendingShare({0, fromActorId, toActorId, conversationId, _store.LatestClock()});
         }
         return {0, true};
     }
@@ -831,7 +840,9 @@ int HostedSession::ApplyShare(const std::string& fromActorId, const std::string&
             copied.insert(summary.sourceId);
         }
     }
-    // The teller's own summaries of the conversation (what it saw, not what it was told), as snapshots, oldest first.
+    // The teller's own summaries of the conversation (what it saw, not what it was told), as snapshots, oldest first,
+    // each copy dated with the run's latest seen clock.
+    const std::optional<double> clock = _store.LatestClock();
     int shared = 0;
     for (const core::Summary& summary : _store.ActorSummaries(fromActorId, true)) {
         if (summary.conversationId != conversationId || !summary.toldBy.empty() || copied.contains(summary.id)) {
@@ -845,6 +856,7 @@ int HostedSession::ApplyShare(const std::string& fromActorId, const std::string&
         copy.conversationId = conversationId;
         copy.toldBy = fromActorId;
         copy.sourceId = summary.id;
+        copy.clock = clock;
         _store.AddActorSummary(copy);
         ++shared;
     }

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -33,6 +34,13 @@ public:
     ~Statement();
 
     Statement& Bind(int index, std::int64_t value);
+    // An int has its own overload: with the double one, an int argument would convert to std::int64_t and to double
+    // equally well.
+    Statement& Bind(int index, int value);
+    // A double keeps its fraction: without this overload it would convert to std::int64_t and be truncated.
+    Statement& Bind(int index, double value);
+    // The value, or NULL when there is none.
+    Statement& Bind(int index, std::optional<double> value);
     Statement& Bind(int index, std::string_view text);
     // Stored as the raw bytes of the floats (little-endian on every supported platform). Must not be empty.
     Statement& Bind(int index, const std::vector<float>& values);
@@ -44,6 +52,9 @@ public:
     void Run();
 
     std::int64_t ColumnInt(int index) const;
+    double ColumnDouble(int index) const;
+    // True when the column of the current row is NULL.
+    bool ColumnIsNull(int index) const;
     std::string ColumnText(int index) const;
     std::vector<float> ColumnFloats(int index) const;
 

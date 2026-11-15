@@ -50,12 +50,14 @@ struct Conversation {
     std::vector<Participant> participants = {}; // In join order.
     bool ended = false;
     int foldedThrough = 0; // This conversation's turns up to this number are folded into summaries; 0 when none are.
+    std::optional<double> clock = {}; // The game time it started at; none without a host clock.
 };
 
 // An event recorded between turns (turn::HostedSession::RecordEvents): the host's JSON object, with its `text`.
 struct ConversationEvent {
     int afterTurn = 0; // The conversation's latest turn when it was recorded; 0 before its first.
     nlohmann::json event = nlohmann::json::object();
+    std::optional<double> clock = {}; // The run's latest seen clock when it was recorded; none before any.
 };
 
 // A share of one NPC's memories of a conversation with another, waiting until the teller's memory of it is complete
@@ -65,6 +67,9 @@ struct PendingShare {
     std::string fromActor = {};
     std::string toActor = {};
     std::string conversationId = {};
+    std::optional<double> clock = {};        // The run's latest seen clock when it was created; none before any.
+    std::optional<double> appliedClock = {}; // The run's latest seen clock when it was applied; none while pending.
+    std::int64_t unappliedBy = 0;            // The rollback that made it pending again; 0 for none.
 };
 
 // What became of the speaker's proposed action (turn::HostedWorld::Adjudicate). A requested action is the host's to
@@ -94,6 +99,7 @@ struct HostedTurn {
     // its prompt left out, the oldest first, because the tail was over tail_allowance. The store keeps them all.
     int eventsOmitted = 0;
     nlohmann::json timings = nlohmann::json::object();
+    std::optional<double> clock = {}; // Its observation's game time; none without a host clock.
 };
 
 } // namespace morpheus::core

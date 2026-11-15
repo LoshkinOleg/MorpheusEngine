@@ -39,6 +39,27 @@ Statement& Statement::Bind(int index, std::int64_t value)
     return *this;
 }
 
+Statement& Statement::Bind(int index, int value)
+{
+    return Bind(index, static_cast<std::int64_t>(value));
+}
+
+Statement& Statement::Bind(int index, double value)
+{
+    Check(sqlite3_bind_double(_pStmt, index, value));
+    return *this;
+}
+
+Statement& Statement::Bind(int index, std::optional<double> value)
+{
+    // No value is SQL NULL.
+    if (!value) {
+        Check(sqlite3_bind_null(_pStmt, index));
+        return *this;
+    }
+    return Bind(index, *value);
+}
+
 Statement& Statement::Bind(int index, std::string_view text)
 {
     // A default-constructed string_view has a null data pointer, which SQLite would store as NULL, not "".
@@ -76,6 +97,16 @@ void Statement::Run()
 std::int64_t Statement::ColumnInt(int index) const
 {
     return sqlite3_column_int64(_pStmt, index);
+}
+
+double Statement::ColumnDouble(int index) const
+{
+    return sqlite3_column_double(_pStmt, index);
+}
+
+bool Statement::ColumnIsNull(int index) const
+{
+    return sqlite3_column_type(_pStmt, index) == SQLITE_NULL;
 }
 
 std::string Statement::ColumnText(int index) const

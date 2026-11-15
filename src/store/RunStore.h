@@ -45,15 +45,17 @@ struct EmbeddingRow {
 
 // One run's SQLite database (saves/<world>/<run>.db). The only writer of run data.
 // Tables: run_meta, turns, state_snapshots, summaries, notes, embeddings, and for hosted runs host_data,
-// conversations, hosted_turns, conversation_events, actor_memory, pending_shares. Every file has every table;
-// summaries and embeddings serve both kinds, and turn numbers run across the whole run. An owned run's summaries have
-// no actor; each of a hosted run's belongs to one NPC (per-speaker memory spec).
+// conversations, conversation_changes, hosted_turns, conversation_events, actor_memory, pending_shares, rollbacks.
+// Every file has every table; summaries and embeddings serve both kinds, and turn numbers run across the whole run. An
+// owned run's summaries have no actor; each of a hosted run's belongs to one NPC (per-speaker memory spec).
+// A hosted row a rollback hid (hidden_by, rollback spec) is kept but skipped by every hosted reader.
 class RunStore {
 public:
-    // 5: the summaries' per-actor columns, actor_memory and pending_shares. 4: hosted_turns.events_omitted. 3:
-    // run_meta.kind and the hosted tables. 2: turns.digest (it also covers turns.attempt). A version 2, 3 or 4 run is
-    // upgraded in place on open; any other version is refused.
-    static constexpr int SCHEMA_VERSION = 5;
+    // 6: clocks and hidden marks on hosted rows, conversation_changes, summaries' superseded_by and made_in, applied
+    // shares kept, rollbacks. 5: the summaries' per-actor columns, actor_memory and pending_shares. 4:
+    // hosted_turns.events_omitted. 3: run_meta.kind and the hosted tables. 2: turns.digest (it also covers
+    // turns.attempt). A version 2 to 5 run is upgraded in place on open; any other version is refused.
+    static constexpr int SCHEMA_VERSION = 6;
 
 private:
     Database _db;
@@ -70,16 +72,19 @@ public:
     // is removed.
     static RunStore CreateHosted(const std::filesystem::path& file, RunMeta meta, const nlohmann::json& hostData);
 
-    // Opens an existing run. An older file is first upgraded in place to version 5, in one transaction: a version 2
+    // Opens an existing run. An older file is first upgraded in place to version 6, in one transaction: a version 2
     // file gains the hosted tables and is marked owned, a version 3 file gains hosted_turns.events_omitted, and each
-    // of them gains version 5's per-actor summary columns and tables. A version 4 hosted run's run-wide summaries are
-    // then moved to NPCs, each by its two end turns: when both are turns of one conversation it is that conversation's
-    // fold, copied, labelled with it, to the NPC witnesses of that conversation's turns in its range; otherwise it is a
-    // condense, copied with no conversation to the NPC witnesses of every turn in its range. Each NPC witness's mark in
-    // a conversation starts at its folded_through. An owned run's data is not touched. Throws StoreError if it is
-    // missing or was written with another schema version, its meta (rng_seed, settings, kind) is damaged, a hosted turn
-    // the move reads is damaged, or a summary does not start and end on hosted turns (the upgrade rolls back), and
-    // when a hosted run's memory mark (actor_memory) names a conversation the run does not have.
+    // of them gains version 5's per-actor summary columns and tables. A version 3 or 4 hosted run's run-wide summaries
+    // are then moved to NPCs, each by its two end turns: when both are turns of one conversation it is that
+    // conversation's fold, copied, labelled with it, to the NPC witnesses of that conversation's turns in its range;
+    // otherwise it is a condense, copied with no conversation to the NPC witnesses of every turn in its range. Each NPC
+    // witness's mark in a conversation starts at its folded_through. Every one of them then gains version 6's columns
+    // (no clocks) and tables: each conversation's participants and end become its first change row, and a superseded
+    // summary names its condense (the actor's first condensed summary after it). An owned run's data is not touched.
+    // Throws StoreError if it is missing or was written with another schema version, its meta (rng_seed, settings,
+    // kind) is damaged, a hosted turn the move reads is damaged, a summary does not start and end on hosted turns, or a
+    // superseded summary has no later condensed summary (the upgrade rolls back), and when a hosted run's memory mark
+    // (actor_memory) names a conversation the run does not have.
     static RunStore Open(const std::filesystem::path& file);
 
     const RunMeta& Meta() const;
@@ -142,21 +147,26 @@ public:
     // together. Throws ContractError for an empty hash.
     void ReplaceHostData(const nlohmann::json& hostData, const std::string& hash);
 
-    // Starts a conversation with `participants` in join order and returns its id: "c1", "c2", ... in creation order.
-    // Throws ContractError for no participants.
-    std::string CreateConversation(const std::vector<core::Participant>& participants);
+    // Starts a conversation with `participants` in join order at game time `clock`, and returns its id: "c1", "c2",
+    // ... in creation order, hidden ones included. Its start row and its first change row land together. Throws
+    // ContractError for no participants.
+    std::string CreateConversation(const std::vector<core::Participant>& participants, std::optional<double> clock);
 
-    // nullopt when there is no conversation `id`. Throws StoreError when its participants column is damaged.
+    // The visible conversation `id`, with the participants and end of its latest visible change row; nullopt when there
+    // is none. Throws StoreError when it has no visible change row or that row's participants are damaged.
     std::optional<core::Conversation> Conversation(std::string_view id);
 
-    // Every conversation, in creation order. Throws StoreError when a participants column is damaged.
+    // Every visible conversation, in creation order, read as Conversation reads one. Throws StoreError like it.
     std::vector<core::Conversation> Conversations();
 
-    // Replaces the participants of conversation `id`. Throws ContractError for an unknown conversation or none.
-    void SetParticipants(std::string_view id, const std::vector<core::Participant>& participants);
+    // Appends a change row to conversation `id`: these participants, its end unchanged, at game time `clock`. Throws
+    // ContractError for an unknown conversation or no participants.
+    void SetParticipants(std::string_view id, const std::vector<core::Participant>& participants,
+                         std::optional<double> clock);
 
-    // Marks conversation `id` ended. Throws ContractError for an unknown conversation.
-    void EndConversation(std::string_view id);
+    // Appends a change row ending conversation `id`, its participants unchanged, at game time `clock`. Throws
+    // ContractError for an unknown conversation.
+    void EndConversation(std::string_view id, std::optional<double> clock);
 
     // A fold by the speaker: adds `summary` (its actor's, of conversation `id`) and moves the conversation's
     // folded_through and the actor's remembered-through mark in it to summary.toTurn, in one transaction. Returns the
@@ -170,16 +180,17 @@ public:
     // at most LatestHostedTurn().
     void MarkFolded(std::string_view id, int turn);
 
-    // One NPC's summaries, by fromTurn then id: the shown ones, or the superseded ones too. Throws ContractError for an
-    // empty actorId.
+    // One NPC's visible summaries, by fromTurn then id: the shown ones, or the superseded ones too. A summary is
+    // superseded when the condense it names (superseded_by) is visible. Throws ContractError for an empty actorId.
     std::vector<core::Summary> ActorSummaries(std::string_view actorId, bool includeSuperseded);
 
-    // Every summary of the run, by fromTurn then id. Throws StoreError naming the file and actor_id for a row without
-    // its actor.
+    // Every visible summary of the run, by fromTurn then id, each superseded or not as ActorSummaries reads it. Throws
+    // StoreError naming the file and actor_id for a row without its actor.
     std::vector<core::Summary> HostedSummaries();
 
-    // Adds `summary` (every field but id; a shared copy names its teller and the summary it copies) and returns its
-    // id. Throws ContractError for an empty actorId and unless 1 <= fromTurn <= toTurn.
+    // Adds `summary` (every field but id, superseded and madeIn; a shared copy names its teller, the summary it copies
+    // and its clock) and returns its id. made_in is the open rollback's id, 0 when none is open. Throws ContractError
+    // for an empty actorId and unless 1 <= fromTurn <= toTurn, and StoreError when more than one rollback is open.
     std::int64_t AddActorSummary(const core::Summary& summary);
 
     // A catch-up fold: adds `summary` and moves its actor's remembered-through mark in its conversation to
@@ -187,8 +198,8 @@ public:
     // ContractError like AddActorSummary and SetRememberedThrough, and for an empty conversationId.
     std::int64_t RememberFold(const core::Summary& summary);
 
-    // Condensing one NPC's memory: marks every shown summary of `actorId` superseded and adds `condensed`, in one
-    // transaction. Returns the condensed summary's id. Throws ContractError unless condensed.actorId is `actorId`,
+    // Condensing one NPC's memory: adds `condensed`, then names it as the condense (superseded_by) of every shown
+    // summary of `actorId`, in one transaction. Returns the condensed summary's id. Throws ContractError unless condensed.actorId is `actorId`,
     // its conversationId and toldBy are empty, and 1 <= fromTurn <= toTurn.
     std::int64_t CondenseActorSummaries(std::string_view actorId, const core::Summary& condensed);
 
@@ -200,35 +211,45 @@ public:
     // conversation, an empty actorId, and unless `turn` is past the current mark.
     void SetRememberedThrough(std::string_view conversationId, std::string_view actorId, int turn);
 
-    // Records a share that waits until the teller's memory of the conversation is complete, and returns its id
-    // (share.id is ignored). Throws ContractError for an empty actor or conversation.
+    // Records a share that waits until the teller's memory of the conversation is complete, created at share.clock,
+    // and returns its id (share.id, appliedClock and unappliedBy are ignored: it is pending). Throws ContractError for
+    // an empty actor or conversation.
     std::int64_t AddPendingShare(const core::PendingShare& share);
 
-    // Every pending share, in the order they were added.
+    // Every visible share that is pending (not applied, or unapplied by a rollback), in the order they were added.
     std::vector<core::PendingShare> PendingShares();
 
-    // Removes pending share `id`.
-    void RemovePendingShare(std::int64_t id);
+    // Marks share `id` applied at game time `clock` (none in a run without a clock); the row stays.
+    void MarkShareApplied(std::int64_t id, std::optional<double> clock);
 
     // Appends `events` to conversation `id`, in order, each with `afterTurn` (the conversation's latest turn, 0 before
-    // its first), in one transaction. Throws ContractError for an unknown conversation.
-    void AddConversationEvents(std::string_view id, int afterTurn, const std::vector<nlohmann::json>& events);
+    // its first) and game time `clock`, in one transaction. Throws ContractError for an unknown conversation.
+    void AddConversationEvents(std::string_view id, int afterTurn, const std::vector<nlohmann::json>& events,
+                               std::optional<double> clock);
 
-    // Conversation `id`'s events in the order they were recorded. Throws StoreError when one is not valid JSON or not
-    // an object with a string `text`.
+    // Conversation `id`'s visible events in the order they were recorded. Throws StoreError when one is not valid JSON
+    // or not an object with a string `text`.
     std::vector<core::ConversationEvent> ConversationEvents(std::string_view id);
 
-    // Highest committed hosted turn number, 0 before the first.
+    // Highest visible hosted turn number, 0 before the first.
     int LatestHostedTurn();
 
-    // Appends hosted turn LatestHostedTurn()+1. Throws ContractError if record.number is not that, or its
+    // One past every hosted turn ever stored, hidden ones included: turn numbers are never reused. 1 before the first.
+    int NextHostedTurn();
+
+    // The highest clock among the visible hosted turns, conversations, conversation changes, events, summaries and
+    // shares (created, and applied unless a rollback unapplied them): what a record with no observation of its own is
+    // dated with. nullopt when none has a clock.
+    std::optional<double> LatestClock();
+
+    // Appends hosted turn NextHostedTurn(), with its clock. Throws ContractError if record.number is not that, or its
     // conversation is unknown.
     void CommitHostedTurn(const core::HostedTurn& record);
 
-    // Conversation `conversationId`'s turns, ascending. Throws StoreError naming the file, the turn and the column if a
-    // stored column is not valid JSON or has the wrong shape, including an observation without the actors core
-    // (core::ReadActors, the rules HostedWorld::Observe applies; each fault named by its pointer) or a speaker that is
-    // not one of its actors.
+    // Conversation `conversationId`'s visible turns, ascending. Throws StoreError naming the file, the turn and the
+    // column if a stored column is not valid JSON or has the wrong shape, including an observation without the actors
+    // core (core::ReadActors, the rules HostedWorld::Observe applies; each fault named by its pointer) or a speaker that
+    // is not one of its actors.
     std::vector<core::HostedTurn> HostedTurns(std::string_view conversationId);
 
 private:
@@ -245,9 +266,12 @@ private:
     // Throws ContractError naming `method` unless this is a hosted run.
     void RequireHosted(const char* method) const;
 
-    // The summary in the current row of `query`, selected as id, from_turn, to_turn, text, actor_id, conversation_id,
-    // told_by, source_id, superseded. A hosted row without its actor is damaged saved data.
+    // The summary in the current row of `query`, selected as SUMMARY_COLUMNS (RunStore.cpp) lists them. A hosted row
+    // without its actor is damaged saved data.
     core::Summary ReadSummaryRow(Statement& query) const;
+
+    // The id of the open rollback, 0 when none is open. Throws StoreError when more than one is open.
+    std::int64_t OpenRollbackId();
 
     // Moves conversation `id`'s folded_through to `turn` (FoldConversation and MarkFolded, named by `method`). Throws
     // ContractError for an unknown conversation, and unless `turn` is past its folded_through and at most

@@ -66,6 +66,101 @@ CREATE TABLE embeddings (
 );
 )sql";
 
+// The schema of a version 5 run exactly as RunStore wrote it before version 6: SCHEMA_SQL, HOSTED_SCHEMA_SQL and
+// PER_ACTOR_TABLES_SQL.
+constexpr const char* V5_SCHEMA_SQL = R"sql(
+CREATE TABLE run_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+CREATE TABLE turns (
+    number    INTEGER PRIMARY KEY,
+    attempt   INTEGER NOT NULL,
+    input     TEXT NOT NULL,
+    resolve   TEXT NOT NULL,
+    checks    TEXT NOT NULL,
+    applied   TEXT NOT NULL,
+    rejected  TEXT NOT NULL,
+    narration TEXT NOT NULL,
+    digest    TEXT NOT NULL,
+    timings   TEXT NOT NULL
+);
+CREATE TABLE state_snapshots (
+    turn  INTEGER PRIMARY KEY,
+    state TEXT NOT NULL
+);
+CREATE TABLE summaries (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_turn       INTEGER NOT NULL,
+    to_turn         INTEGER NOT NULL,
+    text            TEXT NOT NULL,
+    actor_id        TEXT NOT NULL DEFAULT '',
+    conversation_id TEXT NOT NULL DEFAULT '',
+    told_by         TEXT NOT NULL DEFAULT '',
+    source_id       INTEGER NOT NULL DEFAULT 0,
+    superseded      INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE notes (
+    id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    turn INTEGER NOT NULL,
+    text TEXT NOT NULL
+);
+CREATE TABLE embeddings (
+    kind         TEXT NOT NULL,
+    ref_id       TEXT NOT NULL,
+    model        TEXT NOT NULL,
+    vector       BLOB NOT NULL,
+    content_hash TEXT NOT NULL,
+    PRIMARY KEY (kind, ref_id, model)
+);
+CREATE TABLE host_data (
+    id   INTEGER PRIMARY KEY CHECK (id = 1),
+    data TEXT NOT NULL
+);
+CREATE TABLE conversations (
+    id             TEXT PRIMARY KEY,
+    position       INTEGER NOT NULL UNIQUE,
+    participants   TEXT NOT NULL,
+    ended          INTEGER NOT NULL,
+    folded_through INTEGER NOT NULL
+);
+CREATE TABLE hosted_turns (
+    number          INTEGER PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    speaker_id      TEXT NOT NULL,
+    listener_ids    TEXT NOT NULL,
+    player_text     TEXT NOT NULL,
+    events          TEXT NOT NULL,
+    observation     TEXT NOT NULL,
+    resolve_output  TEXT NOT NULL,
+    adjudication    TEXT NOT NULL,
+    line            TEXT NOT NULL,
+    timings         TEXT NOT NULL,
+    events_omitted  INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE conversation_events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    after_turn      INTEGER NOT NULL,
+    event           TEXT NOT NULL
+);
+CREATE INDEX hosted_turns_conversation ON hosted_turns (conversation_id);
+CREATE INDEX conversation_events_conversation ON conversation_events (conversation_id);
+CREATE TABLE actor_memory (
+    conversation_id    TEXT NOT NULL,
+    actor_id           TEXT NOT NULL,
+    remembered_through INTEGER NOT NULL,
+    PRIMARY KEY (conversation_id, actor_id)
+);
+CREATE TABLE pending_shares (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_actor      TEXT NOT NULL,
+    to_actor        TEXT NOT NULL,
+    conversation_id TEXT NOT NULL
+);
+CREATE INDEX summaries_actor ON summaries (actor_id);
+)sql";
+
 store::RunMeta HostedMeta()
 {
     store::RunMeta meta;
@@ -132,17 +227,19 @@ TEST_CASE("A hosted run stores its kind, host data, conversations, events and tu
         store::RunStore store = store::RunStore::CreateHosted(file, HostedMeta(), TestHostData());
         CHECK(store.Meta().kind == store::RunKind::Hosted);
         CHECK(store.LatestHostedTurn() == 0);
-        id = store.CreateConversation(TwoParticipants());
+        id = store.CreateConversation(TwoParticipants(), std::nullopt);
         CHECK(id == "c1");
-        CHECK(store.CreateConversation({{"npc-2", "Saadia", ""}}) == "c2");
-        store.AddConversationEvents(id, 0, {nlohmann::json{{"text", "A door opens."}},
-                                            nlohmann::json{{"type", "ambient"}, {"text", "Rain."}}});
+        CHECK(store.CreateConversation({{"npc-2", "Saadia", ""}}, std::nullopt) == "c2");
+        store.AddConversationEvents(id, 0,
+                                    {nlohmann::json{{"text", "A door opens."}},
+                                     nlohmann::json{{"type", "ambient"}, {"text", "Rain."}}},
+                                    std::nullopt);
         store.CommitHostedTurn(TestHostedTurn(1, id));
         core::HostedTurn quiet = TestHostedTurn(2, id);
         quiet.playerText.reset();
         quiet.adjudication = {false, "", nlohmann::json::object(), {"/intent: unexpected key 'intent'"}};
         store.CommitHostedTurn(quiet);
-        store.AddConversationEvents(id, 2, {nlohmann::json{{"text", "Hulda leaves."}}});
+        store.AddConversationEvents(id, 2, {nlohmann::json{{"text", "Hulda leaves."}}}, std::nullopt);
     }
 
     store::RunStore reopened = store::RunStore::Open(file);
@@ -218,7 +315,7 @@ TEST_CASE("FoldConversation adds the summary and moves folded_through together; 
 {
     store::RunStore store =
         store::RunStore::CreateHosted(test::FreshTempDir("store_hosted_fold") / "run.db", HostedMeta(), TestHostData());
-    const std::string id = store.CreateConversation(TwoParticipants());
+    const std::string id = store.CreateConversation(TwoParticipants(), std::nullopt);
     store.CommitHostedTurn(TestHostedTurn(1, id));
     store.CommitHostedTurn(TestHostedTurn(2, id));
 
@@ -232,18 +329,18 @@ TEST_CASE("FoldConversation adds the summary and moves folded_through together; 
     CHECK_THROWS_AS(store.FoldConversation(id, ActorSummary("npc-1", id, 3, 2, "Backwards.")), core::ContractError);
     CHECK(store.HostedSummaries().size() == 1);
 
-    store.SetParticipants(id, {{"player", "Aela", ""}, {"npc-2", "Saadia", "Serves at the inn."}});
+    store.SetParticipants(id, {{"player", "Aela", ""}, {"npc-2", "Saadia", "Serves at the inn."}}, std::nullopt);
     const std::optional<core::Conversation> changed = store.Conversation(id);
     REQUIRE(changed);
     REQUIRE(changed->participants.size() == 2);
     CHECK(changed->participants[0].id == "player");
     CHECK(changed->participants[1].bio == "Serves at the inn.");
     CHECK_FALSE(changed->ended);
-    store.EndConversation(id);
+    store.EndConversation(id, std::nullopt);
     CHECK(store.Conversation(id)->ended);
 }
 
-TEST_CASE("A version 2 run is upgraded in place to an owned version 5 run, its data unchanged", "[store][hosted]")
+TEST_CASE("A version 2 run is upgraded in place to an owned version 6 run, its data unchanged", "[store][hosted]")
 {
     const std::filesystem::path file = test::FreshTempDir("store_upgrade") / "run.db";
     {
@@ -285,12 +382,12 @@ INSERT INTO notes (turn, text) VALUES (1, 'The rope is frayed.');
         CHECK(summaries[0].text == "A climb.");
     }
 
-    // The file now says version 5 and owned, has the hosted tables, and opens again as it is.
+    // The file now says version 6 and owned, has the hosted tables, and opens again as it is.
     {
         store::Database db = store::Database::Open(file, false);
         store::Statement version = db.Prepare("SELECT value FROM run_meta WHERE key = 'schema_version'");
         REQUIRE(version.Step());
-        CHECK(version.ColumnText(0) == "5");
+        CHECK(version.ColumnText(0) == "6");
         store::Statement kind = db.Prepare("SELECT value FROM run_meta WHERE key = 'kind'");
         REQUIRE(kind.Step());
         CHECK(kind.ColumnText(0) == "owned");
@@ -324,22 +421,47 @@ TEST_CASE("Hosted methods refuse an owned run, a turn out of order and an unknow
 
     store::RunStore ownedStore = store::RunStore::Create(dir / "owned.db", owned, nlohmann::json::object());
     CHECK(ownedStore.Meta().kind == store::RunKind::Owned);
-    CHECK_THROWS_AS(ownedStore.CreateConversation(TwoParticipants()), core::ContractError);
+    CHECK_THROWS_AS(ownedStore.CreateConversation(TwoParticipants(), std::nullopt), core::ContractError);
     CHECK_THROWS_AS(ownedStore.HostData(), core::ContractError);
     CHECK_THROWS_AS(ownedStore.LatestHostedTurn(), core::ContractError);
 
     store::RunStore hosted = store::RunStore::CreateHosted(dir / "hosted.db", HostedMeta(), TestHostData());
-    const std::string id = hosted.CreateConversation(TwoParticipants());
+    const std::string id = hosted.CreateConversation(TwoParticipants(), std::nullopt);
     CHECK_THROWS_AS(hosted.CommitHostedTurn(TestHostedTurn(2, id)), core::ContractError);   // Not the next number.
     CHECK_THROWS_AS(hosted.CommitHostedTurn(TestHostedTurn(1, "c9")), core::ContractError); // No such conversation.
-    CHECK_THROWS_AS(hosted.CreateConversation({}), core::ContractError);
-    CHECK_THROWS_AS(hosted.EndConversation("c9"), core::ContractError);
-    CHECK_THROWS_AS(hosted.SetParticipants("c9", TwoParticipants()), core::ContractError);
-    CHECK_THROWS_AS(hosted.AddConversationEvents("c9", 0, {nlohmann::json{{"text", "x"}}}), core::ContractError);
+    CHECK_THROWS_AS(hosted.CreateConversation({}, std::nullopt), core::ContractError);
+    CHECK_THROWS_AS(hosted.EndConversation("c9", std::nullopt), core::ContractError);
+    CHECK_THROWS_AS(hosted.SetParticipants("c9", TwoParticipants(), std::nullopt), core::ContractError);
+    CHECK_THROWS_AS(hosted.AddConversationEvents("c9", 0, {nlohmann::json{{"text", "x"}}}, std::nullopt),
+                    core::ContractError);
     CHECK(hosted.LatestHostedTurn() == 0);
 }
 
 namespace {
+
+// Takes back what version 6 added to a file (clocks and hidden marks, conversations as history, superseded_by and
+// made_in, applied shares and their applied flag, rollbacks), to make a version 5 file from a new one: each conversation's latest change row
+// becomes its participants and ended columns again, a summary with a condense is superseded. The caller marks the
+// version.
+constexpr const char* DROP_VERSION_6_SQL =
+    "ALTER TABLE summaries ADD COLUMN superseded INTEGER NOT NULL DEFAULT 0;"
+    "UPDATE summaries SET superseded = 1 WHERE superseded_by <> 0;"
+    "ALTER TABLE conversations ADD COLUMN participants TEXT NOT NULL DEFAULT '[]';"
+    "ALTER TABLE conversations ADD COLUMN ended INTEGER NOT NULL DEFAULT 0;"
+    "UPDATE conversations SET"
+    " participants = (SELECT c.participants FROM conversation_changes c WHERE c.conversation_id = conversations.id"
+    "                 ORDER BY c.id DESC LIMIT 1),"
+    " ended = (SELECT c.ended FROM conversation_changes c WHERE c.conversation_id = conversations.id"
+    "          ORDER BY c.id DESC LIMIT 1);"
+    "DROP INDEX conversation_changes_conversation; DROP TABLE conversation_changes; DROP TABLE rollbacks;"
+    "ALTER TABLE hosted_turns DROP COLUMN clock; ALTER TABLE hosted_turns DROP COLUMN hidden_by;"
+    "ALTER TABLE conversation_events DROP COLUMN clock; ALTER TABLE conversation_events DROP COLUMN hidden_by;"
+    "ALTER TABLE conversations DROP COLUMN clock; ALTER TABLE conversations DROP COLUMN hidden_by;"
+    "ALTER TABLE summaries DROP COLUMN clock; ALTER TABLE summaries DROP COLUMN hidden_by;"
+    "ALTER TABLE summaries DROP COLUMN superseded_by; ALTER TABLE summaries DROP COLUMN made_in;"
+    "ALTER TABLE pending_shares DROP COLUMN clock; ALTER TABLE pending_shares DROP COLUMN applied_clock;"
+    "ALTER TABLE pending_shares DROP COLUMN unapplied_by; ALTER TABLE pending_shares DROP COLUMN hidden_by;"
+    "ALTER TABLE pending_shares DROP COLUMN applied;";
 
 // Takes back what version 5 added to a file (the summaries' per-actor columns and the per-speaker memory tables), to
 // make an older file from a new one. The caller marks the version.
@@ -363,10 +485,101 @@ std::filesystem::path HostedFile(const char* name)
 {
     const std::filesystem::path file = test::FreshTempDir(name) / "run.db";
     store::RunStore store = store::RunStore::CreateHosted(file, HostedMeta(), TestHostData());
-    const std::string id = store.CreateConversation(TwoParticipants());
-    store.AddConversationEvents(id, 0, {nlohmann::json{{"text", "A door opens."}}});
+    const std::string id = store.CreateConversation(TwoParticipants(), std::nullopt);
+    store.AddConversationEvents(id, 0, {nlohmann::json{{"text", "A door opens."}}}, std::nullopt);
     store.CommitHostedTurn(TestHostedTurn(1, id));
     return file;
+}
+
+// A version 5 hosted run file as RunStore wrote it, made from SQL and closed again: one ended conversation (c1, with
+// TwoParticipants(), folded through 1) holding TestHostedTurn(1, "c1"), and two summaries of npc-1: "First."
+// (superseded) and "Condensed." (no conversation).
+std::filesystem::path V5HostedFile(const char* name)
+{
+    const std::filesystem::path file = test::FreshTempDir(name) / "run.db";
+    store::Database db = store::Database::Open(file, true);
+    db.Exec(V5_SCHEMA_SQL);
+    const store::RunMeta meta = HostedMeta();
+    const std::vector<std::pair<std::string, std::string>> metaRows = {
+        {"schema_version", "5"},
+        {"world_id", meta.worldId},
+        {"world_hash", meta.worldHash},
+        {"model_id", meta.modelId},
+        {"rng_seed", std::to_string(meta.rngSeed)},
+        {"settings", meta.settings.dump()},
+        {"created_at", "2026-11-01T10:00:00Z"},
+        {"kind", "hosted"}};
+    for (const auto& [key, value] : metaRows) {
+        db.Prepare("INSERT INTO run_meta (key, value) VALUES (?1, ?2)").Bind(1, key).Bind(2, value).Run();
+    }
+    db.Prepare("INSERT INTO host_data (id, data) VALUES (1, ?1)").Bind(1, TestHostData().dump()).Run();
+
+    // The participants as RunStore stored them: [{"id", "name", "bio"}] in join order.
+    nlohmann::json participants = nlohmann::json::array();
+    for (const core::Participant& participant : TwoParticipants()) {
+        participants.push_back({{"id", participant.id}, {"name", participant.name}, {"bio", participant.bio}});
+    }
+    db.Prepare("INSERT INTO conversations (id, position, participants, ended, folded_through) "
+               "VALUES ('c1', 1, ?1, 1, 1)")
+        .Bind(1, participants.dump())
+        .Run();
+
+    // The turn's columns as CommitHostedTurn stored them.
+    const core::HostedTurn turn = TestHostedTurn(1, "c1");
+    const nlohmann::json adjudication = {{"requested", turn.adjudication.requested},
+                                         {"action_id", turn.adjudication.actionId},
+                                         {"params", turn.adjudication.params},
+                                         {"reasons", turn.adjudication.reasons}};
+    db.Prepare("INSERT INTO hosted_turns (number, conversation_id, speaker_id, listener_ids, player_text, events, "
+               "observation, resolve_output, adjudication, line, timings, events_omitted) "
+               "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)")
+        .Bind(1, turn.number)
+        .Bind(2, turn.conversationId)
+        .Bind(3, turn.speakerId)
+        .Bind(4, nlohmann::json(turn.listenerIds).dump())
+        .Bind(5, nlohmann::json(*turn.playerText).dump())
+        .Bind(6, nlohmann::json(turn.events).dump())
+        .Bind(7, turn.observation.dump())
+        .Bind(8, turn.resolveOutput)
+        .Bind(9, adjudication.dump())
+        .Bind(10, turn.line)
+        .Bind(11, turn.timings.dump())
+        .Bind(12, turn.eventsOmitted)
+        .Run();
+
+    db.Exec("INSERT INTO summaries (from_turn, to_turn, text, actor_id, conversation_id, superseded) "
+            "VALUES (1, 1, 'First.', 'npc-1', 'c1', 1);"
+            "INSERT INTO summaries (from_turn, to_turn, text, actor_id, conversation_id) "
+            "VALUES (1, 1, 'Condensed.', 'npc-1', '');");
+    return file;
+}
+
+// Every table, index and column of a file, as sorted text: type, name, then each column's position, name, type,
+// NOT NULL, default and primary key.
+std::vector<std::string> SchemaOf(const std::filesystem::path& file)
+{
+    store::Database db = store::Database::Open(file, false);
+    std::vector<std::string> schema;
+    std::vector<std::string> tables;
+    {
+        store::Statement objects =
+            db.Prepare("SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name");
+        while (objects.Step()) {
+            schema.push_back(objects.ColumnText(0) + " " + objects.ColumnText(1));
+            if (objects.ColumnText(0) == "table") {
+                tables.push_back(objects.ColumnText(1));
+            }
+        }
+    }
+    for (const std::string& table : tables) {
+        store::Statement columns = db.Prepare(std::format("PRAGMA table_info({})", table));
+        while (columns.Step()) {
+            schema.push_back(std::format("{}: {} {} {} {} {} {}", table, columns.ColumnInt(0), columns.ColumnText(1),
+                                         columns.ColumnText(2), columns.ColumnInt(3), columns.ColumnText(4),
+                                         columns.ColumnInt(5)));
+        }
+    }
+    return schema;
 }
 
 // A version 2 run file with only its meta rows, closed again. `extraSql` runs after the schema.
@@ -412,11 +625,21 @@ TEST_CASE("Damaged saved host data and conversations are StoreErrors naming the 
         {
             const std::filesystem::path file = HostedFile("store_damaged_participants");
             store::Database db = store::Database::Open(file, false);
-            db.Prepare("UPDATE conversations SET participants = ?1").Bind(1, std::string(participants)).Run();
+            db.Prepare("UPDATE conversation_changes SET participants = ?1").Bind(1, std::string(participants)).Run();
             store::RunStore store = store::RunStore::Open(file);
             CHECK_THROWS_AS(store.Conversations(), store::StoreError);
             CHECK_THROWS_WITH(store.Conversations(), ContainsSubstring("run.db") && ContainsSubstring("'participants'"));
         }
+    }
+    SECTION("a conversation without a visible change row")
+    {
+        const std::filesystem::path file = HostedFile("store_missing_change");
+        Damage(file, "DELETE FROM conversation_changes");
+        store::RunStore store = store::RunStore::Open(file);
+        CHECK_THROWS_AS(store.Conversations(), store::StoreError);
+        CHECK_THROWS_WITH(store.Conversations(),
+                          ContainsSubstring("run.db") && ContainsSubstring("conversation_changes") &&
+                              ContainsSubstring("'c1'"));
     }
     SECTION("a missing kind")
     {
@@ -562,7 +785,7 @@ TEST_CASE("FoldConversation moves the folded mark only forward and not past the 
 {
     store::RunStore store =
         store::RunStore::CreateHosted(test::FreshTempDir("store_fold_bounds") / "run.db", HostedMeta(), TestHostData());
-    const std::string id = store.CreateConversation(TwoParticipants());
+    const std::string id = store.CreateConversation(TwoParticipants(), std::nullopt);
     store.CommitHostedTurn(TestHostedTurn(1, id));
     store.CommitHostedTurn(TestHostedTurn(2, id));
 
@@ -600,7 +823,7 @@ TEST_CASE("A hosted turn whose text is not UTF-8 still commits", "[store][hosted
 {
     store::RunStore store =
         store::RunStore::CreateHosted(test::FreshTempDir("store_bad_utf8") / "run.db", HostedMeta(), TestHostData());
-    const std::string id = store.CreateConversation(TwoParticipants());
+    const std::string id = store.CreateConversation(TwoParticipants(), std::nullopt);
     const std::string bad = std::string("a") + static_cast<char>(0xFF) + "b";
     core::HostedTurn turn = TestHostedTurn(1, id);
     turn.playerText = bad;
@@ -616,7 +839,7 @@ TEST_CASE("A hosted turn keeps how many events its prompt left out", "[store][ho
     std::string id;
     {
         store::RunStore store = store::RunStore::CreateHosted(file, HostedMeta(), TestHostData());
-        id = store.CreateConversation(TwoParticipants());
+        id = store.CreateConversation(TwoParticipants(), std::nullopt);
         core::HostedTurn turn = TestHostedTurn(1, id);
         turn.eventsOmitted = 3;
         store.CommitHostedTurn(turn);
@@ -629,11 +852,12 @@ TEST_CASE("A hosted turn keeps how many events its prompt left out", "[store][ho
     CHECK(turns[1].eventsOmitted == 0);
 }
 
-TEST_CASE("A version 3 run is upgraded in place to version 5, its turns with no events left out", "[store][hosted]")
+TEST_CASE("A version 3 run is upgraded in place to version 6, its turns with no events left out", "[store][hosted]")
 {
     // A version 3 file as RunStore wrote it: a version 5 file without version 5's additions and without
     // events_omitted, marked version 3.
     const std::filesystem::path file = HostedFile("store_upgrade_v3");
+    Damage(file, DROP_VERSION_6_SQL);
     Damage(file, DROP_VERSION_5_SQL);
     Damage(file, "ALTER TABLE hosted_turns DROP COLUMN events_omitted;"
                  "UPDATE run_meta SET value = '3' WHERE key = 'schema_version';");
@@ -650,7 +874,7 @@ TEST_CASE("A version 3 run is upgraded in place to version 5, its turns with no 
     store::Database db = store::Database::Open(file, false);
     store::Statement version = db.Prepare("SELECT value FROM run_meta WHERE key = 'schema_version'");
     REQUIRE(version.Step());
-    CHECK(version.ColumnText(0) == "5");
+    CHECK(version.ColumnText(0) == "6");
 }
 
 TEST_CASE("A failed upgrade from version 3 names the file and leaves it a version 3 run", "[store][hosted]")
@@ -680,7 +904,7 @@ TEST_CASE("A hosted run keeps summaries per actor, with their conversation, tell
 {
     const std::filesystem::path file = test::FreshTempDir("store_actor_summaries") / "run.db";
     store::RunStore store = store::RunStore::CreateHosted(file, HostedMeta(), TestHostData());
-    const std::string id = store.CreateConversation(TwoParticipants());
+    const std::string id = store.CreateConversation(TwoParticipants(), std::nullopt);
     store.CommitHostedTurn(TestHostedTurn(1, id));
     store.CommitHostedTurn(TestHostedTurn(2, id));
 
@@ -732,11 +956,11 @@ TEST_CASE("A hosted run keeps summaries per actor, with their conversation, tell
     CHECK(store.Conversation(id)->foldedThrough == 2);
 }
 
-TEST_CASE("A hosted run keeps pending shares until they are removed", "[store][hosted][memory]")
+TEST_CASE("A hosted run keeps pending shares until they are applied", "[store][hosted][memory]")
 {
     const std::filesystem::path file = test::FreshTempDir("store_pending_shares") / "run.db";
     store::RunStore store = store::RunStore::CreateHosted(file, HostedMeta(), TestHostData());
-    const std::string id = store.CreateConversation(TwoParticipants());
+    const std::string id = store.CreateConversation(TwoParticipants(), std::nullopt);
     const std::int64_t share = store.AddPendingShare({0, "npc-1", "npc-2", id});
     const std::vector<core::PendingShare> pending = store.PendingShares();
     REQUIRE(pending.size() == 1);
@@ -744,7 +968,7 @@ TEST_CASE("A hosted run keeps pending shares until they are removed", "[store][h
     CHECK(pending[0].fromActor == "npc-1");
     CHECK(pending[0].toActor == "npc-2");
     CHECK(pending[0].conversationId == id);
-    store.RemovePendingShare(share);
+    store.MarkShareApplied(share, std::nullopt);
     CHECK(store.PendingShares().empty());
 }
 
@@ -752,7 +976,7 @@ TEST_CASE("Run-wide summary methods are the owned game's; per-actor folds need a
 {
     const std::filesystem::path file = test::FreshTempDir("store_summary_guards") / "run.db";
     store::RunStore store = store::RunStore::CreateHosted(file, HostedMeta(), TestHostData());
-    const std::string id = store.CreateConversation(TwoParticipants());
+    const std::string id = store.CreateConversation(TwoParticipants(), std::nullopt);
     store.CommitHostedTurn(TestHostedTurn(1, id));
     CHECK_THROWS_AS(store.Summaries(), core::ContractError);
     CHECK_THROWS_AS(store.AddSummary({1, 1, "x"}), core::ContractError);
@@ -761,7 +985,7 @@ TEST_CASE("Run-wide summary methods are the owned game's; per-actor folds need a
     CHECK_THROWS_AS(store.FoldConversation(id, ActorSummary("npc-1", "c9", 1, 1, "x")), core::ContractError);
 }
 
-TEST_CASE("A version 4 hosted run is upgraded to version 5: each summary goes to the NPCs who witnessed it",
+TEST_CASE("A version 4 hosted run is upgraded through version 5: each summary goes to the NPCs who witnessed it",
           "[store][hosted][memory]")
 {
     // A version 4 file as RunStore wrote it: a version 5 file without the new columns and tables, marked version 4,
@@ -769,6 +993,7 @@ TEST_CASE("A version 4 hosted run is upgraded to version 5: each summary goes to
     const std::filesystem::path file = HostedFile("store_upgrade_v4");
     Damage(file, "UPDATE conversations SET folded_through = 1;"
                  "INSERT INTO summaries (from_turn, to_turn, text) VALUES (1, 1, 'Hulda greeted Aela.');");
+    Damage(file, DROP_VERSION_6_SQL);
     Damage(file, DROP_VERSION_5_SQL);
     Damage(file, "UPDATE run_meta SET value = '4' WHERE key = 'schema_version';");
     {
@@ -788,10 +1013,10 @@ TEST_CASE("A version 4 hosted run is upgraded to version 5: each summary goes to
     store::Database db = store::Database::Open(file, false);
     store::Statement version = db.Prepare("SELECT value FROM run_meta WHERE key = 'schema_version'");
     REQUIRE(version.Step());
-    CHECK(version.ColumnText(0) == "5");
+    CHECK(version.ColumnText(0) == "6");
 }
 
-TEST_CASE("A version 4 owned run is upgraded to version 5 with its summaries unchanged", "[store][hosted][memory]")
+TEST_CASE("A version 4 owned run is upgraded to version 6 with its summaries unchanged", "[store][hosted][memory]")
 {
     const std::filesystem::path file = test::FreshTempDir("store_upgrade_v4_owned") / "run.db";
     store::RunMeta owned = HostedMeta();
@@ -802,6 +1027,7 @@ TEST_CASE("A version 4 owned run is upgraded to version 5 with its summaries unc
         store.AddSummary({1, 2, "A climb."});
         store.AddSummary({3, 4, "A fall."});
     }
+    Damage(file, DROP_VERSION_6_SQL);
     Damage(file, DROP_VERSION_5_SQL);
     Damage(file, "UPDATE run_meta SET value = '4' WHERE key = 'schema_version';");
     {
@@ -818,7 +1044,7 @@ TEST_CASE("A version 4 owned run is upgraded to version 5 with its summaries unc
     store::Database db = store::Database::Open(file, false);
     store::Statement version = db.Prepare("SELECT value FROM run_meta WHERE key = 'schema_version'");
     REQUIRE(version.Step());
-    CHECK(version.ColumnText(0) == "5");
+    CHECK(version.ColumnText(0) == "6");
 }
 
 TEST_CASE("A hosted summary row without its actor is a StoreError naming the file and the column",
@@ -841,8 +1067,8 @@ TEST_CASE("A version 4 interleaved fold goes only to its conversation's witnesse
     const std::filesystem::path file = test::FreshTempDir("store_upgrade_v4_two") / "run.db";
     {
         store::RunStore store = store::RunStore::CreateHosted(file, HostedMeta(), TestHostData());
-        const std::string c1 = store.CreateConversation(TwoParticipants());
-        const std::string c2 = store.CreateConversation({{"npc-2", "Saadia", ""}, {"player", "Aela", ""}});
+        const std::string c1 = store.CreateConversation(TwoParticipants(), std::nullopt);
+        const std::string c2 = store.CreateConversation({{"npc-2", "Saadia", ""}, {"player", "Aela", ""}}, std::nullopt);
         auto saadia = [&c2](int number) {
             core::HostedTurn turn = TestHostedTurn(number, c2);
             turn.speakerId = "npc-2";
@@ -860,6 +1086,7 @@ TEST_CASE("A version 4 interleaved fold goes only to its conversation's witnesse
                  "INSERT INTO summaries (from_turn, to_turn, text) VALUES (1, 1, 'Hulda greeted Aela.');"
                  "INSERT INTO summaries (from_turn, to_turn, text) VALUES (1, 3, 'Hulda talked with Aela twice.');"
                  "INSERT INTO summaries (from_turn, to_turn, text) VALUES (1, 4, 'Both talks.');");
+    Damage(file, DROP_VERSION_6_SQL);
     Damage(file, DROP_VERSION_5_SQL);
     Damage(file, "UPDATE run_meta SET value = '4' WHERE key = 'schema_version';");
 
@@ -891,6 +1118,7 @@ TEST_CASE("A version 4 summary whose range holds no turn fails the upgrade, nami
     // Turn 1 is the run's only turn: a summary of turns 5-6 covers none.
     const std::filesystem::path file = HostedFile("store_upgrade_v4_no_turn");
     Damage(file, "INSERT INTO summaries (from_turn, to_turn, text) VALUES (5, 6, 'Nothing happened.');");
+    Damage(file, DROP_VERSION_6_SQL);
     Damage(file, DROP_VERSION_5_SQL);
     Damage(file, "UPDATE run_meta SET value = '4' WHERE key = 'schema_version';");
     CHECK_THROWS_AS(store::RunStore::Open(file), store::StoreError);
@@ -914,6 +1142,7 @@ TEST_CASE("A version 4 summary whose end turn is not a hosted turn fails the upg
     // cannot be told.
     const std::filesystem::path file = HostedFile("store_upgrade_v4_no_end");
     Damage(file, "INSERT INTO summaries (from_turn, to_turn, text) VALUES (1, 2, 'Half a talk.');");
+    Damage(file, DROP_VERSION_6_SQL);
     Damage(file, DROP_VERSION_5_SQL);
     Damage(file, "UPDATE run_meta SET value = '4' WHERE key = 'schema_version';");
     CHECK_THROWS_AS(store::RunStore::Open(file), store::StoreError);
@@ -926,6 +1155,7 @@ TEST_CASE("A version 4 hosted turn whose listener id is not a string fails the u
 {
     const std::filesystem::path file = HostedFile("store_upgrade_v4_bad_listener");
     Damage(file, "UPDATE hosted_turns SET listener_ids = '[\"player\", 5]' WHERE number = 1;");
+    Damage(file, DROP_VERSION_6_SQL);
     Damage(file, DROP_VERSION_5_SQL);
     Damage(file, "UPDATE run_meta SET value = '4' WHERE key = 'schema_version';");
     CHECK_THROWS_AS(store::RunStore::Open(file), store::StoreError);
@@ -943,4 +1173,183 @@ TEST_CASE("A hosted run with a memory mark of a conversation it does not have is
     CHECK_THROWS_WITH(store::RunStore::Open(file), ContainsSubstring("run.db") &&
                                                        ContainsSubstring("actor_memory.conversation_id") &&
                                                        ContainsSubstring("'c9'"));
+}
+
+TEST_CASE("Hosted records keep their clocks, and the run's latest seen clock is the highest", "[store][hosted][rollback]")
+{
+    const std::filesystem::path file = test::FreshTempDir("store_clocks") / "run.db";
+    store::RunStore store = store::RunStore::CreateHosted(file, HostedMeta(), TestHostData());
+    CHECK_FALSE(store.LatestClock().has_value());
+    const std::string id = store.CreateConversation(TwoParticipants(), 1.0);
+    core::HostedTurn turn = TestHostedTurn(1, id);
+    turn.clock = 2.5;
+    store.CommitHostedTurn(turn);
+    store.AddConversationEvents(id, 1, {nlohmann::json{{"text", "A door opens."}}}, 3.0);
+    CHECK(store.LatestClock() == 3.0);
+    CHECK(store.Conversation(id)->clock == 1.0);
+    CHECK(store.HostedTurns(id).at(0).clock == 2.5);
+    CHECK(store.ConversationEvents(id).at(0).clock == 3.0);
+}
+
+TEST_CASE("A conversation's participants and end are history: the latest change row decides", "[store][hosted][rollback]")
+{
+    const std::filesystem::path file = test::FreshTempDir("store_conversation_history") / "run.db";
+    store::RunStore store = store::RunStore::CreateHosted(file, HostedMeta(), TestHostData());
+    const std::vector<core::Participant> two = TwoParticipants();
+    const std::string id = store.CreateConversation(two, 1.0);
+    std::vector<core::Participant> one = {two.at(0)};
+    store.SetParticipants(id, one, 2.0);
+    CHECK(store.Conversation(id)->participants.size() == 1);
+    store.EndConversation(id, 3.0);
+    CHECK(store.Conversation(id)->ended);
+    CHECK(store.Conversation(id)->participants.size() == 1);
+    // The rows are kept: three changes after the start.
+    store::Database db = store::Database::Open(file, false);
+    store::Statement count = db.Prepare("SELECT COUNT(*) FROM conversation_changes WHERE conversation_id = ?1");
+    count.Bind(1, id);
+    REQUIRE(count.Step());
+    CHECK(count.ColumnInt(0) == 3);
+}
+
+TEST_CASE("Turn numbers continue past hidden turns; the latest turn is the latest visible one", "[store][hosted][rollback]")
+{
+    const std::filesystem::path file = test::FreshTempDir("store_next_turn") / "run.db";
+    std::string id;
+    {
+        store::RunStore store = store::RunStore::CreateHosted(file, HostedMeta(), TestHostData());
+        id = store.CreateConversation(TwoParticipants(), 1.0);
+        store.CommitHostedTurn(TestHostedTurn(1, id));
+        store.CommitHostedTurn(TestHostedTurn(2, id));
+    }
+    Damage(file, "INSERT INTO rollbacks (id, game_time, status, saved_marks) VALUES (1, 1.0, 'abandoned', '{}');"
+                 "UPDATE hosted_turns SET hidden_by = 1 WHERE number = 2;");
+    store::RunStore store = store::RunStore::Open(file);
+    CHECK(store.LatestHostedTurn() == 1);
+    CHECK(store.NextHostedTurn() == 3);
+    CHECK(store.HostedTurns(id).size() == 1);
+    CHECK_THROWS_AS(store.CommitHostedTurn(TestHostedTurn(2, id)), core::ContractError);
+    store.CommitHostedTurn(TestHostedTurn(3, id));
+}
+
+TEST_CASE("A summary is shown unless a visible condense superseded it", "[store][hosted][rollback]")
+{
+    const std::filesystem::path file = test::FreshTempDir("store_superseded_by") / "run.db";
+    std::string id;
+    std::int64_t condensed = 0;
+    {
+        store::RunStore store = store::RunStore::CreateHosted(file, HostedMeta(), TestHostData());
+        id = store.CreateConversation(TwoParticipants(), 1.0);
+        store.CommitHostedTurn(TestHostedTurn(1, id));
+        store.FoldConversation(id, ActorSummary("npc-1", id, 1, 1, "First."));
+        condensed = store.CondenseActorSummaries("npc-1", ActorSummary("npc-1", "", 1, 1, "Condensed."));
+        const std::vector<core::Summary> all = store.ActorSummaries("npc-1", true);
+        REQUIRE(all.size() == 2);
+        CHECK(all[0].supersededBy == condensed);
+        CHECK(all[0].superseded);
+        CHECK(store.ActorSummaries("npc-1", false).size() == 1);
+    }
+    // Hide the condense (as a rollback would): the first summary is shown again.
+    Damage(file, "INSERT INTO rollbacks (id, game_time, status, saved_marks) VALUES (1, 0.5, 'open', '{}');"
+                 "UPDATE summaries SET hidden_by = 1 WHERE text = 'Condensed.';");
+    store::RunStore store = store::RunStore::Open(file);
+    const std::vector<core::Summary> shown = store.ActorSummaries("npc-1", false);
+    REQUIRE(shown.size() == 1);
+    CHECK(shown[0].text == "First.");
+    CHECK_FALSE(shown[0].superseded);
+}
+
+TEST_CASE("A share applied in a run with no clock is not pending afterwards, and its row stays",
+          "[store][hosted][rollback]")
+{
+    const std::filesystem::path file = test::FreshTempDir("store_applied_share_no_clock") / "run.db";
+    std::int64_t shareId = 0;
+    {
+        store::RunStore store = store::RunStore::CreateHosted(file, HostedMeta(), TestHostData());
+        const std::string id = store.CreateConversation(TwoParticipants(), std::nullopt);
+        shareId = store.AddPendingShare({0, "npc-1", "npc-2", id});
+        REQUIRE(store.PendingShares().size() == 1);
+        // Applied with no clock: applied all the same, and the run still has no clock.
+        store.MarkShareApplied(shareId, std::nullopt);
+        CHECK(store.PendingShares().empty());
+        CHECK_FALSE(store.LatestClock().has_value());
+    }
+    // It stays applied when the run is opened again, and the row is kept.
+    CHECK(store::RunStore::Open(file).PendingShares().empty());
+    store::Database db = store::Database::Open(file, false);
+    store::Statement row = db.Prepare("SELECT applied, applied_clock FROM pending_shares WHERE id = ?1");
+    row.Bind(1, shareId);
+    REQUIRE(row.Step());
+    CHECK(row.ColumnInt(0) == 1);
+    CHECK(row.ColumnIsNull(1));
+}
+
+TEST_CASE("An applied share stays as a row; pending shares are the ones not applied", "[store][hosted][rollback]")
+{
+    const std::filesystem::path file = test::FreshTempDir("store_applied_share") / "run.db";
+    store::RunStore store = store::RunStore::CreateHosted(file, HostedMeta(), TestHostData());
+    const std::string id = store.CreateConversation(TwoParticipants(), 1.0);
+    core::PendingShare share;
+    share.fromActor = "npc-1";
+    share.toActor = "npc-2";
+    share.conversationId = id;
+    share.clock = 1.5;
+    const std::int64_t shareId = store.AddPendingShare(share);
+    CHECK(store.PendingShares().size() == 1);
+    store.MarkShareApplied(shareId, 2.0);
+    CHECK(store.PendingShares().empty());
+    CHECK(store.LatestClock() == 2.0);
+}
+
+TEST_CASE("A version 5 hosted run is upgraded to version 6: conversations become history, superseded summaries name "
+          "their condense",
+          "[store][hosted][rollback]")
+{
+    const std::filesystem::path file = V5HostedFile("store_upgrade_v5");
+    store::RunStore store = store::RunStore::Open(file);
+    const std::optional<core::Conversation> conversation = store.Conversation("c1");
+    REQUIRE(conversation);
+    CHECK(conversation->ended);
+    CHECK(conversation->participants.size() == 2);
+    CHECK_FALSE(conversation->clock.has_value());
+    const std::vector<core::Summary> all = store.ActorSummaries("npc-1", true);
+    REQUIRE(all.size() == 2);
+    CHECK(all[0].supersededBy == all[1].id);
+    CHECK(store.ActorSummaries("npc-1", false).size() == 1);
+    store::Database db = store::Database::Open(file, false);
+    store::Statement version = db.Prepare("SELECT value FROM run_meta WHERE key = 'schema_version'");
+    REQUIRE(version.Step());
+    CHECK(version.ColumnText(0) == "6");
+}
+
+TEST_CASE("A version 5 superseded summary with no later condense fails the upgrade, naming the file and the summary",
+          "[store][hosted][rollback]")
+{
+    const std::filesystem::path file = V5HostedFile("store_upgrade_v5_no_condense");
+    Damage(file, "DELETE FROM summaries WHERE text = 'Condensed.';");
+    CHECK_THROWS_AS(store::RunStore::Open(file), store::StoreError);
+    CHECK_THROWS_WITH(store::RunStore::Open(file),
+                      ContainsSubstring("run.db") && ContainsSubstring("summary 1") && ContainsSubstring("version 5"));
+    // The upgrade rolled back: still version 5.
+    store::Database db = store::Database::Open(file, false);
+    store::Statement version = db.Prepare("SELECT value FROM run_meta WHERE key = 'schema_version'");
+    REQUIRE(version.Step());
+    CHECK(version.ColumnText(0) == "5");
+}
+
+TEST_CASE("A new file and an upgraded one have the same tables, indexes and columns", "[store][hosted][rollback]")
+{
+    // Hosted: a new file and a version 5 one upgraded.
+    const std::filesystem::path created = HostedFile("store_schema_created");
+    const std::filesystem::path upgraded = V5HostedFile("store_schema_upgraded");
+    store::RunStore::Open(upgraded);
+    CHECK(SchemaOf(created) == SchemaOf(upgraded));
+
+    // Owned: a new file and a version 2 one upgraded.
+    store::RunMeta owned = HostedMeta();
+    owned.kind = store::RunKind::Owned;
+    const std::filesystem::path createdOwned = test::FreshTempDir("store_schema_created_owned") / "run.db";
+    store::RunStore::Create(createdOwned, owned, nlohmann::json::object());
+    const std::filesystem::path upgradedOwned = V2File("store_schema_upgraded_owned", "");
+    store::RunStore::Open(upgradedOwned);
+    CHECK(SchemaOf(createdOwned) == SchemaOf(upgradedOwned));
 }

@@ -137,9 +137,62 @@ CREATE TABLE pending_shares (
 CREATE INDEX summaries_actor ON summaries (actor_id);
 )sql";
 
-// The columns ReadSummaryRow reads, in its order.
+// What version 6 adds (rollback spec, section 4), in three parts, for new files and upgrades alike: a new file is made
+// with the version 5 texts above and then takes these, as an upgraded one does, so both end with the same tables and
+// columns. The columns: a clock (null allowed: a row without one is never hidden) and a hidden mark (the rollback that
+// hid it) on the hosted rows, the condense that superseded a summary and the rollback it was written in, and a share's
+// application: whether it is applied (a flag, since a run with no clock applies shares with no clock) and when.
+constexpr const char* V6_COLUMNS_SQL = R"sql(
+ALTER TABLE hosted_turns ADD COLUMN clock REAL;
+ALTER TABLE hosted_turns ADD COLUMN hidden_by INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE conversation_events ADD COLUMN clock REAL;
+ALTER TABLE conversation_events ADD COLUMN hidden_by INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE conversations ADD COLUMN clock REAL;
+ALTER TABLE conversations ADD COLUMN hidden_by INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE summaries ADD COLUMN clock REAL;
+ALTER TABLE summaries ADD COLUMN hidden_by INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE summaries ADD COLUMN superseded_by INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE summaries ADD COLUMN made_in INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE pending_shares ADD COLUMN clock REAL;
+ALTER TABLE pending_shares ADD COLUMN applied_clock REAL;
+ALTER TABLE pending_shares ADD COLUMN unapplied_by INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE pending_shares ADD COLUMN hidden_by INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE pending_shares ADD COLUMN applied INTEGER NOT NULL DEFAULT 0;
+)sql";
+
+// The tables: a conversation's history of participants and ends, and the rollbacks.
+constexpr const char* V6_TABLES_SQL = R"sql(
+CREATE TABLE conversation_changes (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    clock           REAL,
+    participants    TEXT NOT NULL,
+    ended           INTEGER NOT NULL,
+    hidden_by       INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX conversation_changes_conversation ON conversation_changes (conversation_id);
+CREATE TABLE rollbacks (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    game_time   REAL NOT NULL,
+    status      TEXT NOT NULL,
+    saved_marks TEXT NOT NULL
+);
+)sql";
+
+// The columns version 6 replaces: superseded by superseded_by, a conversation's participants and end by its change
+// rows. An upgrade moves their data first.
+constexpr const char* V6_DROPPED_COLUMNS_SQL = R"sql(
+ALTER TABLE summaries DROP COLUMN superseded;
+ALTER TABLE conversations DROP COLUMN participants;
+ALTER TABLE conversations DROP COLUMN ended;
+)sql";
+
+// The columns ReadSummaryRow reads, in its order, from `summaries s`: superseded is computed, true when the condense
+// the summary names is visible.
 constexpr const char* SUMMARY_COLUMNS =
-    "id, from_turn, to_turn, text, actor_id, conversation_id, told_by, source_id, superseded";
+    "s.id, s.from_turn, s.to_turn, s.text, s.actor_id, s.conversation_id, s.told_by, s.source_id, s.superseded_by, "
+    "s.made_in, s.clock, "
+    "EXISTS (SELECT 1 FROM summaries c WHERE c.id = s.superseded_by AND c.hidden_by = 0) AS superseded";
 
 // Stored spelling of a run kind, run_meta 'kind'.
 const char* RunKindName(RunKind kind)
@@ -239,9 +292,13 @@ RunStore RunStore::CreateWith(const std::filesystem::path& file, RunMeta meta,
         // Schema, meta and the kind's first rows land together or not at all.
         Database db = Database::Open(file, true);
         db.Transaction([&] {
+            // The version 5 schema, then version 6's changes as an upgrade makes them (the file has no rows to move).
             db.Exec(SCHEMA_SQL);
             db.Exec(HOSTED_SCHEMA_SQL);
             db.Exec(PER_ACTOR_TABLES_SQL);
+            db.Exec(V6_COLUMNS_SQL);
+            db.Exec(V6_TABLES_SQL);
+            db.Exec(V6_DROPPED_COLUMNS_SQL);
 
             const std::array<std::pair<const char*, std::string>, 8> metaRows = {{
                 {"schema_version", std::to_string(SCHEMA_VERSION)},
@@ -422,13 +479,49 @@ RunStore RunStore::Open(const std::filesystem::path& file)
         }
     };
 
-    // An older run is upgraded in place to version 5, in one transaction, step by step: version 2 gains the hosted
+    // Version 6 (rollback spec, section 4): clocks and hidden marks on hosted rows, conversations as history, and a
+    // superseded summary naming its condense. Existing rows get no clock: a rewind never hides them.
+    auto upgradeTo6 = [&db, &file] {
+        db.Exec(V6_COLUMNS_SQL);
+        db.Exec(V6_TABLES_SQL);
+        // Each conversation's participants and end become its first change row.
+        db.Exec("INSERT INTO conversation_changes (conversation_id, clock, participants, ended) "
+                "SELECT id, NULL, participants, ended FROM conversations ORDER BY position");
+        // A superseded summary names its condense: the actor's first condensed summary written after it (a condensed
+        // summary has no conversation and no teller). The superseded rows are read whole before any update.
+        std::vector<std::pair<std::int64_t, std::string>> rows;
+        {
+            Statement superseded = db.Prepare("SELECT id, actor_id FROM summaries WHERE superseded = 1 ORDER BY id");
+            while (superseded.Step()) {
+                rows.emplace_back(superseded.ColumnInt(0), superseded.ColumnText(1));
+            }
+        }
+        for (const auto& [id, actor] : rows) {
+            std::int64_t condenseId = 0;
+            {
+                Statement condense = db.Prepare("SELECT id FROM summaries WHERE actor_id = ?1 AND id > ?2 AND "
+                                                "conversation_id = '' AND told_by = '' ORDER BY id LIMIT 1");
+                condense.Bind(1, actor).Bind(2, id);
+                if (!condense.Step()) {
+                    throw StoreError(std::format("'{}': summary {}: superseded, but no later condensed summary of '{}'",
+                                                 core::PathText(file), id, actor));
+                }
+                condenseId = condense.ColumnInt(0);
+            }
+            db.Prepare("UPDATE summaries SET superseded_by = ?1 WHERE id = ?2").Bind(1, condenseId).Bind(2, id).Run();
+        }
+        // Their data moved, the replaced columns go.
+        db.Exec(V6_DROPPED_COLUMNS_SQL);
+    };
+
+    // An older run is upgraded in place to version 6, in one transaction, step by step: version 2 gains the hosted
     // tables (already with version 4's column) and is marked owned; version 3 gains hosted_turns.events_omitted, 0 for
     // the turns it holds; every one of them gains version 5's per-actor columns and tables, and a hosted run's
-    // run-wide summaries move to their NPC witnesses. An owned run's data is untouched. Any other version is refused
-    // below.
+    // run-wide summaries move to their NPC witnesses; then every version up to 5 takes version 6's changes. An owned
+    // run's data is untouched (its hosted tables are empty, and none of its summaries is superseded). Any other version
+    // is refused below.
     const std::string version = value("schema_version"); // A copy: `values` changes below.
-    if (version == "2" || version == "3" || version == "4") {
+    if (version == "2" || version == "3" || version == "4" || version == "5") {
         try {
             // A version 2 file is owned; a later one says its kind.
             const bool hosted = version != "2" && value("kind") == RunKindName(RunKind::Hosted);
@@ -442,11 +535,15 @@ RunStore RunStore::Open(const std::filesystem::path& file)
                 if (version == "3") {
                     db.Exec(EVENTS_OMITTED_SQL);
                 }
-                db.Exec(PER_ACTOR_COLUMNS_SQL);
-                db.Exec(PER_ACTOR_TABLES_SQL);
-                if (hosted) {
-                    moveSummaries();
+                // Versions 2 to 4 reach version 5.
+                if (version != "5") {
+                    db.Exec(PER_ACTOR_COLUMNS_SQL);
+                    db.Exec(PER_ACTOR_TABLES_SQL);
+                    if (hosted) {
+                        moveSummaries();
+                    }
                 }
+                upgradeTo6();
                 db.Prepare("UPDATE run_meta SET value = ?1 WHERE key = 'schema_version'")
                     .Bind(1, std::to_string(SCHEMA_VERSION))
                     .Run();
@@ -788,12 +885,13 @@ void RunStore::ReplaceHostData(const nlohmann::json& hostData, const std::string
     _meta.worldHash = hash;
 }
 
-std::string RunStore::CreateConversation(const std::vector<core::Participant>& participants)
+std::string RunStore::CreateConversation(const std::vector<core::Participant>& participants,
+                                         std::optional<double> clock)
 {
     RequireHosted("CreateConversation");
     MORPHEUS_REQUIRE(!participants.empty(), "CreateConversation: a conversation needs a participant");
-    // Conversations are never deleted, so their count names the next one: c1, c2, ... The count's statement is
-    // finished before the insert.
+    // Conversations are never deleted (a hidden one stays as a row), so their count names the next one: c1, c2, ...
+    // The count's statement is finished before the insert.
     std::int64_t position = 0;
     {
         Statement count = _db.Prepare("SELECT COUNT(*) FROM conversations");
@@ -802,12 +900,21 @@ std::string RunStore::CreateConversation(const std::vector<core::Participant>& p
         position = count.ColumnInt(0) + 1;
     }
     const std::string id = std::format("c{}", position);
-    _db.Prepare("INSERT INTO conversations (id, position, participants, ended, folded_through) "
-                "VALUES (?1, ?2, ?3, 0, 0)")
-        .Bind(1, id)
-        .Bind(2, position)
-        .Bind(3, ParticipantsToJson(participants).dump())
-        .Run();
+    // The start row and the first change row (its participants, not ended) land together: a conversation is never
+    // without its participants.
+    _db.Transaction([&] {
+        _db.Prepare("INSERT INTO conversations (id, position, folded_through, clock) VALUES (?1, ?2, 0, ?3)")
+            .Bind(1, id)
+            .Bind(2, position)
+            .Bind(3, clock)
+            .Run();
+        _db.Prepare("INSERT INTO conversation_changes (conversation_id, clock, participants, ended) "
+                    "VALUES (?1, ?2, ?3, 0)")
+            .Bind(1, id)
+            .Bind(2, clock)
+            .Bind(3, ParticipantsToJson(participants).dump())
+            .Run();
+    });
     return id;
 }
 
@@ -825,20 +932,39 @@ std::optional<core::Conversation> RunStore::Conversation(std::string_view id)
 std::vector<core::Conversation> RunStore::Conversations()
 {
     RequireHosted("Conversations");
-    Statement query =
-        _db.Prepare("SELECT id, participants, ended, folded_through FROM conversations ORDER BY position");
+    // The visible start rows, read whole first; each one's participants and end come from its change rows below.
     std::vector<core::Conversation> conversations;
-    while (query.Step()) {
-        core::Conversation conversation;
-        conversation.id = query.ColumnText(0);
-        // Damaged participants are a StoreError naming the file and the conversation.
+    {
+        Statement query = _db.Prepare(
+            "SELECT id, folded_through, clock FROM conversations WHERE hidden_by = 0 ORDER BY position");
+        while (query.Step()) {
+            core::Conversation conversation;
+            conversation.id = query.ColumnText(0);
+            conversation.foldedThrough = static_cast<int>(query.ColumnInt(1));
+            if (!query.ColumnIsNull(2)) {
+                conversation.clock = query.ColumnDouble(2);
+            }
+            conversations.push_back(std::move(conversation));
+        }
+    }
+    for (core::Conversation& conversation : conversations) {
+        // The latest visible change row holds the participants and the end now. Every conversation starts with one,
+        // and a rollback never hides its start row's change without the start: none is damaged saved data.
+        Statement query = _db.Prepare("SELECT participants, ended FROM conversation_changes WHERE conversation_id = ?1 "
+                                      "AND hidden_by = 0 ORDER BY id DESC LIMIT 1");
+        query.Bind(1, conversation.id);
+        if (!query.Step()) {
+            throw StoreError(std::format("'{}': conversation '{}' has no visible row in conversation_changes",
+                                         core::PathText(_file), conversation.id));
+        }
+        // Damaged participants are a StoreError naming the file, the conversation and the column.
         auto damaged = [&](const std::string& problem) {
-            return StoreError(std::format("'{}': conversation '{}' column 'participants' {}", core::PathText(_file),
-                                          conversation.id, problem));
+            return StoreError(std::format("'{}': conversation '{}' conversation_changes column 'participants' {}",
+                                          core::PathText(_file), conversation.id, problem));
         };
         nlohmann::json participants;
         try {
-            participants = nlohmann::json::parse(query.ColumnText(1));
+            participants = nlohmann::json::parse(query.ColumnText(0));
         } catch (const nlohmann::json::parse_error& error) {
             throw damaged(std::string("is not valid JSON: ") + error.what());
         }
@@ -856,29 +982,38 @@ std::vector<core::Conversation> RunStore::Conversations()
                                                  participant.at("name").get<std::string>(),
                                                  participant.at("bio").get<std::string>()});
         }
-        conversation.ended = query.ColumnInt(2) != 0;
-        conversation.foldedThrough = static_cast<int>(query.ColumnInt(3));
-        conversations.push_back(std::move(conversation));
+        conversation.ended = query.ColumnInt(1) != 0;
     }
     return conversations;
 }
 
-void RunStore::SetParticipants(std::string_view id, const std::vector<core::Participant>& participants)
+void RunStore::SetParticipants(std::string_view id, const std::vector<core::Participant>& participants,
+                               std::optional<double> clock)
 {
     RequireHosted("SetParticipants");
-    MORPHEUS_REQUIRE(Conversation(id).has_value(), "SetParticipants: no such conversation");
+    const std::optional<core::Conversation> conversation = Conversation(id);
+    MORPHEUS_REQUIRE(conversation.has_value(), "SetParticipants: no such conversation");
     MORPHEUS_REQUIRE(!participants.empty(), "SetParticipants: a conversation needs a participant");
-    _db.Prepare("UPDATE conversations SET participants = ?1 WHERE id = ?2")
-        .Bind(1, ParticipantsToJson(participants).dump())
-        .Bind(2, id)
+    // A change row with the new participants; the end stays as it is.
+    _db.Prepare("INSERT INTO conversation_changes (conversation_id, clock, participants, ended) VALUES (?1, ?2, ?3, ?4)")
+        .Bind(1, id)
+        .Bind(2, clock)
+        .Bind(3, ParticipantsToJson(participants).dump())
+        .Bind(4, conversation->ended ? 1 : 0)
         .Run();
 }
 
-void RunStore::EndConversation(std::string_view id)
+void RunStore::EndConversation(std::string_view id, std::optional<double> clock)
 {
     RequireHosted("EndConversation");
-    MORPHEUS_REQUIRE(Conversation(id).has_value(), "EndConversation: no such conversation");
-    _db.Prepare("UPDATE conversations SET ended = 1 WHERE id = ?1").Bind(1, id).Run();
+    const std::optional<core::Conversation> conversation = Conversation(id);
+    MORPHEUS_REQUIRE(conversation.has_value(), "EndConversation: no such conversation");
+    // A change row that ends it; the participants stay as they are.
+    _db.Prepare("INSERT INTO conversation_changes (conversation_id, clock, participants, ended) VALUES (?1, ?2, ?3, 1)")
+        .Bind(1, id)
+        .Bind(2, clock)
+        .Bind(3, ParticipantsToJson(conversation->participants).dump())
+        .Run();
 }
 
 std::int64_t RunStore::FoldConversation(std::string_view id, const core::Summary& summary)
@@ -910,9 +1045,10 @@ std::vector<core::Summary> RunStore::ActorSummaries(std::string_view actorId, bo
 {
     RequireHosted("ActorSummaries");
     MORPHEUS_REQUIRE(!actorId.empty(), "ActorSummaries: an actor is needed");
-    // The actor's rows, the superseded ones only when asked for, oldest range first.
-    Statement query = _db.Prepare(std::format("SELECT {} FROM summaries WHERE actor_id = ?1{} ORDER BY from_turn, id",
-                                              SUMMARY_COLUMNS, includeSuperseded ? "" : " AND superseded = 0"));
+    // The actor's visible rows, the superseded ones (by a visible condense) only when asked for, oldest range first.
+    Statement query = _db.Prepare(
+        std::format("SELECT {} FROM summaries s WHERE s.actor_id = ?1 AND s.hidden_by = 0{} ORDER BY s.from_turn, s.id",
+                    SUMMARY_COLUMNS, includeSuperseded ? "" : " AND NOT superseded"));
     query.Bind(1, actorId);
     std::vector<core::Summary> summaries;
     while (query.Step()) {
@@ -924,8 +1060,9 @@ std::vector<core::Summary> RunStore::ActorSummaries(std::string_view actorId, bo
 std::vector<core::Summary> RunStore::HostedSummaries()
 {
     RequireHosted("HostedSummaries");
-    // Every row: in a hosted run each one has its actor, and ReadSummaryRow refuses one without.
-    Statement query = _db.Prepare(std::format("SELECT {} FROM summaries ORDER BY from_turn, id", SUMMARY_COLUMNS));
+    // Every visible row: in a hosted run each one has its actor, and ReadSummaryRow refuses one without.
+    Statement query = _db.Prepare(
+        std::format("SELECT {} FROM summaries s WHERE s.hidden_by = 0 ORDER BY s.from_turn, s.id", SUMMARY_COLUMNS));
     std::vector<core::Summary> summaries;
     while (query.Step()) {
         summaries.push_back(ReadSummaryRow(query));
@@ -939,10 +1076,13 @@ std::int64_t RunStore::AddActorSummary(const core::Summary& summary)
     MORPHEUS_REQUIRE(!summary.actorId.empty(), "AddActorSummary: the summary needs its actor");
     MORPHEUS_REQUIRE(summary.fromTurn >= 1 && summary.fromTurn <= summary.toTurn,
                      std::format("AddActorSummary: bad turn range {}..{}", summary.fromTurn, summary.toTurn));
-    // Every column but the id, which SQLite assigns and the caller gets back. One statement: callers that change more
-    // than this row hold the transaction.
+    // A summary written while a rollback is open is made in it: undoing the rollback deletes it.
+    const std::int64_t madeIn = OpenRollbackId();
+    // Every column but the id, which SQLite assigns and the caller gets back, and hidden_by (a new row is visible).
+    // Callers that change more than this row hold the transaction, so the open rollback read above is that of the
+    // write.
     _db.Prepare("INSERT INTO summaries (from_turn, to_turn, text, actor_id, conversation_id, told_by, source_id, "
-                "superseded) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)")
+                "superseded_by, made_in, clock) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)")
         .Bind(1, summary.fromTurn)
         .Bind(2, summary.toTurn)
         .Bind(3, summary.text)
@@ -950,7 +1090,9 @@ std::int64_t RunStore::AddActorSummary(const core::Summary& summary)
         .Bind(5, summary.conversationId)
         .Bind(6, summary.toldBy)
         .Bind(7, summary.sourceId)
-        .Bind(8, summary.superseded ? 1 : 0)
+        .Bind(8, summary.supersededBy)
+        .Bind(9, madeIn)
+        .Bind(10, summary.clock)
         .Run();
     Statement inserted = _db.Prepare("SELECT last_insert_rowid()");
     const bool hasRow = inserted.Step();
@@ -979,12 +1121,17 @@ std::int64_t RunStore::CondenseActorSummaries(std::string_view actorId, const co
                                  condensed.actorId, actorId));
     MORPHEUS_REQUIRE(condensed.conversationId.empty() && condensed.toldBy.empty(),
                      "CondenseActorSummaries: a condensed summary has no conversation and no teller");
-    // The shown summaries become superseded (kept, retrieved, found by shares) and the condensed one arrives, together,
-    // so the actor never shows both or neither.
+    // The condensed summary arrives and the shown ones name it as their condense (kept, retrieved, found by shares),
+    // together, so the actor never shows both or neither. Shown: visible, and not superseded by a visible summary (one
+    // whose condense a rollback hid is shown again, and is condensed now).
     std::int64_t summaryId = 0;
     _db.Transaction([&] {
-        _db.Prepare("UPDATE summaries SET superseded = 1 WHERE actor_id = ?1 AND superseded = 0").Bind(1, actorId).Run();
         summaryId = AddActorSummary(condensed);
+        _db.Prepare("UPDATE summaries SET superseded_by = ?2 WHERE actor_id = ?1 AND id <> ?2 AND hidden_by = 0 AND "
+                    "NOT EXISTS (SELECT 1 FROM summaries c WHERE c.id = summaries.superseded_by AND c.hidden_by = 0)")
+            .Bind(1, actorId)
+            .Bind(2, summaryId)
+            .Run();
     });
     return summaryId;
 }
@@ -1022,11 +1169,13 @@ std::int64_t RunStore::AddPendingShare(const core::PendingShare& share)
     RequireHosted("AddPendingShare");
     MORPHEUS_REQUIRE(!share.fromActor.empty() && !share.toActor.empty() && !share.conversationId.empty(),
                      "AddPendingShare: a share needs its teller, its listener and its conversation");
-    // The id SQLite assigns is the share's, read back on the same connection right after the insert.
-    _db.Prepare("INSERT INTO pending_shares (from_actor, to_actor, conversation_id) VALUES (?1, ?2, ?3)")
+    // The id SQLite assigns is the share's, read back on the same connection right after the insert. It is pending: not
+    // applied, no applied clock.
+    _db.Prepare("INSERT INTO pending_shares (from_actor, to_actor, conversation_id, clock) VALUES (?1, ?2, ?3, ?4)")
         .Bind(1, share.fromActor)
         .Bind(2, share.toActor)
         .Bind(3, share.conversationId)
+        .Bind(4, share.clock)
         .Run();
     Statement inserted = _db.Prepare("SELECT last_insert_rowid()");
     const bool hasRow = inserted.Step();
@@ -1037,30 +1186,53 @@ std::int64_t RunStore::AddPendingShare(const core::PendingShare& share)
 std::vector<core::PendingShare> RunStore::PendingShares()
 {
     RequireHosted("PendingShares");
-    Statement query = _db.Prepare("SELECT id, from_actor, to_actor, conversation_id FROM pending_shares ORDER BY id");
+    // Visible shares not applied yet, or applied and then unapplied by a rollback.
+    Statement query = _db.Prepare("SELECT id, from_actor, to_actor, conversation_id, clock, applied_clock, unapplied_by "
+                                  "FROM pending_shares WHERE hidden_by = 0 AND (applied = 0 OR unapplied_by <> 0) "
+                                  "ORDER BY id");
     std::vector<core::PendingShare> shares;
     while (query.Step()) {
-        shares.push_back({query.ColumnInt(0), query.ColumnText(1), query.ColumnText(2), query.ColumnText(3)});
+        core::PendingShare share;
+        share.id = query.ColumnInt(0);
+        share.fromActor = query.ColumnText(1);
+        share.toActor = query.ColumnText(2);
+        share.conversationId = query.ColumnText(3);
+        if (!query.ColumnIsNull(4)) {
+            share.clock = query.ColumnDouble(4);
+        }
+        if (!query.ColumnIsNull(5)) {
+            share.appliedClock = query.ColumnDouble(5);
+        }
+        share.unappliedBy = query.ColumnInt(6);
+        shares.push_back(std::move(share));
     }
     return shares;
 }
 
-void RunStore::RemovePendingShare(std::int64_t id)
+void RunStore::MarkShareApplied(std::int64_t id, std::optional<double> clock)
 {
-    RequireHosted("RemovePendingShare");
-    _db.Prepare("DELETE FROM pending_shares WHERE id = ?1").Bind(1, id).Run();
+    RequireHosted("MarkShareApplied");
+    // The row stays, so a rollback to before `clock` can make it pending again. It is applied even with no clock (a run
+    // without one); such a share is never unapplied.
+    _db.Prepare("UPDATE pending_shares SET applied = 1, applied_clock = ?2, unapplied_by = 0 WHERE id = ?1")
+        .Bind(1, id)
+        .Bind(2, clock)
+        .Run();
 }
 
-void RunStore::AddConversationEvents(std::string_view id, int afterTurn, const std::vector<nlohmann::json>& events)
+void RunStore::AddConversationEvents(std::string_view id, int afterTurn, const std::vector<nlohmann::json>& events,
+                                     std::optional<double> clock)
 {
     RequireHosted("AddConversationEvents");
     MORPHEUS_REQUIRE(Conversation(id).has_value(), "AddConversationEvents: no such conversation");
     _db.Transaction([&] {
         for (const nlohmann::json& event : events) {
-            _db.Prepare("INSERT INTO conversation_events (conversation_id, after_turn, event) VALUES (?1, ?2, ?3)")
+            _db.Prepare("INSERT INTO conversation_events (conversation_id, after_turn, event, clock) "
+                        "VALUES (?1, ?2, ?3, ?4)")
                 .Bind(1, id)
                 .Bind(2, afterTurn)
                 .Bind(3, event.dump())
+                .Bind(4, clock)
                 .Run();
         }
     });
@@ -1069,13 +1241,16 @@ void RunStore::AddConversationEvents(std::string_view id, int afterTurn, const s
 std::vector<core::ConversationEvent> RunStore::ConversationEvents(std::string_view id)
 {
     RequireHosted("ConversationEvents");
-    Statement query =
-        _db.Prepare("SELECT after_turn, event FROM conversation_events WHERE conversation_id = ?1 ORDER BY id");
+    Statement query = _db.Prepare("SELECT after_turn, event, clock FROM conversation_events WHERE conversation_id = ?1 "
+                                  "AND hidden_by = 0 ORDER BY id");
     query.Bind(1, id);
     std::vector<core::ConversationEvent> events;
     while (query.Step()) {
         core::ConversationEvent event;
         event.afterTurn = static_cast<int>(query.ColumnInt(0));
+        if (!query.ColumnIsNull(2)) {
+            event.clock = query.ColumnDouble(2);
+        }
         try {
             event.event = nlohmann::json::parse(query.ColumnText(1));
         } catch (const nlohmann::json::parse_error& error) {
@@ -1094,16 +1269,46 @@ std::vector<core::ConversationEvent> RunStore::ConversationEvents(std::string_vi
 int RunStore::LatestHostedTurn()
 {
     RequireHosted("LatestHostedTurn");
-    Statement query = _db.Prepare("SELECT COALESCE(MAX(number), 0) FROM hosted_turns");
+    Statement query = _db.Prepare("SELECT COALESCE(MAX(number), 0) FROM hosted_turns WHERE hidden_by = 0");
     const bool hasRow = query.Step();
     MORPHEUS_REQUIRE(hasRow, "LatestHostedTurn: aggregate query returned no row");
     return static_cast<int>(query.ColumnInt(0));
 }
 
+int RunStore::NextHostedTurn()
+{
+    RequireHosted("NextHostedTurn");
+    // Every row, hidden or not: a hidden turn's number is never given again.
+    Statement query = _db.Prepare("SELECT COALESCE(MAX(number), 0) + 1 FROM hosted_turns");
+    const bool hasRow = query.Step();
+    MORPHEUS_REQUIRE(hasRow, "NextHostedTurn: aggregate query returned no row");
+    return static_cast<int>(query.ColumnInt(0));
+}
+
+std::optional<double> RunStore::LatestClock()
+{
+    RequireHosted("LatestClock");
+    // The highest clock among visible records: what a request with no observation of its own is dated with.
+    Statement query = _db.Prepare(
+        "SELECT MAX(c) FROM ("
+        " SELECT clock AS c FROM hosted_turns WHERE hidden_by = 0 UNION ALL"
+        " SELECT clock FROM conversations WHERE hidden_by = 0 UNION ALL"
+        " SELECT clock FROM conversation_changes WHERE hidden_by = 0 UNION ALL"
+        " SELECT clock FROM conversation_events WHERE hidden_by = 0 UNION ALL"
+        " SELECT clock FROM summaries WHERE hidden_by = 0 UNION ALL"
+        " SELECT clock FROM pending_shares WHERE hidden_by = 0 UNION ALL"
+        " SELECT applied_clock FROM pending_shares WHERE hidden_by = 0 AND unapplied_by = 0)");
+    if (!query.Step() || query.ColumnIsNull(0)) {
+        return std::nullopt;
+    }
+    return query.ColumnDouble(0);
+}
+
 void RunStore::CommitHostedTurn(const core::HostedTurn& record)
 {
     RequireHosted("CommitHostedTurn");
-    const int expected = LatestHostedTurn() + 1;
+    // Turn numbers are never reused: the next is one past every turn stored, hidden ones included.
+    const int expected = NextHostedTurn();
     MORPHEUS_REQUIRE(record.number == expected,
                      std::format("CommitHostedTurn: expected turn {}, got {}", expected, record.number));
     MORPHEUS_REQUIRE(Conversation(record.conversationId).has_value(), "CommitHostedTurn: no such conversation");
@@ -1121,8 +1326,8 @@ void RunStore::CommitHostedTurn(const core::HostedTurn& record)
                                          {"params", record.adjudication.params},
                                          {"reasons", record.adjudication.reasons}};
     _db.Prepare("INSERT INTO hosted_turns (number, conversation_id, speaker_id, listener_ids, player_text, events, "
-                "observation, resolve_output, adjudication, line, timings, events_omitted) "
-                "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)")
+                "observation, resolve_output, adjudication, line, timings, events_omitted, clock) "
+                "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)")
         .Bind(1, record.number)
         .Bind(2, record.conversationId)
         .Bind(3, record.speakerId)
@@ -1135,6 +1340,7 @@ void RunStore::CommitHostedTurn(const core::HostedTurn& record)
         .Bind(10, record.line)
         .Bind(11, DumpText(record.timings))
         .Bind(12, record.eventsOmitted)
+        .Bind(13, record.clock)
         .Run();
 }
 
@@ -1142,8 +1348,8 @@ std::vector<core::HostedTurn> RunStore::HostedTurns(std::string_view conversatio
 {
     RequireHosted("HostedTurns");
     Statement query = _db.Prepare("SELECT number, speaker_id, listener_ids, player_text, events, observation, "
-                                  "resolve_output, adjudication, line, timings, events_omitted FROM hosted_turns "
-                                  "WHERE conversation_id = ?1 ORDER BY number");
+                                  "resolve_output, adjudication, line, timings, events_omitted, clock FROM hosted_turns "
+                                  "WHERE conversation_id = ?1 AND hidden_by = 0 ORDER BY number");
     query.Bind(1, conversationId);
     std::vector<core::HostedTurn> turns;
     while (query.Step()) {
@@ -1241,6 +1447,9 @@ std::vector<core::HostedTurn> RunStore::HostedTurns(std::string_view conversatio
         if (turn.eventsOmitted < 0) {
             throw damaged("events_omitted", "is negative");
         }
+        if (!query.ColumnIsNull(11)) {
+            turn.clock = query.ColumnDouble(11);
+        }
         turns.push_back(std::move(turn));
     }
     return turns;
@@ -1267,13 +1476,33 @@ core::Summary RunStore::ReadSummaryRow(Statement& query) const
     summary.conversationId = query.ColumnText(5);
     summary.toldBy = query.ColumnText(6);
     summary.sourceId = query.ColumnInt(7);
-    summary.superseded = query.ColumnInt(8) != 0;
+    summary.supersededBy = query.ColumnInt(8);
+    summary.madeIn = query.ColumnInt(9);
+    if (!query.ColumnIsNull(10)) {
+        summary.clock = query.ColumnDouble(10);
+    }
+    summary.superseded = query.ColumnInt(11) != 0;
     // Every hosted summary is some NPC's: one without its actor is damaged saved data.
     if (summary.actorId.empty()) {
         throw StoreError(std::format("'{}': summary {}: actor_id is empty in a hosted run", core::PathText(_file),
                                      summary.id));
     }
     return summary;
+}
+
+std::int64_t RunStore::OpenRollbackId()
+{
+    // At most one rollback is open at a time: a second one is damaged saved data.
+    Statement query = _db.Prepare("SELECT id FROM rollbacks WHERE status = 'open' ORDER BY id");
+    if (!query.Step()) {
+        return 0;
+    }
+    const std::int64_t id = query.ColumnInt(0);
+    if (query.Step()) {
+        throw StoreError(std::format("'{}': rollbacks holds more than one open rollback ({} and {})",
+                                     core::PathText(_file), id, query.ColumnInt(0)));
+    }
+    return id;
 }
 
 void RunStore::MoveFoldedThrough(const char* method, std::string_view id, int turn)

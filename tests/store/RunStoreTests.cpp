@@ -3,6 +3,7 @@
 
 #include <filesystem>
 #include <format>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -185,6 +186,26 @@ TEST_CASE("Statement::ColumnFloats treats a ragged blob as bad stored data", "[s
     Statement query = db.Prepare("SELECT b FROM v");
     REQUIRE(query.Step());
     CHECK_THROWS_AS(query.ColumnFloats(0), StoreError);
+}
+
+TEST_CASE("Statement binds and reads doubles and NULLs", "[store]")
+{
+    Database db = Database::Open(FreshDbPath("store_doubles"), true);
+    db.Exec("CREATE TABLE c (x REAL)");
+    // A double keeps its fraction; an optional binds its value, or NULL when empty.
+    db.Prepare("INSERT INTO c VALUES (?1)").Bind(1, 2.5).Run();
+    db.Prepare("INSERT INTO c VALUES (?1)").Bind(1, std::optional<double>(4.25)).Run();
+    db.Prepare("INSERT INTO c VALUES (?1)").Bind(1, std::optional<double>()).Run();
+
+    Statement query = db.Prepare("SELECT x FROM c ORDER BY rowid");
+    REQUIRE(query.Step());
+    CHECK_FALSE(query.ColumnIsNull(0));
+    CHECK(query.ColumnDouble(0) == 2.5);
+    REQUIRE(query.Step());
+    CHECK(query.ColumnDouble(0) == 4.25);
+    REQUIRE(query.Step());
+    CHECK(query.ColumnIsNull(0));
+    CHECK_FALSE(query.Step());
 }
 
 TEST_CASE("A failed RunStore::Create leaves no file behind", "[store]")
@@ -520,7 +541,7 @@ TEST_CASE("A turn's digest round-trips", "[store]")
 
 TEST_CASE("RunStore refuses a version-1 run, naming the file and both versions", "[store]")
 {
-    CHECK(RunStore::SCHEMA_VERSION == 5);
+    CHECK(RunStore::SCHEMA_VERSION == 6);
     const std::filesystem::path file = FreshDbPath("store_version_1");
     {
         RunStore store = RunStore::Create(file, TestMeta(), TestInitialState());
@@ -530,6 +551,6 @@ TEST_CASE("RunStore refuses a version-1 run, naming the file and both versions",
         db.Exec("UPDATE run_meta SET value = '1' WHERE key = 'schema_version'");
     }
     CHECK_THROWS_AS(RunStore::Open(file), StoreError);
-    CHECK_THROWS_WITH(RunStore::Open(file), ContainsSubstring("schema version 1 is not the supported version 5"));
+    CHECK_THROWS_WITH(RunStore::Open(file), ContainsSubstring("schema version 1 is not the supported version 6"));
     CHECK_THROWS_WITH(RunStore::Open(file), ContainsSubstring("run.db"));
 }
