@@ -920,3 +920,27 @@ TEST_CASE("A version 4 summary whose end turn is not a hosted turn fails the upg
     CHECK_THROWS_WITH(store::RunStore::Open(file), ContainsSubstring("run.db") && ContainsSubstring("summary 1") &&
                                                        ContainsSubstring("1..2"));
 }
+
+TEST_CASE("A version 4 hosted turn whose listener id is not a string fails the upgrade, naming the file and the column",
+          "[store][hosted][memory]")
+{
+    const std::filesystem::path file = HostedFile("store_upgrade_v4_bad_listener");
+    Damage(file, "UPDATE hosted_turns SET listener_ids = '[\"player\", 5]' WHERE number = 1;");
+    Damage(file, DROP_VERSION_5_SQL);
+    Damage(file, "UPDATE run_meta SET value = '4' WHERE key = 'schema_version';");
+    CHECK_THROWS_AS(store::RunStore::Open(file), store::StoreError);
+    CHECK_THROWS_WITH(store::RunStore::Open(file), ContainsSubstring("run.db") && ContainsSubstring("listener_ids") &&
+                                                       ContainsSubstring("hosted turn 1"));
+}
+
+TEST_CASE("A hosted run with a memory mark of a conversation it does not have is a StoreError naming the file and the "
+          "column",
+          "[store][hosted][memory]")
+{
+    const std::filesystem::path file = HostedFile("store_mark_unknown_conversation");
+    Damage(file, "INSERT INTO actor_memory (conversation_id, actor_id, remembered_through) VALUES ('c9', 'npc-1', 1);");
+    CHECK_THROWS_AS(store::RunStore::Open(file), store::StoreError);
+    CHECK_THROWS_WITH(store::RunStore::Open(file), ContainsSubstring("run.db") &&
+                                                       ContainsSubstring("actor_memory.conversation_id") &&
+                                                       ContainsSubstring("'c9'"));
+}

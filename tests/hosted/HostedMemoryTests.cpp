@@ -7,8 +7,10 @@
 #include <filesystem>
 #include <format>
 #include <optional>
+#include <set>
 #include <stop_token>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -629,4 +631,35 @@ TEST_CASE("Maintain asked to yield applies one pending share per pass; the next 
     CHECK(session.Memories(test::BELETHOR).empty());
     CHECK(session.Maintain({}, yield.get_token()));
     CHECK(session.Memories(test::BELETHOR).size() == 1);
+}
+
+TEST_CASE("A hosted turn's retrieval timings name a retrieved memory 'memory' and a retrieved turn 'history'",
+          "[hosted][memory]")
+{
+    // Hulda's first conversation is folded into history and her memory of it; her next turn asks about it.
+    test::HostedScript script;
+    script.actions = {NONE, NONE};
+    script.lines = {"The well is poisoned.", "Yes."};
+    test::ScriptedBackend backend(16384, test::MemoryEchoResponder(script));
+    turn::HostedSession session = turn::HostedSession::Open(test::HostedRunFile("hosted_retrieval_sources"),
+                                                            test::FixtureHostData(), test::HostedSettings(), 42, backend);
+    const std::string first = session.StartConversation({test::HULDA, test::AELA}, test::FixtureObservation());
+    REQUIRE(session.RunTurn(test::Request(first, test::HULDA, "Is the well safe?"), {}, {}));
+    session.EndConversation(first);
+    REQUIRE(session.Maintain({}));
+    const std::vector<core::Summary> memories = session.Memories(test::HULDA);
+    REQUIRE(memories.size() == 1);
+
+    const std::string second = session.StartConversation({test::HULDA, test::AELA}, test::FixtureObservation());
+    const std::optional<core::HostedTurn> record =
+        session.RunTurn(test::Request(second, test::HULDA, "Is the well poisoned?"), {}, {});
+    REQUIRE(record);
+    // Each retrieved hit as its source and ref (a memory's ref is its summary id, a turn's its number: they can be
+    // equal).
+    std::set<std::pair<std::string, std::string>> hits;
+    for (const nlohmann::json& hit : record->timings.at("retrieval")) {
+        hits.emplace(hit.at("source").get<std::string>(), hit.at("ref").get<std::string>());
+    }
+    CHECK(hits.contains({"memory", std::to_string(memories[0].id)}));
+    CHECK(hits.contains({"history", "1"}));
 }

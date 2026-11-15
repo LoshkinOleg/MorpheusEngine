@@ -78,7 +78,8 @@ public:
     // condense, copied with no conversation to the NPC witnesses of every turn in its range. Each NPC witness's mark in
     // a conversation starts at its folded_through. An owned run's data is not touched. Throws StoreError if it is
     // missing or was written with another schema version, its meta (rng_seed, settings, kind) is damaged, a hosted turn
-    // the move reads is damaged, or a summary does not start and end on hosted turns (the upgrade rolls back).
+    // the move reads is damaged, or a summary does not start and end on hosted turns (the upgrade rolls back), and
+    // when a hosted run's memory mark (actor_memory) names a conversation the run does not have.
     static RunStore Open(const std::filesystem::path& file);
 
     const RunMeta& Meta() const;

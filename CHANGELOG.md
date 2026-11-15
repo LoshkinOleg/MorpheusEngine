@@ -15,6 +15,8 @@ Per-speaker memory (design: `docs/superpowers/specs/2026-11-16-per-speaker-memor
 - A turn's prompt shows the speaker's own memories, not the run's; summaries, retrieval and folding are per NPC.
 - A request other than a turn no longer waits for the run's whole background pass: it waits for the current step
   (one NPC's memory of one conversation, or one share), then the pass pauses and resumes after it.
+- A turn's `timings.retrieval[].source` is `memory` for a retrieved memory (its `ref` is the summary's id); folded
+  turns stay `history` (by turn number) and lore `lore`.
 
 ## API 1.0.0 (unreleased)
 

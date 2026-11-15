@@ -318,7 +318,12 @@ RunStore RunStore::Open(const std::filesystem::path& file)
                 const nlohmann::json listeners = nlohmann::json::parse(turnQuery.ColumnText(3), nullptr, false);
                 const nlohmann::json observation = nlohmann::json::parse(turnQuery.ColumnText(4), nullptr, false);
                 const core::ActorsCore actorsCore = core::ReadActors(observation);
-                if (listeners.is_discarded() || !listeners.is_array() || !actorsCore.faults.empty()) {
+                // Every listener is an actor id, as every normal read of a turn requires.
+                const bool listenersRead =
+                    !listeners.is_discarded() && listeners.is_array() &&
+                    std::all_of(listeners.begin(), listeners.end(),
+                                [](const nlohmann::json& listener) { return listener.is_string(); });
+                if (!listenersRead || !actorsCore.faults.empty()) {
                     throw StoreError(std::format("'{}': hosted turn {} cannot be upgraded: its listener_ids or "
                                                  "observation is damaged",
                                                  core::PathText(file), number));
@@ -331,7 +336,7 @@ RunStore RunStore::Open(const std::filesystem::path& file)
                 witnessed.conversationId = turnQuery.ColumnText(1);
                 witnessed.npcs.push_back(turnQuery.ColumnText(2));
                 for (const nlohmann::json& listener : listeners) {
-                    if (listener.is_string() && !isPlayer(listener.get<std::string>())) {
+                    if (!isPlayer(listener.get<std::string>())) {
                         witnessed.npcs.push_back(listener.get<std::string>());
                     }
                 }
@@ -491,6 +496,16 @@ RunStore RunStore::Open(const std::filesystem::path& file)
     } else {
         throw StoreError(std::format("'{}': run_meta 'kind' is '{}', not 'owned' or 'hosted'", core::PathText(file),
                                      kindText));
+    }
+
+    // A hosted run's memory marks each name one of its conversations: a mark of any other is damaged saved data.
+    if (meta.kind == RunKind::Hosted) {
+        Statement orphan = db.Prepare("SELECT conversation_id FROM actor_memory "
+                                      "WHERE conversation_id NOT IN (SELECT id FROM conversations) LIMIT 1");
+        if (orphan.Step()) {
+            throw StoreError(std::format("'{}': actor_memory.conversation_id '{}' names no conversation of the run",
+                                         core::PathText(file), orphan.ColumnText(0)));
+        }
     }
     return RunStore(std::move(db), std::move(meta), file);
 }

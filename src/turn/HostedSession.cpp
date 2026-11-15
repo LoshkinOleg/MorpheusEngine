@@ -392,9 +392,14 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
         timings["resolve"]["refused"] = adjudication.reasons; // The log of why the speaker took no action.
     }
     timings["speak"] = CallTelemetry(spoken, speakSpec);
-    timings["retrieval"] = nlohmann::json::array(); // The hits that made it into the prompt, and why they matched.
+    // The hits that made it into the prompt, and why they matched: the host's lore, the speaker's own memories (by
+    // summary id) and the folded turns it witnessed (by turn number).
+    timings["retrieval"] = nlohmann::json::array();
     for (const RetrievalHit& hit : hits) {
-        timings["retrieval"].push_back({{"source", hit.kind == store::EmbeddingKind::Lore ? "lore" : "history"},
+        const char* source = hit.kind == store::EmbeddingKind::Lore      ? "lore"
+                             : hit.kind == store::EmbeddingKind::Summary ? "memory"
+                                                                         : "history";
+        timings["retrieval"].push_back({{"source", source},
                                         {"ref", hit.refId},
                                         {"score", hit.score},
                                         {"reasons", hit.reasons}});
