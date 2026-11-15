@@ -332,7 +332,7 @@ Errors answer `{"api_version", "error": {"status", "message"}}` with these statu
 - 503: a llama-server is unreachable or failed, also while it embeds lore at `open`; try again later
 - 500: anything else, logged with its message
 
-The `"[server]"` test (see "The [server] tests") also plays the conversation fixture over HTTP against your servers and prints each turn's time to its first sentence. Measured on 2026-11-14 on Windows with an RTX 3070 Laptop GPU (8 GB; llama-server with Vulkan, Qwen3-4B-Instruct-2507-Q4_K_M with --parallel 3 --ctx-size 49152 -fa on -ctk q8_0 -ctv q8_0, nomic-embed for embeddings): the four turns of conversation.json reached their first sentence after 955, 2522, 1745 and 709 ms. The host's 1.5 s target is for its RTX 3060 Ti with a 9B model.
+The `"[server]"` test (see "The [server] tests") also plays the conversation fixture over HTTP against your servers and prints each turn's time to its first sentence. Measured on 2026-11-14 on Windows with an RTX 3070 Laptop GPU (8 GB; llama-server with Vulkan, Qwen3-4B-Instruct-2507-Q4_K_M with --parallel 3 --ctx-size 49152 -fa on -ctk q8_0 -ctv q8_0, nomic-embed for embeddings): the four turns of conversation.json reached their first sentence after 955, 2522, 1745 and 709 ms. With Qwen3.5-9B-Q4_K_M on the same GPU (plus `--checkpoint-min-step 0`), measured on 2026-11-15: 1750, 2371, 1629 and 2088 ms. The host's 1.5 s target is for its RTX 3060 Ti with that 9B model.
 
 ## Worlds
 
