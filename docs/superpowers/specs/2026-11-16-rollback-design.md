@@ -81,7 +81,7 @@ Rows with `hidden_by` = its id are shown again; summaries with `made_in` = its i
 
 ### Playing on abandons the hidden future
 
-The first new record while a rollback is open (a turn committed, events recorded, a conversation started, participants changed, a conversation ended, a share made) first abandons the rollback, in one transaction: its status becomes `abandoned`; rows hidden by it stay hidden for good (readers skip abandoned rollbacks' rows like any hidden row); summaries `made_in` it become ordinary (`made_in` cleared); unapplied shares become pending (their applied clock cleared); its saved marks are dropped. A later rewind has nothing of it to restore.
+The first new record while a rollback is open (a turn committed, events recorded, a conversation started, participants changed, a conversation ended, a share made) first abandons the rollback, in one transaction: its status becomes `abandoned`; rows hidden by it stay hidden for good (readers skip abandoned rollbacks' rows like any hidden row); summaries `made_in` it become ordinary (`made_in` cleared); unapplied shares become pending (not applied, their applied clock cleared); its saved marks are dropped. A later rewind has nothing of it to restore.
 
 Background upkeep (Maintain) never abandons: its writes are tagged `made_in`.
 
@@ -94,7 +94,7 @@ Turn numbers stay run-wide and unique: the next turn is one past the highest num
 - `hidden_by INTEGER NOT NULL DEFAULT 0` on `hosted_turns`, `conversation_events`, `conversations`, `conversation_changes`, `summaries`, `pending_shares`.
 - `clock REAL` (null allowed) on `hosted_turns`, `conversation_events`, `conversations`, `conversation_changes`, `summaries` (shared copies), `pending_shares` (created).
 - `summaries`: `superseded` becomes `superseded_by INTEGER NOT NULL DEFAULT 0`; new `made_in INTEGER NOT NULL DEFAULT 0`.
-- `pending_shares`: `applied_clock REAL` (null: not applied), `unapplied_by INTEGER NOT NULL DEFAULT 0`; applied shares stay as rows instead of being deleted.
+- `pending_shares`: `applied INTEGER NOT NULL DEFAULT 0`, `applied_clock REAL` (when it was applied; null in a run with no clock), `unapplied_by INTEGER NOT NULL DEFAULT 0`; applied shares stay as rows instead of being deleted. A share is pending when it is not applied, or unapplied by the open rollback.
 - `conversations` keeps `id`, `position`, `folded_through`, `clock`, `hidden_by`; `participants` and `ended` move to `conversation_changes (id, conversation_id, clock, participants, ended, hidden_by)`.
 - New `rollbacks (id, game_time, status, saved_marks)`: status `open`, `undone` or `abandoned`; `saved_marks` is JSON: every conversation's folded_through and every NPC mark.
 - Upgrade from version 5 in one transaction: the new columns (clocks null), a change row per conversation from its current participants and ended flag, `superseded_by` from `superseded` (a superseded summary's condense: the actor's next condensed summary by id; if none can be found, the upgrade fails as damaged data), applied shares kept (version 5 deleted them, so none exist to keep). Older versions upgrade through 5. Owned runs gain the columns only.
