@@ -212,7 +212,8 @@ inline void PlayMemoryFixture(const std::string& name, inference::LlmBackend& ba
 {
     const nlohmann::json fixture = ReadFixture(name);
     const nlohmann::json& observation = fixture.at("observation");
-    // A fixture with a "clock" names the pointer of the game time in its observations: the host data's clock; with "prompts", the host data's pack.
+    // A fixture with a "clock" names the pointer of the game time in its observations: the host data's clock; with
+    // "prompts", the host data's pack.
     turn::HostData data = FixtureHostData();
     if (fixture.contains("clock")) {
         data.clock = fixture.at("clock").get<std::string>();

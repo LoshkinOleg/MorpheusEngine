@@ -2,6 +2,7 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 

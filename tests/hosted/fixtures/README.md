@@ -72,8 +72,9 @@ The test also checks that no model call was made and that no turn was committed.
 `{"observation": {...}, "participants": [ids], "steps": [...], "clock", "prompts"}`. `observation` is the fixture's own
 observation: every request and every participants change uses it (a step has no observation of its own). `clock`
 (optional) is a JSON pointer into it, the host data's clock (`open.json`'s host data with this `clock`); a run without
-one cannot be rewound. `prompts` (optional) is the host data's pack (`open.json`'s host data with these `prompts`). A turn, leave, join or start step may then carry a `"clock"` number: that step uses a copy of
-the observation with the number written at the pointer (its game time). The test starts one conversation with
+one cannot be rewound. A turn, leave, join or start step may then carry a `"clock"` number: that step uses a copy of
+the observation with the number written at the pointer (its game time). `prompts` (optional) is the host data's pack
+(`open.json`'s host data with these `prompts`). The test starts one conversation with
 `participants` (in this join order) at the observation as it is, and plays `steps` in order. A step is one of these
 kinds.
 
