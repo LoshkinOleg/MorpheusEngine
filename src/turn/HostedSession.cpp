@@ -15,6 +15,7 @@
 #include "core/Text.h"
 #include "grammar/Schema.h"
 #include "turn/EngineText.h"
+#include "turn/PromptPack.h"
 #include "turn/Session.h"
 
 namespace morpheus::turn {
@@ -30,32 +31,6 @@ constexpr std::string_view MAINTENANCE_INSTRUCTION = "(the conversation's next t
 // A hosted turn retrieves from the host's lore and the run's folded turns; a hosted run has no notes.
 constexpr std::array<store::EmbeddingKind, 3> HOSTED_SOURCES = {store::EmbeddingKind::Lore, store::EmbeddingKind::Turn,
                                                                 store::EmbeddingKind::Summary};
-// The variables the engine fills in the hosted texts.
-constexpr std::string_view SPEAKER_VARIABLE = "{speaker}";
-constexpr std::string_view PLAYER_VARIABLE = "{player}";
-constexpr std::string_view ACTOR_VARIABLE = "{actor}";
-
-// `text` with every {speaker} and {player} replaced by the speaker's and the player's names.
-std::string FillVariables(std::string_view text, std::string_view speaker, std::string_view player)
-{
-    std::string filled;
-    std::size_t at = 0;
-    while (at < text.size()) {
-        const std::string_view rest = text.substr(at);
-        if (rest.starts_with(SPEAKER_VARIABLE)) {
-            filled += speaker;
-            at += SPEAKER_VARIABLE.size();
-        } else if (rest.starts_with(PLAYER_VARIABLE)) {
-            filled += player;
-            at += PLAYER_VARIABLE.size();
-        } else {
-            filled += text[at];
-            ++at;
-        }
-    }
-    return filled;
-}
-
 // Actor `id`'s name as a hosted prompt shows it: as one of the conversation's `participants`, else as one of
 // `observed` (an observation's actors), else the id itself.
 std::string ActorName(const std::vector<core::Participant>& participants, const std::vector<core::Actor>& observed,
@@ -96,6 +71,13 @@ HostedSession HostedSession::Open(const std::filesystem::path& file, HostData da
         throw core::DataError(std::format("settings: summary_cap {} must be below tail_allowance {} for a hosted run: "
                                           "the speaker's memories sit in the tail",
                                           settings.budget.summaryCap, settings.budget.tailAllowance));
+    }
+    // The system text, the host's or the default, must fit engine_rules_cap: it is the host's data now, so over the
+    // cap is its DataError, found before the file is touched.
+    const int systemTokens = backend.CountTokens(world.Prompts().system);
+    if (systemTokens > settings.budget.engineRulesCap) {
+        throw core::DataError(std::format("prompts/system: {} tokens, over engine_rules_cap {}", systemTokens,
+                                          settings.budget.engineRulesCap));
     }
     const nlohmann::json stored = HostDataToJson(data);
     const std::string hash = HostDataHash(data);
@@ -271,11 +253,12 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
         }
     }
 
-    // The instructions name the speaker and the player. The speak instruction must fit narrate_allowance, which the
-    // prompt reserves for it; the names come from the host.
+    // The instructions name the speaker and the player (the run's pack). The speak instruction must fit
+    // narrate_allowance, which the prompt reserves for it; the names come from the host.
     const core::Actor& player = observation.Player();
-    const std::string resolveInstruction = FillVariables(HOSTED_RESOLVE_INSTRUCTION, pSpeaker->name, player.name);
-    const std::string speakMessage = FillVariables(HOSTED_SPEAK_INSTRUCTION, pSpeaker->name, player.name);
+    const PromptVariables names{.speaker = pSpeaker->name, .player = player.name};
+    const std::string resolveInstruction = PromptPack::Fill(_world.Prompts().resolve, names);
+    const std::string speakMessage = PromptPack::Fill(_world.Prompts().speak, names);
     const int speakTokens = _pBackend->CountTokens(speakMessage);
     if (speakTokens > _settings.budget.narrateAllowance) {
         throw core::DataError(std::format("speaker: the speak instruction for '{}' uses {} tokens, over "
@@ -711,7 +694,7 @@ std::vector<context::TranscriptEntry> HostedSession::Entries(const core::Convers
                 fact += part + " ";
             }
             if (user.empty()) {
-                user = FillVariables(HOSTED_TURN_CUE, speaker->name, player->name);
+                user = PromptPack::Fill(_world.Prompts().turnCue, {.speaker = speaker->name, .player = player->name});
             }
             fact += line;
 
@@ -765,7 +748,7 @@ FitPass HostedSession::Pass(std::string_view conversationId, std::string_view ac
     // Both callers pass a checked observation (the request's, or the last stored turn's): names come from it too.
     MORPHEUS_REQUIRE(inputs.observation.is_object(), "HostedSession::Pass: the tail needs its observation");
     const std::vector<core::Actor> observed = HostedWorld::ActorsOf(inputs.observation);
-    inputs.systemText = std::string(HOSTED_SYSTEM_TEXT);
+    inputs.systemText = _world.Prompts().system;
     inputs.lore = _world.Lore();
     inputs.participants = conversation->participants;
     // The speaker's shown summaries are its memories, oldest first; a shared one names its teller.
@@ -799,16 +782,8 @@ MemoryUpkeep HostedSession::Upkeep(const std::string& conversationId, const std:
     std::vector<core::Participant> participants = conversation->participants;
     std::vector<core::Actor> observed = HostedWorld::ActorsOf(observation);
     const std::string name = ActorName(participants, observed, actorId);
-    // {actor} in a hosted text is the actor's name. The scan goes on after each name it puts in, so a name that holds
-    // {actor} itself is put in once.
-    auto fill = [&name](std::string_view text) {
-        std::string filled(text);
-        for (std::size_t at = filled.find(ACTOR_VARIABLE); at != std::string::npos;
-             at = filled.find(ACTOR_VARIABLE, at + name.size())) {
-            filled.replace(at, ACTOR_VARIABLE.size(), name);
-        }
-        return filled;
-    };
+    // {actor} in the pack's fold and condense texts is the actor's name.
+    auto fill = [&name](std::string_view text) { return PromptPack::Fill(text, {.actor = name}); };
 
     // The actor's scope: its shown memories, with the hosted fold and condense texts naming it.
     SummaryScope scope;
@@ -836,11 +811,11 @@ MemoryUpkeep HostedSession::Upkeep(const std::string& conversationId, const std:
         _store.CondenseActorSummaries(actorId, memory);
         SyncMemories(); // Only memories changed.
     };
-    scope.foldInstruction = fill(HOSTED_SUMMARIZE_INSTRUCTION);
+    scope.foldInstruction = fill(_world.Prompts().summarize);
     // The condense message outlives this call, so it holds its own copies of the names it needs and of the filled
     // instruction (`fill` refers to the local name).
     scope.condenseMessage = [name, participants = std::move(participants), observed = std::move(observed),
-                             instruction = fill(HOSTED_CONDENSE_INSTRUCTION)](
+                             instruction = fill(_world.Prompts().condense)](
                                 const std::vector<core::Summary>& summaries) {
         // The memories as the actor's prompt shows them, tellers by name, then the instruction.
         std::vector<context::MemoryLine> lines;
