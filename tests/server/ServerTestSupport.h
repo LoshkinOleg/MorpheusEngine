@@ -13,6 +13,8 @@
 #include <thread>
 #include <vector>
 
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 #include <nlohmann/json.hpp>
 
 #include "TestPaths.h"
@@ -268,6 +270,126 @@ inline HttpTurn PostTurn(httplib::Client& client, const std::string& path, const
         }
     }
     return turn;
+}
+
+// Plays memory fixture `fixture` (format: tests/hosted/fixtures/README.md, "Memory fixtures") over HTTP against run
+// `runId` of the server `client` reaches, checking each step's expectations as the server shows them. `echoedMemories`
+// is as in PlayMemoryFixture: false (a real model) skips memories contains and told_by and a share's shared, and
+// checks memories absent and count, a share's pending and that each turn ends with done (the server does not show
+// prompts: HostedFixtureTests checks them). The server folds in the background, so a memories check first waits (up to
+// `limit`) for the memories the fixture expects of the actor, then reads them.
+inline void PlayMemoryFixtureOverHttp(httplib::Client& client, const std::string& runId, const nlohmann::json& fixture,
+                                      bool echoedMemories,
+                                      std::chrono::milliseconds limit = std::chrono::milliseconds(10000))
+{
+    const nlohmann::json& observation = fixture.at("observation");
+    const std::string runBase = "/v1/runs/" + runId;
+    REQUIRE(JsonPost(client, runBase + "/open", ReadFixture("open.json")).status == 200);
+    auto start = [&](const nlohmann::json& participants) {
+        const HttpJson started =
+            JsonPost(client, runBase + "/conversations", {{"participants", participants}, {"observation", observation}});
+        REQUIRE(started.status == 200);
+        return started.body.at("conversation_id").get<std::string>();
+    };
+    std::string id = start(fixture.at("participants"));
+    const std::string firstId = id; // A share step's default conversation.
+    // An actor's memories as the server answers them.
+    auto memoriesOf = [&](const std::string& actor) {
+        return JsonGet(client, runBase + "/actors/" + actor + "/memories").body.at("memories");
+    };
+
+    for (std::size_t i = 0; i < fixture.at("steps").size(); ++i) {
+        const nlohmann::json& step = fixture.at("steps")[i];
+        INFO("step " << i);
+        const std::string base = runBase + "/conversations/" + id;
+        if (step.contains("turn")) {
+            nlohmann::json body = step.at("turn");
+            body["observation"] = observation;
+            const HttpTurn turn = PostTurn(client, base + "/turn", body);
+            REQUIRE(turn.status == 200);
+            REQUIRE_FALSE(turn.events.empty());
+            CHECK(turn.events.back().name == "done");
+        } else if (step.contains("leave")) {
+            CHECK(JsonPost(client, base + "/participants", {{"left", step.at("leave")}, {"observation", observation}})
+                      .status == 200);
+        } else if (step.contains("join")) {
+            CHECK(JsonPost(client, base + "/participants", {{"joined", step.at("join")}, {"observation", observation}})
+                      .status == 200);
+        } else if (step.contains("end")) {
+            CHECK(JsonPost(client, base + "/end", nlohmann::json::object()).status == 200);
+        } else if (step.contains("maintain")) {
+            // The server folds in the background: the memories checks below wait for what they expect.
+        } else if (step.contains("memories")) {
+            const nlohmann::json& check = step.at("memories");
+            const std::string actor = check.at("actor").get<std::string>();
+            // Every memory's text.
+            auto texts = [&] {
+                std::string all;
+                for (const nlohmann::json& memory : memoriesOf(actor)) {
+                    all += memory.at("text").get<std::string>() + "\n";
+                }
+                return all;
+            };
+            // The fixture expects memories of the actor when it names texts or a count above zero. Wait until they
+            // have landed (every text when the words are known; a memory and the count otherwise), so the absent and
+            // count checks below do not race the background fold.
+            const nlohmann::json contains = check.value("contains", nlohmann::json::array());
+            const std::size_t count = check.value("count", std::size_t(0));
+            if (!contains.empty() || count > 0) {
+                CHECK(WaitUntil(
+                    [&] {
+                        if (echoedMemories) {
+                            const std::string all = texts();
+                            for (const nlohmann::json& present : contains) {
+                                if (all.find(present.get<std::string>()) == std::string::npos) {
+                                    return false;
+                                }
+                            }
+                        }
+                        const std::size_t have = memoriesOf(actor).size();
+                        return have >= 1 && have >= count;
+                    },
+                    limit));
+            }
+            const std::string all = texts();
+            for (const nlohmann::json& absent : check.value("absent", nlohmann::json::array())) {
+                CHECK_THAT(all, !Catch::Matchers::ContainsSubstring(absent.get<std::string>()));
+            }
+            if (check.contains("count")) {
+                CHECK(memoriesOf(actor).size() == check.at("count").get<std::size_t>());
+            }
+            // Kept in a local: items() of a temporary would dangle. The words are the model's when not echoed.
+            const nlohmann::json toldBy = echoedMemories ? check.value("told_by", nlohmann::json::object())
+                                                         : nlohmann::json::object();
+            for (const auto& item : toldBy.items()) {
+                bool found = false;
+                for (const nlohmann::json& memory : memoriesOf(actor)) {
+                    if (memory.at("text").get<std::string>().find(item.key()) != std::string::npos) {
+                        found = true;
+                        CHECK(memory.at("told_by") == item.value());
+                    }
+                }
+                CHECK(found);
+            }
+        } else if (step.contains("start")) {
+            id = start(step.at("start"));
+        } else if (step.contains("share")) {
+            const nlohmann::json& share = step.at("share");
+            const HttpJson shared = JsonPost(client, runBase + "/memories/share",
+                                             {{"from", share.at("from")},
+                                              {"to", share.at("to")},
+                                              {"conversation_id", share.value("conversation", firstId)}});
+            REQUIRE(shared.status == 200);
+            if (share.contains("shared") && echoedMemories) {
+                CHECK(shared.body.at("shared") == share.at("shared"));
+            }
+            if (share.contains("pending")) {
+                CHECK(shared.body.at("pending") == share.at("pending"));
+            }
+        } else {
+            FAIL("unknown step kind");
+        }
+    }
 }
 
 } // namespace morpheus::test

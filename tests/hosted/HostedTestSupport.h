@@ -183,13 +183,9 @@ inline ScriptedBackend::Responder MemoryEchoResponder(HostedScript& script)
     };
 }
 
-// Plays memory fixture `name` (format: fixtures/README.md, "Memory fixtures") on a fresh run with the echo responder,
-// checking each step's expectations.
-inline void PlayMemoryFixture(const std::string& name)
+// The model replies of memory fixture `fixture`, in step order: each step's "model" gives a resolve reply and a line.
+inline HostedScript ScriptOf(const nlohmann::json& fixture)
 {
-    const nlohmann::json fixture = ReadFixture(name);
-    const nlohmann::json& observation = fixture.at("observation");
-    // The fixture's model replies, in step order.
     HostedScript script;
     for (const nlohmann::json& step : fixture.at("steps")) {
         if (step.contains("model")) {
@@ -197,10 +193,23 @@ inline void PlayMemoryFixture(const std::string& name)
             script.lines.push_back(step.at("model").at("line").get<std::string>());
         }
     }
-    ScriptedBackend backend(16384, MemoryEchoResponder(script));
+    return script;
+}
+
+// Plays memory fixture `name` (format: fixtures/README.md, "Memory fixtures") on a fresh run on `backend` with
+// `settings`, checking each step's expectations. With `echoedMemories` true the backend echoes what it witnessed
+// (MemoryEchoResponder), so the memories' texts are known and every expectation is checked. With it false a real
+// model writes the memories and the lines, and only what cannot depend on its words is checked: every prompt_absent,
+// every memories absent and count, a share's pending, and that each turn commits. prompt_contains, memories contains,
+// told_by and a share's shared are skipped, and the fixture's "model" replies are ignored. A prompt_absent or memories
+// absent failing then means a real leak, or a model that wrote the text unprompted where its NPC never heard it.
+inline void PlayMemoryFixture(const std::string& name, inference::LlmBackend& backend, const core::Settings& settings,
+                              bool echoedMemories)
+{
+    const nlohmann::json fixture = ReadFixture(name);
+    const nlohmann::json& observation = fixture.at("observation");
     turn::HostedSession session =
-        turn::HostedSession::Open(HostedRunFile("hosted_memory_fixture_" + name), FixtureHostData(), HostedSettings(), 42,
-                                  backend);
+        turn::HostedSession::Open(HostedRunFile("hosted_memory_fixture_" + name), FixtureHostData(), settings, 42, backend);
     std::string id = session.StartConversation(fixture.at("participants").get<std::vector<std::string>>(), observation);
     const std::string firstId = id; // A share step's default conversation.
 
@@ -226,8 +235,10 @@ inline void PlayMemoryFixture(const std::string& name)
             for (const nlohmann::json& absent : expect.value("prompt_absent", nlohmann::json::array())) {
                 CHECK_THAT(prompt, !Catch::Matchers::ContainsSubstring(absent.get<std::string>()));
             }
-            for (const nlohmann::json& present : expect.value("prompt_contains", nlohmann::json::array())) {
-                CHECK_THAT(prompt, Catch::Matchers::ContainsSubstring(present.get<std::string>()));
+            if (echoedMemories) {
+                for (const nlohmann::json& present : expect.value("prompt_contains", nlohmann::json::array())) {
+                    CHECK_THAT(prompt, Catch::Matchers::ContainsSubstring(present.get<std::string>()));
+                }
             }
         } else if (step.contains("leave")) {
             session.SetParticipants(id, {}, step.at("leave").get<std::vector<std::string>>(), observation);
@@ -245,8 +256,10 @@ inline void PlayMemoryFixture(const std::string& name)
             for (const core::Summary& memory : memories) {
                 texts += memory.text + "\n";
             }
-            for (const nlohmann::json& present : check.value("contains", nlohmann::json::array())) {
-                CHECK_THAT(texts, Catch::Matchers::ContainsSubstring(present.get<std::string>()));
+            if (echoedMemories) {
+                for (const nlohmann::json& present : check.value("contains", nlohmann::json::array())) {
+                    CHECK_THAT(texts, Catch::Matchers::ContainsSubstring(present.get<std::string>()));
+                }
             }
             for (const nlohmann::json& absent : check.value("absent", nlohmann::json::array())) {
                 CHECK_THAT(texts, !Catch::Matchers::ContainsSubstring(absent.get<std::string>()));
@@ -254,9 +267,10 @@ inline void PlayMemoryFixture(const std::string& name)
             if (check.contains("count")) {
                 CHECK(memories.size() == check.at("count").get<std::size_t>());
             }
-            // For each substring, the first memory that holds it is told by that teller. The checks are a local:
-            // items() of a temporary would dangle in the range-for.
-            const nlohmann::json toldBy = check.value("told_by", nlohmann::json::object());
+            // For each substring, the first memory that holds it is told by that teller (known words only). The
+            // checks are a local: items() of a temporary would dangle in the range-for.
+            const nlohmann::json toldBy = echoedMemories ? check.value("told_by", nlohmann::json::object())
+                                                         : nlohmann::json::object();
             for (const auto& item : toldBy.items()) {
                 const std::string substring = item.key();
                 const auto it = std::find_if(memories.begin(), memories.end(), [&substring](const core::Summary& memory) {
@@ -274,7 +288,7 @@ inline void PlayMemoryFixture(const std::string& name)
             const turn::ShareResult result =
                 session.ShareMemories(share.at("from").get<std::string>(), share.at("to").get<std::string>(),
                                       share.value("conversation", firstId));
-            if (share.contains("shared")) {
+            if (share.contains("shared") && echoedMemories) {
                 CHECK(result.shared == share.at("shared").get<int>());
             }
             if (share.contains("pending")) {
@@ -284,6 +298,14 @@ inline void PlayMemoryFixture(const std::string& name)
             FAIL("unknown step kind");
         }
     }
+}
+
+// Plays memory fixture `name` on a fresh run with the echo responder, checking every expectation.
+inline void PlayMemoryFixture(const std::string& name)
+{
+    HostedScript script = ScriptOf(ReadFixture(name)); // The fixture's model replies, in step order.
+    ScriptedBackend backend(16384, MemoryEchoResponder(script));
+    PlayMemoryFixture(name, backend, HostedSettings(), true);
 }
 
 } // namespace morpheus::test

@@ -83,3 +83,28 @@ TEST_CASE("morpheus_server against real llama-servers: the conversation fixture 
     runs.StopAll();
     http.Stop();
 }
+
+TEST_CASE("morpheus_server against real llama-servers: nobody remembers what it did not witness, over HTTP",
+          "[server][memory]")
+{
+    const llamaserver::LlamaServerConfig config = test::LiveServerConfig(server::SlotPool::UPKEEP_SLOT);
+    llamaserver::LlamaServerBackend utility(config);
+    server::SlotPool slots(utility.SlotCount());
+    core::Settings settings = test::HostedSettings();
+    settings.contextSize = test::LIVE_CONTEXT_SIZE;
+    server::RunRegistry runs(test::FreshTempDir("server_live_memory") / "runs", settings,
+                             [config] { return std::make_unique<llamaserver::LlamaServerBackend>(config); },
+                             [](const std::string&) {});
+    server::Api api(runs, slots, utility, {utility.ChatModelId(), utility.EmbeddingModelId(), utility.SlotCount()},
+                    [](const std::string&) {});
+    server::HttpServer http(api);
+    http.Start(0);
+    httplib::Client client("127.0.0.1", http.Port());
+    client.set_read_timeout(std::chrono::seconds(600));
+    // The model writes the lines and the memories: only what cannot depend on its words is checked, and a memories
+    // check waits up to 5 minutes for the background fold.
+    test::PlayMemoryFixtureOverHttp(client, "live_memory", test::ReadFixture("three_actors.json"), false,
+                                    std::chrono::minutes(5));
+    runs.StopAll();
+    http.Stop();
+}

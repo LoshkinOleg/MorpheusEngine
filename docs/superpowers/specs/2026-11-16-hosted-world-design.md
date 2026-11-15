@@ -18,7 +18,7 @@ Everything in D1 is engine code in `src/turn` and below, with no HTTP. Morpheus'
 - D1 (this spec, the engine seam) first, then D2 (`morpheus_server`), as two specs and plans.
 - A turn names its speaker. Player text is optional, so NPC-to-NPC turns work; R8's `"decide"` waits for a later sub-project.
 - The engine reads a fixed generic core of the observation (the actors); the rest is opaque, validated against the host's schema, and shown in the prompt.
-- Memory: the transcript layer is the current conversation; its turns fold into run-wide summaries, and turns of this and earlier conversations are retrieved run-wide. Turns store their speaker, listeners and conversation, so per-speaker memory (sub-project E) has the data.
+- Memory (replaced by E1: summaries and retrieval are per NPC, see `2026-11-16-per-speaker-memory-design.md`): the transcript layer is the current conversation; its turns fold into run-wide summaries, and turns of this and earlier conversations are retrieved run-wide. Turns store their speaker, listeners and conversation, so per-speaker memory (sub-project E) has the data.
 - Texts: the engine ships default hosted texts. The host may send lore at open. The host's full prompt pack is sub-project F.
 - Storage: the same `RunStore`, schema version 3, with new tables for hosted runs.
 - Structure: a separate `turn::HostedSession` and `turn::HostedWorld`. `Session`'s fit loop, fold and condense move into a shared piece that both sessions call. There is no `OwnedWorld` class: `Session` keeps its behaviour and its tests, which is what R5's acceptance line asks for.
@@ -72,6 +72,8 @@ One open hosted run, the counterpart of `turn::Session`. Every backend call happ
 
 ### Shared memory upkeep
 
+E1 replaced the run-wide summaries below with per-NPC summaries worked through a `SummaryScope`: see `2026-11-16-per-speaker-memory-design.md`.
+
 `Session`'s fit loop (`AssembleFitting`), `FoldOldest` and `Condense` move into one piece in `src/turn` that both sessions call.
 
 - It works on summaries and on transcript entries (a turn number and its rendered text), not on `core::TurnRecord`, so `Session` passes its turns and `HostedSession` its conversation's turns.
@@ -121,7 +123,7 @@ The layers, most stable first, so a new turn adds to the end of the cached part:
 | L0 system | The default hosted system text: voicing characters in a world the host simulates, and the output rules |
 | L1 world | The host's always-on lore entries |
 | Participants | Each participant's name and bio, in join order. A join or a leave changes the prompt from this layer on |
-| L2 summaries | Run-wide summaries of folded turns |
+| L2 summaries | Run-wide summaries of folded turns (E1: empty in a hosted run; the speaker's own memories are in the tail, see `2026-11-16-per-speaker-memory-design.md`) |
 | L3 conversation | This conversation's unfolded turns and events in order: `Aela: ...`, `Hulda [follow]: ...`, `(Hulda is now following Aela.)` |
 | Tail | Retrieved snippets; the observation as compact JSON; the new events; the player text; the instruction |
 

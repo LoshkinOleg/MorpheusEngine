@@ -115,7 +115,7 @@ export MORPHEUS_TEST_EMBED_SERVER_URL=http://127.0.0.1:8081
 ./build/tests/bin/Debug/morpheus_tests.exe "[server]"
 ```
 
-They complete a resolve call under its grammar and a streamed narrate call, think on a thinking model (skipped on one without a thinking mode), and run three sessions on three slots at once, each alternating an action call and a speech call for ten exchanges; that test prints each call's reused share of its prompt (`tokensReused / promptTokens`) and checks that every call after a session's first reuses some. In the `dev` build, with the `[llama]` variables set too, `"[server][llama]"` checks that the server and the in-process backend count the same tokens when the server runs the `MORPHEUS_TEST_CHAT_MODEL` file. `morpheus_server`'s own `[server]` test plays the conversation fixture over HTTP against your servers and prints each turn's time to its first sentence.
+They complete a resolve call under its grammar and a streamed narrate call, think on a thinking model (skipped on one without a thinking mode), and run three sessions on three slots at once, each alternating an action call and a speech call for ten exchanges; that test prints each call's reused share of its prompt (`tokensReused / promptTokens`) and checks that every call after a session's first reuses some. In the `dev` build, with the `[llama]` variables set too, `"[server][llama]"` checks that the server and the in-process backend count the same tokens when the server runs the `MORPHEUS_TEST_CHAT_MODEL` file. `morpheus_server`'s own `[server]` tests play the conversation fixture over HTTP against your servers and print each turn's time to its first sentence, and play the three-actor memory fixture (`tests/hosted/fixtures/three_actors.json`) over HTTP, checking only what cannot depend on the model's words: nobody remembers what it did not witness. The `"[llama][memory]"` test plays the same fixture in-process on the `MORPHEUS_TEST_CHAT_MODEL` file.
 
 ### Prompt-cache reuse through llama-server
 
@@ -275,7 +275,7 @@ To run it, start the two llama-servers as in "Models through llama-server", the 
 
 The flags and their defaults are `--port 4998`, `--runs ./runs` and `--settings ./settings.json`. The server listens on 127.0.0.1 only and owns its port alone: a port already in use ends it at startup with a message. A run's file is `<runs>/<run_id>.morpheus`. Ctrl+C stops it; turns still running commit nothing, and their streams end with `error` 503 ("the server is stopping"). A `run_id` is 1 to 64 characters of `A-Z a-z 0-9 _ -` and not a Windows device name (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`, in any case); one that differs from an opened run's only in case is refused with 400, and so is any `open` once shutdown has begun (503).
 
-Every response carries `"api_version": "1.0.0"` (the changes are in `CHANGELOG.md`), error answers the HTTP layer makes itself (OPTIONS, an unknown method, a malformed request) included. The endpoints:
+Every response carries `"api_version": "1.1.0"` (the changes are in `CHANGELOG.md`), error answers the HTTP layer makes itself (OPTIONS, an unknown method, a malformed request) included. The endpoints:
 
 | Endpoint | Body | Answer |
 |---|---|---|
@@ -287,10 +287,14 @@ Every response carries `"api_version": "1.0.0"` (the changes are in `CHANGELOG.m
 | `POST /v1/runs/{run_id}/conversations/{cid}/participants` | `{joined?, left?, observation}` | `{participants}` |
 | `POST /v1/runs/{run_id}/conversations/{cid}/end` | `{}` | `{}`; folding follows in the background |
 | `GET /v1/runs/{run_id}/conversations/{cid}` | - | `{conversation, turns, events}`: the stored records |
+| `POST /v1/runs/{run_id}/memories/share` | `{from, to, conversation_id}` | `{shared, pending}`; added in 1.1.0: `to` learns what `from` remembers of the conversation |
+| `GET /v1/runs/{run_id}/actors/{actor_id}/memories` | - | `{memories: [{conversation_id, from_turn, to_turn, text, told_by, superseded}]}`, oldest first; added in 1.1.0 |
 | `POST /v1/tokenize` | `{content}` | `{tokens}`: a token count |
 | `POST /v1/embeddings` | `{input, purpose}` | `{embeddings, model}` |
 
 A turn's stream has these events, in order: `action` (the adjudicated action, sent before the line starts; when the proposal was refused it is `"action": null` plus a separate `"refused": [reasons]` key), `token` (one per streamed piece), `sentence` (each complete sentence, as soon as it is complete), then `done` (the speaker, action, line, turn number, `events_omitted`, timings) or `error` (`status` and `message`, when a failure comes after the stream has started). A client that disconnects stops the turn and nothing is committed. Events recorded since a conversation's last turn that do not fit its tail leave the prompt, oldest first; `events_omitted` says how many, and the store keeps them all.
+
+**Memory.** Each NPC remembers only what it witnessed: the turns it spoke in or heard (it was a participant when they were played). Its memories are summaries written in its own words (the fold names the NPC), shown in the tail of its prompt under `# What <name> remembers`, and retrieval for its turns searches only what it saw and was told. Nobody else's summaries reach its prompt: an NPC that left the room does not know what was said after. `POST /v1/runs/{run_id}/memories/share` lets one NPC tell another what it remembers of a conversation: the listener gets copies marked as told by the teller, which it then keeps, retrieves and condenses like its own. A share of a conversation that has not ended, or whose memory for the teller is not complete yet, waits (`pending: true`) and lands when the teller's memory is complete; `shared` counts the copies made now. A share to the player is refused: the player has no memories in Morpheus (the host's player is a person). `GET .../actors/{actor_id}/memories` shows an NPC's memories, the ones condensed away (`superseded`) included. Design: `docs/superpowers/specs/2026-11-16-per-speaker-memory-design.md`.
 
 A run folds its ended conversations in the background, between requests. A turn stops a running fold at once (it resumes later); every other request to that run waits until the fold's pass ends, which can take a few model calls after a long session.
 
@@ -311,7 +315,7 @@ The turn's stream looks like this:
 
 ```
 event: action
-data: {"action":{"id":"follow","params":{}},"api_version":"1.0.0","speaker":"0001A6A4"}
+data: {"action":{"id":"follow","params":{}},"api_version":"1.1.0","speaker":"0001A6A4"}
 
 event: token
 data: {"text":"Lead"}

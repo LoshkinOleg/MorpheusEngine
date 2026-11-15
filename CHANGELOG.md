@@ -5,14 +5,14 @@ gets an entry here with a migration note.
 
 ## API 1.1.0
 
-Per-speaker memory (design: `docs/superpowers/specs/2026-11-16-per-speaker-memory-design.md`). Only additions.
+Per-speaker memory (design: `docs/superpowers/specs/2026-11-16-per-speaker-memory-design.md`). Two new routes; and a change of behaviour: every NPC now remembers only what it witnessed.
 
 - `POST /v1/runs/{run_id}/memories/share` with `{from, to, conversation_id}` answers `{shared, pending}`: `to` learns
   what `from` remembers of the conversation, as copies marked told by `from`; a share waits (`pending`) until the
   conversation ended and `from`'s memory of it is complete.
 - `GET /v1/runs/{run_id}/actors/{actor_id}/memories` answers `{memories: [{conversation_id, from_turn, to_turn, text,
   told_by, superseded}]}`, oldest first.
-- Every NPC now remembers only what it witnessed; a turn's prompt shows the speaker's own memories.
+- A turn's prompt shows the speaker's own memories, not the run's; summaries, retrieval and folding are per NPC.
 
 ## API 1.0.0 (unreleased)
 

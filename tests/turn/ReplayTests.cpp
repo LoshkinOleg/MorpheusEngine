@@ -35,8 +35,8 @@ core::Settings ReplaySettings()
     settings.embeddingModel = "models/embed.gguf";
     settings.embeddingDocumentPrefix = "search_document: ";
     settings.contextSize = 16384;
-    settings.budget = {512, 768, 512, 2048, 1024, 4096, 2048, 768}; // As settings.example.json, without thinking.
-    settings.budget.reviewMaxTokens = 384; // As settings.example.json.
+    settings.budget = {512, 768, 512, 2048, 1024, 4096, 2048, 768}; // The budget the replays were recorded with, without thinking.
+    settings.budget.reviewMaxTokens = 384; // The review budget the replays were recorded with.
     settings.resolveSampling = {0.3, 40, 0.9};
     settings.narrateSampling = {0.8, 40, 0.95};
     return settings;

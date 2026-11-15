@@ -37,6 +37,8 @@ Conversations sit under their run: their ids are short and per run (`c1`, `c2`, 
 | `POST /v1/runs/{run_id}/conversations/{cid}/participants` | `{joined?, left?, observation}` | `{participants}`: the ids in join order |
 | `POST /v1/runs/{run_id}/conversations/{cid}/end` | `{}` | `{}`; folding follows in the background (section 2) |
 | `GET /v1/runs/{run_id}/conversations/{cid}` | - | `{conversation, turns, events}`: the stored records, for debugging and the host's own tests |
+| `POST /v1/runs/{run_id}/memories/share` | `{from, to, conversation_id}` | `{shared, pending}`: `to` learns what `from` remembers of the conversation; added in 1.1.0 (E1) |
+| `GET /v1/runs/{run_id}/actors/{actor_id}/memories` | - | `{memories: [{conversation_id, from_turn, to_turn, text, told_by, superseded}]}`, oldest first; added in 1.1.0 (E1) |
 | `POST /v1/tokenize` | `{content}` | `{tokens}`: the exact count from the chat model |
 | `POST /v1/embeddings` | `{input: [texts], purpose: "query" or "document"}` | `{embeddings: [[...]], model}` |
 
@@ -192,7 +194,7 @@ The `conversation` fixture end to end over HTTP against real llama-servers. The 
 ## Documentation
 
 - README: a "morpheus_server" section: running it against llama-server, the flags, the endpoints, an example session with curl, the measured first-sentence time.
-- `CHANGELOG.md` (new, at the repo root): API 1.0.0.
+- `CHANGELOG.md` (new, at the repo root): API 1.0.0. API 1.1.0 (E1, `2026-11-16-per-speaker-memory-design.md`) adds the two memory routes and changes behaviour: each NPC remembers only what it witnessed.
 - CLAUDE.md: `src/server` and `tools/server` in the layout; `src/server` among the modules that include `<httplib.h>`; the `MORPHEUS_BUILD_SERVER` option.
 - Architecture spec: the server module row and its dependencies.
 - The hosted-world spec: section 6's overflow paragraph points here.

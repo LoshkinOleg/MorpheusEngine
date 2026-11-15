@@ -46,3 +46,17 @@ TEST_CASE("A hosted conversation on the real model: every action validates and e
     }
     CHECK(session.Turns(id).size() == playerTexts.size());
 }
+
+TEST_CASE("The three-actor fixture on the real model: nobody remembers what it did not witness",
+          "[llama][hosted][memory]")
+{
+    llama::LlamaCppBackend& backend = test::SharedBackend();
+    // As the test above: budgets that fit the shared backend's context of 4096, greedy sampling.
+    core::Settings settings = test::HostedSettings();
+    settings.contextSize = backend.ContextSize();
+    settings.budget = {96, 160, 128, 1024, 1024, 1024, 512, 256};
+    settings.resolveSampling = {0.0, 40, 0.95};
+    settings.narrateSampling = {0.0, 40, 0.95};
+    // The model writes the lines and the memories: only what cannot depend on its words is checked.
+    test::PlayMemoryFixture("three_actors.json", backend, settings, false);
+}
