@@ -62,7 +62,7 @@ TEST_CASE("A turn streams its action, its tokens and its sentences, then done, a
 
     // The action first, with the API version; done last.
     CHECK(events.front().name == "action");
-    CHECK(events.front().data == nlohmann::json{{"api_version", "1.0.0"},
+    CHECK(events.front().data == nlohmann::json{{"api_version", "1.1.0"},
                                                 {"speaker", test::HULDA},
                                                 {"action", {{"id", "follow"}, {"params", nlohmann::json::object()}}}});
     CHECK(events.back().name == "done");
@@ -139,7 +139,7 @@ TEST_CASE("A turn's errors before its action are JSON with their status, and not
         INFO(response.body.dump());
         CHECK(response.stream == nullptr);
         CHECK(response.status == status);
-        CHECK(response.body.at("api_version") == "1.0.0");
+        CHECK(response.body.at("api_version") == "1.1.0");
         CHECK_THAT(response.body.at("error").at("message").get<std::string>(), ContainsSubstring(part));
     };
 
@@ -238,10 +238,17 @@ test::ScriptedBackend::Responder SlowFoldResponder(test::HostedScript& script, s
     };
 }
 
-// Conversation c1's folded_through, through GET.
-int FoldedThrough(test::ApiHarness& harness)
+// Whether Hulda has a memory of conversation c1, through GET: the fold's summary is written to her memory.
+bool HuldaRemembersC1(test::ApiHarness& harness)
 {
-    return harness.Get("/v1/runs/save_1/conversations/c1").body.at("conversation").at("folded_through").get<int>();
+    // Kept in a local: a range-for over a member of the temporary response would dangle.
+    const nlohmann::json memories = harness.Get("/v1/runs/save_1/actors/" + test::HULDA + "/memories").body.at("memories");
+    for (const nlohmann::json& memory : memories) {
+        if (memory.at("conversation_id") == "c1") {
+            return true;
+        }
+    }
+    return false;
 }
 
 } // namespace
@@ -264,7 +271,7 @@ TEST_CASE("Requests other than turns wait for a background fold, which lands whi
     bool folded = false;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     while (!folded && std::chrono::steady_clock::now() < deadline) {
-        folded = FoldedThrough(harness) == 1;
+        folded = HuldaRemembersC1(harness);
     }
     CHECK(folded);
     CHECK(foldCalls.load() == 1);
@@ -300,7 +307,7 @@ TEST_CASE("A turn during a background fold stops it and runs promptly; the fold 
     // The fold runs again afterwards and lands: c1's turn left its transcript before the first fold call, and a GET
     // waits for the running fold.
     CHECK(test::WaitUntil([&] { return foldCalls.load() >= 2; }));
-    CHECK(FoldedThrough(harness) == 1);
+    CHECK(test::WaitUntil([&] { return HuldaRemembersC1(harness); }));
 }
 
 TEST_CASE("A turn stopped by shutdown mid-line ends its stream with a 503 error, and commits nothing",

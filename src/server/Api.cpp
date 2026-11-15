@@ -235,6 +235,32 @@ ApiResponse Api::Handle(std::string_view method, std::string_view path, std::str
                 }
                 const bool created = _pRuns->Open(runId, turn::HostDataFromJson(json), seed);
                 response.body = {{"run_id", runId}, {"created", created}};
+            } else if (post && parts.size() == 5 && parts[3] == "memories" && parts[4] == "share") {
+                // One NPC tells another what it remembers of a conversation (per-speaker memory spec, section 2).
+                const std::string from = RequiredString(json, "from");
+                const std::string to = RequiredString(json, "to");
+                const std::string conversationId = RequiredString(json, "conversation_id");
+                turn::ShareResult result;
+                worker().Call([&](turn::HostedSession& session, SlotBackend&, std::stop_token) {
+                    RequireConversation(session, conversationId);
+                    result = session.ShareMemories(from, to, conversationId);
+                });
+                response.body = {{"shared", result.shared}, {"pending", result.pending}};
+            } else if (get && parts.size() == 6 && parts[3] == "actors" && parts[5] == "memories") {
+                // Every memory of an actor, oldest first, for debugging and the host's own tests.
+                const std::string actorId(parts[4]);
+                nlohmann::json memories = nlohmann::json::array();
+                worker().Call([&](turn::HostedSession& session, SlotBackend&, std::stop_token) {
+                    for (const core::Summary& memory : session.Memories(actorId)) {
+                        memories.push_back({{"conversation_id", memory.conversationId},
+                                            {"from_turn", memory.fromTurn},
+                                            {"to_turn", memory.toTurn},
+                                            {"text", memory.text},
+                                            {"told_by", memory.toldBy},
+                                            {"superseded", memory.superseded}});
+                    }
+                });
+                response.body = {{"memories", memories}};
             } else if (post && parts.size() == 4 && parts[3] == "conversations") {
                 const std::vector<std::string> participants = StringList(json, "participants");
                 const nlohmann::json& observation = RequiredObject(json, "observation");

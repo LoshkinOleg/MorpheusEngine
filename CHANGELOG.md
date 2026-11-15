@@ -3,6 +3,17 @@
 The morpheus_server API's versions (`api_version` on every response). A breaking change bumps the major version and
 gets an entry here with a migration note.
 
+## API 1.1.0
+
+Per-speaker memory (design: `docs/superpowers/specs/2026-11-16-per-speaker-memory-design.md`). Only additions.
+
+- `POST /v1/runs/{run_id}/memories/share` with `{from, to, conversation_id}` answers `{shared, pending}`: `to` learns
+  what `from` remembers of the conversation, as copies marked told by `from`; a share waits (`pending`) until the
+  conversation ended and `from`'s memory of it is complete.
+- `GET /v1/runs/{run_id}/actors/{actor_id}/memories` answers `{memories: [{conversation_id, from_turn, to_turn, text,
+  told_by, superseded}]}`, oldest first.
+- Every NPC now remembers only what it witnessed; a turn's prompt shows the speaker's own memories.
+
 ## API 1.0.0 (unreleased)
 
 The first version (design: `docs/superpowers/specs/2026-11-16-morpheus-server-design.md`).
