@@ -288,9 +288,9 @@ public:
 
     // Undoes the open rollback, in one transaction: the rows it hid are shown again, the summaries made in it are
     // deleted with their embeddings (and the supersession links of its condenses), every share's application and the
-    // saved marks are restored exactly, and its status becomes undone. Returns the number of turns shown again. Throws
-    // ContractError when none is open, and StoreError naming the file and saved_marks when the saved marks are damaged
-    // (nothing is changed then).
+    // saved marks are restored exactly, and its status becomes undone (its saved marks dropped). Returns the number of
+    // turns shown again. Throws ContractError when none is open, and StoreError naming the file and saved_marks when the
+    // saved marks are damaged (nothing is changed then).
     RollbackCounts UndoRollback();
 
     // Abandons the open rollback (playing on after a rewind), in one transaction: what it hid stays hidden for good,

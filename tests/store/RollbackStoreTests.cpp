@@ -152,6 +152,30 @@ TEST_CASE("A rollback hides what came after its time, moves the marks back, and 
     CHECK(store.LatestClock() == 4.5);
 }
 
+TEST_CASE("An undone or abandoned rollback keeps no saved marks", "[store][rollback]")
+{
+    // The host rewinds on every save load, so a rollback row that kept its marks after it closed would grow the file
+    // by every mark and share of the run on every load.
+    std::string id;
+    const std::filesystem::path file = Run("rollback_marks_cleared", id);
+    {
+        store::RunStore store = store::RunStore::Open(file);
+        store.ApplyRollback(2.7);
+        store.UndoRollback();
+        store.ApplyRollback(3.5);
+        store.AbandonRollback();
+    }
+    store::Database db = store::Database::Open(file, false);
+    store::Statement rows = db.Prepare("SELECT status, saved_marks FROM rollbacks ORDER BY id");
+    REQUIRE(rows.Step());
+    CHECK(rows.ColumnText(0) == "undone");
+    CHECK(rows.ColumnText(1) == "{}");
+    REQUIRE(rows.Step());
+    CHECK(rows.ColumnText(0) == "abandoned");
+    CHECK(rows.ColumnText(1) == "{}");
+    CHECK_FALSE(rows.Step());
+}
+
 TEST_CASE("A rollback shows again what a hidden condense superseded", "[store][rollback]")
 {
     std::string id;

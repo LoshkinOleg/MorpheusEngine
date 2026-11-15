@@ -1703,7 +1703,8 @@ RollbackCounts RunStore::UndoRollback()
                 .Bind(3, mark.at(2).get<std::int64_t>())
                 .Run();
         }
-        _db.Prepare("UPDATE rollbacks SET status = 'undone' WHERE id = ?1").Bind(1, open->id).Run();
+        // Its saved marks are spent: dropped, as an abandon drops them, so the file does not grow on every reload.
+        _db.Prepare("UPDATE rollbacks SET status = 'undone', saved_marks = '{}' WHERE id = ?1").Bind(1, open->id).Run();
     });
     return counts;
 }
