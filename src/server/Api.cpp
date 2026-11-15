@@ -261,6 +261,22 @@ ApiResponse Api::Handle(std::string_view method, std::string_view path, std::str
                     }
                 });
                 response.body = {{"memories", memories}};
+            } else if (post && parts.size() == 4 && parts[3] == "rewind") {
+                // The run as it was at a save's game time (rollback spec, section 3).
+                const auto field = json.find("game_time");
+                if (field == json.end() || !field->is_number()) {
+                    throw core::DataError("game_time: expected a number");
+                }
+                const double gameTime = field->get<double>();
+                turn::RewindResult result;
+                worker().Call([&](turn::HostedSession& session, SlotBackend&, std::stop_token) {
+                    result = session.Rewind(gameTime);
+                });
+                response.body = {{"rewound", result.rewound},
+                                 {"hidden_turns", result.hiddenTurns},
+                                 {"restored_turns", result.restoredTurns},
+                                 {"rollback", result.rollbackTime ? nlohmann::json{{"game_time", *result.rollbackTime}}
+                                                                  : nlohmann::json(nullptr)}};
             } else if (post && parts.size() == 4 && parts[3] == "conversations") {
                 const std::vector<std::string> participants = StringList(json, "participants");
                 const nlohmann::json& observation = RequiredObject(json, "observation");

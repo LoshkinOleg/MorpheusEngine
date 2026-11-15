@@ -20,3 +20,16 @@ TEST_CASE("The three-actor fixture plays over HTTP", "[hosted-server][http][memo
     harness.runs.StopAll();
     http.Stop();
 }
+
+TEST_CASE("The reload fixture plays over HTTP", "[hosted-server][http][rewind][fixtures]")
+{
+    const nlohmann::json fixture = test::ReadFixture("reload.json");
+    test::HostedScript script = test::ScriptOf(fixture);
+    test::ApiHarness harness("http_reload_fixture", test::MemoryEchoResponder(script));
+    server::HttpServer http(harness.api);
+    http.Start(0);
+    httplib::Client client("127.0.0.1", http.Port());
+    test::PlayMemoryFixtureOverHttp(client, "r", fixture, true);
+    harness.runs.StopAll();
+    http.Stop();
+}

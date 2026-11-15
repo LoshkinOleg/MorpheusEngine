@@ -30,7 +30,7 @@ void CheckError(const server::ApiResponse& response, int status, const std::stri
     INFO(response.body.dump());
     CHECK(response.stream == nullptr);
     CHECK(response.status == status);
-    CHECK(response.body.at("api_version") == "1.1.0");
+    CHECK(response.body.at("api_version") == "1.2.0");
     CHECK(response.body.at("error").at("status") == status);
     CHECK_THAT(response.body.at("error").at("message").get<std::string>(), ContainsSubstring(part));
 }
@@ -47,7 +47,7 @@ TEST_CASE("The /health route reports the models, the slots and the API version",
                                         {"chat_model", "chat-model"},
                                         {"embedding_model", "embed-model"},
                                         {"slots", 3},
-                                        {"api_version", "1.1.0"}});
+                                        {"api_version", "1.2.0"}});
 }
 
 TEST_CASE("Opening a run creates its file once; opening it again is idempotent; a seed goes to a new run",
@@ -59,7 +59,7 @@ TEST_CASE("Opening a run creates its file once; opening it again is idempotent; 
 
     const server::ApiResponse first = harness.Post("/v1/runs/save_1/open", open);
     CHECK(first.status == 200);
-    CHECK(first.body == nlohmann::json{{"run_id", "save_1"}, {"created", true}, {"api_version", "1.1.0"}});
+    CHECK(first.body == nlohmann::json{{"run_id", "save_1"}, {"created", true}, {"api_version", "1.2.0"}});
     CHECK(std::filesystem::exists(harness.runsDir / "save_1.morpheus"));
     const server::ApiResponse second = harness.Post("/v1/runs/save_1/open", open);
     CHECK(second.status == 200);
@@ -86,13 +86,13 @@ TEST_CASE("A conversation starts, records events, changes participants, ends, an
 
     const server::ApiResponse started = harness.Post("/v1/runs/save_1/conversations", HuldaAndAela());
     REQUIRE(started.status == 200);
-    CHECK(started.body == nlohmann::json{{"conversation_id", "c1"}, {"api_version", "1.1.0"}});
+    CHECK(started.body == nlohmann::json{{"conversation_id", "c1"}, {"api_version", "1.2.0"}});
     const std::string base = "/v1/runs/save_1/conversations/c1";
 
     const server::ApiResponse recorded =
         harness.Post(base + "/events", {{"events", {{{"type", "ambient"}, {"text", "A door opens."}}}}});
     CHECK(recorded.status == 200);
-    CHECK(recorded.body == nlohmann::json{{"api_version", "1.1.0"}});
+    CHECK(recorded.body == nlohmann::json{{"api_version", "1.2.0"}});
 
     const server::ApiResponse joined =
         harness.Post(base + "/participants", {{"joined", {test::SAADIA}}, {"observation", test::FixtureObservation()}});

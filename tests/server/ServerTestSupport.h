@@ -284,7 +284,20 @@ inline void PlayMemoryFixtureOverHttp(httplib::Client& client, const std::string
 {
     const nlohmann::json& observation = fixture.at("observation");
     const std::string runBase = "/v1/runs/" + runId;
-    REQUIRE(JsonPost(client, runBase + "/open", ReadFixture("open.json")).status == 200);
+    // A fixture with a "clock" names the pointer of the game time in its observations: the host data's clock.
+    nlohmann::json hostData = ReadFixture("open.json");
+    if (fixture.contains("clock")) {
+        hostData["clock"] = fixture.at("clock");
+    }
+    REQUIRE(JsonPost(client, runBase + "/open", hostData).status == 200);
+    // A step's observation: the fixture's, with the step's "clock" (when it has one) written at the clock's pointer.
+    auto observationOf = [&](const nlohmann::json& step) {
+        nlohmann::json observed = observation;
+        if (step.contains("clock")) {
+            observed[nlohmann::json::json_pointer(fixture.at("clock").get<std::string>())] = step.at("clock");
+        }
+        return observed;
+    };
     auto start = [&](const nlohmann::json& participants) {
         const HttpJson started =
             JsonPost(client, runBase + "/conversations", {{"participants", participants}, {"observation", observation}});
@@ -304,16 +317,16 @@ inline void PlayMemoryFixtureOverHttp(httplib::Client& client, const std::string
         const std::string base = runBase + "/conversations/" + id;
         if (step.contains("turn")) {
             nlohmann::json body = step.at("turn");
-            body["observation"] = observation;
+            body["observation"] = observationOf(step);
             const HttpTurn turn = PostTurn(client, base + "/turn", body);
             REQUIRE(turn.status == 200);
             REQUIRE_FALSE(turn.events.empty());
             CHECK(turn.events.back().name == "done");
         } else if (step.contains("leave")) {
-            CHECK(JsonPost(client, base + "/participants", {{"left", step.at("leave")}, {"observation", observation}})
+            CHECK(JsonPost(client, base + "/participants", {{"left", step.at("leave")}, {"observation", observationOf(step)}})
                       .status == 200);
         } else if (step.contains("join")) {
-            CHECK(JsonPost(client, base + "/participants", {{"joined", step.at("join")}, {"observation", observation}})
+            CHECK(JsonPost(client, base + "/participants", {{"joined", step.at("join")}, {"observation", observationOf(step)}})
                       .status == 200);
         } else if (step.contains("end")) {
             CHECK(JsonPost(client, base + "/end", nlohmann::json::object()).status == 200);
@@ -386,6 +399,43 @@ inline void PlayMemoryFixtureOverHttp(httplib::Client& client, const std::string
             if (share.contains("pending")) {
                 CHECK(shared.body.at("pending") == share.at("pending"));
             }
+        } else if (step.contains("rewind")) {
+            // The run as it was at a game time (a save load), the answer checked where the step gives it.
+            const nlohmann::json& rewind = step.at("rewind");
+            const HttpJson answer = JsonPost(client, runBase + "/rewind", {{"game_time", rewind.at("game_time")}});
+            REQUIRE(answer.status == 200);
+            for (const char* field : {"rewound", "hidden_turns", "restored_turns"}) {
+                if (rewind.contains(field)) {
+                    CHECK(answer.body.at(field) == rewind.at(field));
+                }
+            }
+        } else if (step.contains("turns")) {
+            // The current conversation's visible turns.
+            const HttpJson shown = JsonGet(client, base);
+            REQUIRE(shown.status == 200);
+            CHECK(shown.body.at("turns").size() == step.at("turns").at("count").get<std::size_t>());
+        } else if (step.contains("conversation")) {
+            // The current conversation as it is now: its end, its participants in join order, its visible events.
+            const nlohmann::json& expected = step.at("conversation");
+            const HttpJson shown = JsonGet(client, base);
+            REQUIRE(shown.status == 200);
+            const nlohmann::json& conversation = shown.body.at("conversation");
+            if (expected.contains("ended")) {
+                CHECK(conversation.at("ended") == expected.at("ended"));
+            }
+            if (expected.contains("participants")) {
+                std::vector<std::string> ids;
+                for (const nlohmann::json& participant : conversation.at("participants")) {
+                    ids.push_back(participant.at("id").get<std::string>());
+                }
+                CHECK(ids == expected.at("participants").get<std::vector<std::string>>());
+            }
+            if (expected.contains("events")) {
+                CHECK(shown.body.at("events").size() == expected.at("events").get<std::size_t>());
+            }
+        } else if (step.contains("events")) {
+            // Events recorded between turns of the current conversation.
+            CHECK(JsonPost(client, base + "/events", {{"events", step.at("events")}}).status == 200);
         } else {
             FAIL("unknown step kind");
         }

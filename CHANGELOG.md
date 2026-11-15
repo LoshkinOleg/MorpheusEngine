@@ -3,6 +3,15 @@
 The morpheus_server API's versions (`api_version` on every response). A breaking change bumps the major version and
 gets an entry here with a migration note.
 
+## API 1.2.0
+
+Rolling a run back (design: `docs/superpowers/specs/2026-11-16-rollback-design.md`). Only additions.
+
+- The host data may name a `clock`: a JSON pointer to a number in every observation (the game time).
+- `POST /v1/runs/{run_id}/rewind` with `{game_time}` answers `{rewound, hidden_turns, restored_turns, rollback}`: the
+  run as it was at that game time. Call it on every save load. What came later is hidden, not deleted; a later rewind
+  restores it until a new record (a turn, events, a conversation, participants, an end, a share) abandons it.
+
 ## API 1.1.0
 
 Per-speaker memory (design: `docs/superpowers/specs/2026-11-16-per-speaker-memory-design.md`). Two new routes; and a change of behaviour: every NPC now remembers only what it witnessed.

@@ -68,7 +68,7 @@ void ReplayOverHttp(const std::string& name)
         const nlohmann::json& expect = step.at("expect");
         const nlohmann::json& action = turn.events.front().data;
         CHECK(turn.events.front().name == "action");
-        CHECK(action.at("api_version") == "1.1.0");
+        CHECK(action.at("api_version") == "1.2.0");
         CHECK(action.at("action").is_null() == !expect.at("requested").get<bool>());
         if (expect.contains("action")) {
             CHECK(action.at("action") == expect.at("action"));
@@ -108,12 +108,12 @@ TEST_CASE("Over HTTP every answer is JSON with the API version, and an unknown r
     const test::HttpJson health = test::JsonGet(client, "/health");
     CHECK(health.status == 200);
     CHECK_THAT(health.contentType, StartsWith("application/json"));
-    CHECK(health.body.at("api_version") == "1.1.0");
+    CHECK(health.body.at("api_version") == "1.2.0");
     CHECK(health.body.at("chat_model") == "nomic-embed-text-v1.5.Q8_0"); // The fake names one model file for both.
     CHECK(health.body.at("slots") == 3);
     const test::HttpJson unknown = test::JsonGet(client, "/nope");
     CHECK(unknown.status == 404);
-    CHECK(unknown.body.at("api_version") == "1.1.0");
+    CHECK(unknown.body.at("api_version") == "1.2.0");
     CHECK(unknown.body.at("error").at("status") == 404);
 }
 
@@ -133,7 +133,7 @@ TEST_CASE("Answers cpp-httplib makes itself are JSON with the API version too", 
         CHECK_THAT(result->get_header_value("Content-Type"), StartsWith("application/json"));
         const nlohmann::json body = nlohmann::json::parse(result->body, nullptr, false);
         REQUIRE(body.is_object());
-        CHECK(body.at("api_version") == "1.1.0");
+        CHECK(body.at("api_version") == "1.2.0");
         CHECK(body.at("error").at("status") == result->status);
         CHECK_FALSE(body.at("error").at("message").get<std::string>().empty());
     }
@@ -172,7 +172,7 @@ TEST_CASE("Each invalid request fixture is refused over HTTP with its status and
         // An unknown conversation is a 404 over HTTP; every other fault is the request's (400).
         CHECK(turn.status == (name == "unknown conversation" ? 404 : 400));
         CHECK(turn.events.empty());
-        CHECK(turn.body.at("api_version") == "1.1.0");
+        CHECK(turn.body.at("api_version") == "1.2.0");
         CHECK_THAT(turn.body.at("error").at("message").get<std::string>(),
                    ContainsSubstring(entry.at("error").get<std::string>()));
     }
@@ -300,7 +300,7 @@ TEST_CASE("Opening a run whose lore cannot be embedded: 503 when the embedding s
         httplib::Client client = harness.Client();
         const test::HttpJson opened = test::JsonPost(client, "/v1/runs/r/open", test::ReadFixture("open.json"));
         CHECK(opened.status == failure.expected);
-        CHECK(opened.body.at("api_version") == "1.1.0");
+        CHECK(opened.body.at("api_version") == "1.2.0");
         CHECK(opened.body.at("error").at("status") == failure.expected);
         if (failure.expected == 400) {
             CHECK_THAT(opened.body.at("error").at("message").get<std::string>(), ContainsSubstring("cannot be embedded"));
