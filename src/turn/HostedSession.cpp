@@ -179,6 +179,10 @@ void HostedSession::RecordEvents(std::string_view conversationId, const std::vec
 {
     const core::Conversation conversation = OpenConversation(conversationId);
     HostedWorld::CheckEvents(events);
+    // No event: nothing is recorded, so an open rollback stays open. Otherwise it is abandoned before they are written.
+    if (events.empty()) {
+        return;
+    }
     AbandonRollbackForNewRecord();
     // They follow the conversation's latest turn (0 before its first), so they come before its next. With no
     // observation of their own, they are dated with the run's latest seen clock.
@@ -278,9 +282,6 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
                                           "narrate_allowance {}",
                                           pSpeaker->name, speakTokens, _settings.budget.narrateAllowance));
     }
-    // The request passed: an open rollback is abandoned before anything is written, the catch-up's folds included.
-    AbandonRollbackForNewRecord();
-
     // Run-wide, shared with the summaries' ranges, and never reused: one past every turn stored, hidden ones included.
     const int turn = _store.NextHostedTurn();
     const std::uint64_t seed = _store.Meta().rngSeed;
@@ -417,6 +418,10 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
     }
     record.timings = std::move(timings);
     record.clock = observation.clock; // The game time it was played at.
+    // The turn's own record is its first new record: an open rollback is abandoned only now. The catch-up's and the
+    // fit loop's folds above were written in it (made_in), as Maintain's are: a turn cancelled or failed before this
+    // point leaves the rollback open (an undo deletes those folds), and the abandon makes them ordinary memories.
+    AbandonRollbackForNewRecord();
     _store.CommitHostedTurn(record);
     return record;
 }
@@ -497,7 +502,7 @@ bool HostedSession::Maintain(std::stop_token stop, std::stop_token yield)
             if (yielding()) {
                 return false;
             }
-            ApplyShare(share.fromActor, share.toActor, share.conversationId);
+            ApplyShare(share.fromActor, share.toActor, share.conversationId, false);
             _store.MarkShareApplied(share.id, _store.LatestClock());
             stepped = true;
         }
@@ -533,9 +538,6 @@ ShareResult HostedSession::ShareMemories(const std::string& fromActorId, const s
             throw core::DataError(std::format("to: '{}' is the player; only NPCs keep memories", toActorId));
         }
     }
-    // The share passed its checks: an open rollback is abandoned before it stores a pending share or copies.
-    AbandonRollbackForNewRecord();
-
     // The teller's memory of it is complete once the conversation ended and the teller caught up to its last turn;
     // until then the share waits, stored once however often it is asked for. The teller witnessed a turn, so the
     // conversation has one.
@@ -548,12 +550,15 @@ ShareResult HostedSession::ShareMemories(const std::string& fromActorId, const s
                    share.conversationId == conversationId;
         });
         if (!stored) {
-            // Created at the run's latest seen clock.
+            // Created at the run's latest seen clock, after an open rollback is abandoned. A share already stored
+            // writes nothing and leaves it open.
+            AbandonRollbackForNewRecord();
             _store.AddPendingShare({0, fromActorId, toActorId, conversationId, _store.LatestClock()});
         }
         return {0, true};
     }
-    return {ApplyShare(fromActorId, toActorId, conversationId), false};
+    // Its copies abandon an open rollback before the first is written; none to make leaves it open.
+    return {ApplyShare(fromActorId, toActorId, conversationId, true), false};
 }
 
 RewindResult HostedSession::Rewind(double gameTime)
@@ -883,7 +888,7 @@ bool HostedSession::CatchUp(const std::string& conversationId, const std::string
 }
 
 int HostedSession::ApplyShare(const std::string& fromActorId, const std::string& toActorId,
-                              const std::string& conversationId)
+                              const std::string& conversationId, bool abandonsRollback)
 {
     // What the listener already has from these summaries: copies are keyed by their source.
     std::set<std::int64_t> copied;
@@ -909,6 +914,11 @@ int HostedSession::ApplyShare(const std::string& fromActorId, const std::string&
         copy.toldBy = fromActorId;
         copy.sourceId = summary.id;
         copy.clock = clock;
+        // A share the host asked for is a new record: an open rollback is abandoned before its first copy (the
+        // abandon changes no visible clock, so `clock` stays right). Maintain's never abandon: they carry made_in.
+        if (abandonsRollback && shared == 0) {
+            AbandonRollbackForNewRecord();
+        }
         _store.AddActorSummary(copy);
         ++shared;
     }

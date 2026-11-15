@@ -91,9 +91,12 @@ public:
     static HostedSession Open(const std::filesystem::path& file, HostData data, core::Settings settings,
                               std::uint64_t seed, inference::LlmBackend& backend);
 
-    // Every writer of a new record below (StartConversation, RecordEvents, SetParticipants, RunTurn once its request
-    // passed its checks, EndConversation, ShareMemories once it passed its checks) first abandons an open rollback: its
-    // hidden records stay hidden for good (Rewind).
+    // Every writer of a new record below first abandons an open rollback, once its checks passed and just before it
+    // records: its hidden records stay hidden for good (Rewind). StartConversation, SetParticipants and
+    // EndConversation always record; RecordEvents when it has an event; RunTurn just before it commits its turn (the
+    // catch-up's and the fit loop's folds before that are written in the rollback, as Maintain's are); ShareMemories
+    // when it stores a pending share or makes a copy. A refused request, a turn cancelled or failed, an empty events
+    // list and a share already pending or already copied record nothing and leave the rollback open.
 
     // Starts a conversation of `participantIds` (in this join order) and returns its id. Every participant must be an
     // actor of the observation, once; their names and bios are taken from it and stored. Throws DataError naming the
@@ -103,7 +106,7 @@ public:
     // Adds events to an open conversation without a turn, in order (HostedWorld::CheckEvents). They come before the
     // conversation's next turn: every event recorded since its last turn joins that turn's tail. When the tail is over
     // tail_allowance, the oldest events (these first, then the request's own) are left out of that turn's prompt (RunTurn); the store
-    // keeps them all.
+    // keeps them all. An empty list records nothing.
     // Throws DataError naming the field.
     void RecordEvents(std::string_view conversationId, const std::vector<nlohmann::json>& events);
 
@@ -120,9 +123,10 @@ public:
     // (streamed through onToken), and commits the record. Player text is cleaned as Session cleans input
     // (CleanInput); nothing left means none. Returns the committed turn, or nullopt when `stop` cancelled it:
     // then no turn is committed and the request's events are not kept (folds the catch-up and the fit loop finished
-    // before the stop are, as in Session). onAction fires before the line starts, so a turn cancelled during the
-    // speak call has already reported its action through onAction and is still not committed: the host must not take
-    // a reported action as a committed turn until RunTurn returns one. Throws DataError naming the field for a
+    // before the stop are, as in Session), and an open rollback stays open, as it does when the turn throws. onAction
+    // fires before the line starts, so a turn cancelled during the speak call has already reported its action through
+    // onAction and is still not committed: the host must not take a reported action as a committed turn until RunTurn
+    // returns one. Throws DataError naming the field for a
     // malformed request (before any model call), TurnError when the observation, the player text and the instruction
     // alone do not fit tail_allowance (before the resolve call; folds the catch-up and the fit loop finished before
     // it stay), and InferenceError from the backend. The tail holds the observation, every event recorded since the
@@ -164,8 +168,10 @@ public:
     // The run as it was at game time `gameTime` (rollback spec, section 3): the host calls it on every save load. It
     // undoes the open rollback, if any, then applies one to `gameTime` when that is before the latest live clock; a
     // rewind to the open rollback's own time changes nothing. Hidden records are kept; a later rewind restores them
-    // until a new record abandons them. The background upkeep then refolds what NPCs are missing. Throws DataError
-    // "game_time: ..." when the host data names no clock or `gameTime` is not finite.
+    // until a new record abandons them (a turn committed, events recorded, a conversation started or ended,
+    // participants changed, a share stored or copied: see the writers above). The background upkeep then refolds what
+    // NPCs are missing. Throws DataError "game_time: ..." when the host data names no clock or `gameTime` is not
+    // finite.
     RewindResult Rewind(double gameTime);
 
     const store::RunMeta& Meta() const;
@@ -183,7 +189,8 @@ private:
     core::Conversation OpenConversation(std::string_view conversationId);
 
     // A new record while a rollback is open: the hidden future is abandoned first (rollback spec, "Playing on"). Every
-    // writer of a new record calls it after its checks and before its first write; Maintain never does.
+    // writer of a new record calls it after its checks, just before it writes that record (RunTurn just before its
+    // commit); Maintain never does.
     void AbandonRollbackForNewRecord();
 
     // Of `turns` (the conversation's turns as the store holds them, oldest first), those with afterTurn < number <=
@@ -227,8 +234,10 @@ private:
                  std::stop_token stop);
 
     // Copies to `toActorId` the summaries of `fromActorId`'s own memory of conversation `conversationId` it does not
-    // have yet (ShareMemories, and Maintain for a pending share), and returns how many.
-    int ApplyShare(const std::string& fromActorId, const std::string& toActorId, const std::string& conversationId);
+    // have yet (ShareMemories, and Maintain for a pending share), and returns how many. With abandonsRollback (a share
+    // the host asked for), an open rollback is abandoned before the first copy; with none to copy it stays open.
+    int ApplyShare(const std::string& fromActorId, const std::string& toActorId, const std::string& conversationId,
+                   bool abandonsRollback);
 
     // Every NPC who spoke or listened in `turns`, in first-seen order. A listener who is the player in its turn's
     // observation is left out.
