@@ -435,10 +435,21 @@ bool HostedSession::Maintain(std::stop_token stop)
     }
 
     // Shares waiting for their teller: applied once the conversation ended and the teller caught up, then removed.
+    // Each applied share may embed its copies, so a stop is honoured before each one.
     for (const core::PendingShare& share : _store.PendingShares()) {
+        if (stop.stop_requested()) {
+            return false;
+        }
+        // ShareMemories stores a share only for a conversation with a turn its teller witnessed: one without is
+        // damaged saved data.
         const std::optional<core::Conversation> conversation = _store.Conversation(share.conversationId);
         const std::vector<core::HostedTurn> turns = _store.HostedTurns(share.conversationId);
-        const bool complete = conversation && conversation->ended && !turns.empty() &&
+        if (!conversation || turns.empty()) {
+            throw store::StoreError(std::format("pending share {}: conversation_id '{}' names no conversation with a "
+                                                "turn",
+                                                share.id, share.conversationId));
+        }
+        const bool complete = conversation->ended &&
                               _store.RememberedThrough(share.conversationId, share.fromActor) >= turns.back().number;
         if (complete) {
             ApplyShare(share.fromActor, share.toActor, share.conversationId);
@@ -465,13 +476,32 @@ ShareResult HostedSession::ShareMemories(const std::string& fromActorId, const s
     if (toActorId.empty() || toActorId == fromActorId) {
         throw core::DataError(std::format("to: '{}' must be another actor than the teller '{}'", toActorId, fromActorId));
     }
+    // Only NPCs keep memories: the listener may not be the player in any of the conversation's turns. An id the turns
+    // never show is allowed (an NPC who has not spoken or listened yet).
+    for (const core::HostedTurn& turn : turns) {
+        const std::vector<core::Actor> actors = HostedWorld::ActorsOf(turn.observation);
+        const bool isPlayer = std::any_of(actors.begin(), actors.end(), [&toActorId](const core::Actor& actor) {
+            return actor.id == toActorId && actor.isPlayer;
+        });
+        if (isPlayer) {
+            throw core::DataError(std::format("to: '{}' is the player; only NPCs keep memories", toActorId));
+        }
+    }
 
     // The teller's memory of it is complete once the conversation ended and the teller caught up to its last turn;
-    // until then the share waits. The teller witnessed a turn, so the conversation has one.
+    // until then the share waits, stored once however often it is asked for. The teller witnessed a turn, so the
+    // conversation has one.
     const bool complete =
         conversation->ended && _store.RememberedThrough(conversationId, fromActorId) >= turns.back().number;
     if (!complete) {
-        _store.AddPendingShare({0, fromActorId, toActorId, conversationId});
+        const std::vector<core::PendingShare> pending = _store.PendingShares();
+        const bool stored = std::any_of(pending.begin(), pending.end(), [&](const core::PendingShare& share) {
+            return share.fromActor == fromActorId && share.toActor == toActorId &&
+                   share.conversationId == conversationId;
+        });
+        if (!stored) {
+            _store.AddPendingShare({0, fromActorId, toActorId, conversationId});
+        }
         return {0, true};
     }
     return {ApplyShare(fromActorId, toActorId, conversationId), false};

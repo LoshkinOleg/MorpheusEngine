@@ -129,15 +129,17 @@ public:
     // witness's memory reaches the transcript's cut. An NPC's memories over summary_cap are condensed on the way.
     // Then every pending share (ShareMemories) whose teller's memory is now complete is applied and removed.
     // Returns false when `stop` cancelled it; it can simply run again. Throws DataError when summary_cap is too small
-    // for even a condensed summary.
+    // for even a condensed summary, and StoreError for a pending share whose conversation is missing or has no turn
+    // (damaged saved data).
     bool Maintain(std::stop_token stop);
 
     // `toActorId` learns what `fromActorId` remembers of conversation `conversationId`: copies of `fromActorId`'s own
     // summaries of it (superseded or not, shared copies excluded), each told by `fromActorId`, oldest first. A copy is
     // a snapshot, and a summary already copied to `toActorId` is not copied again. While the conversation is open or
-    // `fromActorId` is behind in it, the share waits and Maintain applies it once the conversation ended and
-    // `fromActorId` caught up. Throws DataError "conversation_id: ..." for an unknown conversation, "from: ..." when
-    // `fromActorId` witnessed none of its turns as an NPC, and "to: ..." for an empty `toActorId` or the teller itself.
+    // `fromActorId` is behind in it, the share waits (stored once, however often it is asked for) and Maintain applies
+    // it once the conversation ended and `fromActorId` caught up. Throws DataError "conversation_id: ..." for an
+    // unknown conversation, "from: ..." when `fromActorId` witnessed none of its turns as an NPC, and "to: ..." for an
+    // empty `toActorId`, the teller itself, or the player of any of its turns.
     ShareResult ShareMemories(const std::string& fromActorId, const std::string& toActorId,
                               const std::string& conversationId);
 

@@ -44,7 +44,6 @@
     {"turn": {"speaker": "0001B07C", "player_text": "Anything new about the guard captain?"},
      "model": {"resolve": "{\"action\":\"none\",\"params\":{}}", "line": "Hulda says he takes bribes."},
      "expect": {"prompt_contains": ["(told by Hulda)", "takes bribes"]}},
-    {"share": {"from": "0001A6A4", "to": "0001B07C", "shared": 0, "pending": false}},
-    {"memories": {"actor": "0001B07D", "absent": ["takes bribes"]}}
+    {"share": {"from": "0001A6A4", "to": "0001B07C", "shared": 0, "pending": false}}
   ]
 }

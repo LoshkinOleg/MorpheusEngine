@@ -3,8 +3,11 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
+#include <format>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <vector>
 
@@ -247,28 +250,123 @@ TEST_CASE("A share made while the conversation is open waits, then applies once 
     script.actions = {NONE};
     script.lines = {"The well is poisoned."};
     test::ScriptedBackend backend(16384, test::MemoryEchoResponder(script));
-    turn::HostedSession session = turn::HostedSession::Open(test::HostedRunFile("hosted_share_pending"),
+    const std::filesystem::path file = test::HostedRunFile("hosted_share_pending");
+    std::string id;
+    {
+        turn::HostedSession session =
+            turn::HostedSession::Open(file, test::FixtureHostData(), test::HostedSettings(), 42, backend);
+        id = session.StartConversation({test::HULDA, test::AELA}, test::FixtureObservation());
+        REQUIRE(session.RunTurn(test::Request(id, test::HULDA, "Any news?"), {}, {}));
+
+        const turn::ShareResult early = session.ShareMemories(test::HULDA, test::SAADIA, id);
+        CHECK(early.pending);
+        CHECK(early.shared == 0);
+        // The same share again waits too, but is not stored twice.
+        const turn::ShareResult again = session.ShareMemories(test::HULDA, test::SAADIA, id);
+        CHECK(again.pending);
+        CHECK(again.shared == 0);
+        CHECK(session.Memories(test::SAADIA).empty());
+    }
+    CHECK(store::RunStore::Open(file).PendingShares().size() == 1);
+
+    {
+        turn::HostedSession session =
+            turn::HostedSession::Open(file, test::FixtureHostData(), test::HostedSettings(), 42, backend);
+        session.EndConversation(id);
+        REQUIRE(session.Maintain({}));
+        const std::vector<core::Summary> saadia = session.Memories(test::SAADIA);
+        REQUIRE(saadia.size() == 1);
+        CHECK(saadia[0].toldBy == test::HULDA);
+        CHECK(saadia[0].text.find("poisoned") != std::string::npos);
+        // Applied once: another pass copies nothing more.
+        REQUIRE(session.Maintain({}));
+        CHECK(session.Memories(test::SAADIA).size() == 1);
+    }
+    // The applied share is no longer pending.
+    CHECK(store::RunStore::Open(file).PendingShares().empty());
+}
+
+TEST_CASE("A share made after the conversation ended but before the teller caught up waits for Maintain",
+          "[hosted][memory]")
+{
+    test::HostedScript script;
+    script.actions = {NONE};
+    script.lines = {"The well is poisoned."};
+    test::ScriptedBackend backend(16384, test::MemoryEchoResponder(script));
+    turn::HostedSession session = turn::HostedSession::Open(test::HostedRunFile("hosted_share_ended_behind"),
                                                             test::FixtureHostData(), test::HostedSettings(), 42, backend);
     const std::string id = session.StartConversation({test::HULDA, test::AELA}, test::FixtureObservation());
     REQUIRE(session.RunTurn(test::Request(id, test::HULDA, "Any news?"), {}, {}));
+    session.EndConversation(id);
 
+    // Ended, but Hulda remembers none of it yet: the share waits.
     const turn::ShareResult early = session.ShareMemories(test::HULDA, test::SAADIA, id);
     CHECK(early.pending);
     CHECK(early.shared == 0);
     CHECK(session.Memories(test::SAADIA).empty());
 
-    session.EndConversation(id);
+    // Maintain catches her up, then applies it.
     REQUIRE(session.Maintain({}));
     const std::vector<core::Summary> saadia = session.Memories(test::SAADIA);
     REQUIRE(saadia.size() == 1);
     CHECK(saadia[0].toldBy == test::HULDA);
     CHECK(saadia[0].text.find("poisoned") != std::string::npos);
-    // Applied once: another pass copies nothing more.
+}
+
+TEST_CASE("Maintain stopped before a pending share leaves it pending; the next pass applies it", "[hosted][memory]")
+{
+    test::HostedScript script;
+    script.actions = {NONE};
+    script.lines = {"The well is poisoned."};
+    test::ScriptedBackend backend(16384, test::MemoryEchoResponder(script));
+    const std::filesystem::path file = test::HostedRunFile("hosted_share_stopped");
+    std::string id;
+    {
+        turn::HostedSession session =
+            turn::HostedSession::Open(file, test::FixtureHostData(), test::HostedSettings(), 42, backend);
+        id = session.StartConversation({test::HULDA, test::AELA}, test::FixtureObservation());
+        REQUIRE(session.RunTurn(test::Request(id, test::HULDA, "Any news?"), {}, {}));
+        session.EndConversation(id);
+        REQUIRE(session.Maintain({}));
+    }
+    // A pending share whose teller's memory is already complete: only the share loop has work left.
+    store::RunStore::Open(file).AddPendingShare({0, test::HULDA, test::SAADIA, id});
+
+    turn::HostedSession session =
+        turn::HostedSession::Open(file, test::FixtureHostData(), test::HostedSettings(), 42, backend);
+    std::stop_source stopped;
+    stopped.request_stop();
+    CHECK_FALSE(session.Maintain(stopped.get_token()));
+    CHECK(session.Memories(test::SAADIA).empty());
     REQUIRE(session.Maintain({}));
     CHECK(session.Memories(test::SAADIA).size() == 1);
 }
 
-TEST_CASE("A share refuses a teller who witnessed nothing, the same actor, and an unknown conversation",
+TEST_CASE("Maintain refuses a pending share whose conversation is not in the run, as damaged saved data",
+          "[hosted][memory]")
+{
+    test::HostedScript script;
+    script.actions = {NONE};
+    script.lines = {"Hello."};
+    test::ScriptedBackend backend(16384, test::MemoryEchoResponder(script));
+    const std::filesystem::path file = test::HostedRunFile("hosted_share_damaged");
+    {
+        turn::HostedSession session =
+            turn::HostedSession::Open(file, test::FixtureHostData(), test::HostedSettings(), 42, backend);
+        const std::string id = session.StartConversation({test::HULDA, test::AELA}, test::FixtureObservation());
+        REQUIRE(session.RunTurn(test::Request(id, test::HULDA, "Hi."), {}, {}));
+    }
+    // A pending_shares row naming a conversation the run does not have.
+    const std::int64_t shareId = store::RunStore::Open(file).AddPendingShare({0, test::HULDA, test::SAADIA, "c9"});
+
+    turn::HostedSession session =
+        turn::HostedSession::Open(file, test::FixtureHostData(), test::HostedSettings(), 42, backend);
+    CHECK_THROWS_AS(session.Maintain({}), store::StoreError);
+    CHECK_THROWS_WITH(session.Maintain({}),
+                      ContainsSubstring(std::format("pending share {}", shareId)) && ContainsSubstring("'c9'"));
+}
+
+TEST_CASE("A share refuses a teller who witnessed nothing, the same actor, the player, and an unknown conversation",
           "[hosted][memory]")
 {
     test::HostedScript script;
@@ -279,11 +377,55 @@ TEST_CASE("A share refuses a teller who witnessed nothing, the same actor, and a
                                                             test::FixtureHostData(), test::HostedSettings(), 42, backend);
     const std::string id = session.StartConversation({test::HULDA, test::AELA}, test::FixtureObservation());
     REQUIRE(session.RunTurn(test::Request(id, test::HULDA, "Hi."), {}, {}));
-    CHECK_THROWS_WITH(session.ShareMemories(test::SAADIA, test::HULDA, id), ContainsSubstring("from"));
-    CHECK_THROWS_WITH(session.ShareMemories(test::AELA, test::HULDA, id), ContainsSubstring("from")); // The player.
-    CHECK_THROWS_WITH(session.ShareMemories(test::HULDA, test::HULDA, id), ContainsSubstring("to"));
-    CHECK_THROWS_WITH(session.ShareMemories(test::HULDA, "", id), ContainsSubstring("to"));
+    CHECK_THROWS_WITH(session.ShareMemories(test::SAADIA, test::HULDA, id), ContainsSubstring("from:"));
+    CHECK_THROWS_WITH(session.ShareMemories(test::AELA, test::HULDA, id), ContainsSubstring("from:")); // The player.
+    CHECK_THROWS_WITH(session.ShareMemories(test::HULDA, test::HULDA, id), ContainsSubstring("to:"));
+    CHECK_THROWS_WITH(session.ShareMemories(test::HULDA, "", id), ContainsSubstring("to:"));
+    CHECK_THROWS_WITH(session.ShareMemories(test::HULDA, test::AELA, id),
+                      ContainsSubstring("to:") && ContainsSubstring("is the player"));
     CHECK_THROWS_WITH(session.ShareMemories(test::HULDA, test::SAADIA, "c9"), ContainsSubstring("conversation_id"));
+}
+
+TEST_CASE("A share made after the teller condensed still copies its superseded summaries of the conversation",
+          "[hosted][memory]")
+{
+    // Folds echo what they read; a condense writes "Condensed.". A line of 240 bytes puts Hulda's memories over
+    // summary_cap 64 after the second conversation.
+    test::HostedScript script;
+    script.actions = {NONE, NONE};
+    script.lines = {"The well is poisoned.", std::string(240, 'x')};
+    const test::ScriptedBackend::Responder echo = test::MemoryEchoResponder(script);
+    test::ScriptedBackend backend(16384, [&echo](const inference::Prompt& prompt, const inference::GenerationSpec& spec) {
+        return prompt.messages.back().content.find("Condense what") != std::string::npos ? std::string("Condensed.")
+                                                                                         : echo(prompt, spec);
+    });
+    core::Settings settings = test::HostedSettings();
+    settings.budget.summaryCap = 64;
+    turn::HostedSession session = turn::HostedSession::Open(test::HostedRunFile("hosted_share_after_condense"),
+                                                            test::FixtureHostData(), settings, 42, backend);
+    std::vector<std::string> ids;
+    for (int i = 0; i < 2; ++i) {
+        ids.push_back(session.StartConversation({test::HULDA, test::AELA}, test::FixtureObservation()));
+        REQUIRE(session.RunTurn(test::Request(ids.back(), test::HULDA, "News?"), {}, {}));
+        session.EndConversation(ids.back());
+        REQUIRE(session.Maintain({}));
+    }
+    // Hulda's memory of the first conversation is superseded by her condensed one.
+    const std::vector<core::Summary> hulda = session.Memories(test::HULDA);
+    REQUIRE_FALSE(hulda.empty());
+    const core::Summary original = hulda.front();
+    REQUIRE(original.superseded);
+    REQUIRE(original.conversationId == ids[0]);
+
+    const turn::ShareResult result = session.ShareMemories(test::HULDA, test::SAADIA, ids[0]);
+    CHECK(result.shared == 1);
+    CHECK_FALSE(result.pending);
+    const std::vector<core::Summary> saadia = session.Memories(test::SAADIA);
+    REQUIRE(saadia.size() == 1);
+    CHECK(saadia[0].text == original.text);
+    CHECK(saadia[0].sourceId == original.id);
+    CHECK(saadia[0].toldBy == test::HULDA);
+    CHECK_FALSE(saadia[0].superseded);
 }
 
 TEST_CASE("A shared memory is a snapshot: the teller's later condense leaves it as it was", "[hosted][memory]")
