@@ -140,8 +140,8 @@ CREATE INDEX summaries_actor ON summaries (actor_id);
 // What version 6 adds (rollback spec, section 4), in three parts, for new files and upgrades alike: a new file is made
 // with the version 5 texts above and then takes these, as an upgraded one does, so both end with the same tables and
 // columns. The columns: a clock (null allowed: a row without one is never hidden) and a hidden mark (the rollback that
-// hid it) on the hosted rows, the condense that superseded a summary and the rollback it was written in, and a share's
-// application: whether it is applied (a flag, since a run with no clock applies shares with no clock) and when.
+// hid it) on the hosted rows, the rollback a summary was written in, and a share's application: whether it is applied
+// (a flag, since a run with no clock applies shares with no clock) and when.
 constexpr const char* V6_COLUMNS_SQL = R"sql(
 ALTER TABLE hosted_turns ADD COLUMN clock REAL;
 ALTER TABLE hosted_turns ADD COLUMN hidden_by INTEGER NOT NULL DEFAULT 0;
@@ -151,7 +151,6 @@ ALTER TABLE conversations ADD COLUMN clock REAL;
 ALTER TABLE conversations ADD COLUMN hidden_by INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE summaries ADD COLUMN clock REAL;
 ALTER TABLE summaries ADD COLUMN hidden_by INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE summaries ADD COLUMN superseded_by INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE summaries ADD COLUMN made_in INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE pending_shares ADD COLUMN clock REAL;
 ALTER TABLE pending_shares ADD COLUMN applied_clock REAL;
@@ -160,7 +159,10 @@ ALTER TABLE pending_shares ADD COLUMN hidden_by INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE pending_shares ADD COLUMN applied INTEGER NOT NULL DEFAULT 0;
 )sql";
 
-// The tables: a conversation's history of participants and ends, and the rollbacks.
+// The tables: a conversation's history of participants and ends, the rollbacks, and which condensed summaries
+// superseded which summaries. A summary can be condensed more than once (a condense a rollback hid leaves it shown,
+// and a later condense takes it again), so every link is kept; it is superseded while one of them names a visible
+// summary.
 constexpr const char* V6_TABLES_SQL = R"sql(
 CREATE TABLE conversation_changes (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -177,22 +179,34 @@ CREATE TABLE rollbacks (
     status      TEXT NOT NULL,
     saved_marks TEXT NOT NULL
 );
+CREATE TABLE summary_supersessions (
+    summary_id   INTEGER NOT NULL,
+    condensed_id INTEGER NOT NULL,
+    PRIMARY KEY (summary_id, condensed_id)
+);
 )sql";
 
-// The columns version 6 replaces: superseded by superseded_by, a conversation's participants and end by its change
-// rows. An upgrade moves their data first.
+// The columns version 6 replaces: superseded by summary_supersessions, a conversation's participants and end by its
+// change rows. An upgrade moves their data first.
 constexpr const char* V6_DROPPED_COLUMNS_SQL = R"sql(
 ALTER TABLE summaries DROP COLUMN superseded;
 ALTER TABLE conversations DROP COLUMN participants;
 ALTER TABLE conversations DROP COLUMN ended;
 )sql";
 
-// The columns ReadSummaryRow reads, in its order, from `summaries s`: superseded is computed, true when the condense
-// the summary names is visible.
+// The columns ReadConversation reads from a conversation's start row, in its order.
+constexpr const char* CONVERSATION_COLUMNS = "id, folded_through, clock";
+
+// The columns ReadSummaryRow reads, in its order, from `summaries s`. The supersession is computed from
+// summary_supersessions: superseded_by is the smallest id among the visible condenses that superseded the summary (0
+// for none), and superseded is true when there is one.
 constexpr const char* SUMMARY_COLUMNS =
-    "s.id, s.from_turn, s.to_turn, s.text, s.actor_id, s.conversation_id, s.told_by, s.source_id, s.superseded_by, "
+    "s.id, s.from_turn, s.to_turn, s.text, s.actor_id, s.conversation_id, s.told_by, s.source_id, "
+    "COALESCE((SELECT MIN(c.id) FROM summary_supersessions l JOIN summaries c ON c.id = l.condensed_id "
+    "WHERE l.summary_id = s.id AND c.hidden_by = 0), 0) AS superseded_by, "
     "s.made_in, s.clock, "
-    "EXISTS (SELECT 1 FROM summaries c WHERE c.id = s.superseded_by AND c.hidden_by = 0) AS superseded";
+    "EXISTS (SELECT 1 FROM summary_supersessions l JOIN summaries c ON c.id = l.condensed_id "
+    "WHERE l.summary_id = s.id AND c.hidden_by = 0) AS superseded";
 
 // Stored spelling of a run kind, run_meta 'kind'.
 const char* RunKindName(RunKind kind)
@@ -480,15 +494,15 @@ RunStore RunStore::Open(const std::filesystem::path& file)
     };
 
     // Version 6 (rollback spec, section 4): clocks and hidden marks on hosted rows, conversations as history, and a
-    // superseded summary naming its condense. Existing rows get no clock: a rewind never hides them.
+    // superseded summary linked to its condense. Existing rows get no clock: a rewind never hides them.
     auto upgradeTo6 = [&db, &file] {
         db.Exec(V6_COLUMNS_SQL);
         db.Exec(V6_TABLES_SQL);
         // Each conversation's participants and end become its first change row.
         db.Exec("INSERT INTO conversation_changes (conversation_id, clock, participants, ended) "
                 "SELECT id, NULL, participants, ended FROM conversations ORDER BY position");
-        // A superseded summary names its condense: the actor's first condensed summary written after it (a condensed
-        // summary has no conversation and no teller). The superseded rows are read whole before any update.
+        // A superseded summary is linked to its condense: the actor's first condensed summary written after it (a
+        // condensed summary has no conversation and no teller). The superseded rows are read whole before any insert.
         std::vector<std::pair<std::int64_t, std::string>> rows;
         {
             Statement superseded = db.Prepare("SELECT id, actor_id FROM summaries WHERE superseded = 1 ORDER BY id");
@@ -508,7 +522,10 @@ RunStore RunStore::Open(const std::filesystem::path& file)
                 }
                 condenseId = condense.ColumnInt(0);
             }
-            db.Prepare("UPDATE summaries SET superseded_by = ?1 WHERE id = ?2").Bind(1, condenseId).Bind(2, id).Run();
+            db.Prepare("INSERT INTO summary_supersessions (summary_id, condensed_id) VALUES (?1, ?2)")
+                .Bind(1, id)
+                .Bind(2, condenseId)
+                .Run();
         }
         // Their data moved, the replaced columns go.
         db.Exec(V6_DROPPED_COLUMNS_SQL);
@@ -921,68 +938,25 @@ std::string RunStore::CreateConversation(const std::vector<core::Participant>& p
 std::optional<core::Conversation> RunStore::Conversation(std::string_view id)
 {
     RequireHosted("Conversation");
-    for (core::Conversation& conversation : Conversations()) {
-        if (conversation.id == id) {
-            return std::move(conversation);
-        }
+    // The one visible start row, then its latest visible change row.
+    Statement query =
+        _db.Prepare(std::format("SELECT {} FROM conversations WHERE id = ?1 AND hidden_by = 0", CONVERSATION_COLUMNS));
+    query.Bind(1, id);
+    if (!query.Step()) {
+        return std::nullopt;
     }
-    return std::nullopt;
+    return ReadConversation(query);
 }
 
 std::vector<core::Conversation> RunStore::Conversations()
 {
     RequireHosted("Conversations");
-    // The visible start rows, read whole first; each one's participants and end come from its change rows below.
+    // The visible start rows in creation order, each read with its latest visible change row.
+    Statement query = _db.Prepare(
+        std::format("SELECT {} FROM conversations WHERE hidden_by = 0 ORDER BY position", CONVERSATION_COLUMNS));
     std::vector<core::Conversation> conversations;
-    {
-        Statement query = _db.Prepare(
-            "SELECT id, folded_through, clock FROM conversations WHERE hidden_by = 0 ORDER BY position");
-        while (query.Step()) {
-            core::Conversation conversation;
-            conversation.id = query.ColumnText(0);
-            conversation.foldedThrough = static_cast<int>(query.ColumnInt(1));
-            if (!query.ColumnIsNull(2)) {
-                conversation.clock = query.ColumnDouble(2);
-            }
-            conversations.push_back(std::move(conversation));
-        }
-    }
-    for (core::Conversation& conversation : conversations) {
-        // The latest visible change row holds the participants and the end now. Every conversation starts with one,
-        // and a rollback never hides its start row's change without the start: none is damaged saved data.
-        Statement query = _db.Prepare("SELECT participants, ended FROM conversation_changes WHERE conversation_id = ?1 "
-                                      "AND hidden_by = 0 ORDER BY id DESC LIMIT 1");
-        query.Bind(1, conversation.id);
-        if (!query.Step()) {
-            throw StoreError(std::format("'{}': conversation '{}' has no visible row in conversation_changes",
-                                         core::PathText(_file), conversation.id));
-        }
-        // Damaged participants are a StoreError naming the file, the conversation and the column.
-        auto damaged = [&](const std::string& problem) {
-            return StoreError(std::format("'{}': conversation '{}' conversation_changes column 'participants' {}",
-                                          core::PathText(_file), conversation.id, problem));
-        };
-        nlohmann::json participants;
-        try {
-            participants = nlohmann::json::parse(query.ColumnText(0));
-        } catch (const nlohmann::json::parse_error& error) {
-            throw damaged(std::string("is not valid JSON: ") + error.what());
-        }
-        if (!participants.is_array()) {
-            throw damaged("is not an array");
-        }
-        for (const nlohmann::json& participant : participants) {
-            const bool whole = participant.is_object() && participant.contains("id") && participant.at("id").is_string() &&
-                               participant.contains("name") && participant.at("name").is_string() &&
-                               participant.contains("bio") && participant.at("bio").is_string();
-            if (!whole) {
-                throw damaged("holds a participant without a string id, name and bio");
-            }
-            conversation.participants.push_back({participant.at("id").get<std::string>(),
-                                                 participant.at("name").get<std::string>(),
-                                                 participant.at("bio").get<std::string>()});
-        }
-        conversation.ended = query.ColumnInt(1) != 0;
+    while (query.Step()) {
+        conversations.push_back(ReadConversation(query));
     }
     return conversations;
 }
@@ -1082,7 +1056,7 @@ std::int64_t RunStore::AddActorSummary(const core::Summary& summary)
     // Callers that change more than this row hold the transaction, so the open rollback read above is that of the
     // write.
     _db.Prepare("INSERT INTO summaries (from_turn, to_turn, text, actor_id, conversation_id, told_by, source_id, "
-                "superseded_by, made_in, clock) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)")
+                "made_in, clock) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)")
         .Bind(1, summary.fromTurn)
         .Bind(2, summary.toTurn)
         .Bind(3, summary.text)
@@ -1090,9 +1064,8 @@ std::int64_t RunStore::AddActorSummary(const core::Summary& summary)
         .Bind(5, summary.conversationId)
         .Bind(6, summary.toldBy)
         .Bind(7, summary.sourceId)
-        .Bind(8, summary.supersededBy)
-        .Bind(9, madeIn)
-        .Bind(10, summary.clock)
+        .Bind(8, madeIn)
+        .Bind(9, summary.clock)
         .Run();
     Statement inserted = _db.Prepare("SELECT last_insert_rowid()");
     const bool hasRow = inserted.Step();
@@ -1127,8 +1100,10 @@ std::int64_t RunStore::CondenseActorSummaries(std::string_view actorId, const co
     std::int64_t summaryId = 0;
     _db.Transaction([&] {
         summaryId = AddActorSummary(condensed);
-        _db.Prepare("UPDATE summaries SET superseded_by = ?2 WHERE actor_id = ?1 AND id <> ?2 AND hidden_by = 0 AND "
-                    "NOT EXISTS (SELECT 1 FROM summaries c WHERE c.id = summaries.superseded_by AND c.hidden_by = 0)")
+        _db.Prepare("INSERT INTO summary_supersessions (summary_id, condensed_id) "
+                    "SELECT s.id, ?2 FROM summaries s WHERE s.actor_id = ?1 AND s.id <> ?2 AND s.hidden_by = 0 AND "
+                    "NOT EXISTS (SELECT 1 FROM summary_supersessions l JOIN summaries c ON c.id = l.condensed_id "
+                    "WHERE l.summary_id = s.id AND c.hidden_by = 0)")
             .Bind(1, actorId)
             .Bind(2, summaryId)
             .Run();
@@ -1488,6 +1463,54 @@ core::Summary RunStore::ReadSummaryRow(Statement& query) const
                                      summary.id));
     }
     return summary;
+}
+
+core::Conversation RunStore::ReadConversation(Statement& startRow)
+{
+    // The start row: id, folded_through and the clock it started at.
+    core::Conversation conversation;
+    conversation.id = startRow.ColumnText(0);
+    conversation.foldedThrough = static_cast<int>(startRow.ColumnInt(1));
+    if (!startRow.ColumnIsNull(2)) {
+        conversation.clock = startRow.ColumnDouble(2);
+    }
+
+    // The latest visible change row holds the participants and the end now. Every conversation starts with one, hidden
+    // only with its start row: a visible conversation without one is damaged saved data.
+    Statement query = _db.Prepare("SELECT participants, ended FROM conversation_changes WHERE conversation_id = ?1 "
+                                  "AND hidden_by = 0 ORDER BY id DESC LIMIT 1");
+    query.Bind(1, conversation.id);
+    if (!query.Step()) {
+        throw StoreError(std::format("'{}': conversation '{}' has no visible row in conversation_changes",
+                                     core::PathText(_file), conversation.id));
+    }
+    // Damaged participants are a StoreError naming the file, the conversation and the column.
+    auto damaged = [&](const std::string& problem) {
+        return StoreError(std::format("'{}': conversation '{}' conversation_changes column 'participants' {}",
+                                      core::PathText(_file), conversation.id, problem));
+    };
+    nlohmann::json participants;
+    try {
+        participants = nlohmann::json::parse(query.ColumnText(0));
+    } catch (const nlohmann::json::parse_error& error) {
+        throw damaged(std::string("is not valid JSON: ") + error.what());
+    }
+    if (!participants.is_array()) {
+        throw damaged("is not an array");
+    }
+    for (const nlohmann::json& participant : participants) {
+        const bool whole = participant.is_object() && participant.contains("id") && participant.at("id").is_string() &&
+                           participant.contains("name") && participant.at("name").is_string() &&
+                           participant.contains("bio") && participant.at("bio").is_string();
+        if (!whole) {
+            throw damaged("holds a participant without a string id, name and bio");
+        }
+        conversation.participants.push_back({participant.at("id").get<std::string>(),
+                                             participant.at("name").get<std::string>(),
+                                             participant.at("bio").get<std::string>()});
+    }
+    conversation.ended = query.ColumnInt(1) != 0;
+    return conversation;
 }
 
 std::int64_t RunStore::OpenRollbackId()

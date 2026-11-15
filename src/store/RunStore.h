@@ -51,8 +51,8 @@ struct EmbeddingRow {
 // A hosted row a rollback hid (hidden_by, rollback spec) is kept but skipped by every hosted reader.
 class RunStore {
 public:
-    // 6: clocks and hidden marks on hosted rows, conversation_changes, summaries' superseded_by and made_in, applied
-    // shares kept, rollbacks. 5: the summaries' per-actor columns, actor_memory and pending_shares. 4:
+    // 6: clocks and hidden marks on hosted rows, conversation_changes, summary_supersessions and summaries' made_in,
+    // applied shares kept, rollbacks. 5: the summaries' per-actor columns, actor_memory and pending_shares. 4:
     // hosted_turns.events_omitted. 3: run_meta.kind and the hosted tables. 2: turns.digest (it also covers
     // turns.attempt). A version 2 to 5 run is upgraded in place on open; any other version is refused.
     static constexpr int SCHEMA_VERSION = 6;
@@ -80,7 +80,8 @@ public:
     // otherwise it is a condense, copied with no conversation to the NPC witnesses of every turn in its range. Each NPC
     // witness's mark in a conversation starts at its folded_through. Every one of them then gains version 6's columns
     // (no clocks) and tables: each conversation's participants and end become its first change row, and a superseded
-    // summary names its condense (the actor's first condensed summary after it). An owned run's data is not touched.
+    // summary is linked to its condense (the actor's first condensed summary after it). An owned run's data is not
+    // touched.
     // Throws StoreError if it is missing or was written with another schema version, its meta (rng_seed, settings,
     // kind) is damaged, a hosted turn the move reads is damaged, a summary does not start and end on hosted turns, or a
     // superseded summary has no later condensed summary (the upgrade rolls back), and when a hosted run's memory mark
@@ -181,16 +182,19 @@ public:
     void MarkFolded(std::string_view id, int turn);
 
     // One NPC's visible summaries, by fromTurn then id: the shown ones, or the superseded ones too. A summary is
-    // superseded when the condense it names (superseded_by) is visible. Throws ContractError for an empty actorId.
+    // superseded when a condense it is linked to is visible; supersededBy is the smallest such condense's id. Throws
+    // ContractError for an empty actorId.
     std::vector<core::Summary> ActorSummaries(std::string_view actorId, bool includeSuperseded);
 
     // Every visible summary of the run, by fromTurn then id, each superseded or not as ActorSummaries reads it. Throws
     // StoreError naming the file and actor_id for a row without its actor.
     std::vector<core::Summary> HostedSummaries();
 
-    // Adds `summary` (every field but id, superseded and madeIn; a shared copy names its teller, the summary it copies
-    // and its clock) and returns its id. made_in is the open rollback's id, 0 when none is open. Throws ContractError
-    // for an empty actorId and unless 1 <= fromTurn <= toTurn, and StoreError when more than one rollback is open.
+    // Adds `summary` and returns its id. It stores fromTurn, toTurn, text, actorId, conversationId, toldBy, sourceId
+    // and clock (a shared copy names its teller, the summary it copies and its clock); it ignores id, superseded,
+    // supersededBy (only CondenseActorSummaries links a summary to its condense) and madeIn (always the open
+    // rollback's id, 0 when none is open). Throws ContractError for an empty actorId and unless
+    // 1 <= fromTurn <= toTurn, and StoreError when more than one rollback is open.
     std::int64_t AddActorSummary(const core::Summary& summary);
 
     // A catch-up fold: adds `summary` and moves its actor's remembered-through mark in its conversation to
@@ -198,8 +202,9 @@ public:
     // ContractError like AddActorSummary and SetRememberedThrough, and for an empty conversationId.
     std::int64_t RememberFold(const core::Summary& summary);
 
-    // Condensing one NPC's memory: adds `condensed`, then names it as the condense (superseded_by) of every shown
-    // summary of `actorId`, in one transaction. Returns the condensed summary's id. Throws ContractError unless condensed.actorId is `actorId`,
+    // Condensing one NPC's memory: adds `condensed`, then links every shown summary of `actorId` to it
+    // (summary_supersessions; a link is never changed or removed), in one transaction. Returns the condensed summary's
+    // id. Throws ContractError unless condensed.actorId is `actorId`,
     // its conversationId and toldBy are empty, and 1 <= fromTurn <= toTurn.
     std::int64_t CondenseActorSummaries(std::string_view actorId, const core::Summary& condensed);
 
@@ -248,8 +253,8 @@ public:
 
     // Conversation `conversationId`'s visible turns, ascending. Throws StoreError naming the file, the turn and the
     // column if a stored column is not valid JSON or has the wrong shape, including an observation without the actors
-    // core (core::ReadActors, the rules HostedWorld::Observe applies; each fault named by its pointer) or a speaker that
-    // is not one of its actors.
+    // core (core::ReadActors, the rules HostedWorld::Observe applies; each fault named by its pointer) or a speaker
+    // that is not one of its actors.
     std::vector<core::HostedTurn> HostedTurns(std::string_view conversationId);
 
 private:
@@ -269,6 +274,11 @@ private:
     // The summary in the current row of `query`, selected as SUMMARY_COLUMNS (RunStore.cpp) lists them. A hosted row
     // without its actor is damaged saved data.
     core::Summary ReadSummaryRow(Statement& query) const;
+
+    // The conversation whose start row is the current row of `startRow`, selected as CONVERSATION_COLUMNS
+    // (RunStore.cpp) lists them, with the participants and end of its latest visible change row. Throws StoreError
+    // naming the file when it has no visible change row or that row's participants are damaged.
+    core::Conversation ReadConversation(Statement& startRow);
 
     // The id of the open rollback, 0 when none is open. Throws StoreError when more than one is open.
     std::int64_t OpenRollbackId();

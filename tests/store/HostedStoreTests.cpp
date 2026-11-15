@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <format>
@@ -439,13 +440,14 @@ TEST_CASE("Hosted methods refuse an owned run, a turn out of order and an unknow
 
 namespace {
 
-// Takes back what version 6 added to a file (clocks and hidden marks, conversations as history, superseded_by and
-// made_in, applied shares and their applied flag, rollbacks), to make a version 5 file from a new one: each conversation's latest change row
-// becomes its participants and ended columns again, a summary with a condense is superseded. The caller marks the
-// version.
+// Takes back what version 6 added to a file (clocks and hidden marks, conversations as history, summary supersessions
+// and made_in, applied shares and their applied flag, rollbacks), to make a version 5 file from a new one: each
+// conversation's latest change row becomes its participants and ended columns again, and a summary with a condense is
+// superseded. The caller marks the version.
 constexpr const char* DROP_VERSION_6_SQL =
     "ALTER TABLE summaries ADD COLUMN superseded INTEGER NOT NULL DEFAULT 0;"
-    "UPDATE summaries SET superseded = 1 WHERE superseded_by <> 0;"
+    "UPDATE summaries SET superseded = 1 WHERE id IN (SELECT summary_id FROM summary_supersessions);"
+    "DROP TABLE summary_supersessions;"
     "ALTER TABLE conversations ADD COLUMN participants TEXT NOT NULL DEFAULT '[]';"
     "ALTER TABLE conversations ADD COLUMN ended INTEGER NOT NULL DEFAULT 0;"
     "UPDATE conversations SET"
@@ -458,7 +460,7 @@ constexpr const char* DROP_VERSION_6_SQL =
     "ALTER TABLE conversation_events DROP COLUMN clock; ALTER TABLE conversation_events DROP COLUMN hidden_by;"
     "ALTER TABLE conversations DROP COLUMN clock; ALTER TABLE conversations DROP COLUMN hidden_by;"
     "ALTER TABLE summaries DROP COLUMN clock; ALTER TABLE summaries DROP COLUMN hidden_by;"
-    "ALTER TABLE summaries DROP COLUMN superseded_by; ALTER TABLE summaries DROP COLUMN made_in;"
+    "ALTER TABLE summaries DROP COLUMN made_in;"
     "ALTER TABLE pending_shares DROP COLUMN clock; ALTER TABLE pending_shares DROP COLUMN applied_clock;"
     "ALTER TABLE pending_shares DROP COLUMN unapplied_by; ALTER TABLE pending_shares DROP COLUMN hidden_by;"
     "ALTER TABLE pending_shares DROP COLUMN applied;";
@@ -1352,4 +1354,181 @@ TEST_CASE("A new file and an upgraded one have the same tables, indexes and colu
     const std::filesystem::path upgradedOwned = V2File("store_schema_upgraded_owned", "");
     store::RunStore::Open(upgradedOwned);
     CHECK(SchemaOf(createdOwned) == SchemaOf(upgradedOwned));
+}
+
+TEST_CASE("A summary keeps every condense that superseded it: undoing a later condense leaves the earlier one in force",
+          "[store][hosted][rollback]")
+{
+    const std::filesystem::path file = test::FreshTempDir("store_supersessions") / "run.db";
+    std::string id;
+    {
+        // S (turn 1) and S2 (turn 2) are condensed into C1.
+        store::RunStore store = store::RunStore::CreateHosted(file, HostedMeta(), TestHostData());
+        id = store.CreateConversation(TwoParticipants(), std::nullopt);
+        store.CommitHostedTurn(TestHostedTurn(1, id));
+        store.CommitHostedTurn(TestHostedTurn(2, id));
+        store.FoldConversation(id, ActorSummary("npc-1", id, 1, 1, "S."));
+        store.FoldConversation(id, ActorSummary("npc-1", id, 2, 2, "S2."));
+        store.CondenseActorSummaries("npc-1", ActorSummary("npc-1", "", 1, 2, "C1."));
+    }
+    // An open rollback hides C1 and S2: S is shown again.
+    Damage(file, "INSERT INTO rollbacks (id, game_time, status, saved_marks) VALUES (1, 0.5, 'open', '{}');"
+                 "UPDATE summaries SET hidden_by = 1 WHERE text IN ('C1.', 'S2.');");
+    {
+        store::RunStore store = store::RunStore::Open(file);
+        const std::vector<core::Summary> shown = store.ActorSummaries("npc-1", false);
+        REQUIRE(shown.size() == 1);
+        CHECK(shown[0].text == "S.");
+        CHECK(shown[0].supersededBy == 0);
+        // S is condensed into C2 while the rollback is open: C2 is made in it.
+        const std::int64_t c2 = store.CondenseActorSummaries("npc-1", ActorSummary("npc-1", "", 1, 1, "C2."));
+        const std::vector<core::Summary> now = store.ActorSummaries("npc-1", true);
+        REQUIRE(now.size() == 2);
+        CHECK(now[0].text == "S.");
+        CHECK(now[0].supersededBy == c2);
+        CHECK(now[1].id == c2);
+        CHECK(now[1].madeIn == 1);
+    }
+    // The undo, by hand: C2 and its links go, C1 and S2 are shown again.
+    Damage(file, "DELETE FROM summary_supersessions "
+                 "WHERE condensed_id = (SELECT id FROM summaries WHERE text = 'C2.');"
+                 "DELETE FROM summaries WHERE text = 'C2.';"
+                 "UPDATE summaries SET hidden_by = 0 WHERE hidden_by = 1;"
+                 "UPDATE rollbacks SET status = 'undone' WHERE id = 1;");
+    store::RunStore store = store::RunStore::Open(file);
+    const std::vector<core::Summary> all = store.ActorSummaries("npc-1", true);
+    REQUIRE(all.size() == 3);
+    const auto c1 =
+        std::find_if(all.begin(), all.end(), [](const core::Summary& summary) { return summary.text == "C1."; });
+    REQUIRE(c1 != all.end());
+    for (const core::Summary& summary : all) {
+        if (summary.text != "C1.") {
+            CHECK(summary.superseded);
+            CHECK(summary.supersededBy == c1->id);
+        }
+    }
+    const std::vector<core::Summary> shown = store.ActorSummaries("npc-1", false);
+    REQUIRE(shown.size() == 1);
+    CHECK(shown[0].text == "C1.");
+}
+
+TEST_CASE("Every hosted reader skips hidden rows", "[store][hosted][rollback]")
+{
+    // A run with one conversation started at 1.0, changed at 2.0 (one participant left) and ended at 3.0, with an event
+    // at 1.0 and one at 2.0, and a turn at 1.5.
+    const std::filesystem::path file = test::FreshTempDir("store_hidden_rows") / "run.db";
+    std::string id;
+    {
+        store::RunStore store = store::RunStore::CreateHosted(file, HostedMeta(), TestHostData());
+        id = store.CreateConversation(TwoParticipants(), 1.0);
+        store.AddConversationEvents(id, 0, {nlohmann::json{{"text", "Early."}}}, 1.0);
+        core::HostedTurn turn = TestHostedTurn(1, id);
+        turn.clock = 1.5;
+        store.CommitHostedTurn(turn);
+        store.AddConversationEvents(id, 1, {nlohmann::json{{"text", "Late."}}}, 2.0);
+        store.SetParticipants(id, {TwoParticipants().at(0)}, 2.0);
+        store.EndConversation(id, 3.0);
+    }
+    Damage(file, "INSERT INTO rollbacks (id, game_time, status, saved_marks) VALUES (1, 1.75, 'open', '{}');");
+
+    SECTION("a hidden conversation is not there, and writers refuse it")
+    {
+        Damage(file, "UPDATE conversations SET hidden_by = 1;");
+        store::RunStore store = store::RunStore::Open(file);
+        CHECK_FALSE(store.Conversation(id).has_value());
+        CHECK(store.Conversations().empty());
+        CHECK_THROWS_AS(store.CommitHostedTurn(TestHostedTurn(2, id)), core::ContractError);
+        CHECK_THROWS_AS(store.EndConversation(id, std::nullopt), core::ContractError);
+    }
+    SECTION("hidden change rows fall back to the latest visible one")
+    {
+        Damage(file, "UPDATE conversation_changes SET hidden_by = 1 WHERE clock > 1.75;");
+        store::RunStore store = store::RunStore::Open(file);
+        const std::optional<core::Conversation> conversation = store.Conversation(id);
+        REQUIRE(conversation);
+        CHECK(conversation->participants.size() == 2);
+        CHECK_FALSE(conversation->ended);
+    }
+    SECTION("hidden events are not read")
+    {
+        Damage(file, "UPDATE conversation_events SET hidden_by = 1 WHERE clock > 1.75;");
+        store::RunStore store = store::RunStore::Open(file);
+        const std::vector<core::ConversationEvent> events = store.ConversationEvents(id);
+        REQUIRE(events.size() == 1);
+        CHECK(events[0].event.at("text") == "Early.");
+    }
+}
+
+TEST_CASE("Hidden shares are not pending; a share a rollback unapplied is pending again", "[store][hosted][rollback]")
+{
+    const std::filesystem::path file = test::FreshTempDir("store_hidden_shares") / "run.db";
+    {
+        store::RunStore store = store::RunStore::CreateHosted(file, HostedMeta(), TestHostData());
+        const std::string id = store.CreateConversation(TwoParticipants(), 1.0);
+        store.AddPendingShare({0, "npc-1", "npc-2", id, 1.0});
+        const std::int64_t applied = store.AddPendingShare({0, "npc-1", "npc-3", id, 1.0});
+        store.MarkShareApplied(applied, 2.0);
+        REQUIRE(store.PendingShares().size() == 1);
+    }
+    Damage(file, "INSERT INTO rollbacks (id, game_time, status, saved_marks) VALUES (1, 1.5, 'open', '{}');"
+                 "UPDATE pending_shares SET hidden_by = 1 WHERE to_actor = 'npc-2';"
+                 "UPDATE pending_shares SET unapplied_by = 1 WHERE to_actor = 'npc-3';");
+    store::RunStore store = store::RunStore::Open(file);
+    const std::vector<core::PendingShare> pending = store.PendingShares();
+    REQUIRE(pending.size() == 1);
+    CHECK(pending[0].toActor == "npc-3");
+    CHECK(pending[0].appliedClock == 2.0);
+    CHECK(pending[0].unappliedBy == 1);
+}
+
+TEST_CASE("The latest clock skips hidden rows and the applied clocks of unapplied shares", "[store][hosted][rollback]")
+{
+    const std::filesystem::path file = test::FreshTempDir("store_latest_clock_hidden") / "run.db";
+    {
+        store::RunStore store = store::RunStore::CreateHosted(file, HostedMeta(), TestHostData());
+        const std::string id = store.CreateConversation(TwoParticipants(), 1.0);
+        core::HostedTurn turn = TestHostedTurn(1, id);
+        turn.clock = 2.0;
+        store.CommitHostedTurn(turn);
+        const std::int64_t share = store.AddPendingShare({0, "npc-1", "npc-2", id, 2.5});
+        store.MarkShareApplied(share, 4.0);
+        REQUIRE(store.LatestClock() == 4.0);
+    }
+    // Unapplied: its applied clock no longer counts, its creation still does.
+    Damage(file, "INSERT INTO rollbacks (id, game_time, status, saved_marks) VALUES (1, 1.5, 'open', '{}');"
+                 "UPDATE pending_shares SET unapplied_by = 1;");
+    CHECK(store::RunStore::Open(file).LatestClock() == 2.5);
+    // Hidden: neither the share nor the turn counts; the conversation's start does.
+    Damage(file, "UPDATE pending_shares SET hidden_by = 1; UPDATE hosted_turns SET hidden_by = 1;");
+    CHECK(store::RunStore::Open(file).LatestClock() == 1.0);
+}
+
+TEST_CASE("A summary written while a rollback is open is made in it; two open rollbacks are damaged saved data",
+          "[store][hosted][rollback]")
+{
+    const std::filesystem::path file = test::FreshTempDir("store_made_in") / "run.db";
+    std::string id;
+    {
+        store::RunStore store = store::RunStore::CreateHosted(file, HostedMeta(), TestHostData());
+        id = store.CreateConversation(TwoParticipants(), std::nullopt);
+        store.CommitHostedTurn(TestHostedTurn(1, id));
+        store.AddActorSummary(ActorSummary("npc-1", id, 1, 1, "Before."));
+    }
+    // An undone rollback is not open; rollback 3 is.
+    Damage(file, "INSERT INTO rollbacks (id, game_time, status, saved_marks) VALUES (2, 0.5, 'undone', '{}');"
+                 "INSERT INTO rollbacks (id, game_time, status, saved_marks) VALUES (3, 0.5, 'open', '{}');");
+    {
+        store::RunStore store = store::RunStore::Open(file);
+        store.AddActorSummary(ActorSummary("npc-1", id, 1, 1, "During."));
+        const std::vector<core::Summary> summaries = store.ActorSummaries("npc-1", true);
+        REQUIRE(summaries.size() == 2);
+        CHECK(summaries[0].madeIn == 0);
+        CHECK(summaries[1].madeIn == 3);
+    }
+    Damage(file, "INSERT INTO rollbacks (id, game_time, status, saved_marks) VALUES (4, 0.5, 'open', '{}');");
+    store::RunStore store = store::RunStore::Open(file);
+    CHECK_THROWS_AS(store.AddActorSummary(ActorSummary("npc-1", id, 1, 1, "x")), store::StoreError);
+    CHECK_THROWS_WITH(store.AddActorSummary(ActorSummary("npc-1", id, 1, 1, "x")),
+                      ContainsSubstring("run.db") && ContainsSubstring("rollbacks"));
+    CHECK(store.ActorSummaries("npc-1", true).size() == 2);
 }

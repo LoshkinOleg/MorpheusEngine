@@ -49,7 +49,7 @@ struct Summary {
     std::int64_t sourceId = 0; // The summary a shared copy was made from; 0 otherwise.
     bool superseded = false;   // Superseded by a visible condensed summary: kept, but not shown. Read, not stored.
     std::int64_t id = 0;       // The store's row id; 0 before it is stored.
-    std::int64_t supersededBy = 0;    // The condensed summary that replaced it; 0 for none.
+    std::int64_t supersededBy = 0;    // The smallest visible condense that replaced it; 0 for none. Read, not stored.
     std::int64_t madeIn = 0;          // The rollback it was written in, while open; 0 otherwise.
     std::optional<double> clock = {}; // A shared copy's: the run's latest seen clock when it was made; none otherwise.
 };
