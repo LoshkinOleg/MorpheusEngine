@@ -175,6 +175,107 @@ TEST_CASE("A rollback shows again what a hidden condense superseded", "[store][r
     CHECK(store.RememberedThrough(id, "npc-1") == 2);
 }
 
+TEST_CASE("A rollback hides a condense that holds a shared copy made after its time", "[store][rollback]")
+{
+    // c1: turns 1-3, npc-1 folds 1-3, ended. c2: turns 4-5, npc-2 folds 4-5, ended. c3: turns 6-7. At 7, npc-2's memory
+    // of c2 is shared with npc-1 (a copy clocked 7); then npc-1 condenses its 1-3 and that copy into one 1-5.
+    const std::filesystem::path file = test::FreshTempDir("rollback_condensed_copy") / "run.db";
+    store::RunStore store =
+        store::RunStore::CreateHosted(file, Meta(), nlohmann::json{{"catalog", nlohmann::json::object()}});
+    const std::vector<core::Participant> participants = {{"npc-1", "Hulda", ""}, {"npc-2", "Saadia", ""}, {"player", "Aela", ""}};
+    const std::string c1 = store.CreateConversation(participants, 0.5);
+    store.CommitHostedTurn(Turn(1, c1, 1.0));
+    store.CommitHostedTurn(Turn(2, c1, 2.0));
+    store.CommitHostedTurn(Turn(3, c1, 3.0));
+    store.EndConversation(c1, 3.0);
+    const std::int64_t fold = store.FoldConversation(c1, Fold("npc-1", c1, 1, 3));
+    const std::string c2 = store.CreateConversation(participants, 3.5);
+    store.CommitHostedTurn(Turn(4, c2, 4.0));
+    store.CommitHostedTurn(Turn(5, c2, 5.0));
+    store.EndConversation(c2, 5.0);
+    const std::int64_t told = store.FoldConversation(c2, Fold("npc-2", c2, 4, 5));
+    const std::string c3 = store.CreateConversation(participants, 5.5);
+    store.CommitHostedTurn(Turn(6, c3, 6.0));
+    store.CommitHostedTurn(Turn(7, c3, 7.0));
+    core::Summary copy = Fold("npc-1", c2, 4, 5);
+    copy.toldBy = "npc-2";
+    copy.sourceId = told;
+    copy.clock = 7.0;
+    store.AddActorSummary(copy);
+    core::Summary condensed;
+    condensed.fromTurn = 1;
+    condensed.toTurn = 5;
+    condensed.text = "npc-1 condensed.";
+    condensed.actorId = "npc-1";
+    const std::int64_t condense = store.CondenseActorSummaries("npc-1", condensed);
+    REQUIRE(store.ActorSummaries("npc-1", false).size() == 1);
+
+    // A rollback to 6.5 hides turn 7 and the copy (its clock), and the condense that holds the copy with it, though
+    // the condense ends at turn 5: npc-1 shows its own 1-3 again and nothing of what it was told at 7.
+    store.ApplyRollback(6.5);
+    const std::vector<core::Summary> shown = store.ActorSummaries("npc-1", false);
+    REQUIRE(shown.size() == 1);
+    CHECK(shown[0].id == fold);
+    CHECK(store.ActorSummaries("npc-1", true).size() == 1);
+
+    // Undo: the condense is shown again, over the fold and the copy.
+    store.UndoRollback();
+    const std::vector<core::Summary> restored = store.ActorSummaries("npc-1", false);
+    REQUIRE(restored.size() == 1);
+    CHECK(restored[0].id == condense);
+    CHECK(store.ActorSummaries("npc-1", true).size() == 3);
+}
+
+TEST_CASE("A rollback hides a condense whose range ends before the end of a hidden fold it holds", "[store][rollback]")
+{
+    // Interleaved conversations: c1 has turns 1, 2, 5 and 6, c2 turns 3 and 4 (clocks are the turn numbers). npc-1
+    // folds c1's 1-6; npc-2's fold of c2 (3-4) is shared with npc-1 at 4; npc-1's condense of [1-6, 3-4] ranges 1-4
+    // (the condense's range runs from its first summary's fromTurn to its last one's toTurn, by fromTurn).
+    const std::filesystem::path file = test::FreshTempDir("rollback_condensed_nested") / "run.db";
+    store::RunStore store =
+        store::RunStore::CreateHosted(file, Meta(), nlohmann::json{{"catalog", nlohmann::json::object()}});
+    const std::vector<core::Participant> participants = {{"npc-1", "Hulda", ""}, {"npc-2", "Saadia", ""}, {"player", "Aela", ""}};
+    const std::string c1 = store.CreateConversation(participants, 0.5);
+    const std::string c2 = store.CreateConversation(participants, 0.5);
+    store.CommitHostedTurn(Turn(1, c1, 1.0));
+    store.CommitHostedTurn(Turn(2, c1, 2.0));
+    store.CommitHostedTurn(Turn(3, c2, 3.0));
+    store.CommitHostedTurn(Turn(4, c2, 4.0));
+    const std::int64_t told = store.FoldConversation(c2, Fold("npc-2", c2, 3, 4));
+    core::Summary copy = Fold("npc-1", c2, 3, 4);
+    copy.toldBy = "npc-2";
+    copy.sourceId = told;
+    copy.clock = 4.0;
+    const std::int64_t copyId = store.AddActorSummary(copy);
+    store.CommitHostedTurn(Turn(5, c1, 5.0));
+    store.CommitHostedTurn(Turn(6, c1, 6.0));
+    store.FoldConversation(c1, Fold("npc-1", c1, 1, 6));
+    core::Summary condensed;
+    condensed.fromTurn = 1;
+    condensed.toTurn = 4;
+    condensed.text = "npc-1 condensed.";
+    condensed.actorId = "npc-1";
+    const std::int64_t condense = store.CondenseActorSummaries("npc-1", condensed);
+    REQUIRE(store.ActorSummaries("npc-1", false).size() == 1);
+
+    // A rollback to 4 hides turns 5-6 and npc-1's fold 1-6 (past c1's last visible turn, 2), and the condense that
+    // holds that fold with it, though the condense ends at turn 4: npc-1 shows only the copy (3-4, at 4), and its
+    // mark in c1 moves before the hidden fold so the catch-up refolds turns 1-2.
+    store.ApplyRollback(4.0);
+    const std::vector<core::Summary> shown = store.ActorSummaries("npc-1", false);
+    REQUIRE(shown.size() == 1);
+    CHECK(shown[0].id == copyId);
+    CHECK(store.RememberedThrough(c1, "npc-1") == 0);
+
+    // Undo: the condense is shown again, over the fold and the copy, and the mark is back at 6.
+    store.UndoRollback();
+    const std::vector<core::Summary> restored = store.ActorSummaries("npc-1", false);
+    REQUIRE(restored.size() == 1);
+    CHECK(restored[0].id == condense);
+    CHECK(store.ActorSummaries("npc-1", true).size() == 3);
+    CHECK(store.RememberedThrough(c1, "npc-1") == 6);
+}
+
 TEST_CASE("An undo deletes a condense made while the rollback was open, with its links and its embedding",
           "[store][rollback]")
 {

@@ -61,7 +61,7 @@ A rollback row is added (`rollbacks`: id, game time, status `open`, the marks it
 - events, participant changes and conversation ends clocked after T (a conversation whose end is hidden is open again);
 - conversations started after T, with everything in them;
 - shared copies made after T (their clock), and pending shares created after T;
-- every NPC summary covering a hidden turn (`toTurn` past the last visible turn of its conversation, or, for a condensed summary, past the run's last visible turn).
+- every NPC summary covering a hidden turn (`toTurn` past the last visible turn of its conversation, or, for a condensed summary, past the run's last visible turn), and every condense that holds a summary this rollback hid (a link in `summary_supersessions` names it), whatever its range, repeated until nothing more is hidden (a condense can itself be condensed): a condense is written after what it holds, so after T too (a shared copy made after T, or a fold reaching past the condense's own end when conversations interleave).
 
 And:
 

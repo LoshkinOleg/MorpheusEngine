@@ -1553,6 +1553,23 @@ RollbackCounts RunStore::ApplyRollback(double gameTime)
                     "COALESCE((SELECT MAX(number) FROM hosted_turns WHERE hidden_by = 0), 0)")
             .Bind(1, id)
             .Run();
+        // And every condense that holds a summary hidden here, whatever its range: it was written after that summary,
+        // so after the time too (a shared copy made later, or a fold reaching past the condense's own end when
+        // conversations interleave). A condense can itself be condensed, so this repeats until nothing more is hidden.
+        // The summaries a hidden condense superseded are shown again, and the rules above already hid those of them
+        // that cover hidden turns.
+        for (;;) {
+            _db.Prepare("UPDATE summaries SET hidden_by = ?1 WHERE hidden_by = 0 AND id IN (SELECT l.condensed_id FROM "
+                        "summary_supersessions l JOIN summaries s ON s.id = l.summary_id WHERE s.hidden_by = ?1)")
+                .Bind(1, id)
+                .Run();
+            Statement changed = _db.Prepare("SELECT changes()");
+            const bool hasRow = changed.Step();
+            MORPHEUS_REQUIRE(hasRow, "ApplyRollback: changes() returned no row");
+            if (changed.ColumnInt(0) == 0) {
+                break;
+            }
+        }
         // Marks back to each conversation's last visible turn (two-argument MIN is the scalar minimum).
         _db.Prepare("UPDATE conversations SET folded_through = MIN(folded_through, COALESCE((SELECT MAX(number) FROM "
                     "hosted_turns t WHERE t.conversation_id = conversations.id AND t.hidden_by = 0), 0))")

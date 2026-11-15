@@ -280,7 +280,7 @@ public:
     // application. Then it hides (hidden_by = its id): turns, events, participant changes and conversation ends clocked
     // after `gameTime`; conversations started after it; shared copies and pending shares created after it; and every
     // NPC summary covering a hidden turn (toTurn past the last visible turn of its conversation, or of the run for a
-    // summary with no conversation). A share applied after `gameTime` is unapplied by it (pending again). Each
+    // summary with no conversation), then, repeatedly, every condense of a summary it hid. A share applied after `gameTime` is unapplied by it (pending again). Each
     // conversation's folded_through moves back to its last visible turn `cut` (when past it), and each NPC's mark to
     // `cut` and before the first turn of its own hidden fold summaries of that conversation that cover a visible turn.
     // Returns the number of turns it hid. Throws ContractError when a rollback is already open.
