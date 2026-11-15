@@ -36,7 +36,7 @@ The open body (and `turn::HostData`) gains an optional `prompts` object:
 ## 2. Variables
 
 - A variable is `{` followed by one or more of `a-z` and `_`, then `}`. Every other brace is literal text, so a JSON example such as `{"action": "wait"}` in the system text stays as written.
-- Each text takes only the variables in section 1's table. A variable a text does not take is a `DataError` at open: "prompts/<key>: unknown variable {<name>}; this text takes {speaker}, {player}" (or "takes no variable" for `system`, or "takes {actor}"). The first fault found is reported, texts in the table's order, variables in text order.
+- Each text takes only the variables in section 1's table. A variable a text does not take is a `DataError` at open: "prompts/<key>: unknown variable {<name>}; this text takes {speaker}, {player}" (or "takes no variable" for `system`, or "takes {actor}"). The first fault found is reported: unknown keys first (in key order), then each text in the table's order (empty, then its variables in text order).
 - No variable is required: a text may name no one.
 - The system text takes no variable so that L0 is the same for every turn and speaker of a run (R7's cache rule).
 - The engine fills variables with names: `{speaker}` the speaking NPC's, `{player}` the player's character's, `{actor}` the NPC whose memory is folded or condensed. One filler, `PromptPack::Fill`, replaces today's `FillVariables` and the `{actor}` loop in `HostedSession`.
@@ -52,7 +52,7 @@ The open body (and `turn::HostData`) gains an optional `prompts` object:
 - `turn::HostData` gains `prompts` (the host's texts, by key); `HostDataFromJson` and `HostDataToJson` read and write it (section 1).
 - `turn::HostedWorld` builds the run's `PromptPack` in its constructor, with the other host data checks, and exposes it (`Prompts()`).
 - `turn::HostedSession` reads every hosted text from `_world.Prompts()` instead of the constants: the system text in `Pass`, the resolve and speak instructions and the cue in `RunTurn` and `Entries`, the summarize and condense instructions in its upkeep scope. `Open` adds section 3's check.
-- `server::Api`: `open` passes `prompts` through `HostDataFromJson`; the new `GET /v1/prompts/default` answers `{"api_version": ..., "prompts": {<key>: <default text>, ...}, "variables": {<key>: ["speaker", "player"], ...}}` (keys in section 1's order, `system`'s list empty). API 1.3.0: a new optional field and a new route; nothing breaks.
+- `server::Api`: `open` passes `prompts` through `HostDataFromJson`; the new `GET /v1/prompts/default` answers `{"api_version": ..., "prompts": {<key>: <default text>, ...}, "variables": {<key>: ["speaker", "player"], ...}}` (a JSON object, so its keys come in no set order; `system`'s list is empty). API 1.3.0: a new optional field and a new route; nothing breaks.
 
 ## 5. The default texts
 
@@ -74,7 +74,7 @@ The open body (and `turn::HostData`) gains an optional `prompts` object:
 - R7's acceptance: over three turns of one conversation with a custom pack, each resolve prompt's messages up to its `stableCount` are byte-identical to the previous prompt's messages, and only the tail and the new entries differ.
 - Open: an over-cap custom system text is a `DataError` naming `prompts/system`, and no file is created; reopening with a changed pack replaces the stored host data and the next prompt shows the new text.
 - Server (`[hosted-server]`): `open` with a pack, then a turn whose prompt shows it; `open` with a bad variable answers 400 naming the key and the variable; `GET /v1/prompts/default` answers every key with its default and its variables.
-- A hosted fixture with a pack (`tests/hosted/fixtures/prompt-pack.json`), run in-process and over HTTP like the others.
+- A hosted fixture with a pack (`tests/hosted/fixtures/prompt_pack.json`), run in-process and over HTTP like the others.
 - Existing tests that pin the old default speak instruction or system text are updated to the new defaults; `"[turn]"`, `"[replay]"` and `"[context]"` (Morpheus's own game) are unchanged.
 
 ## Out of scope
