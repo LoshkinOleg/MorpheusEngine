@@ -43,10 +43,10 @@ std::string RenderSummaries(const std::vector<core::Summary>& summaries)
 // Lays out a prompt into `assembly`: one system message with `systemText`, the messages of the transcript entries
 // (the stable prefix ends after them), then one user message with `tail`. Then measures it against `budget`: the
 // layer counts the caller has not set (tail, transcript, total), the transcript's budget and cost, and every flag. The
-// caller has set tokens.summary: an over-cap summary is counted at most at its cap. Throws DataError when the context
-// leaves no room for the transcript (folding cannot fix that).
+// caller has set tokens.summary: an over-cap summary is counted at most at its cap, in the system message or the tail
+// as `place` says. Throws DataError when the context leaves no room for the transcript (folding cannot fix that).
 void LayOut(Assembly& assembly, std::string systemText, const std::vector<TranscriptEntry>& transcript,
-            std::string tail, const core::BudgetSettings& budget, inference::LlmBackend& backend)
+            std::string tail, const core::BudgetSettings& budget, SummaryPlace place, inference::LlmBackend& backend)
 {
     // The caller passes a fresh result: this appends to its prompt and adds to its transcript count.
     MORPHEUS_REQUIRE(assembly.prompt.messages.empty() && assembly.tokens.transcript == 0,
@@ -85,23 +85,29 @@ void LayOut(Assembly& assembly, std::string systemText, const std::vector<Transc
     tokens.total = backend.CountPromptTokens(prompt);
     assembly.transcriptCost = tokens.total - fixedTotal;
 
+    // The summary is counted at most at its cap where it sits: an over-cap summary is a flag (condense it), not a
+    // settings error.
     assembly.summaryOverBudget = tokens.summary > budget.summaryCap;
-    assembly.tailOverBudget = tokens.tail > budget.tailAllowance;
-
-    // L3 gets what the templated system message (with the tail's frame), the tail allowance, the narrate allowance and both generations
-    // leave, with the summary counted at most at its cap: an over-cap summary is a flag (condense it), not a
-    // settings error. A generation is a call's thinking block plus its answer. Reserving both thinking blocks is
-    // conservative: the resolve call's block is not part of the narrate prompt, so the two never share a context.
     const int summaryExcess = std::max(0, tokens.summary - budget.summaryCap);
+    // A hosted speaker's memories sit in the tail: an over-cap summary is counted at most at its cap there, and the
+    // system message holds none.
+    assembly.tailOverBudget = (place == SummaryPlace::Tail ? tokens.tail - summaryExcess : tokens.tail) >
+                              budget.tailAllowance;
+    const int systemShare = place == SummaryPlace::System ? systemCost - summaryExcess : systemCost;
+
+    // L3 gets what the templated system message (with the tail's frame), the tail allowance, the narrate allowance and
+    // both generations leave, with the system message's summary counted at most at its cap. A generation is a call's
+    // thinking block plus its answer. Reserving both thinking blocks is conservative: the resolve call's block is not
+    // part of the narrate prompt, so the two never share a context.
     assembly.transcriptBudget = backend.ContextSize() - budget.ResolveGenerationTokens() -
                                 budget.NarrateGenerationTokens() - budget.narrateAllowance - budget.tailAllowance -
-                                (systemCost - summaryExcess);
+                                systemShare;
     if (assembly.transcriptBudget <= 0) {
         // Folding turns cannot fix this: the settings or the world leave L3 nothing, so it is not a flag.
         throw core::DataError(std::format("context_size {} leaves no room for the transcript after the system "
                                           "layers ({} tokens), the tail allowance, the narrate allowance and both "
                                           "generations",
-                                          backend.ContextSize(), systemCost - summaryExcess));
+                                          backend.ContextSize(), systemShare));
     }
     assembly.transcriptOverBudget = assembly.transcriptCost > assembly.transcriptBudget;
 
@@ -169,7 +175,7 @@ Assembly AssembleResolvePrompt(const core::World& world, const ContextInputs& in
                                           world.id, tokens.world, budget.worldCap));
     }
     LayOut(assembly, inputs.engineRules + "\n\n" + worldText + summaryText, inputs.transcript, std::move(tail), budget,
-           backend);
+           SummaryPlace::System, backend);
     return assembly;
 }
 
@@ -231,8 +237,9 @@ Assembly AssembleHostedPrompt(const HostedInputs& inputs, const core::BudgetSett
                                           budget.worldCap));
     }
     const std::string separator = summaryText.empty() ? std::string() : "\n";
+    // The speaker's memories sit in the system message (L2).
     LayOut(assembly, inputs.systemText + "\n\n" + worldText + separator + summaryText, inputs.transcript,
-           std::move(tail), budget, backend);
+           std::move(tail), budget, SummaryPlace::System, backend);
     return assembly;
 }
 

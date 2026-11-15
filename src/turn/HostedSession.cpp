@@ -384,7 +384,7 @@ bool HostedSession::Maintain(std::stop_token stop)
         // The conversation is folded as its last turn's speaker: the summaries are that speaker's memories.
         const std::string& speakerId = played.back().speakerId;
         auto assemble = [&](const std::vector<RetrievalHit>&) { return Pass(conversation.id, speakerId, {}, tail); };
-        // Each fold's summary is stored and its turns indexed as it lands (Upkeep's StoreFold).
+        // Each fold's summary is stored and its turns indexed as it lands (the scope's storeFold).
         if (!Upkeep(conversation.id, speakerId, latest).FoldAll(assemble, stop)) {
             return false;
         }
@@ -543,16 +543,27 @@ FitPass HostedSession::Pass(std::string_view conversationId, std::string_view sp
 
 MemoryUpkeep HostedSession::Upkeep(const std::string& conversationId, const std::string& speakerId, int turn)
 {
+    // The speaker's scope: its shown memories, with the engine's fold and condense texts.
+    SummaryScope scope;
+    scope.shown = [this, speakerId] { return _store.ActorSummaries(speakerId, false); };
     // A fold's summary joins the store as the speaker's memory of this conversation, with the conversation's folded
     // mark and the speaker's own, and the folded turns become history.
-    return MemoryUpkeep(_store, *_pBackend, _settings, std::string(HOSTED_TAIL_NAME), turn, 0,
-                        [this, conversationId, speakerId](const core::Summary& summary) {
-                            core::Summary speakers = summary;
-                            speakers.actorId = speakerId;
-                            speakers.conversationId = conversationId;
-                            _store.FoldConversation(conversationId, speakers);
-                            SyncHistory();
-                        });
+    scope.storeFold = [this, conversationId, speakerId](const core::Summary& summary) {
+        core::Summary speakers = summary;
+        speakers.actorId = speakerId;
+        speakers.conversationId = conversationId;
+        _store.FoldConversation(conversationId, speakers);
+        SyncHistory();
+    };
+    // A condense supersedes the speaker's shown memories with one condensed memory of no conversation.
+    scope.storeCondensed = [this, speakerId](const core::Summary& condensed) {
+        core::Summary speakers = condensed;
+        speakers.actorId = speakerId;
+        _store.CondenseActorSummaries(speakerId, speakers);
+    };
+    scope.foldInstruction = std::string(SUMMARIZE_INSTRUCTION);
+    scope.condenseMessage = [](const std::vector<core::Summary>&) { return std::string(CONDENSE_INSTRUCTION); };
+    return MemoryUpkeep(_store, *_pBackend, _settings, std::string(HOSTED_TAIL_NAME), turn, 0, std::move(scope));
 }
 
 } // namespace morpheus::turn

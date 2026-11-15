@@ -93,9 +93,10 @@ TEST_CASE("SeatLabelOf labels each call the way the session and folding make it"
     played.number = 1;
     played.input = "I climb the cliff.";
     played.narration = "You climb.";
-    CHECK(app::SeatLabelOf(turn::SummarizePrompt(system, context::TranscriptEntries({played}, std::numeric_limits<int>::max())),
+    CHECK(app::SeatLabelOf(turn::SummarizePrompt(system, context::TranscriptEntries({played}, std::numeric_limits<int>::max()),
+                                                 turn::SUMMARIZE_INSTRUCTION),
                            plain) == app::SeatLabel::Summarize);
-    CHECK(app::SeatLabelOf(turn::CondensePrompt(system), plain) == app::SeatLabel::Condense);
+    CHECK(app::SeatLabelOf(turn::CondensePrompt(system, turn::CONDENSE_INSTRUCTION), plain) == app::SeatLabel::Condense);
 
     // CallKindOf takes a summary call to end with exactly the instruction, so a grammar-free call that only quotes
     // one is narration. (A summary call that ends with neither instruction cannot be built: SeatLabelOf's throw for

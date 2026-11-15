@@ -7,12 +7,11 @@
 
 #include "core/Errors.h"
 #include "core/Text.h"
-#include "turn/EngineText.h"
 
 namespace morpheus::turn {
 
 inference::Prompt SummarizePrompt(const inference::Message& systemMessage,
-                                  const std::vector<context::TranscriptEntry>& entries)
+                                  const std::vector<context::TranscriptEntry>& entries, std::string_view instruction)
 {
     // The system message, then each turn in full (stable, so cached), then the instruction. Summaries are written
     // from the full narration, digests or not.
@@ -24,7 +23,7 @@ inference::Prompt SummarizePrompt(const inference::Message& systemMessage,
         }
     }
     prompt.stableCount = prompt.messages.size();
-    prompt.messages.push_back({inference::Role::User, std::string(SUMMARIZE_INSTRUCTION)});
+    prompt.messages.push_back({inference::Role::User, std::string(instruction)});
     return prompt;
 }
 
@@ -43,12 +42,13 @@ core::Summary SummarizeFallback(const std::vector<context::TranscriptEntry>& ent
 
 std::optional<core::Summary> SummarizeTurns(const inference::Message& systemMessage,
                                             const std::vector<context::TranscriptEntry>& entries,
-                                            const inference::GenerationSpec& spec, inference::LlmBackend& backend,
-                                            std::stop_token stop)
+                                            std::string_view instruction, const inference::GenerationSpec& spec,
+                                            inference::LlmBackend& backend, std::stop_token stop)
 {
     MORPHEUS_REQUIRE(systemMessage.role == inference::Role::System && !entries.empty(),
                      "SummarizeTurns: needs the system message and at least one entry");
-    const inference::Completion completion = backend.Complete(SummarizePrompt(systemMessage, entries), spec, {}, stop);
+    const inference::Completion completion =
+        backend.Complete(SummarizePrompt(systemMessage, entries, instruction), spec, {}, stop);
     if (completion.cancelled) {
         return std::nullopt;
     }
@@ -62,13 +62,14 @@ std::optional<core::Summary> SummarizeTurns(const inference::Message& systemMess
     return core::Summary{entries.front().turn, entries.back().turn, std::move(text)};
 }
 
-inference::Prompt CondensePrompt(const inference::Message& systemMessage)
+inference::Prompt CondensePrompt(const inference::Message& systemMessage, std::string_view message)
 {
-    // The system message already holds every summary (L2), so only the instruction follows it.
+    // The system message, then the caller's message: the owned game's system message already holds every summary
+    // (L2), so its message is only the instruction.
     inference::Prompt prompt;
     prompt.messages.push_back(systemMessage);
     prompt.stableCount = 1;
-    prompt.messages.push_back({inference::Role::User, std::string(CONDENSE_INSTRUCTION)});
+    prompt.messages.push_back({inference::Role::User, std::string(message)});
     return prompt;
 }
 
@@ -86,13 +87,13 @@ core::Summary CondenseFallback(const std::vector<core::Summary>& summaries, int 
 }
 
 std::optional<core::Summary> CondenseSummaries(const inference::Message& systemMessage,
-                                               const std::vector<core::Summary>& summaries,
+                                               const std::vector<core::Summary>& summaries, std::string_view message,
                                                const inference::GenerationSpec& spec, inference::LlmBackend& backend,
                                                std::stop_token stop)
 {
     MORPHEUS_REQUIRE(systemMessage.role == inference::Role::System && !summaries.empty(),
                      "CondenseSummaries: needs the system message and at least one summary");
-    const inference::Completion completion = backend.Complete(CondensePrompt(systemMessage), spec, {}, stop);
+    const inference::Completion completion = backend.Complete(CondensePrompt(systemMessage, message), spec, {}, stop);
     if (completion.cancelled) {
         return std::nullopt;
     }

@@ -6,6 +6,7 @@
 #include <optional>
 #include <stop_token>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -67,7 +68,8 @@ std::vector<turn::RetrievalHit> Hits(int count)
 // A stand-in for a session: `entries` are its turns, and the unfolded ones follow the last summary's range. Its
 // prompt is flagged by rules the test sets: the tail is over its allowance while more than `maxHits` hits are left
 // (-1: always), the summary over its cap while more than `maxSummaries` summaries are stored, and the transcript over
-// its budget while more than `maxEntries` entries are unfolded. Its StoreFold adds the summary and records it.
+// its budget while more than `maxEntries` entries are unfolded. Its run-wide scope's fold adds the summary and records
+// it.
 struct Harness {
     store::RunStore store; // Set by the constructor.
     std::vector<context::TranscriptEntry> entries = {};
@@ -87,10 +89,16 @@ struct Harness {
 
     turn::MemoryUpkeep Upkeep(test::ScriptedBackend& backend, const core::Settings& settings)
     {
-        return turn::MemoryUpkeep(store, backend, settings, "the test tail", 9, 0, [this](const core::Summary& summary) {
+        turn::SummaryScope scope;
+        scope.shown = [this] { return store.Summaries(); };
+        scope.storeFold = [this](const core::Summary& summary) {
             store.AddSummary(summary);
             folded.push_back(summary);
-        });
+        };
+        scope.storeCondensed = [this](const core::Summary& condensed) { store.ReplaceSummaries(condensed); };
+        scope.foldInstruction = std::string(turn::SUMMARIZE_INSTRUCTION);
+        scope.condenseMessage = [](const std::vector<core::Summary>&) { return std::string(turn::CONDENSE_INSTRUCTION); };
+        return turn::MemoryUpkeep(store, backend, settings, "the test tail", 9, 0, std::move(scope));
     }
 
     turn::MemoryUpkeep::Assemble Assemble()
@@ -244,4 +252,54 @@ TEST_CASE("A summary still over its cap right after a condense is a DataError", 
     CHECK_THROWS_WITH(harness.Upkeep(backend, settings).Settle(harness.Assemble(), {}),
                       "summary_cap 512 is too small for even a condensed summary (0 tokens)");
     CHECK(backend.Calls().size() == 2); // One condense per Settle, then the throw instead of a second.
+}
+
+TEST_CASE("MemoryUpkeep reads and writes summaries only through its scope, with the scope's instructions",
+          "[turn][upkeep]")
+{
+    // A scope over a vector: folds and condenses land in it, never in the store, and the calls carry its texts.
+    std::vector<core::Summary> kept = {{1, 2, "Earlier."}, {3, 4, "Later."}};
+    turn::SummaryScope scope;
+    scope.shown = [&kept] { return kept; };
+    scope.storeFold = [&kept](const core::Summary& summary) { kept.push_back(summary); };
+    scope.storeCondensed = [&kept](const core::Summary& condensed) { kept = {condensed}; };
+    scope.foldInstruction = "Fold for the scope.";
+    scope.condenseMessage = [](const std::vector<core::Summary>& summaries) {
+        return std::format("Condense these {} for the scope.", summaries.size());
+    };
+    test::ScriptedBackend backend(16384, [](const inference::Prompt& prompt, const inference::GenerationSpec&) {
+        return prompt.messages.back().content.starts_with("Condense these") ? std::string("Condensed.")
+                                                                           : std::string("Folded.");
+    });
+    const core::Settings settings = UpkeepSettings();
+    Harness harness("upkeep_scope", 5, 8);
+
+    // The prompt follows the vector: entries after its last summary are unfolded, and more than two summaries are over
+    // the cap.
+    turn::MemoryUpkeep::Assemble assemble = [&](const std::vector<turn::RetrievalHit>&) {
+        const int foldedThrough = kept.empty() ? 0 : kept.back().toTurn;
+        turn::FitPass pass;
+        for (const context::TranscriptEntry& entry : harness.entries) {
+            if (entry.turn > foldedThrough) {
+                pass.transcript.push_back(entry);
+            }
+        }
+        pass.assembly.prompt.messages = {{inference::Role::System, "SYSTEM"}, {inference::Role::User, "TAIL"}};
+        pass.assembly.prompt.stableCount = 1;
+        pass.assembly.summaryOverBudget = kept.size() > 2;
+        return pass;
+    };
+    turn::MemoryUpkeep upkeep(harness.store, backend, settings, "the test tail", 9, 0, scope);
+    CHECK(upkeep.FoldAll(assemble, {}));
+
+    // 5-8 fold in one call with the scope's instruction; three summaries over the cap condense into one with the
+    // scope's message; the store's run-wide summaries are untouched.
+    REQUIRE(kept.size() == 1);
+    CHECK(kept[0].fromTurn == 1);
+    CHECK(kept[0].toTurn == 8);
+    CHECK(kept[0].text == "Condensed.");
+    REQUIRE(backend.Calls().size() == 2);
+    CHECK(backend.Calls()[0].prompt.messages.back().content == "Fold for the scope.");
+    CHECK(backend.Calls()[1].prompt.messages.back().content == "Condense these 3 for the scope.");
+    CHECK(harness.store.Summaries().empty());
 }

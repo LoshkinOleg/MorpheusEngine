@@ -41,6 +41,11 @@ struct HostedInputs {
     std::string instruction = {};                     // Tail: the resolve instruction.
 };
 
+// Where a prompt's summaries sit: in the system message (the owned game's L2) or in the tail (a hosted speaker's
+// memories). LayOut counts an over-cap summary at most at its cap where it sits, so condensing, not a settings error,
+// answers it.
+enum class SummaryPlace { System, Tail };
+
 // Exact token counts. Layer counts are raw text (no template tokens), for the inspector; `total` is the only
 // figure that includes chat-template tokens (the whole templated prompt).
 struct LayerTokens {

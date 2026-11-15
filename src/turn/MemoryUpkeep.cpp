@@ -23,16 +23,19 @@ core::DataError CondensedOverCap(int summaryCap, int summaryTokens)
 } // namespace
 
 MemoryUpkeep::MemoryUpkeep(store::RunStore& store, inference::LlmBackend& backend, const core::Settings& settings,
-                           std::string tailName, int turn, int attempt, StoreFold storeFold)
+                           std::string tailName, int turn, int attempt, SummaryScope scope)
     : _pStore(&store)
     , _pBackend(&backend)
     , _pSettings(&settings)
     , _tailName(std::move(tailName))
     , _turn(turn)
     , _attempt(attempt)
-    , _storeFold(std::move(storeFold))
+    , _scope(std::move(scope))
 {
-    MORPHEUS_REQUIRE(static_cast<bool>(_storeFold), "MemoryUpkeep: a fold needs somewhere to go");
+    MORPHEUS_REQUIRE(static_cast<bool>(_scope.shown) && static_cast<bool>(_scope.storeFold) &&
+                         static_cast<bool>(_scope.storeCondensed) && static_cast<bool>(_scope.condenseMessage) &&
+                         !_scope.foldInstruction.empty(),
+                     "MemoryUpkeep: a scope needs its summaries, its stores and its instructions");
 }
 
 std::optional<context::Assembly> MemoryUpkeep::Fit(std::vector<RetrievalHit>& hits, const Assemble& assemble,
@@ -161,7 +164,8 @@ bool MemoryUpkeep::FoldOldest(const inference::Message& systemMessage,
     // measured exactly as the backend measures a call. The transcript can be far larger than the context (a run
     // loaded with a smaller context_size, or turns put back by undoing past a condensed summary).
     auto fits = [&](std::size_t count) {
-        const int promptTokens = _pBackend->CountPromptTokens(SummarizePrompt(systemMessage, oldest(count)));
+        const int promptTokens =
+            _pBackend->CountPromptTokens(SummarizePrompt(systemMessage, oldest(count), _scope.foldInstruction));
         return spec.maxTokens <= _pBackend->ContextSize() - promptTokens;
     };
 
@@ -187,13 +191,13 @@ bool MemoryUpkeep::FoldOldest(const inference::Message& systemMessage,
         // Not even the oldest entry fits a call: the engine writes its summary, so folding always makes progress.
         summary = SummarizeFallback(oldest(1), spec.maxTokens);
     } else {
-        summary = SummarizeTurns(systemMessage, oldest(count), spec, *_pBackend, stop);
+        summary = SummarizeTurns(systemMessage, oldest(count), _scope.foldInstruction, spec, *_pBackend, stop);
         if (!summary) {
             return false;
         }
     }
-    // The session stores it and makes the folded turns searchable history.
-    _storeFold(*summary);
+    // The scope stores it and makes the folded turns searchable history.
+    _scope.storeFold(*summary);
     return true;
 }
 
@@ -203,21 +207,25 @@ bool MemoryUpkeep::Condense(const inference::Message& systemMessage, std::stop_t
     spec.maxTokens = std::max(1, _pSettings->budget.summaryCap / CONDENSE_SUMMARY_DIVISOR);
     spec.sampling = SamplingFrom(_pSettings->resolveSampling, core::SamplingSeed(_pStore->Meta().rngSeed, _turn,
                                                                                 core::CallKind::Summarize, _attempt));
-    const std::vector<core::Summary> summaries = _pStore->Summaries();
+    // The scope's shown summaries, and the condense call's message for them.
+    const std::vector<core::Summary> summaries = _scope.shown();
+    const std::string message = _scope.condenseMessage(summaries);
 
-    // The condense prompt holds every summary in its system message. Summaries written under a larger summary_cap
-    // can make it larger than the context: then the engine condenses them itself, so the loop still makes progress.
-    const int promptTokens = _pBackend->CountPromptTokens(CondensePrompt(systemMessage));
+    // The condense prompt holds every shown summary (the owned game's in its system message). Summaries written under
+    // a larger summary_cap can make it larger than the context: then the engine condenses them itself, so the loop
+    // still makes progress.
+    const int promptTokens = _pBackend->CountPromptTokens(CondensePrompt(systemMessage, message));
     std::optional<core::Summary> merged;
     if (spec.maxTokens <= _pBackend->ContextSize() - promptTokens) {
-        merged = CondenseSummaries(systemMessage, summaries, spec, *_pBackend, stop);
+        merged = CondenseSummaries(systemMessage, summaries, message, spec, *_pBackend, stop);
         if (!merged) {
             return false;
         }
     } else {
         merged = CondenseFallback(summaries, spec.maxTokens);
     }
-    _pStore->ReplaceSummaries(*merged);
+    // The scope replaces its shown summaries with the condensed one.
+    _scope.storeCondensed(*merged);
     return true;
 }
 

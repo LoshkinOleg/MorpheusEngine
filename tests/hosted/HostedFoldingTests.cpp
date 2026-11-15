@@ -347,3 +347,62 @@ TEST_CASE("A stop between two ended conversations in one Maintain keeps the firs
     CHECK(session.Conversation(c1)->foldedThrough == 1);
     CHECK(session.Conversation(c2)->foldedThrough == 2);
 }
+
+TEST_CASE("A speaker's memories over summary_cap condense into one, superseding the old ones and leaving others' alone",
+          "[hosted][folding]")
+{
+    // A summary_cap of 12: one memory ("# Story so far" and one line, 9 tokens) fits, two (14 tokens) do not.
+    test::HostedScript script;
+    script.actions = {NONE, NONE, NONE};
+    script.lines = {"One.", "Two.", "Three."};
+    test::ScriptedBackend backend(16384, script.Responder());
+    core::Settings settings = test::HostedSettings();
+    settings.budget.summaryCap = 12;
+    turn::HostedSession session = turn::HostedSession::Open(test::HostedRunFile("hosted_condense_speaker"),
+                                                            test::FixtureHostData(), settings, 42, backend);
+    const nlohmann::json observation = test::FixtureObservation();
+
+    // Saadia keeps one memory of her own; Hulda folds two conversations, one memory each.
+    const std::string c1 = session.StartConversation({test::SAADIA, test::AELA}, observation);
+    REQUIRE(session.RunTurn(test::Request(c1, test::SAADIA, "First."), {}, {}));
+    session.EndConversation(c1);
+    REQUIRE(session.Maintain({}));
+    const std::string c2 = session.StartConversation({test::HULDA, test::AELA}, observation);
+    REQUIRE(session.RunTurn(test::Request(c2, test::HULDA, "Second."), {}, {}));
+    session.EndConversation(c2);
+    REQUIRE(session.Maintain({}));
+    REQUIRE(session.Memories(test::HULDA).size() == 1);
+    const std::size_t calls = backend.Calls().size();
+
+    // The third conversation's fold gives Hulda two memories, over her cap: the upkeep condenses them through her
+    // scope, in one condense call.
+    const std::string c3 = session.StartConversation({test::HULDA, test::AELA}, observation);
+    REQUIRE(session.RunTurn(test::Request(c3, test::HULDA, "Third."), {}, {}));
+    session.EndConversation(c3);
+    CHECK(session.Maintain({}));
+    REQUIRE(backend.Calls().size() == calls + 4); // The turn's two calls, then the fold and the condense.
+    CHECK(backend.Calls().back().prompt.messages.back().content == std::string(turn::CONDENSE_INSTRUCTION));
+
+    // Hulda shows one condensed memory over both conversations' turns, with no conversation; the two it condensed stay,
+    // superseded.
+    std::vector<core::Summary> shown;
+    std::vector<core::Summary> superseded;
+    for (const core::Summary& summary : session.Memories(test::HULDA)) {
+        (summary.superseded ? superseded : shown).push_back(summary);
+    }
+    REQUIRE(shown.size() == 1);
+    CHECK(shown[0].fromTurn == 2);
+    CHECK(shown[0].toTurn == 3);
+    CHECK(shown[0].text == "Summary.");
+    CHECK(shown[0].actorId == test::HULDA);
+    CHECK(shown[0].conversationId.empty());
+    REQUIRE(superseded.size() == 2);
+    CHECK(superseded[0].conversationId == c2);
+    CHECK(superseded[1].conversationId == c3);
+
+    // Saadia's memory is untouched.
+    const std::vector<core::Summary> saadias = session.Memories(test::SAADIA);
+    REQUIRE(saadias.size() == 1);
+    CHECK_FALSE(saadias[0].superseded);
+    CHECK(saadias[0].conversationId == c1);
+}

@@ -535,12 +535,18 @@ FitPass Session::Pass(const nlohmann::json& state, const std::vector<RetrievalHi
 
 MemoryUpkeep Session::Upkeep(int turn, int attempt)
 {
-    // A fold's summary joins the store, and the turns it covers leave the transcript and become searchable history.
-    return MemoryUpkeep(_store, *_pBackend, _settings, "the input and the state", turn, attempt,
-                        [this](const core::Summary& summary) {
-                            _store.AddSummary(summary);
-                            _index.SyncHistory(_store, summary.toTurn, *_pBackend);
-                        });
+    // The run-wide scope: the owned run's summaries and the engine's texts, as before the scope existed. A fold's
+    // summary joins the store, and the turns it covers leave the transcript and become searchable history.
+    SummaryScope scope;
+    scope.shown = [this] { return _store.Summaries(); };
+    scope.storeFold = [this](const core::Summary& summary) {
+        _store.AddSummary(summary);
+        _index.SyncHistory(_store, summary.toTurn, *_pBackend);
+    };
+    scope.storeCondensed = [this](const core::Summary& condensed) { _store.ReplaceSummaries(condensed); };
+    scope.foldInstruction = std::string(SUMMARIZE_INSTRUCTION);
+    scope.condenseMessage = [](const std::vector<core::Summary>&) { return std::string(CONDENSE_INSTRUCTION); };
+    return MemoryUpkeep(_store, *_pBackend, _settings, "the input and the state", turn, attempt, std::move(scope));
 }
 
 int Session::FoldedThrough()
