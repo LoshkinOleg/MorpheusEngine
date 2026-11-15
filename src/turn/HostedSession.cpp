@@ -313,13 +313,15 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
     // events leave the prompt one by one until it fits (the store keeps them all; the record counts them). The
     // observation, the player text and the instruction must fit on their own: with no event left, an over-long tail
     // is the fit loop's TurnError, before the resolve call (folds the catch-up and the fit loop finished stay).
-    // The speaker's L3 is the conversation's unfolded turns it witnessed, read again each pass (a fold moves the
-    // conversation's mark); a fold during this turn is the speaker's memory and cuts the shared transcript.
+    // The speaker's L3 is the conversation's unfolded turns it witnessed, the mark read again each pass (a fold moves
+    // it; no turn is committed meanwhile, so `played` stays the conversation's turns); a fold during this turn is the
+    // speaker's memory and cuts the shared transcript.
     auto speakerPass = [&](const std::vector<RetrievalHit>& kept) {
         const std::optional<core::Conversation> now = _store.Conversation(conversation.id);
         MORPHEUS_REQUIRE(now.has_value(), "HostedSession::RunTurn: the conversation is not in the store");
         return Pass(conversation.id, request.speakerId,
-                    Entries(*now, now->foldedThrough, _store.LatestHostedTurn(), request.speakerId), kept, tail);
+                    Entries(*now, played, now->foldedThrough, _store.LatestHostedTurn(), request.speakerId), kept,
+                    tail);
     };
     MemoryUpkeep upkeep = Upkeep(conversation.id, request.speakerId, observation.json, turn, true);
     std::optional<context::Assembly> assembly = upkeep.Fit(
@@ -549,7 +551,8 @@ core::Conversation HostedSession::OpenConversation(std::string_view conversation
     return std::move(*conversation);
 }
 
-std::vector<context::TranscriptEntry> HostedSession::Entries(const core::Conversation& conversation, int afterTurn,
+std::vector<context::TranscriptEntry> HostedSession::Entries(const core::Conversation& conversation,
+                                                             const std::vector<core::HostedTurn>& turns, int afterTurn,
                                                              int throughTurn, std::string_view witnessId)
 {
     const std::vector<core::ConversationEvent> recorded = _store.ConversationEvents(conversation.id);
@@ -557,7 +560,7 @@ std::vector<context::TranscriptEntry> HostedSession::Entries(const core::Convers
     // `previous` follows every turn of the conversation, rendered or not: events are placed by the conversation's
     // turns, whoever witnessed them.
     int previous = 0; // The conversation's turn before the one rendered; 0 before its first.
-    for (const core::HostedTurn& turn : _store.HostedTurns(conversation.id)) {
+    for (const core::HostedTurn& turn : turns) {
         // A turn is rendered when it is in the range and, for a witness, its speaker or a listener was that witness.
         const bool witnessed = witnessId.empty() || turn.speakerId == witnessId ||
                                std::find(turn.listenerIds.begin(), turn.listenerIds.end(), witnessId) !=
@@ -632,21 +635,28 @@ std::vector<context::TranscriptEntry> HostedSession::Entries(const core::Convers
 void HostedSession::SyncHistory()
 {
     // Every conversation's folded turns, rendered as entries with their witnesses (speaker and listeners), are the
-    // run's searchable history; the NPC summaries are a second source, each owned by its NPC.
+    // run's searchable history. Each conversation's turns are read once, for both.
     std::vector<WitnessedEntry> folded;
     for (const core::Conversation& conversation : _store.Conversations()) {
+        const std::vector<core::HostedTurn> turns = _store.HostedTurns(conversation.id);
         std::map<int, std::vector<std::string>> witnesses; // Turn number -> its speaker and listeners.
-        for (const core::HostedTurn& turn : _store.HostedTurns(conversation.id)) {
+        for (const core::HostedTurn& turn : turns) {
             std::vector<std::string>& ids = witnesses[turn.number];
             ids.push_back(turn.speakerId);
             ids.insert(ids.end(), turn.listenerIds.begin(), turn.listenerIds.end());
         }
-        for (context::TranscriptEntry& entry : Entries(conversation, 0, conversation.foldedThrough, "")) {
+        for (context::TranscriptEntry& entry : Entries(conversation, turns, 0, conversation.foldedThrough, "")) {
             std::vector<std::string> ids = witnesses.at(entry.turn);
             folded.push_back({std::move(entry), std::move(ids)});
         }
     }
     _index.SyncEntries(folded, _store, *_pBackend);
+    // The NPC summaries are a second source, each owned by its NPC.
+    SyncMemories();
+}
+
+void HostedSession::SyncMemories()
+{
     _index.SyncSummaries(_store.HostedSummaries(), _store, *_pBackend);
 }
 
@@ -713,20 +723,23 @@ MemoryUpkeep HostedSession::Upkeep(const std::string& conversationId, const std:
         core::Summary memory = summary;
         memory.actorId = actorId;
         memory.conversationId = conversationId;
+        // The summary becomes a searchable memory. A fold during the actor's turn also moved the conversation's
+        // folded_through, so its folded turns become searchable history; a catch-up only writes a memory of turns
+        // that are history already.
         if (foldsConversation) {
             _store.FoldConversation(conversationId, memory);
+            SyncHistory();
         } else {
             _store.RememberFold(memory);
+            SyncMemories();
         }
-        // The folded turns become searchable history, and the summary a searchable memory.
-        SyncHistory();
     };
     // A condense supersedes the actor's shown memories with one condensed memory of no conversation.
     scope.storeCondensed = [this, actorId](const core::Summary& condensed) {
         core::Summary memory = condensed;
         memory.actorId = actorId;
         _store.CondenseActorSummaries(actorId, memory);
-        SyncHistory();
+        SyncMemories(); // Only memories changed.
     };
     scope.foldInstruction = fill(HOSTED_SUMMARIZE_INSTRUCTION);
     // The condense message outlives this call, so it holds its own copies of the names it needs and of the filled
@@ -765,7 +778,8 @@ bool HostedSession::CatchUp(const std::string& conversationId, const std::string
         inputs.observation = observation;
         inputs.instruction = std::string(MAINTENANCE_INSTRUCTION);
         return Pass(conversationId, actorId,
-                    Entries(*now, _store.RememberedThrough(conversationId, actorId), throughTurn, actorId), {}, inputs);
+                    Entries(*now, turns, _store.RememberedThrough(conversationId, actorId), throughTurn, actorId), {},
+                    inputs);
     };
     // Each fold's summary is the actor's and moves only its own mark (a catch-up); its turns are indexed as it lands.
     if (!Upkeep(conversationId, actorId, observation, seedTurn, false).FoldAll(assemble, stop)) {
@@ -806,7 +820,7 @@ int HostedSession::ApplyShare(const std::string& fromActorId, const std::string&
         ++shared;
     }
     if (shared > 0) {
-        SyncHistory(); // The copies are searchable by their new owner.
+        SyncMemories(); // The copies are searchable by their new owner.
     }
     return shared;
 }

@@ -18,6 +18,7 @@
 #include "fakes/ScriptedBackend.h"
 #include "hosted/HostedTestSupport.h"
 #include "store/RunStore.h"
+#include "store/Sqlite.h"
 #include "turn/HostedSession.h"
 
 using namespace morpheus;
@@ -472,4 +473,74 @@ TEST_CASE("A shared memory is a snapshot: the teller's later condense leaves it 
     CHECK(saadia[0].text == copy.text);
     CHECK(saadia[0].toldBy == test::HULDA);
     CHECK(saadia[0].sourceId == copy.sourceId);
+}
+
+TEST_CASE("A fold during a turn indexes its turns; a share and a catch-up with its condense index only memories",
+          "[hosted][memory]")
+{
+    // Memory calls write "Summary.". With a 2500 context L3 gets about 680 tokens: two lines of 1600 bytes (400 tokens
+    // each) do not fit, so Hulda's third turn of the second conversation folds. A summary_cap of 11 holds one
+    // "Summary." (9 tokens) but not a memory told by Hulda next to it, so Saadia condenses when she catches up.
+    test::HostedScript script;
+    script.actions = {NONE, NONE, NONE, NONE};
+    script.lines = {"Welcome.", std::string(1600, 'a'), std::string(1600, 'b'), "Short."};
+    test::ScriptedBackend backend(2500, script.Responder());
+    core::Settings settings = test::HostedSettings();
+    settings.contextSize = 2500;
+    settings.budget.summaryCap = 11;
+    const std::filesystem::path file = test::HostedRunFile("hosted_memory_sync_cost");
+    turn::HostedSession session = turn::HostedSession::Open(file, test::FixtureHostData(), settings, 42, backend);
+    // The turn vectors the run has stored, read through a second connection.
+    auto turnVectors = [&file] {
+        store::Database db = store::Database::Open(file, false);
+        store::Statement count = db.Prepare("SELECT COUNT(*) FROM embeddings WHERE kind = 'turn'");
+        REQUIRE(count.Step());
+        return static_cast<int>(count.ColumnInt(0));
+    };
+    // Removes the stored turn vectors: any later sync of the turn index embeds every folded turn again.
+    auto dropTurnVectors = [&file] {
+        store::Database db = store::Database::Open(file, false);
+        db.Exec("DELETE FROM embeddings WHERE kind = 'turn'");
+    };
+
+    // The first conversation, Hulda's alone, ended and folded: one turn vector, and Hulda's memory of it.
+    const std::string first = session.StartConversation({test::HULDA, test::AELA}, test::FixtureObservation());
+    REQUIRE(session.RunTurn(test::Request(first, test::HULDA, "Hello."), {}, {}));
+    session.EndConversation(first);
+    REQUIRE(session.Maintain({}));
+    REQUIRE(turnVectors() == 1);
+
+    // The second, with Saadia listening: the fold during Hulda's third turn indexes the turns it folded.
+    const std::string second =
+        session.StartConversation({test::HULDA, test::SAADIA, test::AELA}, test::FixtureObservation());
+    REQUIRE(session.RunTurn(test::Request(second, test::HULDA, "One."), {}, {}));
+    REQUIRE(session.RunTurn(test::Request(second, test::HULDA, "Two."), {}, {}));
+    REQUIRE(session.RunTurn(test::Request(second, test::HULDA, "Three."), {}, {}));
+    const int foldedThrough = session.Conversation(second)->foldedThrough;
+    const std::vector<core::HostedTurn> turns = session.Turns(second);
+    const auto folded = std::count_if(turns.begin(), turns.end(), [foldedThrough](const core::HostedTurn& turn) {
+        return turn.number <= foldedThrough;
+    });
+    REQUIRE(folded >= 1);
+    CHECK(turnVectors() == 1 + folded);
+    REQUIRE(session.Memories(test::SAADIA).empty()); // Saadia is behind.
+
+    // Hulda tells Saadia what she remembers of the first conversation: only the copy is embedded.
+    dropTurnVectors();
+    int embedded = backend.EmbeddedTexts();
+    const turn::ShareResult shared = session.ShareMemories(test::HULDA, test::SAADIA, first);
+    REQUIRE(shared.shared == 1);
+    CHECK(backend.EmbeddedTexts() == embedded + 1);
+    CHECK(turnVectors() == 0);
+
+    // Saadia catches up on the second conversation, condensing on the way: only her new memories are embedded.
+    dropTurnVectors();
+    embedded = backend.EmbeddedTexts();
+    REQUIRE(session.Maintain({}));
+    const std::vector<core::Summary> saadia = session.Memories(test::SAADIA);
+    CHECK(std::any_of(saadia.begin(), saadia.end(), [](const core::Summary& memory) { return memory.superseded; }));
+    CHECK(std::any_of(saadia.begin(), saadia.end(),
+                      [&second](const core::Summary& memory) { return memory.conversationId == second; }));
+    CHECK(backend.EmbeddedTexts() == embedded + static_cast<int>(saadia.size()) - 1); // All but the copy are new.
+    CHECK(turnVectors() == 0);
 }

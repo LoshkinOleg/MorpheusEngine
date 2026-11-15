@@ -157,16 +157,23 @@ private:
     // Conversation `conversationId`, which must exist and be open. Throws DataError "conversation_id: ..." otherwise.
     core::Conversation OpenConversation(std::string_view conversationId);
 
-    // A conversation's turns with afterTurn < number <= throughTurn as transcript entries, oldest first, only those
-    // `witnessId` witnessed (its speaker or a listener) when it is not empty. Rendering as before: a turn's user
+    // Of `turns` (the conversation's turns as the store holds them, oldest first), those with afterTurn < number <=
+    // throughTurn as transcript entries, oldest first, only those `witnessId` witnessed (its speaker or a listener)
+    // when it is not empty. Rendering as before: a turn's user
     // message is the events before it (recorded since the conversation's previous turn, then its request's own, less
     // the ones its prompt left out) in parentheses and the player's line; HOSTED_TURN_CUE when it has neither. Its
     // assistant message is "<speaker> [<action id> <params>]: <line>". Names come from the turn's own observation.
-    std::vector<context::TranscriptEntry> Entries(const core::Conversation& conversation, int afterTurn,
+    std::vector<context::TranscriptEntry> Entries(const core::Conversation& conversation,
+                                                  const std::vector<core::HostedTurn>& turns, int afterTurn,
                                                   int throughTurn, std::string_view witnessId);
 
-    // Indexes every conversation's folded turns as searchable history.
+    // Indexes every conversation's folded turns as searchable history, then the memories (SyncMemories). Needed only
+    // when a conversation's folded_through moved: Open, a fold during a turn, Maintain's mark of an ended one.
     void SyncHistory();
+
+    // Indexes every NPC summary of the run (shown, superseded and shared) as a searchable memory of its NPC; alone
+    // after a write that changes only summaries (a catch-up fold, a condense, a share).
+    void SyncMemories();
 
     // One pass of the memory upkeep for `actorId` in conversation `conversationId`: the hosted prompt with
     // `transcript` as L3, `actorId`'s shown summaries as its memories (tellers by name), `hits` and the tail parts
