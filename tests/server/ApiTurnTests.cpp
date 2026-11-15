@@ -230,7 +230,7 @@ test::ScriptedBackend::Responder SlowFoldResponder(test::HostedScript& script, s
                                                    std::size_t summaryBytes)
 {
     return [&script, &foldCalls, summaryBytes](const inference::Prompt& prompt, const inference::GenerationSpec& spec) {
-        if (prompt.messages.back().content == turn::SUMMARIZE_INSTRUCTION) {
+        if (test::IsHostedFold(prompt)) {
             ++foldCalls;
             return std::string(summaryBytes, 's');
         }

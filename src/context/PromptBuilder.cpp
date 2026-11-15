@@ -26,8 +26,8 @@ std::string RenderAlwaysOnLore(const std::vector<core::LoreEntry>& lore)
     return text;
 }
 
-// L2: the folded summaries under "# Story so far", oldest first; empty when there are none. The condense call reads
-// this section, so both kinds of run render it the same way.
+// The owned game's L2: the folded summaries under "# Story so far", oldest first; empty when there are none. Its
+// condense call reads this section. A hosted prompt has no L2 (RenderMemories shows the speaker's in the tail).
 std::string RenderSummaries(const std::vector<core::Summary>& summaries)
 {
     if (summaries.empty()) {
@@ -196,13 +196,12 @@ Assembly AssembleHostedPrompt(const HostedInputs& inputs, const core::BudgetSett
                          : std::format("- {} ({}): {}\n", participant.name, participant.id, participant.bio);
     }
 
-    // L2: run-wide summaries of folded turns, oldest first.
-    const std::string summaryText = RenderSummaries(inputs.summaries);
-
-    // The tail, rebuilt every turn, so it goes last: retrieved snippets, the observation, the new events, the
-    // player's line and the instruction. The replace handler keeps a string that is not UTF-8 from throwing: the
-    // observation is the host's data.
-    std::string tail;
+    // The tail, rebuilt every turn, so it goes last: the speaker's memories (they change with the speaker, so they sit
+    // after the conversation the speakers share), retrieved snippets, the observation, the new events, the player's
+    // line and the instruction. The replace handler keeps a string that is not UTF-8 from throwing: the observation is
+    // the host's data.
+    const std::string memories = RenderMemories(inputs.speakerName, inputs.memories);
+    std::string tail = memories.empty() ? std::string() : memories + "\n";
     if (!inputs.retrieved.empty()) {
         tail += "# Relevant\n";
         for (const std::string& snippet : inputs.retrieved) {
@@ -228,7 +227,7 @@ Assembly AssembleHostedPrompt(const HostedInputs& inputs, const core::BudgetSett
     LayerTokens& tokens = assembly.tokens;
     tokens.engineRules = backend.CountTokens(inputs.systemText);
     tokens.world = backend.CountTokens(worldText);
-    tokens.summary = backend.CountTokens(summaryText);
+    tokens.summary = backend.CountTokens(memories);
     MORPHEUS_REQUIRE(tokens.engineRules <= budget.engineRulesCap,
                      std::format("the hosted system text uses {} tokens, over engine_rules_cap {}", tokens.engineRules,
                                  budget.engineRulesCap));
@@ -236,11 +235,24 @@ Assembly AssembleHostedPrompt(const HostedInputs& inputs, const core::BudgetSett
         throw core::DataError(std::format("host lore and participants use {} tokens, over world_cap {}", tokens.world,
                                           budget.worldCap));
     }
-    const std::string separator = summaryText.empty() ? std::string() : "\n";
-    // The speaker's memories sit in the system message (L2).
-    LayOut(assembly, inputs.systemText + "\n\n" + worldText + separator + summaryText, inputs.transcript,
-           std::move(tail), budget, SummaryPlace::System, backend);
+    // The speaker's memories sit in the tail: the system message holds no L2.
+    LayOut(assembly, inputs.systemText + "\n\n" + worldText, inputs.transcript, std::move(tail), budget,
+           SummaryPlace::Tail, backend);
     return assembly;
+}
+
+std::string RenderMemories(std::string_view speakerName, const std::vector<MemoryLine>& memories)
+{
+    if (memories.empty()) {
+        return {};
+    }
+    // The heading names the speaker; a memory told by another NPC names its teller.
+    std::string text = std::format("# What {} remembers\n", speakerName);
+    for (const MemoryLine& memory : memories) {
+        text += memory.toldBy.empty() ? std::format("- {}\n", memory.text)
+                                      : std::format("- (told by {}) {}\n", memory.toldBy, memory.text);
+    }
+    return text;
 }
 
 void ExtendForNarrate(inference::Prompt& prompt, const std::string& resolveOutput,

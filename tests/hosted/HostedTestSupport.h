@@ -79,6 +79,13 @@ inline std::filesystem::path HostedRunFile(std::string_view name)
     return FreshTempDir(name) / "run.db";
 }
 
+// Whether `prompt` is a hosted fold call: its last message is HOSTED_SUMMARIZE_INSTRUCTION with an NPC's name filled in.
+inline bool IsHostedFold(const inference::Prompt& prompt)
+{
+    const std::string_view text = turn::HOSTED_SUMMARIZE_INSTRUCTION;
+    return !prompt.messages.empty() && prompt.messages.back().content.starts_with(text.substr(0, text.find("{actor}")));
+}
+
 // A scripted model for hosted turns. Resolve calls (they carry the proposal grammar) get `actions` in order, speak
 // calls (no grammar) get `lines` in order, and fold and condense calls "Summary.". Running out of replies is a test
 // bug. The script must outlive the backends that call it.
@@ -92,7 +99,10 @@ struct HostedScript {
     {
         return [this](const inference::Prompt& prompt, const inference::GenerationSpec& spec) -> std::string {
             const std::string& last = prompt.messages.back().content;
-            if (last == turn::SUMMARIZE_INSTRUCTION || last == turn::CONDENSE_INSTRUCTION) {
+            // Memory calls: the owned game's texts, and the hosted ones (which name the NPC).
+            if (last == turn::SUMMARIZE_INSTRUCTION || last == turn::CONDENSE_INSTRUCTION ||
+                last.find("Summarize the turns above as") != std::string::npos ||
+                last.find("Condense what") != std::string::npos) {
                 return "Summary.";
             }
             if (!spec.grammar.empty()) {

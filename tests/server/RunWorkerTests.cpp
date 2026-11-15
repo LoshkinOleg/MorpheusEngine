@@ -129,7 +129,7 @@ TEST_CASE("Between jobs the worker folds ended conversations on the upkeep slot;
     worker->Call([&](turn::HostedSession&, server::SlotBackend&, std::stop_token) {
         for (const test::ScriptedBackend::Call& call : pBackend->Calls()) {
             slots.push_back(call.spec.slot);
-            folds.push_back(call.prompt.messages.back().content == turn::SUMMARIZE_INSTRUCTION);
+            folds.push_back(test::IsHostedFold(call.prompt));
         }
     });
     REQUIRE(slots.size() >= 3);
@@ -154,7 +154,7 @@ std::unique_ptr<server::RunWorker> SlowFoldWorker(const std::string& name, std::
     script.lines = {"Welcome."};
     test::ScriptedBackend::Responder responder = [&script, &foldCalls](const inference::Prompt& prompt,
                                                                        const inference::GenerationSpec& spec) {
-        if (prompt.messages.back().content == turn::SUMMARIZE_INSTRUCTION) {
+        if (test::IsHostedFold(prompt)) {
             ++foldCalls;
             return std::string("Summary of a long talk at the inn.");
         }

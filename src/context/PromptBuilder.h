@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -26,14 +27,22 @@ struct ContextInputs {
     std::string instruction = {};                  // T4: the resolve task instruction.
 };
 
-// What goes into one hosted resolve prompt, by layer (hosted-world spec, "The prompt"), most stable first, so a new
-// turn adds to the end of the cached part.
+// One memory of a hosted speaker, as its prompt shows it: its text, and the teller's name for one told by another NPC.
+struct MemoryLine {
+    std::string toldBy = {}; // Empty for the speaker's own memory.
+    std::string text = {};
+};
+
+// What goes into one hosted resolve prompt, by layer (hosted-world spec, "The prompt"; per-speaker memory spec), most
+// stable first, so a new turn adds to the end of the cached part. A hosted prompt has no L2: the speaker's memories
+// open the tail.
 struct HostedInputs {
     std::string systemText = {};                      // L0: the hosted system text.
     std::vector<core::LoreEntry> lore = {};           // L1: the host's lore; only the always-on entries are shown.
     std::vector<core::Participant> participants = {}; // The participants, in join order: name, id and bio.
-    std::vector<core::Summary> summaries = {};        // L2: run-wide summaries of folded turns, oldest first.
-    std::vector<TranscriptEntry> transcript = {};     // L3: this conversation's unfolded turns, rendered.
+    std::vector<TranscriptEntry> transcript = {};     // L3: the conversation's unfolded turns the speaker witnessed.
+    std::string speakerName = {};                     // The speaker, for the memories' heading.
+    std::vector<MemoryLine> memories = {};            // Tail: the speaker's shown summaries, oldest first.
     std::vector<std::string> retrieved = {};          // Tail: lore and history snippets.
     nlohmann::json observation = nullptr;             // Tail: shown as compact JSON.
     std::vector<std::string> events = {};             // Tail: the new events' texts, in order.
@@ -93,14 +102,21 @@ Assembly AssembleResolvePrompt(const core::World& world, const ContextInputs& in
                                const core::BudgetSettings& budget, inference::LlmBackend& backend);
 
 // Builds a hosted resolve prompt: one system message (L0, then L1 the always-on lore, then the participants as
-// "- <name> (<id>): <bio>" or "- <name> (<id>)", then L2), the conversation's entries (L3), then one user message with
-// the tail (retrieved snippets, the observation as compact JSON, the new events in parentheses, the player's line,
-// the instruction). prompt.stableCount marks the end of L3. A join or a leave changes the prompt from the
-// participants on; a new turn only adds entries before the tail. Budgets and flags are AssembleResolvePrompt's, with
-// the speak call in the narrate call's place: tokens.world counts the lore and the participants together against
-// world_cap (a DataError over it: the host's data); the system text over engine_rules_cap is a ContractError.
+// "- <name> (<id>): <bio>" or "- <name> (<id>)"; no L2), the conversation's entries (L3), then one user message with
+// the tail (the speaker's memories (RenderMemories), retrieved snippets, the observation as compact JSON, the new
+// events in parentheses, the player's line, the instruction). prompt.stableCount marks the end of L3. A join or a
+// leave changes the prompt from the participants on; a new turn only adds entries before the tail, and another
+// speaker changes it only from the tail on (when it witnessed the same turns). Budgets and flags are
+// AssembleResolvePrompt's, with the speak call in the narrate call's place and the memories as the summary:
+// tokens.summary counts them, against summary_cap, and the tail counts them at most at that cap. tokens.world counts
+// the lore and the participants together against world_cap (a DataError over it: the host's data); the system text
+// over engine_rules_cap is a ContractError.
 Assembly AssembleHostedPrompt(const HostedInputs& inputs, const core::BudgetSettings& budget,
                               inference::LlmBackend& backend);
+
+// The speaker's memories as a hosted tail shows them: "# What <name> remembers", then one line per memory ("- (told by
+// <teller>) <text>" for one told by another NPC). Empty for none. The condense call of a hosted NPC shows the same.
+std::string RenderMemories(std::string_view speakerName, const std::vector<MemoryLine>& memories);
 
 // Turns a resolve prompt into the narrate prompt by appending the resolve output (assistant) and the resolution
 // record with the narrate instruction (user). It only appends, so the whole resolve prompt stays cached.

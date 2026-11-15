@@ -65,10 +65,11 @@ public:
     // Creates the run in `file` when the file does not exist, with `seed` for sampling, and indexes the retrievable
     // lore; or reopens it: the same host data (equal content hash) reopens as it is; with changed host data (a mod
     // update) the changed lore is re-embedded first, then the new host data replaces the stored copy. The host data
-    // is checked first (HostedWorld's DataError). Throws DataError for a file that holds an owned run, StoreError for
-    // a damaged one, DataError if the backend refuses a lore entry (too long to embed), and InferenceError if the
-    // backend cannot be reached or fails while embedding: either way a new file is then removed, and a reopened run
-    // keeps its stored host data and hash.
+    // is checked first (HostedWorld's DataError), then the settings: a summary_cap not below tail_allowance is a
+    // DataError naming both (the speaker's memories sit in the tail). Throws DataError for a file that holds an owned
+    // run, StoreError for a damaged one, DataError if the backend refuses a lore entry (too long to embed), and
+    // InferenceError if the backend cannot be reached or fails while embedding: either way a new file is then
+    // removed, and a reopened run keeps its stored host data and hash.
     static HostedSession Open(const std::filesystem::path& file, HostData data, core::Settings settings,
                               std::uint64_t seed, inference::LlmBackend& backend);
 
@@ -134,27 +135,28 @@ private:
     // Conversation `conversationId`, which must exist and be open. Throws DataError "conversation_id: ..." otherwise.
     core::Conversation OpenConversation(std::string_view conversationId);
 
-    // A conversation's turns as transcript entries, oldest first: the folded ones (folded == true) or those still in
-    // L3. A turn's user message is the events before it (recorded since the conversation's previous turn, then its
-    // request's own) in parentheses and the player's line, one per line; HOSTED_TURN_CUE when it has neither. Its
-    // assistant message is "<speaker> [<action id> <params>]: <line>", without the params when there are none and
-    // without the bracket for a refused action. Names come from the turn's own observation.
-    std::vector<context::TranscriptEntry> Entries(const core::Conversation& conversation, bool folded);
+    // A conversation's turns with afterTurn < number <= throughTurn as transcript entries, oldest first, only those
+    // `witnessId` witnessed (its speaker or a listener) when it is not empty. Rendering as before: a turn's user
+    // message is the events before it (recorded since the conversation's previous turn, then its request's own, less
+    // the ones its prompt left out) in parentheses and the player's line; HOSTED_TURN_CUE when it has neither. Its
+    // assistant message is "<speaker> [<action id> <params>]: <line>". Names come from the turn's own observation.
+    std::vector<context::TranscriptEntry> Entries(const core::Conversation& conversation, int afterTurn,
+                                                  int throughTurn, std::string_view witnessId);
 
     // Indexes every conversation's folded turns as searchable history.
     void SyncHistory();
 
-    // One pass of the memory upkeep for a turn of conversation `conversationId` spoken by `speakerId`: the hosted
-    // prompt for `hits`, with the tail parts `inputs` already holds (observation, events, player line, instruction) and
-    // the conversation, the speaker's shown summaries and its unfolded entries read from the store as it is now; and
-    // the entries its L3 shows.
-    FitPass Pass(std::string_view conversationId, std::string_view speakerId, const std::vector<RetrievalHit>& hits,
+    // One pass of the memory upkeep for `actorId` in conversation `conversationId`: the hosted prompt with
+    // `transcript` as L3, `actorId`'s shown summaries as its memories (tellers by name), `hits` and the tail parts
+    // `inputs` already holds, read from the store as it is now.
+    FitPass Pass(std::string_view conversationId, std::string_view actorId,
+                 std::vector<context::TranscriptEntry> transcript, const std::vector<RetrievalHit>& hits,
                  context::HostedInputs inputs);
 
-    // The shared memory upkeep for turn `turn` of conversation `conversationId` spoken by `speakerId`: a fold's summary
-    // joins the store as the speaker's, with the conversation's folded mark and the speaker's own, and the folded turns
-    // become searchable history.
-    MemoryUpkeep Upkeep(const std::string& conversationId, const std::string& speakerId, int turn);
+    // The shared memory upkeep for `actorId`'s memory of conversation `conversationId`, its seeds naming turn `turn`:
+    // `actorId`'s scope with the hosted texts. A fold's summary is the actor's; with foldsConversation it also moves
+    // the conversation's folded mark (a fold during the actor's turn), otherwise only the actor's own (a catch-up).
+    MemoryUpkeep Upkeep(const std::string& conversationId, const std::string& actorId, int turn, bool foldsConversation);
 };
 
 } // namespace morpheus::turn

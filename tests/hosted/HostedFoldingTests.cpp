@@ -22,6 +22,7 @@
 
 using namespace morpheus;
 using Catch::Matchers::ContainsSubstring;
+using Catch::Matchers::StartsWith;
 
 namespace {
 
@@ -138,7 +139,7 @@ TEST_CASE("A conversation over its transcript budget folds its oldest turns duri
     CHECK(session.Conversation(id)->foldedThrough >= 1);
     const inference::Prompt& prompt = session.LastAssembly().prompt;
     CHECK(prompt.stableCount < 1 + 2 * 5);
-    CHECK_THAT(prompt.messages.front().content, ContainsSubstring("# Story so far\nTurns 1-"));
+    CHECK_THAT(prompt.messages.back().content, StartsWith("# What Hulda remembers\n- Summary.\n"));
 }
 
 TEST_CASE("EndConversation and Maintain fold the rest, and a later conversation retrieves it", "[hosted][folding]")
@@ -170,11 +171,12 @@ TEST_CASE("EndConversation and Maintain fold the rest, and a later conversation 
     CHECK(session.Maintain({})); // Nothing is left to fold.
     CHECK(backend.Calls().size() == calls);
 
-    // A later conversation sees the summary in L2, starts with an empty L3, and retrieves the folded turns.
+    // A later conversation shows the summary as Hulda's memory in the tail, starts with an empty L3, and retrieves the
+    // folded turns.
     const std::string second = session.StartConversation({test::HULDA, test::AELA}, test::FixtureObservation());
     REQUIRE(session.RunTurn(test::Request(second, test::HULDA, "Remind me where the silver key is."), {}, {}));
     const inference::Prompt& prompt = session.LastAssembly().prompt;
-    CHECK_THAT(prompt.messages.front().content, ContainsSubstring("# Story so far\nTurns 1-2: Summary.\n"));
+    CHECK_THAT(prompt.messages.back().content, StartsWith("# What Hulda remembers\n- Summary.\n\n"));
     CHECK(prompt.stableCount == 1);
     CHECK_THAT(prompt.messages.back().content,
                ContainsSubstring("\n- Turn 1: Aela: Where did you hide the silver key? Hulda [none]: The silver key "
@@ -274,7 +276,10 @@ TEST_CASE("Two open conversations interleave their turns; ending one folds only 
     CHECK(session.Maintain({}));
     REQUIRE(backend.Calls().size() == calls + 1);
     const inference::Prompt& fold = backend.Calls().back().prompt;
-    CHECK(fold.messages.back().content == std::string(turn::SUMMARIZE_INSTRUCTION));
+    CHECK(fold.messages.back().content ==
+          "Summarize the turns above as Hulda remembers them, for Hulda's own memory, not for the player. Keep names, "
+          "places, items, promises, secrets and who said what to whom. Leave out JSON and engine details. Plain prose, "
+          "at most 200 words.");
     std::string folded;
     for (std::size_t i = 1; i < fold.messages.size(); ++i) {
         folded += fold.messages[i].content + "\n";
@@ -292,10 +297,10 @@ TEST_CASE("Two open conversations interleave their turns; ending one folds only 
     // The summary is Hulda's, who spoke c1's last turn; Saadia has none.
     CHECK(session.Memories(test::SAADIA).empty());
 
-    // c2's next turn (Saadia's) has no summary of c1 in L2 and its own turns still in L3, and does not retrieve c1's
+    // c2's next turn (Saadia's) shows no memory of c1 and its own turns still in L3, and does not retrieve c1's
     // folded turns: Saadia did not witness them.
     REQUIRE(session.RunTurn(test::Request(c2, test::SAADIA, "Where is the silver key?"), {}, {})->number == 5);
-    CHECK_THAT(session.LastAssembly().prompt.messages.front().content, !ContainsSubstring("# Story so far"));
+    CHECK_THAT(tail(), !ContainsSubstring("remembers"));
     CHECK(transcript() == std::vector<std::string>{"(A bard tunes a lute.)\nAela: Any rumours tonight?",
                                                    "Saadia [none]: Only about the bard.",
                                                    "(The fire crackles.)\nAela: Tell me about the bard.",
@@ -351,13 +356,13 @@ TEST_CASE("A stop between two ended conversations in one Maintain keeps the firs
 TEST_CASE("A speaker's memories over summary_cap condense into one, superseding the old ones and leaving others' alone",
           "[hosted][folding]")
 {
-    // A summary_cap of 12: one memory ("# Story so far" and one line, 9 tokens) fits, two (14 tokens) do not.
+    // A summary_cap of 11: one memory ("# What Hulda remembers" and one line, 9 tokens) fits, two (12 tokens) do not.
     test::HostedScript script;
     script.actions = {NONE, NONE, NONE};
     script.lines = {"One.", "Two.", "Three."};
     test::ScriptedBackend backend(16384, script.Responder());
     core::Settings settings = test::HostedSettings();
-    settings.budget.summaryCap = 12;
+    settings.budget.summaryCap = 11;
     turn::HostedSession session = turn::HostedSession::Open(test::HostedRunFile("hosted_condense_speaker"),
                                                             test::FixtureHostData(), settings, 42, backend);
     const nlohmann::json observation = test::FixtureObservation();
@@ -381,7 +386,12 @@ TEST_CASE("A speaker's memories over summary_cap condense into one, superseding 
     session.EndConversation(c3);
     CHECK(session.Maintain({}));
     REQUIRE(backend.Calls().size() == calls + 4); // The turn's two calls, then the fold and the condense.
-    CHECK(backend.Calls().back().prompt.messages.back().content == std::string(turn::CONDENSE_INSTRUCTION));
+    // The condense call shows Hulda's memories as her prompt does, then the instruction naming her.
+    CHECK(backend.Calls().back().prompt.messages.back().content ==
+          "# What Hulda remembers\n- Summary.\n- Summary.\n\n"
+          "Condense what Hulda remembers, above, into one summary for Hulda's own memory, not for the player. Keep "
+          "names, places, items, promises, secrets, who told Hulda what, and the order of events. Plain prose, at most "
+          "250 words.");
 
     // Hulda shows one condensed memory over both conversations' turns, with no conversation; the two it condensed stay,
     // superseded.

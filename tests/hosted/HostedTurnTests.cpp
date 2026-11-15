@@ -239,7 +239,7 @@ TEST_CASE("A join or a leave changes the prompt only from the participants layer
     REQUIRE(session.RunTurn(test::Request(id, test::HULDA, "Saadia, join us."), {}, {}));
     const inference::Prompt joined = session.LastAssembly().prompt;
 
-    // Saadia joins at the end of the participants layer, which ends the system message here (no summary yet): the
+    // Saadia joins at the end of the participants layer, which ends the system message (a hosted one has no L2): the
     // first turn's system message is the start of the second's.
     const std::string& a = before.messages[0].content;
     const std::string& b = joined.messages[0].content;

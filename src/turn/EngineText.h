@@ -96,4 +96,16 @@ inline constexpr std::string_view HOSTED_SPEAK_INSTRUCTION =
 // L3's user message for a turn that had no events and no player text before the speaker's line.
 inline constexpr std::string_view HOSTED_TURN_CUE = "({speaker} speaks.)";
 
+// A hosted NPC's fold call (per-speaker memory spec, section 1): its memory of the turns above, in its own terms.
+// {actor} is the NPC's name.
+inline constexpr std::string_view HOSTED_SUMMARIZE_INSTRUCTION =
+    "Summarize the turns above as {actor} remembers them, for {actor}'s own memory, not for the player. Keep names, "
+    "places, items, promises, secrets and who said what to whom. Leave out JSON and engine details. Plain prose, at "
+    "most 200 words.";
+
+// A hosted NPC's condense call: the memories above (RenderMemories) become one. {actor} is the NPC's name.
+inline constexpr std::string_view HOSTED_CONDENSE_INSTRUCTION =
+    "Condense what {actor} remembers, above, into one summary for {actor}'s own memory, not for the player. Keep names, "
+    "places, items, promises, secrets, who told {actor} what, and the order of events. Plain prose, at most 250 words.";
+
 } // namespace morpheus::turn

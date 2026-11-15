@@ -42,7 +42,8 @@ context::HostedInputs Inputs()
     inputs.systemText = "HOSTED SYSTEM";
     inputs.lore = {{"Whiterun", "A city.", true}, {"Saadia", "Hides from hunters.", false}};
     inputs.participants = {{"0001A6A4", "Hulda", "A barkeep."}, {"00000007", "Aela", ""}};
-    inputs.summaries = {{1, 2, "They met."}};
+    inputs.speakerName = "Hulda";
+    inputs.memories = {{"", "They met."}};
     inputs.transcript = {Entry(3, "Aela: Hello.", "Hulda [none]: Welcome.")};
     inputs.retrieved = {"Turn 1: Aela: A room, please."};
     inputs.observation = {{"location", "inn"}};
@@ -62,20 +63,20 @@ TEST_CASE("AssembleHostedPrompt lays out the hosted layers, most stable first", 
     REQUIRE(prompt.messages.size() == 4);
     CHECK(prompt.stableCount == 3);
 
-    // L0, L1 (always-on lore only), the participants in join order, L2.
+    // L0, L1 (always-on lore only), the participants in join order; no L2.
     CHECK(prompt.messages[0].role == inference::Role::System);
     CHECK(prompt.messages[0].content == "HOSTED SYSTEM\n\n"
                                         "# Lore\n- Whiterun: A city.\n\n"
-                                        "# Participants\n- Hulda (0001A6A4): A barkeep.\n- Aela (00000007)\n\n"
-                                        "# Story so far\nTurns 1-2: They met.\n");
+                                        "# Participants\n- Hulda (0001A6A4): A barkeep.\n- Aela (00000007)\n");
     // L3.
     CHECK(prompt.messages[1].role == inference::Role::User);
     CHECK(prompt.messages[1].content == "Aela: Hello.");
     CHECK(prompt.messages[2].role == inference::Role::Assistant);
     CHECK(prompt.messages[2].content == "Hulda [none]: Welcome.");
-    // The tail.
+    // The tail, the speaker's memories first.
     CHECK(prompt.messages[3].role == inference::Role::User);
-    CHECK(prompt.messages[3].content == "# Relevant\n- Turn 1: Aela: A room, please.\n\n"
+    CHECK(prompt.messages[3].content == "# What Hulda remembers\n- They met.\n\n"
+                                        "# Relevant\n- Turn 1: Aela: A room, please.\n\n"
                                         "# Observation\n{\"location\":\"inn\"}\n\n"
                                         "# New events\n(Door opens.)\n\n"
                                         "# Player\nAela: Follow me.\n\n"
@@ -88,7 +89,7 @@ TEST_CASE("AssembleHostedPrompt leaves out empty optional layers", "[context][ho
     context::HostedInputs inputs = Inputs();
     inputs.lore = {{"Saadia", "Hides from hunters.", false}}; // Retrieved only: never in L1.
     inputs.participants = {{"0001A6A4", "Hulda", "A barkeep."}};
-    inputs.summaries.clear();
+    inputs.memories.clear();
     inputs.transcript.clear();
     inputs.retrieved.clear();
     inputs.events.clear();
@@ -112,7 +113,7 @@ TEST_CASE("AssembleHostedPrompt counts and budgets like the resolve prompt", "[c
     CHECK(assembly.tokens.engineRules == backend.CountTokens("HOSTED SYSTEM"));
     CHECK(assembly.tokens.world == backend.CountTokens("# Lore\n- Whiterun: A city.\n\n# Participants\n"
                                                        "- Hulda (0001A6A4): A barkeep.\n- Aela (00000007)\n"));
-    CHECK(assembly.tokens.summary == backend.CountTokens("# Story so far\nTurns 1-2: They met.\n"));
+    CHECK(assembly.tokens.summary == backend.CountTokens("# What Hulda remembers\n- They met.\n"));
     CHECK(assembly.tokens.transcript ==
           backend.CountTokens("Aela: Hello.") + backend.CountTokens("Hulda [none]: Welcome."));
     CHECK(assembly.tokens.tail == backend.CountTokens(assembly.prompt.messages[3].content));
@@ -128,7 +129,7 @@ TEST_CASE("AssembleHostedPrompt counts and budgets like the resolve prompt", "[c
     longTail.playerLine = "Aela: " + std::string(4000, 'y');
     CHECK(context::AssembleHostedPrompt(longTail, budget, backend).tailOverBudget);
     context::HostedInputs longSummary = Inputs();
-    longSummary.summaries.front().text = std::string(2000, 's');
+    longSummary.memories.front().text = std::string(2000, 's');
     CHECK(context::AssembleHostedPrompt(longSummary, budget, backend).summaryOverBudget);
     context::HostedInputs longTranscript = Inputs();
     longTranscript.transcript.front().messages.back().content = std::string(40000, 'x');
@@ -148,6 +149,52 @@ TEST_CASE("AssembleHostedPrompt counts and budgets like the resolve prompt", "[c
     CHECK_THROWS_AS(context::AssembleHostedPrompt(Inputs(), smallRules, backend), core::ContractError);
     test::FakeBackend tiny(600);
     CHECK_THROWS_WITH(context::AssembleHostedPrompt(Inputs(), budget, tiny), ContainsSubstring("no room for the transcript"));
+}
+
+TEST_CASE("A hosted prompt shows the speaker's memories in the tail, with their tellers, and no L2", "[context][hosted]")
+{
+    context::HostedInputs inputs = Inputs();
+    inputs.speakerName = "Saadia";
+    inputs.memories = {{"", "Saadia arrived in Whiterun in spring."}, {"Hulda", "The guard captain takes bribes."}};
+    test::FakeBackend backend(16384);
+    const context::Assembly assembly = context::AssembleHostedPrompt(inputs, RoomyBudget(), backend);
+    const std::string& system = assembly.prompt.messages.front().content;
+    const std::string& tail = assembly.prompt.messages.back().content;
+    CHECK(system.find("arrived in Whiterun") == std::string::npos);
+    CHECK(tail.starts_with("# What Saadia remembers\n- Saadia arrived in Whiterun in spring.\n- (told by Hulda) The guard "
+                           "captain takes bribes.\n"));
+    CHECK(assembly.tokens.summary ==
+          backend.CountTokens(context::RenderMemories("Saadia", inputs.memories)));
+    // No memories: no heading.
+    inputs.memories.clear();
+    const context::Assembly empty = context::AssembleHostedPrompt(inputs, RoomyBudget(), backend);
+    CHECK(empty.prompt.messages.back().content.find("remembers") == std::string::npos);
+    CHECK(context::RenderMemories("Saadia", {}).empty());
+}
+
+TEST_CASE("A hosted speaker's memories over summary_cap count at most at the cap in the tail", "[context][hosted]")
+{
+    const core::BudgetSettings budget = RoomyBudget(); // summary_cap 256, tail_allowance 512.
+    test::FakeBackend backend(8192);
+    context::HostedInputs inputs = Inputs();
+    inputs.memories.front().text = std::string(2000, 's'); // About 500 tokens: over summary_cap.
+    const context::Assembly assembly = context::AssembleHostedPrompt(inputs, budget, backend);
+
+    // The tail's raw text is over tail_allowance, but with the memories counted at their cap it fits: the memories
+    // are a condense to do, not a tail to shed.
+    CHECK(assembly.tokens.summary > budget.summaryCap);
+    CHECK(assembly.tokens.tail > budget.tailAllowance);
+    CHECK(assembly.tokens.tail - (assembly.tokens.summary - budget.summaryCap) <= budget.tailAllowance);
+    CHECK(assembly.summaryOverBudget);
+    CHECK_FALSE(assembly.tailOverBudget);
+    // The system message holds no memories, so L3's budget is the one a prompt without them gets.
+    context::HostedInputs none = Inputs();
+    none.memories.clear();
+    CHECK(assembly.transcriptBudget == context::AssembleHostedPrompt(none, budget, backend).transcriptBudget);
+
+    // The rest of the tail over its allowance on its own is still the tail's flag.
+    inputs.playerLine = "Aela: " + std::string(2000, 'y');
+    CHECK(context::AssembleHostedPrompt(inputs, budget, backend).tailOverBudget);
 }
 
 TEST_CASE("A join changes the hosted prompt only from the participants layer on", "[context][hosted]")
