@@ -152,6 +152,22 @@ TEST_CASE("A rollback hides what came after its time, moves the marks back, and 
     CHECK(store.LatestClock() == 4.5);
 }
 
+TEST_CASE("The run's summaries leave out the hidden ones", "[store][rollback]")
+{
+    // HostedSummaries feeds the retrieval index: a hidden summary there would reach the prompts through retrieval.
+    std::string id;
+    store::RunStore store = store::RunStore::Open(Run("rollback_hosted_summaries", id));
+    REQUIRE(store.HostedSummaries().size() == 3);
+    store.ApplyRollback(2.7);
+    // npc-1's 3-4 and npc-2's 1-4 are hidden; npc-1's 1-2 stays.
+    const std::vector<core::Summary> visible = store.HostedSummaries();
+    REQUIRE(visible.size() == 1);
+    CHECK(visible[0].actorId == "npc-1");
+    CHECK(visible[0].toTurn == 2);
+    store.UndoRollback();
+    CHECK(store.HostedSummaries().size() == 3);
+}
+
 TEST_CASE("An undone or abandoned rollback keeps no saved marks", "[store][rollback]")
 {
     // The host rewinds on every save load, so a rollback row that kept its marks after it closed would grow the file

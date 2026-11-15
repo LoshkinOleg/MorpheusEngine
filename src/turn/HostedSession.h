@@ -171,7 +171,9 @@ public:
     // until a new record abandons them (a turn committed, events recorded, a conversation started or ended,
     // participants changed, a share stored or copied: see the writers above). The background upkeep then refolds what
     // NPCs are missing. Throws DataError "game_time: ..." when the host data names no clock or `gameTime` is not
-    // finite.
+    // finite, and InferenceError when the backend fails while the retrieval index is synced afterwards (an embedding):
+    // the store has already rewound then, and the next full sync (SyncHistory: a later rewind that changes what is
+    // hidden, a fold during a turn, Maintain's mark of an ended conversation, or reopening the run) repairs the index.
     RewindResult Rewind(double gameTime);
 
     const store::RunMeta& Meta() const;

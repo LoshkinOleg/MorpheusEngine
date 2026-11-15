@@ -57,7 +57,8 @@ struct RollbackCounts {
 
 // One run's SQLite database (saves/<world>/<run>.db). The only writer of run data.
 // Tables: run_meta, turns, state_snapshots, summaries, notes, embeddings, and for hosted runs host_data,
-// conversations, conversation_changes, hosted_turns, conversation_events, actor_memory, pending_shares, rollbacks.
+// conversations, conversation_changes, hosted_turns, conversation_events, actor_memory, pending_shares, rollbacks,
+// summary_supersessions.
 // Every file has every table; summaries and embeddings serve both kinds, and turn numbers run across the whole run. An
 // owned run's summaries have no actor; each of a hosted run's belongs to one NPC (per-speaker memory spec).
 // A hosted row a rollback hid (hidden_by, rollback spec) is kept but skipped by every hosted reader.
