@@ -154,9 +154,12 @@ private:
                  context::HostedInputs inputs);
 
     // The shared memory upkeep for `actorId`'s memory of conversation `conversationId`, its seeds naming turn `turn`:
-    // `actorId`'s scope with the hosted texts. A fold's summary is the actor's; with foldsConversation it also moves
-    // the conversation's folded mark (a fold during the actor's turn), otherwise only the actor's own (a catch-up).
-    MemoryUpkeep Upkeep(const std::string& conversationId, const std::string& actorId, int turn, bool foldsConversation);
+    // `actorId`'s scope with the hosted texts, which name the actor and the tellers as Pass does (the conversation's
+    // participants, then the actors of `observation`, then the id). A fold's summary is the actor's; with
+    // foldsConversation it also moves the conversation's folded mark (a fold during the actor's turn), otherwise only
+    // the actor's own (a catch-up).
+    MemoryUpkeep Upkeep(const std::string& conversationId, const std::string& actorId,
+                        const nlohmann::json& observation, int turn, bool foldsConversation);
 };
 
 } // namespace morpheus::turn

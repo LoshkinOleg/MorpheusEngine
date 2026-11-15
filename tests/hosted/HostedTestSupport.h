@@ -79,11 +79,21 @@ inline std::filesystem::path HostedRunFile(std::string_view name)
     return FreshTempDir(name) / "run.db";
 }
 
-// Whether `prompt` is a hosted fold call: its last message is HOSTED_SUMMARIZE_INSTRUCTION with an NPC's name filled in.
+// Whether `prompt` is a hosted fold call: its last message is HOSTED_SUMMARIZE_INSTRUCTION with an NPC's name filled
+// in.
 inline bool IsHostedFold(const inference::Prompt& prompt)
 {
     const std::string_view text = turn::HOSTED_SUMMARIZE_INSTRUCTION;
     return !prompt.messages.empty() && prompt.messages.back().content.starts_with(text.substr(0, text.find("{actor}")));
+}
+
+// Whether `prompt` is a hosted condense call: its last message ends with HOSTED_CONDENSE_INSTRUCTION with an NPC's
+// name filled in (after the memories it condenses).
+inline bool IsHostedCondense(const inference::Prompt& prompt)
+{
+    const std::string_view text = turn::HOSTED_CONDENSE_INSTRUCTION;
+    const std::string_view ending = text.substr(text.rfind("{actor}") + std::string_view("{actor}").size());
+    return !prompt.messages.empty() && prompt.messages.back().content.ends_with(ending);
 }
 
 // A scripted model for hosted turns. Resolve calls (they carry the proposal grammar) get `actions` in order, speak
@@ -100,9 +110,8 @@ struct HostedScript {
         return [this](const inference::Prompt& prompt, const inference::GenerationSpec& spec) -> std::string {
             const std::string& last = prompt.messages.back().content;
             // Memory calls: the owned game's texts, and the hosted ones (which name the NPC).
-            if (last == turn::SUMMARIZE_INSTRUCTION || last == turn::CONDENSE_INSTRUCTION ||
-                last.find("Summarize the turns above as") != std::string::npos ||
-                last.find("Condense what") != std::string::npos) {
+            if (last == turn::SUMMARIZE_INSTRUCTION || last == turn::CONDENSE_INSTRUCTION || IsHostedFold(prompt) ||
+                IsHostedCondense(prompt)) {
                 return "Summary.";
             }
             if (!spec.grammar.empty()) {

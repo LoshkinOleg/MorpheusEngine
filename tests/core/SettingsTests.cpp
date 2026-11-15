@@ -366,6 +366,11 @@ TEST_CASE("settings.example.json loads with the current loader", "[settings]")
     CHECK(settings.proseTurns == 2);
     CHECK(settings.budget.reviewMaxTokens == 384);
     CHECK(settings.budget.reviewThinkingTokens == 0);
+    // A hosted run needs summary_cap below tail_allowance (the speaker's memories sit in the tail): the example's
+    // budgets suit both kinds of run.
+    CHECK(settings.budget.summaryCap == 1024);
+    CHECK(settings.budget.tailAllowance == 3072);
+    CHECK(settings.budget.summaryCap < settings.budget.tailAllowance);
 }
 
 TEST_CASE("LoadSettings reads the llama-server backend", "[settings]")

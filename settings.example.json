@@ -17,10 +17,10 @@
     "narrate_thinking_tokens": 1536,
     "review_thinking_tokens": 0,
     "narrate_allowance": 512,
-    "tail_allowance": 2048,
+    "tail_allowance": 3072,
     "engine_rules_cap": 1024,
     "world_cap": 4096,
-    "summary_cap": 2048,
+    "summary_cap": 1024,
     "retrieval_cap": 768
   },
   "sampling": {
