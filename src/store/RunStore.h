@@ -73,11 +73,12 @@ public:
     // Opens an existing run. An older file is first upgraded in place to version 5, in one transaction: a version 2
     // file gains the hosted tables and is marked owned, a version 3 file gains hosted_turns.events_omitted, and each
     // of them gains version 5's per-actor summary columns and tables. A version 4 hosted run's run-wide summaries are
-    // then moved to the NPCs who witnessed a turn in their range, labelled with the conversation of those turns, or
-    // with none when they are of several (a condensed summary); each NPC witness's mark in a conversation starts at
-    // its folded_through. An owned run's data is not touched. Throws StoreError if it is missing or was written with
-    // another schema version, its meta (rng_seed, settings, kind) is damaged, a hosted turn the move reads is damaged,
-    // or a summary's range holds no turn (the upgrade rolls back).
+    // then moved to NPCs, each by its two end turns: when both are turns of one conversation it is that conversation's
+    // fold, copied, labelled with it, to the NPC witnesses of that conversation's turns in its range; otherwise it is a
+    // condense, copied with no conversation to the NPC witnesses of every turn in its range. Each NPC witness's mark in
+    // a conversation starts at its folded_through. An owned run's data is not touched. Throws StoreError if it is
+    // missing or was written with another schema version, its meta (rng_seed, settings, kind) is damaged, a hosted turn
+    // the move reads is damaged, or a summary does not start and end on hosted turns (the upgrade rolls back).
     static RunStore Open(const std::filesystem::path& file);
 
     const RunMeta& Meta() const;

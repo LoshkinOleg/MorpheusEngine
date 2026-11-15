@@ -297,8 +297,12 @@ RunStore RunStore::Open(const std::filesystem::path& file)
     };
 
     // Version 5's move of a version 3 or 4 hosted run's summaries, inside the upgrade's transaction. Each run-wide
-    // summary goes to every NPC who witnessed a turn in its range, with that turn's conversation; the run-wide row
-    // goes. Each NPC witness's mark in a conversation starts at the conversation's folded_through.
+    // summary's conversation is decided by its two end turns: a D1 fold started and ended on turns of the conversation
+    // it folded (its range can hold another conversation's turns played in between), so one conversation at both ends
+    // is that conversation's fold, which goes to the NPC witnesses of that conversation's turns in the range, labelled
+    // with it. Two conversations at the ends is a condense over both: it goes to the NPC witnesses of every turn in the
+    // range, with no conversation. The run-wide row goes. Each NPC witness's mark in a conversation starts at the
+    // conversation's folded_through.
     auto moveSummaries = [&db, &file] {
         struct Witnessed {
             std::string conversationId = {};
@@ -351,22 +355,29 @@ RunStore RunStore::Open(const std::filesystem::path& file)
             }
         }
 
-        // Each one copied to the NPC witnesses of its range, then removed.
+        // Each one copied to the NPC witnesses it belongs to, then removed.
         for (const RunWide& summary : runWide) {
-            std::set<std::string> npcs;
-            std::set<std::string> conversationIds;
-            for (auto it = turns.lower_bound(summary.fromTurn); it != turns.end() && it->first <= summary.toTurn; ++it) {
-                conversationIds.insert(it->second.conversationId);
-                npcs.insert(it->second.npcs.begin(), it->second.npcs.end());
-            }
-            // Every fold covers turns that exist: a summary over none is damaged data, and the upgrade rolls back.
-            if (conversationIds.empty()) {
-                throw StoreError(std::format("'{}': summary {} covers turns {}..{}, which hold no hosted turn",
+            // Every fold and condense starts and ends on turns that exist: a summary whose end turns are not hosted
+            // turns (or come in the wrong order) is damaged data, and the upgrade rolls back.
+            const auto first = turns.find(summary.fromTurn);
+            const auto last = turns.find(summary.toTurn);
+            if (first == turns.end() || last == turns.end() || summary.fromTurn > summary.toTurn) {
+                throw StoreError(std::format("'{}': summary {} covers turns {}..{}, which do not start and end on "
+                                             "hosted turns",
                                              core::PathText(file), summary.id, summary.fromTurn, summary.toTurn));
             }
-            // A summary over one conversation's turns keeps that conversation; one over several (a run-wide condense)
-            // is condensed, and a condensed summary has no conversation.
-            const std::string conversationId = conversationIds.size() == 1 ? *conversationIds.begin() : std::string();
+            // One conversation at both ends: that conversation's fold, labelled with it, for its own turns' witnesses
+            // only. Two: a condense, which has no conversation, for the witnesses of every turn in the range. A D1
+            // condense whose ends happen to fall in one conversation is taken for a fold: it goes to fewer NPCs, so a
+            // memory can be lost but never given to an NPC who did not witness it.
+            const bool fold = first->second.conversationId == last->second.conversationId;
+            const std::string conversationId = fold ? first->second.conversationId : std::string();
+            std::set<std::string> npcs;
+            for (auto it = first; it != turns.end() && it->first <= summary.toTurn; ++it) {
+                if (!fold || it->second.conversationId == conversationId) {
+                    npcs.insert(it->second.npcs.begin(), it->second.npcs.end());
+                }
+            }
             for (const std::string& npc : npcs) {
                 db.Prepare("INSERT INTO summaries (from_turn, to_turn, text, actor_id, conversation_id) "
                            "VALUES (?1, ?2, ?3, ?4, ?5)")

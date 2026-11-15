@@ -831,47 +831,58 @@ TEST_CASE("A hosted summary row without its actor is a StoreError naming the fil
     CHECK_THROWS_WITH(store.HostedSummaries(), ContainsSubstring("run.db") && ContainsSubstring("actor_id"));
 }
 
-TEST_CASE("A version 4 summary over turns of two conversations is upgraded to each NPC witness with no conversation",
+TEST_CASE("A version 4 interleaved fold goes only to its conversation's witnesses; a condense over two conversations "
+          "goes to every witness with no conversation",
           "[store][hosted][memory]")
 {
-    // c1 (Hulda and Aela) has turns 1 and 3; c2 (Saadia and Aela) has turn 2. One run-wide summary covers turns 1-3, as
-    // a D1 condense over both conversations wrote it; another covers c1's turn 1 alone.
+    // c1 (Hulda and Aela) has turns 1 and 3; c2 (Saadia and Aela) has turns 2 and 4. D1 stored a fold of c1's turns 1
+    // and 3 as the range 1..3, around c2's turn 2: its end turns are both c1's, so it is c1's fold. A condense over
+    // both conversations ends on turns of two conversations (1..4). A fold of c1's turn 1 alone is c1's too.
     const std::filesystem::path file = test::FreshTempDir("store_upgrade_v4_two") / "run.db";
     {
         store::RunStore store = store::RunStore::CreateHosted(file, HostedMeta(), TestHostData());
         const std::string c1 = store.CreateConversation(TwoParticipants());
         const std::string c2 = store.CreateConversation({{"npc-2", "Saadia", ""}, {"player", "Aela", ""}});
+        auto saadia = [&c2](int number) {
+            core::HostedTurn turn = TestHostedTurn(number, c2);
+            turn.speakerId = "npc-2";
+            turn.observation = nlohmann::json::parse(R"({"actors": [{"id": "npc-2", "name": "Saadia", "is_player": false},
+                                                                    {"id": "player", "name": "Aela", "is_player": true}]})");
+            return turn;
+        };
         store.CommitHostedTurn(TestHostedTurn(1, c1));
-        core::HostedTurn saadia = TestHostedTurn(2, c2);
-        saadia.speakerId = "npc-2";
-        saadia.observation = nlohmann::json::parse(R"({"actors": [{"id": "npc-2", "name": "Saadia", "is_player": false},
-                                                                  {"id": "player", "name": "Aela", "is_player": true}]})");
-        store.CommitHostedTurn(saadia);
+        store.CommitHostedTurn(saadia(2));
         store.CommitHostedTurn(TestHostedTurn(3, c1));
+        store.CommitHostedTurn(saadia(4));
     }
     Damage(file, "UPDATE conversations SET folded_through = 3 WHERE id = 'c1';"
-                 "UPDATE conversations SET folded_through = 2 WHERE id = 'c2';"
+                 "UPDATE conversations SET folded_through = 4 WHERE id = 'c2';"
                  "INSERT INTO summaries (from_turn, to_turn, text) VALUES (1, 1, 'Hulda greeted Aela.');"
-                 "INSERT INTO summaries (from_turn, to_turn, text) VALUES (1, 3, 'Both talks.');");
+                 "INSERT INTO summaries (from_turn, to_turn, text) VALUES (1, 3, 'Hulda talked with Aela twice.');"
+                 "INSERT INTO summaries (from_turn, to_turn, text) VALUES (1, 4, 'Both talks.');");
     Damage(file, DROP_VERSION_5_SQL);
     Damage(file, "UPDATE run_meta SET value = '4' WHERE key = 'schema_version';");
 
     store::RunStore store = store::RunStore::Open(file);
-    // Hulda keeps the label of the summary over c1 alone; the one over both conversations has none.
+    // Hulda has both of c1's folds, labelled c1, and the condense, with no conversation.
     const std::vector<core::Summary> hulda = store.ActorSummaries("npc-1", true);
-    REQUIRE(hulda.size() == 2);
+    REQUIRE(hulda.size() == 3);
     CHECK(hulda[0].text == "Hulda greeted Aela.");
     CHECK(hulda[0].conversationId == "c1");
-    CHECK(hulda[1].text == "Both talks.");
-    CHECK(hulda[1].conversationId.empty());
-    // Saadia witnessed turn 2, in the range of the summary over both.
+    CHECK(hulda[1].text == "Hulda talked with Aela twice.");
+    CHECK(hulda[1].conversationId == "c1");
+    CHECK(hulda[1].fromTurn == 1);
+    CHECK(hulda[1].toTurn == 3);
+    CHECK(hulda[2].text == "Both talks.");
+    CHECK(hulda[2].conversationId.empty());
+    // Saadia witnessed turn 2, inside the interleaved fold's range, but not c1's turns: she has only the condense.
     const std::vector<core::Summary> saadia = store.ActorSummaries("npc-2", true);
     REQUIRE(saadia.size() == 1);
     CHECK(saadia[0].text == "Both talks.");
     CHECK(saadia[0].conversationId.empty());
     CHECK(store.ActorSummaries("player", true).empty());
     CHECK(store.RememberedThrough("c1", "npc-1") == 3);
-    CHECK(store.RememberedThrough("c2", "npc-2") == 2);
+    CHECK(store.RememberedThrough("c2", "npc-2") == 4);
 }
 
 TEST_CASE("A version 4 summary whose range holds no turn fails the upgrade, naming the file and the summary",
@@ -894,4 +905,18 @@ TEST_CASE("A version 4 summary whose range holds no turn fails the upgrade, nami
     store::Statement summaries = db.Prepare("SELECT COUNT(*) FROM summaries");
     REQUIRE(summaries.Step());
     CHECK(summaries.ColumnInt(0) == 1);
+}
+
+TEST_CASE("A version 4 summary whose end turn is not a hosted turn fails the upgrade, naming the file and the summary",
+          "[store][hosted][memory]")
+{
+    // Turn 1 is the run's only turn: a summary of turns 1-2 starts on it but ends on no turn, so its conversation
+    // cannot be told.
+    const std::filesystem::path file = HostedFile("store_upgrade_v4_no_end");
+    Damage(file, "INSERT INTO summaries (from_turn, to_turn, text) VALUES (1, 2, 'Half a talk.');");
+    Damage(file, DROP_VERSION_5_SQL);
+    Damage(file, "UPDATE run_meta SET value = '4' WHERE key = 'schema_version';");
+    CHECK_THROWS_AS(store::RunStore::Open(file), store::StoreError);
+    CHECK_THROWS_WITH(store::RunStore::Open(file), ContainsSubstring("run.db") && ContainsSubstring("summary 1") &&
+                                                       ContainsSubstring("1..2"));
 }
