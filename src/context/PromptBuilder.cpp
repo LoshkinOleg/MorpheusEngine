@@ -221,7 +221,8 @@ Assembly AssembleHostedPrompt(const HostedInputs& inputs, const core::BudgetSett
     }
     tail += "\n# Task\n" + inputs.instruction;
 
-    // The system layers' counts, then their caps: L0 is engine text (a bug if too long), the lore and the
+    // The system layers' counts, then their caps: L0 is the run's system text (the host's
+    // pack or the engine's default; Open refused one over the cap, so too long is a bug), the lore and the
     // participants are the host's data.
     Assembly assembly;
     LayerTokens& tokens = assembly.tokens;

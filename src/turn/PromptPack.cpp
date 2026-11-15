@@ -102,7 +102,8 @@ std::string PromptPack::Fill(std::string_view text, const PromptVariables& varia
                                     : name == "player" ? &variables.player
                                     : name == "actor"  ? &variables.actor
                                                        : nullptr;
-        MORPHEUS_REQUIRE(pValue != nullptr, std::format("PromptPack::Fill: {{{}}} is not a variable the engine fills", name));
+        MORPHEUS_REQUIRE(pValue != nullptr,
+                         std::format("PromptPack::Fill: {{{}}} is not a variable the engine fills", name));
         MORPHEUS_REQUIRE(!pValue->empty(), std::format("PromptPack::Fill: no value for {{{}}}", name));
         filled += *pValue;
         at += length;

@@ -85,11 +85,11 @@ public:
     // update) the changed lore is re-embedded first, then the new host data replaces the stored copy. The host data
     // is checked first (HostedWorld's DataError), then the settings: a summary_cap not below tail_allowance is a
     // DataError naming both (the speaker's memories sit in the tail). Then the system text (the run's pack's) is
-    // counted with `backend`: over engine_rules_cap is a DataError "prompts/system: <n> tokens, over engine_rules_cap
-    // <cap>". Throws DataError for a file that holds an owned
-    // run, StoreError for a damaged one, DataError if the backend refuses a lore entry (too long to embed), and
-    // InferenceError if the backend cannot be reached or fails while embedding: either way a new file is then
-    // removed, and a reopened run keeps its stored host data and hash.
+    // counted with `backend`: over engine_rules_cap is a DataError "prompts/system: <n> tokens, over
+    // engine_rules_cap <cap>". Throws DataError for a file that holds an owned run, StoreError for a damaged one,
+    // DataError if the backend refuses a lore entry (too long to embed), and InferenceError if the backend cannot be
+    // reached or fails while counting the system text (before the file is touched) or while embedding: either way
+    // a new file is then removed, and a reopened run keeps its stored host data and hash.
     static HostedSession Open(const std::filesystem::path& file, HostData data, core::Settings settings,
                               std::uint64_t seed, inference::LlmBackend& backend);
 
