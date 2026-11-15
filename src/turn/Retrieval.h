@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -50,6 +51,12 @@ struct RetrievalQuery {
 // first as written.
 std::vector<std::string> SceneOf(const core::World& world, const nlohmann::json& state);
 
+// A hosted run's folded turn as searchable history, with who witnessed it (its speaker and listeners).
+struct WitnessedEntry {
+    context::TranscriptEntry entry = {};
+    std::vector<std::string> witnesses = {};
+};
+
 // Similarity search over a run's memory (architecture spec, turn flow step 1): lore that is not always on, folded
 // turns, and notes. Turns still in the transcript are not searchable: they are already in the prompt. Vectors are
 // stored in the RunStore with the content hash of the document prefix plus the embedded text, so edited lore, a
@@ -62,6 +69,7 @@ private:
         std::string name = {}; // Lore: the lower-cased subject, for the name boost. Empty otherwise.
         std::string text = {}; // The snippet the prompt shows.
         std::vector<float> vector = {};
+        std::vector<std::string> witnesses = {}; // Turn: its speaker and listeners. Summary: its owner. Empty otherwise.
     };
     struct Document {
         std::string refId = {};
@@ -90,20 +98,30 @@ public:
     // backend cannot embed a text (the engine cuts them, so that is a runtime failure).
     void SyncHistory(store::RunStore& store, int foldedThrough, inference::LlmBackend& backend);
 
-    // Indexes `folded` (a hosted run's folded turns, as transcript entries) as searchable history: each embedded as
+    // Indexes `folded` (a hosted run's folded turns, with their witnesses) as searchable history: each embedded as
     // its fact cut to EMBED_TEXT_CHARS and shown as "Turn N: <fact>" with the fact cut to 2 * HISTORY_SNIPPET_CHARS,
     // embedding where missing or stale. Replaces every turn entry; notes are left as they are. Throws InferenceError
     // when the backend cannot embed a text (the engine cuts them, so that is a runtime failure).
-    void SyncEntries(const std::vector<context::TranscriptEntry>& folded, store::RunStore& store,
+    void SyncEntries(const std::vector<WitnessedEntry>& folded, store::RunStore& store,
                      inference::LlmBackend& backend);
+
+    // Indexes `summaries` (a hosted run's NPC summaries, shown or superseded) as a searchable source owned by their
+    // NPC: each embedded as its text cut to EMBED_TEXT_CHARS and shown as "Memory of turns A-B: <text>" with the text
+    // cut to 2 * HISTORY_SNIPPET_CHARS, under its id in decimal. Replaces every summary entry. Throws ContractError
+    // for a summary with no actor or no id, and InferenceError when the backend cannot embed a text.
+    void SyncSummaries(const std::vector<core::Summary>& summaries, store::RunStore& store,
+                       inference::LlmBackend& backend);
 
     // The best hits for `query` among `sources`. Each hit scores at least RETRIEVAL_MIN_SCORE: the cosine with the
     // embedding of query.Text(), plus NAME_BOOST, once, for a lore subject (lower-cased) contained in the input
     // (reason "name") or in a scene value (reason "scene"). The digest only enters the embedding. Hits come in score
     // order (ties by kind, then refId), at most maxHits of them, whose "- text\n" lines fit capTokens together. A hit
-    // too big for the rest of the cap is skipped. No embedding call is made when nothing is searchable.
+    // too big for the rest of the cap is skipped. With a `witness`, a turn entry is searched only when the witness is
+    // among its witnesses and a summary entry only when the witness owns it; lore and notes are unaffected. No
+    // embedding call is made when nothing is searchable.
     std::vector<RetrievalHit> Retrieve(const RetrievalQuery& query, std::span<const store::EmbeddingKind> sources,
-                                       int capTokens, std::size_t maxHits, inference::LlmBackend& backend) const;
+                                       int capTokens, std::size_t maxHits, inference::LlmBackend& backend,
+                                       std::optional<std::string_view> witness = std::nullopt) const;
 
 private:
     // Vectors for `documents` of one kind, aligned with them: stored ones whose hash still matches, the rest

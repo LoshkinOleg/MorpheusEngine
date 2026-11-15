@@ -205,7 +205,8 @@ TEST_CASE("A cancelled Maintain folds nothing and can simply run again", "[hoste
     CHECK(session.Conversation(id)->foldedThrough == 2);
 }
 
-TEST_CASE("Two open conversations interleave their turns; ending one folds only its turns, which the other retrieves",
+TEST_CASE("Two open conversations interleave their turns; ending one folds only its turns, which a non-witness does not "
+          "retrieve",
           "[hosted][folding]")
 {
     test::HostedScript script;
@@ -291,16 +292,15 @@ TEST_CASE("Two open conversations interleave their turns; ending one folds only 
     // The summary is Hulda's, who spoke c1's last turn; Saadia has none.
     CHECK(session.Memories(test::SAADIA).empty());
 
-    // c2's next turn (Saadia's) has no summary of c1 in L2 and its own turns still in L3, and retrieves c1's folded
-    // turns.
+    // c2's next turn (Saadia's) has no summary of c1 in L2 and its own turns still in L3, and does not retrieve c1's
+    // folded turns: Saadia did not witness them.
     REQUIRE(session.RunTurn(test::Request(c2, test::SAADIA, "Where is the silver key?"), {}, {})->number == 5);
     CHECK_THAT(session.LastAssembly().prompt.messages.front().content, !ContainsSubstring("# Story so far"));
     CHECK(transcript() == std::vector<std::string>{"(A bard tunes a lute.)\nAela: Any rumours tonight?",
                                                    "Saadia [none]: Only about the bard.",
                                                    "(The fire crackles.)\nAela: Tell me about the bard.",
                                                    "Saadia [none]: He sings of dragons."});
-    CHECK_THAT(tail(), ContainsSubstring("\n- Turn 1: (Rain starts.) Aela: Where did you hide the silver key? Hulda "
-                                         "[none]: The silver key is under the bar.\n"));
+    CHECK_THAT(tail(), !ContainsSubstring("- Turn 1:") && !ContainsSubstring("- Turn 3:"));
     CHECK(session.Conversation(c2)->foldedThrough == 0);
 }
 

@@ -175,18 +175,20 @@ void MemoryIndex::SyncHistory(store::RunStore& store, int foldedThrough, inferen
     Replace(store::EmbeddingKind::Note, std::move(noteEntries));
 }
 
-void MemoryIndex::SyncEntries(const std::vector<context::TranscriptEntry>& folded, store::RunStore& store,
+void MemoryIndex::SyncEntries(const std::vector<WitnessedEntry>& folded, store::RunStore& store,
                               inference::LlmBackend& backend)
 {
-    // Each folded turn under its run-wide number: its fact is what is embedded and, cut shorter, what is shown.
+    // Each folded turn under its run-wide number, with its witnesses: its fact is what is embedded and, cut shorter,
+    // what is shown.
     std::vector<Document> documents;
     std::vector<Entry> entries;
-    for (const context::TranscriptEntry& turn : folded) {
+    for (const WitnessedEntry& witnessed : folded) {
+        const context::TranscriptEntry& turn = witnessed.entry;
         const std::string refId = std::to_string(turn.turn);
         documents.push_back({refId, core::CutUtf8(turn.fact, EMBED_TEXT_CHARS)});
         entries.push_back({store::EmbeddingKind::Turn, refId, {},
                            std::format("Turn {}: {}", turn.turn, core::CutUtf8(turn.fact, 2 * HISTORY_SNIPPET_CHARS)),
-                           {}});
+                           {}, witnessed.witnesses});
     }
     std::vector<std::vector<float>> vectors = Vectors(store::EmbeddingKind::Turn, documents, "", store, backend);
     for (std::size_t i = 0; i < entries.size(); ++i) {
@@ -195,15 +197,48 @@ void MemoryIndex::SyncEntries(const std::vector<context::TranscriptEntry>& folde
     Replace(store::EmbeddingKind::Turn, std::move(entries));
 }
 
+void MemoryIndex::SyncSummaries(const std::vector<core::Summary>& summaries, store::RunStore& store,
+                                inference::LlmBackend& backend)
+{
+    // Each NPC summary under its id, owned by its NPC: its text is what is embedded and, cut shorter, what is shown.
+    std::vector<Document> documents;
+    std::vector<Entry> entries;
+    for (const core::Summary& summary : summaries) {
+        MORPHEUS_REQUIRE(!summary.actorId.empty() && summary.id > 0,
+                         "MemoryIndex::SyncSummaries: a stored NPC summary is needed");
+        const std::string refId = std::to_string(summary.id);
+        documents.push_back({refId, core::CutUtf8(summary.text, EMBED_TEXT_CHARS)});
+        entries.push_back({store::EmbeddingKind::Summary, refId, {},
+                           std::format("Memory of turns {}-{}: {}", summary.fromTurn, summary.toTurn,
+                                       core::CutUtf8(summary.text, 2 * HISTORY_SNIPPET_CHARS)),
+                           {}, {summary.actorId}});
+    }
+    std::vector<std::vector<float>> vectors = Vectors(store::EmbeddingKind::Summary, documents, "", store, backend);
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        entries[i].vector = std::move(vectors[i]);
+    }
+    Replace(store::EmbeddingKind::Summary, std::move(entries));
+}
+
 std::vector<RetrievalHit> MemoryIndex::Retrieve(const RetrievalQuery& query,
                                                 std::span<const store::EmbeddingKind> sources, int capTokens,
-                                                std::size_t maxHits, inference::LlmBackend& backend) const
+                                                std::size_t maxHits, inference::LlmBackend& backend,
+                                                std::optional<std::string_view> witness) const
 {
-    auto searched = [&sources](store::EmbeddingKind kind) {
-        return std::find(sources.begin(), sources.end(), kind) != sources.end();
+    // An entry is searched when its kind is one of the sources and, for a witness, when it may see it: a turn it
+    // witnessed, or a summary it owns. Lore and notes are everyone's.
+    auto searched = [&sources, &witness](const Entry& entry) {
+        if (std::find(sources.begin(), sources.end(), entry.kind) == sources.end()) {
+            return false;
+        }
+        if (!witness || (entry.kind != store::EmbeddingKind::Turn && entry.kind != store::EmbeddingKind::Summary)) {
+            return true;
+        }
+        return std::any_of(entry.witnesses.begin(), entry.witnesses.end(),
+                           [&witness](const std::string& id) { return id == *witness; });
     };
     const std::string text = query.Text();
-    const bool anything = std::any_of(_entries.begin(), _entries.end(), [&](const Entry& e) { return searched(e.kind); });
+    const bool anything = std::any_of(_entries.begin(), _entries.end(), [&](const Entry& e) { return searched(e); });
     if (!anything || capTokens <= 0 || maxHits == 0 || text.empty()) {
         return {};
     }
@@ -217,7 +252,7 @@ std::vector<RetrievalHit> MemoryIndex::Retrieve(const RetrievalQuery& query,
     }
     std::vector<RetrievalHit> hits;
     for (const Entry& entry : _entries) {
-        if (!searched(entry.kind)) {
+        if (!searched(entry)) {
             continue;
         }
         MORPHEUS_REQUIRE(entry.vector.size() == queryVector.size(), "Retrieve: vectors from different models");

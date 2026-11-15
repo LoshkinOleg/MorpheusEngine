@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <map>
 #include <format>
 #include <system_error>
 #include <utility>
@@ -25,7 +26,8 @@ constexpr std::string_view HOSTED_TAIL_NAME = "the observation, the events and t
 // The task line of the placeholder tail Maintain measures an ended conversation's prompt with.
 constexpr std::string_view MAINTENANCE_INSTRUCTION = "(the conversation's next turn)";
 // A hosted turn retrieves from the host's lore and the run's folded turns; a hosted run has no notes.
-constexpr std::array<store::EmbeddingKind, 2> HOSTED_SOURCES = {store::EmbeddingKind::Lore, store::EmbeddingKind::Turn};
+constexpr std::array<store::EmbeddingKind, 3> HOSTED_SOURCES = {store::EmbeddingKind::Lore, store::EmbeddingKind::Turn,
+                                                                store::EmbeddingKind::Summary};
 // The variables the engine fills in the hosted texts.
 constexpr std::string_view SPEAKER_VARIABLE = "{speaker}";
 constexpr std::string_view PLAYER_VARIABLE = "{player}";
@@ -259,14 +261,15 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
         newEvents.push_back(event.at("text").get<std::string>());
     }
 
-    // 1. Retrieve from lore and the run's folded turns (this and earlier conversations), with the player text, the
-    // speaker's name and the previous line.
+    // 1. Retrieve from lore, the folded turns the speaker witnessed (this and earlier conversations) and its own
+    // summaries, with the player text, the speaker's name and the previous line.
     RetrievalQuery query;
     query.input = playerText.value_or("");
     query.scene = {pSpeaker->name};
     query.digest = played.empty() ? std::string() : played.back().line;
     std::vector<RetrievalHit> hits =
-        _index.Retrieve(query, HOSTED_SOURCES, _settings.budget.retrievalCap, RETRIEVAL_MAX_HITS, *_pBackend);
+        _index.Retrieve(query, HOSTED_SOURCES, _settings.budget.retrievalCap, RETRIEVAL_MAX_HITS, *_pBackend,
+                        request.speakerId);
 
     // 2. Resolve: a prompt that fits (the fit loop sheds hits, condenses and folds), under the proposal grammar.
     context::HostedInputs tail;
@@ -509,14 +512,23 @@ std::vector<context::TranscriptEntry> HostedSession::Entries(const core::Convers
 
 void HostedSession::SyncHistory()
 {
-    // Every conversation's folded turns, rendered as entries, are the run's searchable history.
-    std::vector<context::TranscriptEntry> folded;
+    // Every conversation's folded turns, rendered as entries with their witnesses (speaker and listeners), are the
+    // run's searchable history; the NPC summaries are a second source, each owned by its NPC.
+    std::vector<WitnessedEntry> folded;
     for (const core::Conversation& conversation : _store.Conversations()) {
+        std::map<int, std::vector<std::string>> witnesses; // Turn number -> its speaker and listeners.
+        for (const core::HostedTurn& turn : _store.HostedTurns(conversation.id)) {
+            std::vector<std::string>& ids = witnesses[turn.number];
+            ids.push_back(turn.speakerId);
+            ids.insert(ids.end(), turn.listenerIds.begin(), turn.listenerIds.end());
+        }
         for (context::TranscriptEntry& entry : Entries(conversation, true)) {
-            folded.push_back(std::move(entry));
+            std::vector<std::string> ids = witnesses.at(entry.turn);
+            folded.push_back({std::move(entry), std::move(ids)});
         }
     }
     _index.SyncEntries(folded, _store, *_pBackend);
+    _index.SyncSummaries(_store.HostedSummaries(), _store, *_pBackend);
 }
 
 FitPass HostedSession::Pass(std::string_view conversationId, std::string_view speakerId,
@@ -560,6 +572,7 @@ MemoryUpkeep HostedSession::Upkeep(const std::string& conversationId, const std:
         core::Summary speakers = condensed;
         speakers.actorId = speakerId;
         _store.CondenseActorSummaries(speakerId, speakers);
+        SyncHistory();
     };
     scope.foldInstruction = std::string(SUMMARIZE_INSTRUCTION);
     scope.condenseMessage = [](const std::vector<core::Summary>&) { return std::string(CONDENSE_INSTRUCTION); };

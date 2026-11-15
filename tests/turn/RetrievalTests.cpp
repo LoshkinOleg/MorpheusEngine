@@ -4,9 +4,12 @@
 #include <catch2/matchers/catch_matchers_exception.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
+#include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -14,6 +17,7 @@
 #include "TestPaths.h"
 #include "context/Transcript.h"
 #include "core/Errors.h"
+#include "core/TurnRecord.h"
 #include "core/World.h"
 #include "fakes/ScriptedBackend.h"
 #include "store/RunStore.h"
@@ -316,7 +320,7 @@ TEST_CASE("Folded transcript entries are searchable history under their turn num
     entry.fact = "Aela: Where is the brass key? Hulda [none]: Under the bar.";
     test::ScriptedBackend backend(16384);
     turn::MemoryIndex index("search_document: ");
-    index.SyncEntries({entry}, store, backend);
+    index.SyncEntries({{entry, {}}}, store, backend);
 
     const std::vector<turn::RetrievalHit> hits =
         index.Retrieve(turn::RetrievalQuery{"brass key"}, ALL_SOURCES, 1000, 6, backend);
@@ -327,8 +331,55 @@ TEST_CASE("Folded transcript entries are searchable history under their turn num
 
     // The stored vector is reused, and an empty list leaves no history.
     const int embedded = backend.EmbeddedTexts();
-    index.SyncEntries({entry}, store, backend);
+    index.SyncEntries({{entry, {}}}, store, backend);
     CHECK(backend.EmbeddedTexts() == embedded);
     index.SyncEntries({}, store, backend);
     CHECK(index.Retrieve(turn::RetrievalQuery{"brass key"}, ALL_SOURCES, 1000, 6, backend).empty());
+}
+
+TEST_CASE("Retrieve for a witness returns only the turns it witnessed and the summaries it owns", "[retrieval][memory]")
+{
+    test::ScriptedBackend backend(16384);
+    store::RunStore store = store::RunStore::Create(test::FreshTempDir("retrieval_witness") / "run.db",
+                                                    store::RunMeta{}, nlohmann::json::object());
+    turn::MemoryIndex index("search_document: ");
+    auto turnEntry = [](int number, const std::string& fact) {
+        context::TranscriptEntry entry;
+        entry.turn = number;
+        entry.fact = fact;
+        return entry;
+    };
+    index.SyncEntries({{turnEntry(1, "bridge one"), {"hulda", "saadia"}}, {turnEntry(2, "bridge two"), {"hulda"}}},
+                      store, backend);
+    core::Summary mine{1, 1, "bridge three"};
+    mine.actorId = "saadia";
+    mine.id = 7;
+    core::Summary theirs{2, 2, "bridge four"};
+    theirs.actorId = "hulda";
+    theirs.id = 8;
+    index.SyncSummaries({mine, theirs}, store, backend);
+
+    const std::array<store::EmbeddingKind, 2> sources = {store::EmbeddingKind::Turn, store::EmbeddingKind::Summary};
+    turn::RetrievalQuery query;
+    query.input = "bridge";
+    // The hits as (kind, refId) pairs.
+    auto found = [](const std::vector<turn::RetrievalHit>& hits) {
+        std::set<std::pair<store::EmbeddingKind, std::string>> pairs;
+        for (const turn::RetrievalHit& hit : hits) {
+            pairs.insert({hit.kind, hit.refId});
+        }
+        return pairs;
+    };
+    CHECK(found(index.Retrieve(query, sources, 1000, 10, backend)).size() == 4);
+    CHECK(found(index.Retrieve(query, sources, 1000, 10, backend, "saadia")) ==
+          std::set<std::pair<store::EmbeddingKind, std::string>>{{store::EmbeddingKind::Turn, "1"},
+                                                                 {store::EmbeddingKind::Summary, "7"}});
+    CHECK(found(index.Retrieve(query, sources, 1000, 10, backend, "belethor")).empty());
+
+    // A summary is shown under its range.
+    const std::vector<turn::RetrievalHit> hulda = index.Retrieve(query, sources, 1000, 10, backend, "hulda");
+    const bool shown = std::any_of(hulda.begin(), hulda.end(), [](const turn::RetrievalHit& hit) {
+        return hit.kind == store::EmbeddingKind::Summary && hit.text == "Memory of turns 2-2: bridge four";
+    });
+    CHECK(shown);
 }
