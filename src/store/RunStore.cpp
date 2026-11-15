@@ -612,16 +612,31 @@ RunStore RunStore::Open(const std::filesystem::path& file)
                                      kindText));
     }
 
-    // A hosted run's memory marks each name one of its conversations: a mark of any other is damaged saved data.
-    if (meta.kind == RunKind::Hosted) {
-        Statement orphan = db.Prepare("SELECT conversation_id FROM actor_memory "
-                                      "WHERE conversation_id NOT IN (SELECT id FROM conversations) LIMIT 1");
-        if (orphan.Step()) {
-            throw StoreError(std::format("'{}': actor_memory.conversation_id '{}' names no conversation of the run",
-                                         core::PathText(file), orphan.ColumnText(0)));
+    RunStore store(std::move(db), std::move(meta), file);
+    if (store._meta.kind == RunKind::Hosted) {
+        // A hosted run's memory marks each name one of its conversations: a mark of any other is damaged saved data.
+        {
+            Statement orphan = store._db.Prepare("SELECT conversation_id FROM actor_memory "
+                                                 "WHERE conversation_id NOT IN (SELECT id FROM conversations) LIMIT 1");
+            if (orphan.Step()) {
+                throw StoreError(std::format("'{}': actor_memory.conversation_id '{}' names no conversation of the run",
+                                             core::PathText(file), orphan.ColumnText(0)));
+            }
         }
+        // Every hidden row names a rollback, and at most one rollback is open.
+        for (const char* table : {"hosted_turns", "conversation_events", "conversation_changes", "conversations",
+                                  "summaries", "pending_shares"}) {
+            Statement dangling = store._db.Prepare(std::format(
+                "SELECT COUNT(*) FROM {} WHERE hidden_by <> 0 AND hidden_by NOT IN (SELECT id FROM rollbacks)", table));
+            const bool hasRow = dangling.Step();
+            MORPHEUS_REQUIRE(hasRow, "RunStore::Open: aggregate query returned no row");
+            if (dangling.ColumnInt(0) > 0) {
+                throw StoreError(std::format("'{}': {}: hidden_by names no rollback", core::PathText(file), table));
+            }
+        }
+        store.OpenRollback(); // Throws when more than one is open.
     }
-    return RunStore(std::move(db), std::move(meta), file);
+    return store;
 }
 
 const RunMeta& RunStore::Meta() const
@@ -1430,6 +1445,261 @@ std::vector<core::HostedTurn> RunStore::HostedTurns(std::string_view conversatio
     return turns;
 }
 
+std::optional<Rollback> RunStore::OpenRollback()
+{
+    RequireHosted("OpenRollback");
+    // At most one rollback is open at a time: a second one is damaged saved data.
+    Statement query = _db.Prepare("SELECT id, game_time FROM rollbacks WHERE status = 'open' ORDER BY id");
+    std::optional<Rollback> open;
+    while (query.Step()) {
+        if (open) {
+            throw StoreError(std::format("'{}': rollbacks holds more than one open rollback ({} and {})",
+                                         core::PathText(_file), open->id, query.ColumnInt(0)));
+        }
+        open = Rollback{query.ColumnInt(0), query.ColumnDouble(1)};
+    }
+    return open;
+}
+
+RollbackCounts RunStore::ApplyRollback(double gameTime)
+{
+    RequireHosted("ApplyRollback");
+    MORPHEUS_REQUIRE(!OpenRollback(), "RunStore::ApplyRollback: a rollback is already open");
+    RollbackCounts counts;
+    _db.Transaction([&] {
+        // What it changes, saved first so an undo restores it exactly: every conversation's folded mark, every NPC's
+        // mark (as [conversation, actor, through]) and every share's application (as [id, applied, applied_clock,
+        // unapplied_by]; shares applied while it is open are put back too).
+        nlohmann::json saved = {{"folded_through", nlohmann::json::object()},
+                                {"remembered", nlohmann::json::array()},
+                                {"shares", nlohmann::json::array()}};
+        {
+            Statement folded = _db.Prepare("SELECT id, folded_through FROM conversations");
+            while (folded.Step()) {
+                saved["folded_through"][folded.ColumnText(0)] = folded.ColumnInt(1);
+            }
+        }
+        {
+            Statement remembered = _db.Prepare("SELECT conversation_id, actor_id, remembered_through FROM actor_memory");
+            while (remembered.Step()) {
+                saved["remembered"].push_back(
+                    {remembered.ColumnText(0), remembered.ColumnText(1), remembered.ColumnInt(2)});
+            }
+        }
+        {
+            Statement shares = _db.Prepare("SELECT id, applied, applied_clock, unapplied_by FROM pending_shares");
+            while (shares.Step()) {
+                const nlohmann::json appliedClock =
+                    shares.ColumnIsNull(2) ? nlohmann::json(nullptr) : nlohmann::json(shares.ColumnDouble(2));
+                saved["shares"].push_back({shares.ColumnInt(0), shares.ColumnInt(1), appliedClock, shares.ColumnInt(3)});
+            }
+        }
+        _db.Prepare("INSERT INTO rollbacks (game_time, status, saved_marks) VALUES (?1, 'open', ?2)")
+            .Bind(1, gameTime)
+            .Bind(2, saved.dump())
+            .Run();
+        std::int64_t id = 0;
+        {
+            Statement inserted = _db.Prepare("SELECT last_insert_rowid()");
+            const bool hasRow = inserted.Step();
+            MORPHEUS_REQUIRE(hasRow, "ApplyRollback: last_insert_rowid returned no row");
+            id = inserted.ColumnInt(0);
+        }
+
+        // Records clocked after the time, and conversations started after it with everything in them (their rows all
+        // have later clocks). The visible turns are counted before they are hidden.
+        {
+            Statement hiddenTurns = _db.Prepare("SELECT COUNT(*) FROM hosted_turns WHERE hidden_by = 0 AND clock > ?1");
+            hiddenTurns.Bind(1, gameTime);
+            const bool hasRow = hiddenTurns.Step();
+            MORPHEUS_REQUIRE(hasRow, "ApplyRollback: aggregate query returned no row");
+            counts.hiddenTurns = static_cast<int>(hiddenTurns.ColumnInt(0));
+        }
+        for (const char* table : {"hosted_turns", "conversation_events", "conversation_changes", "conversations"}) {
+            _db.Prepare(std::format("UPDATE {} SET hidden_by = ?1 WHERE hidden_by = 0 AND clock > ?2", table))
+                .Bind(1, id)
+                .Bind(2, gameTime)
+                .Run();
+        }
+        // Shared copies and pending shares made after it; shares applied after it are pending again (a share hidden
+        // here is not also unapplied: it is gone until an undo, applied or not).
+        _db.Prepare("UPDATE summaries SET hidden_by = ?1 WHERE hidden_by = 0 AND clock > ?2")
+            .Bind(1, id)
+            .Bind(2, gameTime)
+            .Run();
+        _db.Prepare("UPDATE pending_shares SET hidden_by = ?1 WHERE hidden_by = 0 AND clock > ?2")
+            .Bind(1, id)
+            .Bind(2, gameTime)
+            .Run();
+        _db.Prepare("UPDATE pending_shares SET unapplied_by = ?1 WHERE hidden_by = 0 AND applied = 1 AND unapplied_by = 0 "
+                    "AND applied_clock > ?2")
+            .Bind(1, id)
+            .Bind(2, gameTime)
+            .Run();
+        // Summaries covering a hidden turn: past their conversation's last visible turn, or, with no conversation (a
+        // condense), past the run's.
+        _db.Prepare("UPDATE summaries SET hidden_by = ?1 WHERE hidden_by = 0 AND conversation_id <> '' AND to_turn > "
+                    "COALESCE((SELECT MAX(number) FROM hosted_turns t WHERE t.conversation_id = summaries.conversation_id "
+                    "AND t.hidden_by = 0), 0)")
+            .Bind(1, id)
+            .Run();
+        _db.Prepare("UPDATE summaries SET hidden_by = ?1 WHERE hidden_by = 0 AND conversation_id = '' AND to_turn > "
+                    "COALESCE((SELECT MAX(number) FROM hosted_turns WHERE hidden_by = 0), 0)")
+            .Bind(1, id)
+            .Run();
+        // Marks back to each conversation's last visible turn (two-argument MIN is the scalar minimum).
+        _db.Prepare("UPDATE conversations SET folded_through = MIN(folded_through, COALESCE((SELECT MAX(number) FROM "
+                    "hosted_turns t WHERE t.conversation_id = conversations.id AND t.hidden_by = 0), 0))")
+            .Run();
+        _db.Prepare("UPDATE actor_memory SET remembered_through = MIN(remembered_through, COALESCE((SELECT MAX(number) "
+                    "FROM hosted_turns t WHERE t.conversation_id = actor_memory.conversation_id AND t.hidden_by = 0), 0))")
+            .Run();
+        // And an NPC's mark before the first turn of its own fold summaries of that conversation (not a shared copy:
+        // told_by empty; not a condense: conversation set) that this rollback hid and that cover a visible turn: the
+        // background catch-up refolds those turns. A hidden fold ends past the last visible turn, so it covers one
+        // exactly when it starts at or before it. With none, the mark stays.
+        _db.Prepare("UPDATE actor_memory SET remembered_through = MIN(remembered_through, COALESCE((SELECT "
+                    "MIN(s.from_turn) - 1 FROM summaries s WHERE s.hidden_by = ?1 AND s.actor_id = actor_memory.actor_id "
+                    "AND s.conversation_id = actor_memory.conversation_id AND s.told_by = '' AND s.from_turn <= "
+                    "COALESCE((SELECT MAX(number) FROM hosted_turns t WHERE t.conversation_id = actor_memory.conversation_id "
+                    "AND t.hidden_by = 0), 0)), remembered_through))")
+            .Bind(1, id)
+            .Run();
+    });
+    return counts;
+}
+
+RollbackCounts RunStore::UndoRollback()
+{
+    RequireHosted("UndoRollback");
+    const std::optional<Rollback> open = OpenRollback();
+    MORPHEUS_REQUIRE(open.has_value(), "RunStore::UndoRollback: no rollback is open");
+
+    // The saved marks, read and checked whole before anything changes: damaged ones stop the undo with nothing changed.
+    nlohmann::json saved;
+    {
+        Statement marks = _db.Prepare("SELECT saved_marks FROM rollbacks WHERE id = ?1");
+        marks.Bind(1, open->id);
+        const bool hasRow = marks.Step();
+        MORPHEUS_REQUIRE(hasRow, "UndoRollback: the open rollback's row is gone");
+        saved = nlohmann::json::parse(marks.ColumnText(0), nullptr, false);
+    }
+    auto damaged = [&](const char* problem) {
+        return StoreError(std::format("'{}': rollback {}: rollbacks column 'saved_marks' {}", core::PathText(_file),
+                                      open->id, problem));
+    };
+    if (saved.is_discarded()) {
+        throw damaged("is not valid JSON");
+    }
+    if (!saved.is_object()) {
+        throw damaged("is not an object");
+    }
+    // folded_through: {conversation: through}.
+    if (!saved.contains("folded_through") || !saved.at("folded_through").is_object()) {
+        throw damaged("has no folded_through object");
+    }
+    for (const nlohmann::json& through : saved.at("folded_through")) {
+        if (!through.is_number_integer()) {
+            throw damaged("holds a folded_through that is not an integer");
+        }
+    }
+    // remembered: [[conversation, actor, through], ...].
+    if (!saved.contains("remembered") || !saved.at("remembered").is_array()) {
+        throw damaged("has no remembered array");
+    }
+    for (const nlohmann::json& mark : saved.at("remembered")) {
+        const bool whole = mark.is_array() && mark.size() == 3 && mark.at(0).is_string() && mark.at(1).is_string() &&
+                           mark.at(2).is_number_integer();
+        if (!whole) {
+            throw damaged("holds a remembered mark that is not [conversation, actor, through]");
+        }
+    }
+    // shares: [[id, applied, applied_clock or null, unapplied_by], ...].
+    if (!saved.contains("shares") || !saved.at("shares").is_array()) {
+        throw damaged("has no shares array");
+    }
+    for (const nlohmann::json& share : saved.at("shares")) {
+        const bool whole = share.is_array() && share.size() == 4 && share.at(0).is_number_integer() &&
+                           share.at(1).is_number_integer() && (share.at(2).is_number() || share.at(2).is_null()) &&
+                           share.at(3).is_number_integer();
+        if (!whole) {
+            throw damaged("holds a share that is not [id, applied, applied_clock, unapplied_by]");
+        }
+    }
+
+    RollbackCounts counts;
+    _db.Transaction([&] {
+        {
+            Statement restored = _db.Prepare("SELECT COUNT(*) FROM hosted_turns WHERE hidden_by = ?1");
+            restored.Bind(1, open->id);
+            const bool hasRow = restored.Step();
+            MORPHEUS_REQUIRE(hasRow, "UndoRollback: aggregate query returned no row");
+            counts.restoredTurns = static_cast<int>(restored.ColumnInt(0));
+        }
+        // Summaries made while it was open go, with their vectors and their condenses' supersession links (a summary
+        // made in it is only ever condensed by a condense made in it); what it hid comes back.
+        _db.Prepare("DELETE FROM embeddings WHERE kind = 'summary' AND CAST(ref_id AS INTEGER) IN (SELECT id FROM "
+                    "summaries WHERE made_in = ?1)")
+            .Bind(1, open->id)
+            .Run();
+        _db.Prepare("DELETE FROM summary_supersessions WHERE condensed_id IN (SELECT id FROM summaries WHERE "
+                    "made_in = ?1)")
+            .Bind(1, open->id)
+            .Run();
+        _db.Prepare("DELETE FROM summaries WHERE made_in = ?1").Bind(1, open->id).Run();
+        for (const char* table : {"hosted_turns", "conversation_events", "conversation_changes", "conversations",
+                                  "summaries", "pending_shares"}) {
+            _db.Prepare(std::format("UPDATE {} SET hidden_by = 0 WHERE hidden_by = ?1", table)).Bind(1, open->id).Run();
+        }
+        // Every share's application as saved: those it unapplied are applied again, and those applied while it was
+        // open (their copies deleted above) are as they were. A new share abandons the rollback first, so no share was
+        // added while it was open.
+        for (const nlohmann::json& share : saved.at("shares")) {
+            const std::optional<double> appliedClock =
+                share.at(2).is_null() ? std::nullopt : std::optional<double>(share.at(2).get<double>());
+            _db.Prepare("UPDATE pending_shares SET applied = ?2, applied_clock = ?3, unapplied_by = ?4 WHERE id = ?1")
+                .Bind(1, share.at(0).get<std::int64_t>())
+                .Bind(2, share.at(1).get<std::int64_t>())
+                .Bind(3, appliedClock)
+                .Bind(4, share.at(3).get<std::int64_t>())
+                .Run();
+        }
+        // The saved marks, exactly.
+        const nlohmann::json& foldedThrough = saved.at("folded_through");
+        for (auto it = foldedThrough.begin(); it != foldedThrough.end(); ++it) {
+            _db.Prepare("UPDATE conversations SET folded_through = ?1 WHERE id = ?2")
+                .Bind(1, it.value().get<std::int64_t>())
+                .Bind(2, it.key())
+                .Run();
+        }
+        _db.Prepare("DELETE FROM actor_memory").Run();
+        for (const nlohmann::json& mark : saved.at("remembered")) {
+            _db.Prepare("INSERT INTO actor_memory (conversation_id, actor_id, remembered_through) VALUES (?1, ?2, ?3)")
+                .Bind(1, mark.at(0).get<std::string>())
+                .Bind(2, mark.at(1).get<std::string>())
+                .Bind(3, mark.at(2).get<std::int64_t>())
+                .Run();
+        }
+        _db.Prepare("UPDATE rollbacks SET status = 'undone' WHERE id = ?1").Bind(1, open->id).Run();
+    });
+    return counts;
+}
+
+void RunStore::AbandonRollback()
+{
+    RequireHosted("AbandonRollback");
+    const std::optional<Rollback> open = OpenRollback();
+    MORPHEUS_REQUIRE(open.has_value(), "RunStore::AbandonRollback: no rollback is open");
+    // What it hid stays hidden for good; its refolds become ordinary memories; shares it unapplied are pending.
+    _db.Transaction([&] {
+        _db.Prepare("UPDATE summaries SET made_in = 0 WHERE made_in = ?1").Bind(1, open->id).Run();
+        _db.Prepare("UPDATE pending_shares SET applied = 0, applied_clock = NULL, unapplied_by = 0 WHERE unapplied_by = ?1")
+            .Bind(1, open->id)
+            .Run();
+        _db.Prepare("UPDATE rollbacks SET status = 'abandoned', saved_marks = '{}' WHERE id = ?1").Bind(1, open->id).Run();
+    });
+}
+
 void RunStore::RequireOwned(const char* method) const
 {
     MORPHEUS_REQUIRE(_meta.kind == RunKind::Owned, std::format("RunStore::{}: this is a hosted run", method));
@@ -1515,17 +1785,9 @@ core::Conversation RunStore::ReadConversation(Statement& startRow)
 
 std::int64_t RunStore::OpenRollbackId()
 {
-    // At most one rollback is open at a time: a second one is damaged saved data.
-    Statement query = _db.Prepare("SELECT id FROM rollbacks WHERE status = 'open' ORDER BY id");
-    if (!query.Step()) {
-        return 0;
-    }
-    const std::int64_t id = query.ColumnInt(0);
-    if (query.Step()) {
-        throw StoreError(std::format("'{}': rollbacks holds more than one open rollback ({} and {})",
-                                     core::PathText(_file), id, query.ColumnInt(0)));
-    }
-    return id;
+    // OpenRollback is the one reader of the open rollback, and its check of more than one open.
+    const std::optional<Rollback> open = OpenRollback();
+    return open ? open->id : 0;
 }
 
 void RunStore::MoveFoldedThrough(const char* method, std::string_view id, int turn)

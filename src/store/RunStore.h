@@ -43,6 +43,18 @@ struct EmbeddingRow {
                                   // from the hash of the current text, so edited lore never keeps a stale vector.
 };
 
+// A hosted run's open rollback (rollback spec, section 3): its rollbacks row id and the game time it rewound to.
+struct Rollback {
+    std::int64_t id = 0;
+    double gameTime = 0.0;
+};
+
+// What a rollback transaction changed: the visible turns ApplyRollback hid, the turns UndoRollback showed again.
+struct RollbackCounts {
+    int hiddenTurns = 0;
+    int restoredTurns = 0;
+};
+
 // One run's SQLite database (saves/<world>/<run>.db). The only writer of run data.
 // Tables: run_meta, turns, state_snapshots, summaries, notes, embeddings, and for hosted runs host_data,
 // conversations, conversation_changes, hosted_turns, conversation_events, actor_memory, pending_shares, rollbacks.
@@ -85,7 +97,8 @@ public:
     // Throws StoreError if it is missing or was written with another schema version, its meta (rng_seed, settings,
     // kind) is damaged, a hosted turn the move reads is damaged, a summary does not start and end on hosted turns, or a
     // superseded summary has no later condensed summary (the upgrade rolls back), and when a hosted run's memory mark
-    // (actor_memory) names a conversation the run does not have.
+    // (actor_memory) names a conversation the run does not have, a hosted row's hidden_by names no rollback, or more
+    // than one rollback is open.
     static RunStore Open(const std::filesystem::path& file);
 
     const RunMeta& Meta() const;
@@ -257,6 +270,34 @@ public:
     // that is not one of its actors.
     std::vector<core::HostedTurn> HostedTurns(std::string_view conversationId);
 
+    // The one open rollback, nullopt when none is open. Throws StoreError naming the file and rollbacks when more than
+    // one is open.
+    std::optional<Rollback> OpenRollback();
+
+    // Rolls the run back to game time `gameTime`, in one transaction (rollback spec, section 3). A rollbacks row is
+    // added (open), saving every conversation's folded_through, every NPC's remembered-through mark and every share's
+    // application. Then it hides (hidden_by = its id): turns, events, participant changes and conversation ends clocked
+    // after `gameTime`; conversations started after it; shared copies and pending shares created after it; and every
+    // NPC summary covering a hidden turn (toTurn past the last visible turn of its conversation, or of the run for a
+    // summary with no conversation). A share applied after `gameTime` is unapplied by it (pending again). Each
+    // conversation's folded_through moves back to its last visible turn `cut` (when past it), and each NPC's mark to
+    // `cut` and before the first turn of its own hidden fold summaries of that conversation that cover a visible turn.
+    // Returns the number of turns it hid. Throws ContractError when a rollback is already open.
+    RollbackCounts ApplyRollback(double gameTime);
+
+    // Undoes the open rollback, in one transaction: the rows it hid are shown again, the summaries made in it are
+    // deleted with their embeddings (and the supersession links of its condenses), every share's application and the
+    // saved marks are restored exactly, and its status becomes undone. Returns the number of turns shown again. Throws
+    // ContractError when none is open, and StoreError naming the file and saved_marks when the saved marks are damaged
+    // (nothing is changed then).
+    RollbackCounts UndoRollback();
+
+    // Abandons the open rollback (playing on after a rewind), in one transaction: what it hid stays hidden for good,
+    // the summaries made in it become ordinary (made_in cleared), the shares it unapplied become pending (not applied,
+    // no applied clock), its saved marks are dropped and its status becomes abandoned. Throws ContractError when none
+    // is open.
+    void AbandonRollback();
+
 private:
     RunStore(Database db, RunMeta meta, std::filesystem::path file);
 
@@ -280,7 +321,7 @@ private:
     // naming the file when it has no visible change row or that row's participants are damaged.
     core::Conversation ReadConversation(Statement& startRow);
 
-    // The id of the open rollback, 0 when none is open. Throws StoreError when more than one is open.
+    // The id of the open rollback (OpenRollback), 0 when none is open. Throws StoreError when more than one is open.
     std::int64_t OpenRollbackId();
 
     // Moves conversation `id`'s folded_through to `turn` (FoldConversation and MarkFolded, named by `method`). Throws

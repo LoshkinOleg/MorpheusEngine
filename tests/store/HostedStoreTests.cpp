@@ -1525,10 +1525,8 @@ TEST_CASE("A summary written while a rollback is open is made in it; two open ro
         CHECK(summaries[0].madeIn == 0);
         CHECK(summaries[1].madeIn == 3);
     }
+    // A second open rollback: the run no longer opens, so nothing can be written in either.
     Damage(file, "INSERT INTO rollbacks (id, game_time, status, saved_marks) VALUES (4, 0.5, 'open', '{}');");
-    store::RunStore store = store::RunStore::Open(file);
-    CHECK_THROWS_AS(store.AddActorSummary(ActorSummary("npc-1", id, 1, 1, "x")), store::StoreError);
-    CHECK_THROWS_WITH(store.AddActorSummary(ActorSummary("npc-1", id, 1, 1, "x")),
-                      ContainsSubstring("run.db") && ContainsSubstring("rollbacks"));
-    CHECK(store.ActorSummaries("npc-1", true).size() == 2);
+    CHECK_THROWS_AS(store::RunStore::Open(file), store::StoreError);
+    CHECK_THROWS_WITH(store::RunStore::Open(file), ContainsSubstring("run.db") && ContainsSubstring("rollbacks"));
 }
