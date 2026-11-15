@@ -73,6 +73,10 @@ HostData HostDataFromJson(const nlohmann::json& json)
         if (!json.at("clock").is_string()) {
             throw fault("/clock", "'clock' must be a JSON pointer string");
         }
+        // An empty string would mean no clock without saying so: a run without a clock omits the key.
+        if (json.at("clock").get_ref<const std::string&>().empty()) {
+            throw fault("/clock", "'clock' must not be empty; a run without a clock omits it");
+        }
         data.clock = json.at("clock").get<std::string>();
     }
     if (!json.contains("lore")) {

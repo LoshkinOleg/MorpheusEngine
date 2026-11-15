@@ -28,9 +28,9 @@ struct HostData {
 // "clock" (a string) is written only when the host data names one.
 nlohmann::json HostDataToJson(const HostData& data);
 
-// Reads HostDataToJson's form; "lore" may be absent (no lore), "clock" may be absent (no clock) and "always_on"
-// defaults to false. Checks the shape only
-// (HostedWorld checks the content): throws DataError "host data at <pointer>: <problem>".
+// Reads HostDataToJson's form; "lore" may be absent (no lore), "clock" may be absent (no clock; when present it is a
+// non-empty string) and "always_on" defaults to false. Checks the shape only (HostedWorld checks the content): throws
+// DataError "host data at <pointer>: <problem>".
 HostData HostDataFromJson(const nlohmann::json& json);
 
 // The content hash of `data` (core::ContentHash over HostDataToJson's text) that a hosted run stores: changed host

@@ -478,6 +478,10 @@ TEST_CASE("A host clock must be a JSON pointer, and round-trips through the host
     CHECK_THROWS_WITH(turn::HostedWorld(turn::HostDataFromJson(open)), ContainsSubstring("/clock"));
     open["clock"] = 7;
     CHECK_THROWS_WITH(turn::HostDataFromJson(open), ContainsSubstring("/clock"));
+    // An empty string would silently mean no clock (a run without one omits the key): refused.
+    open["clock"] = "";
+    CHECK_THROWS_AS(turn::HostDataFromJson(open), core::DataError);
+    CHECK_THROWS_WITH(turn::HostDataFromJson(open), ContainsSubstring("/clock"));
     open["clock"] = "/game_time/days_passed";
     const turn::HostData data = turn::HostDataFromJson(open);
     CHECK(data.clock == "/game_time/days_passed");
