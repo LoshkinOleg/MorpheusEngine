@@ -292,6 +292,8 @@ Every response carries `"api_version": "1.0.0"` (the changes are in `CHANGELOG.m
 
 A turn's stream has these events, in order: `action` (the adjudicated action, sent before the line starts; when the proposal was refused it is `"action": null` plus a separate `"refused": [reasons]` key), `token` (one per streamed piece), `sentence` (each complete sentence, as soon as it is complete), then `done` (the speaker, action, line, turn number, `events_omitted`, timings) or `error` (`status` and `message`, when a failure comes after the stream has started). A client that disconnects stops the turn and nothing is committed. Events recorded since a conversation's last turn that do not fit its tail leave the prompt, oldest first; `events_omitted` says how many, and the store keeps them all.
 
+A run folds its ended conversations in the background, between requests. A turn stops a running fold at once (it resumes later); every other request to that run waits until the fold's pass ends, which can take a few model calls after a long session.
+
 An example session, in Git Bash or on Linux, with the host data and the observation from the fixtures:
 
 ```

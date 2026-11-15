@@ -141,39 +141,86 @@ TEST_CASE("Between jobs the worker folds ended conversations on the upkeep slot;
     }
 }
 
-TEST_CASE("A job stops a running fold, and the fold runs again after it", "[hosted-server][worker]")
+namespace {
+
+// A worker whose run has one ended conversation of one turn, and whose fold streams slowly: its summary is 9 pieces,
+// each after `pieceDelay`. `foldCalls` counts the fold calls; `*ppBackend` gets the run's backend. The fold starts in
+// the background as soon as this returns.
+std::unique_ptr<server::RunWorker> SlowFoldWorker(const std::string& name, std::chrono::milliseconds pieceDelay,
+                                                  test::HostedScript& script, std::atomic<int>& foldCalls,
+                                                  test::ScriptedBackend** ppBackend, std::string& id)
 {
-    // The fold's summary streams slowly: 9 pieces, 100 ms each, once the delay is set.
-    test::HostedScript script;
     script.actions = {NONE};
     script.lines = {"Welcome."};
-    std::atomic<int> foldCalls = 0;
-    test::ScriptedBackend::Responder responder = [&](const inference::Prompt& prompt,
-                                                     const inference::GenerationSpec& spec) -> std::string {
+    test::ScriptedBackend::Responder responder = [&script, &foldCalls](const inference::Prompt& prompt,
+                                                                       const inference::GenerationSpec& spec) {
         if (prompt.messages.back().content == turn::SUMMARIZE_INSTRUCTION) {
             ++foldCalls;
-            return "Summary of a long talk at the inn.";
+            return std::string("Summary of a long talk at the inn.");
         }
         return script.Responder()(prompt, spec);
     };
-    test::ScriptedBackend* pBackend = nullptr;
     std::unique_ptr<server::RunWorker> worker =
-        test::MakeWorker("worker_fold_stop", test::HostedRunFile("worker_fold_stop"), responder, &pBackend);
-    std::string id;
+        test::MakeWorker(name, test::HostedRunFile(name), responder, ppBackend);
     worker->Call([&](turn::HostedSession& session, server::SlotBackend&, std::stop_token stop) {
         id = session.StartConversation({test::HULDA, test::AELA}, test::FixtureObservation());
         session.RunTurn(test::Request(id, test::HULDA, "Hello."), {}, stop);
-        pBackend->SetPieceDelay(std::chrono::milliseconds(100));
+        (*ppBackend)->SetPieceDelay(pieceDelay);
         session.EndConversation(id);
     });
+    return worker;
+}
 
-    // While the fold streams, a job arrives: the fold stops at its next piece, and the job runs at once.
+} // namespace
+
+TEST_CASE("A job that does not preempt waits for a running fold, which lands first", "[hosted-server][worker]")
+{
+    // The fold streams for about 900 ms.
+    test::HostedScript script;
+    std::atomic<int> foldCalls = 0;
+    test::ScriptedBackend* pBackend = nullptr;
+    std::string id;
+    std::unique_ptr<server::RunWorker> worker =
+        SlowFoldWorker("worker_fold_wait", std::chrono::milliseconds(100), script, foldCalls, &pBackend, id);
+
+    // While the fold streams, a job arrives: it runs once the fold has landed, which was not started over.
+    REQUIRE(test::WaitUntil([&] { return foldCalls.load() >= 1; }));
+    int through = 0;
+    worker->Call([&](turn::HostedSession& session, server::SlotBackend&, std::stop_token) {
+        through = session.Conversation(id)->foldedThrough;
+    });
+    CHECK(through == 1);
+    CHECK(foldCalls.load() == 1);
+}
+
+TEST_CASE("A preempting job stops a running fold at once, also from behind a job that waits; the fold runs again",
+          "[hosted-server][worker]")
+{
+    // The fold streams for about 2 s.
+    test::HostedScript script;
+    std::atomic<int> foldCalls = 0;
+    test::ScriptedBackend* pBackend = nullptr;
+    std::string id;
+    std::unique_ptr<server::RunWorker> worker =
+        SlowFoldWorker("worker_fold_stop", std::chrono::milliseconds(220), script, foldCalls, &pBackend, id);
+
+    // While the fold streams, a job that waits arrives, then a preempting one behind it: the preempting one stops the
+    // fold when it is queued, so both run at once, in order.
     REQUIRE(test::WaitUntil([&] { return foldCalls.load() >= 1; }));
     const auto start = std::chrono::steady_clock::now();
-    worker->Call([&](turn::HostedSession&, server::SlotBackend&, std::stop_token) {
-        pBackend->SetPieceDelay(std::chrono::milliseconds(0));
-    });
-    CHECK(std::chrono::steady_clock::now() - start < std::chrono::milliseconds(600));
+    std::vector<int> order;
+    std::future<void> waiting =
+        worker->Post([&](turn::HostedSession&, server::SlotBackend&, std::stop_token) { order.push_back(1); });
+    std::future<void> preempting = worker->Post(
+        [&](turn::HostedSession&, server::SlotBackend&, std::stop_token) {
+            order.push_back(2);
+            pBackend->SetPieceDelay(std::chrono::milliseconds(0));
+        },
+        server::RunWorker::Preempt::Fold);
+    waiting.get();
+    preempting.get();
+    CHECK(std::chrono::steady_clock::now() - start < std::chrono::milliseconds(1000));
+    CHECK(order == std::vector<int>{1, 2});
 
     // Then the fold runs again, now without the delay, and lands.
     const bool folded = test::WaitUntil([&] {

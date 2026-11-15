@@ -68,8 +68,8 @@ RunWorker::RunWorker(std::string runId, std::filesystem::path file, turn::HostDa
             }
 
             if (!entry) {
-                // Folding, on the upkeep slot. A new job or RequestStop stops it; it then runs again once the queue is
-                // empty. A failure (the model unreachable, a summary cap too small) must not stop the run's turns: it
+                // Folding, on the upkeep slot. A preempting job or RequestStop stops it; it then runs again once the
+                // queue is empty. Other jobs queued meanwhile wait for this pass to end. A failure (the model unreachable, a summary cap too small) must not stop the run's turns: it
                 // is logged, and folding is tried again after the next job.
                 bool finished = true;
                 if (_session) {
@@ -111,17 +111,19 @@ const std::string& RunWorker::RunId() const
     return _runId;
 }
 
-std::future<void> RunWorker::Post(Job job)
+std::future<void> RunWorker::Post(Job job, Preempt preempt)
 {
     MORPHEUS_REQUIRE(static_cast<bool>(job), "RunWorker::Post: no job");
     // A job needs the session; a run left closed by a failed Reopen has none.
-    return Enqueue([this, job = std::move(job)](std::stop_token stop) {
-        if (!_session) {
-            throw inference::InferenceError(
-                std::format("run '{}' is closed: it could not be opened again after a failed reopen", _runId));
-        }
-        job(*_session, _backend, stop);
-    });
+    return Enqueue(
+        [this, job = std::move(job)](std::stop_token stop) {
+            if (!_session) {
+                throw inference::InferenceError(
+                    std::format("run '{}' is closed: it could not be opened again after a failed reopen", _runId));
+            }
+            job(*_session, _backend, stop);
+        },
+        preempt);
 }
 
 void RunWorker::Call(Job job)
@@ -131,6 +133,7 @@ void RunWorker::Call(Job job)
 
 void RunWorker::Reopen(turn::HostData data, std::uint64_t seed)
 {
+    // Not preempting: reopening waits for a running fold's pass, like every job but a turn.
     Enqueue([this, data = std::move(data), seed](std::stop_token) mutable {
         // Changed data is checked before the open run is touched; the same data changes nothing.
         const turn::HostedWorld check(data);
@@ -151,7 +154,7 @@ void RunWorker::Reopen(turn::HostData data, std::uint64_t seed)
             }
             throw;
         }
-    }).get();
+    }, Preempt::None).get();
 }
 
 void RunWorker::RequestStop()
@@ -171,7 +174,7 @@ void RunWorker::RequestStop()
     _thread.request_stop();
 }
 
-std::future<void> RunWorker::Enqueue(std::function<void(std::stop_token)> work)
+std::future<void> RunWorker::Enqueue(std::function<void(std::stop_token)> work, Preempt preempt)
 {
     Entry entry;
     entry.work = std::move(work);
@@ -183,8 +186,12 @@ std::future<void> RunWorker::Enqueue(std::function<void(std::stop_token)> work)
             return done;
         }
         _queue.push_back(std::move(entry));
-        // Work comes first: a running Maintain stops now, and runs again once the queue is empty.
-        _maintenanceStop.request_stop();
+        // Preemption is decided here, when the work is queued, not when it reaches the front: a turn queued behind
+        // jobs that wait still stops a running Maintain now. Maintain runs again once the queue is empty. Other work
+        // waits behind Maintain's current pass.
+        if (preempt == Preempt::Fold) {
+            _maintenanceStop.request_stop();
+        }
     }
     _wake.notify_one();
     return done;

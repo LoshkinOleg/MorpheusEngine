@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <optional>
@@ -15,6 +16,7 @@
 #include "inference/Llm.h"
 #include "server/Api.h"
 #include "server/ServerTestSupport.h"
+#include "turn/EngineText.h"
 
 using namespace morpheus;
 using Catch::Matchers::ContainsSubstring;
@@ -218,4 +220,84 @@ TEST_CASE("A turn whose stream is cancelled stops, commits nothing, and the next
     REQUIRE_FALSE(events.empty());
     CHECK(events.back().name == "done");
     CHECK(events.back().data.at("turn") == 1);
+}
+
+namespace {
+
+// A responder for background-folding tests: the script's replies, and for each fold call (counted in `foldCalls`) a
+// summary of `summaryBytes` bytes, which streams in pieces of 4 bytes.
+test::ScriptedBackend::Responder SlowFoldResponder(test::HostedScript& script, std::atomic<int>& foldCalls,
+                                                   std::size_t summaryBytes)
+{
+    return [&script, &foldCalls, summaryBytes](const inference::Prompt& prompt, const inference::GenerationSpec& spec) {
+        if (prompt.messages.back().content == turn::SUMMARIZE_INSTRUCTION) {
+            ++foldCalls;
+            return std::string(summaryBytes, 's');
+        }
+        return script.Responder()(prompt, spec);
+    };
+}
+
+// Conversation c1's folded_through, through GET.
+int FoldedThrough(test::ApiHarness& harness)
+{
+    return harness.Get("/v1/runs/save_1/conversations/c1").body.at("conversation").at("folded_through").get<int>();
+}
+
+} // namespace
+
+TEST_CASE("Requests other than turns wait for a background fold, which lands while a client keeps polling",
+          "[hosted-server][api]")
+{
+    // Each piece streams after 25 ms: the fold's summary of 40 pieces takes about a second.
+    test::HostedScript script;
+    script.actions = {NONE};
+    script.lines = {"Welcome."};
+    std::atomic<int> foldCalls = 0;
+    test::ApiHarness harness("api_fold_poll", SlowFoldResponder(script, foldCalls, 160));
+    harness.pieceDelay = std::chrono::milliseconds(25);
+    OpenWithConversation(harness);
+    test::ReadAll(*harness.Post(TURN, TurnBody(test::HULDA, "Hi.")).stream);
+    REQUIRE(harness.Post("/v1/runs/save_1/conversations/c1/end", nlohmann::json::object()).status == 200);
+
+    // The client polls without pause; each GET waits for the fold's pass instead of starting it over.
+    bool folded = false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!folded && std::chrono::steady_clock::now() < deadline) {
+        folded = FoldedThrough(harness) == 1;
+    }
+    CHECK(folded);
+    CHECK(foldCalls.load() == 1);
+}
+
+TEST_CASE("A turn during a background fold stops it and runs promptly; the fold lands afterwards",
+          "[hosted-server][api]")
+{
+    // Each piece streams after 25 ms: the fold's summary of 100 pieces takes about 2.5 s, a turn about 250 ms.
+    test::HostedScript script;
+    script.actions = {NONE, NONE};
+    script.lines = {"Welcome.", "Hello."};
+    std::atomic<int> foldCalls = 0;
+    test::ApiHarness harness("api_fold_turn", SlowFoldResponder(script, foldCalls, 400));
+    harness.pieceDelay = std::chrono::milliseconds(25);
+    OpenWithConversation(harness);
+    REQUIRE(harness.Post("/v1/runs/save_1/conversations",
+                         {{"participants", {test::HULDA, test::AELA}}, {"observation", test::FixtureObservation()}})
+                .status == 200);
+    test::ReadAll(*harness.Post(TURN, TurnBody(test::HULDA, "Hi.")).stream);
+    REQUIRE(harness.Post("/v1/runs/save_1/conversations/c1/end", nlohmann::json::object()).status == 200);
+
+    // While c1 folds, c2's turn arrives: it stops the fold and plays at once.
+    REQUIRE(test::WaitUntil([&] { return foldCalls.load() >= 1; }));
+    const auto start = std::chrono::steady_clock::now();
+    const server::ApiResponse response = harness.Post("/v1/runs/save_1/conversations/c2/turn", TurnBody(test::HULDA, "Hi."));
+    REQUIRE(response.stream != nullptr);
+    const std::vector<server::StreamEvent> events = test::ReadAll(*response.stream);
+    CHECK(std::chrono::steady_clock::now() - start < std::chrono::milliseconds(1500));
+    REQUIRE_FALSE(events.empty());
+    CHECK(events.back().name == "done");
+
+    // The fold runs again afterwards and lands (the GET waits for it).
+    CHECK(test::WaitUntil([&] { return FoldedThrough(harness) == 1; }));
+    CHECK(foldCalls.load() >= 2);
 }

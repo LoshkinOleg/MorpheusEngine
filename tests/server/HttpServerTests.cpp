@@ -240,9 +240,8 @@ TEST_CASE("Two runs play at once, each conversation on its own slot, and folding
     httplib::Client client = harness.Client();
     const std::size_t embeddedBefore = harness.embed.RequestsTo("/embedding").size();
     REQUIRE(test::JsonPost(client, "/v1/runs/a/conversations/c1/end", nlohmann::json::object()).status == 200);
-    // The test waits on the fakes, not on the run: any request to the run is a job, and a job stops a running fold
-    // (work comes first), which then folds again with a completion nobody queued. The folded turn is embedded as
-    // history (a document) only once the fold is stored.
+    // The test waits on the fakes: the folded turn is embedded as history (a document) only once the fold is stored.
+    // (A GET would also do: only a turn stops a running fold, so a GET waits for it.)
     CHECK(test::WaitUntil([&] {
         const std::vector<test::FakeLlamaServer::Request> embedded = harness.embed.RequestsTo("/embedding");
         return std::any_of(embedded.begin() + static_cast<std::ptrdiff_t>(embeddedBefore), embedded.end(),

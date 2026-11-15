@@ -89,7 +89,7 @@ Errors before a stream starts are JSON with an HTTP status: `{api_version, error
 - Each run has one thread that owns its `turn::HostedSession`, its own `llamaserver::LlamaServerBackend` (wrapped by `SlotBackend`, below) and a queue of jobs. The backend is not thread-safe; several backends on one llama-server is its supported use.
 - HTTP handler threads put a job on the queue and wait for it. A turn's job reports its events (action, tokens, sentences, done or error) to the handler through a thread-safe channel, and the handler writes them to the stream. The job carries a stop source that the handler triggers when the client disconnects.
 - Jobs run one at a time, in arrival order.
-- When the queue is empty, the worker runs `HostedSession::Maintain` with a stop token. A new job stops it; it resumes when the queue is empty again. `Maintain` returning true with nothing left to fold leaves the worker idle until the next job.
+- When the queue is empty, the worker runs `HostedSession::Maintain` with a stop token. Only a turn stops it, at once, when the turn is queued (`RunWorker::Post` with `Preempt::Fold`), even behind other queued jobs; every other job (`events`, `participants`, `conversations`, `end`, GET, a reopen) waits in the queue until `Maintain`'s pass ends, so a host that polls or records events often cannot keep folding from finishing. `Maintain` resumes when the queue is empty again. A pass folds every ended conversation's remaining turns (condensing included), so a non-turn request can wait several fold calls after a long session; `Maintain` is not split per conversation, because that needs an engine API change. `Maintain` returning true with nothing left to fold leaves the worker idle until the next job.
 
 ### Slots
 
@@ -160,7 +160,7 @@ New module `src/server`, library `morpheus_server_lib` (namespace `morpheus::ser
   - `api_version` on every response.
 - `RunWorker`:
   - jobs in arrival order;
-  - idle `Maintain` stops when a job arrives and resumes after it;
+  - idle `Maintain` stops when a turn is queued (also behind a waiting job) and resumes after it; other jobs wait for its pass;
   - an ended conversation is folded in the background;
   - shutdown stops a running turn, which commits nothing.
 - `HostedSession` event overflow:

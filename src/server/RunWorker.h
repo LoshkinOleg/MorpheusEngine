@@ -24,14 +24,18 @@ namespace morpheus::server {
 
 // One opened run of morpheus_server (spec, section 2): a thread of its own that owns the run's HostedSession and its
 // own backend, and runs the run's jobs one at a time, in arrival order. While no job waits, it folds the run's ended
-// conversations in the background (HostedSession::Maintain, on the upkeep slot); a new job stops that, and it resumes
-// once the queue is empty again. HostedSession's contract (one caller at a time) holds because only this thread calls
+// conversations in the background (HostedSession::Maintain, on the upkeep slot); a preempting job (a turn) stops that
+// when it is queued, other jobs wait for Maintain's pass to end, and Maintain resumes once the queue is empty again. HostedSession's contract (one caller at a time) holds because only this thread calls
 // it. Every public method is thread-safe.
 class RunWorker {
 public:
     // A job: the run's session, the backend its calls go through (the job sets the slot), and a stop token that fires
     // when the worker stops.
     using Job = std::function<void(turn::HostedSession& session, SlotBackend& backend, std::stop_token stop)>;
+
+    // Whether a job stops a running background fold when it is queued (Post): only a turn does, so a host that polls
+    // or records events often cannot keep folding from finishing. Other jobs wait behind the fold's current pass.
+    enum class Preempt { None, Fold };
 
 private:
     // A queued piece of work and its completion. Post's jobs need the session; Reopen's work replaces it.
@@ -53,7 +57,7 @@ private:
     std::condition_variable_any _wake = {};
     std::deque<Entry> _queue = {};
     bool _maintenanceDue = true;           // Folding may have work: set after each job, cleared once Maintain is done.
-    std::stop_source _maintenanceStop = {}; // Stops the running Maintain; a new job and RequestStop request it.
+    std::stop_source _maintenanceStop = {}; // Stops the running Maintain; a preempting job and RequestStop request it.
     bool _stopping = false;
     std::jthread _thread = {}; // Last: joined first on destruction, before the session and the backend go.
 
@@ -71,15 +75,16 @@ public:
 
     const std::string& RunId() const;
 
-    // Queues `job` after the jobs before it and returns its completion: the future rethrows what the job threw. A run
-    // left closed by a failed Reopen fails the job with InferenceError naming the run. After RequestStop the job never
-    // runs, and the future holds InferenceError "the server is stopping".
-    std::future<void> Post(Job job);
+    // Queues `job` after the jobs before it and returns its completion: the future rethrows what the job threw. With
+    // Preempt::Fold a running Maintain stops at once (even with jobs queued before this one); otherwise the job waits
+    // for Maintain's pass to end. A run left closed by a failed Reopen fails the job with InferenceError naming the run.
+    // After RequestStop the job never runs, and the future holds InferenceError "the server is stopping".
+    std::future<void> Post(Job job, Preempt preempt = Preempt::None);
 
-    // Post, then wait: rethrows what the job threw.
+    // Post (not preempting), then wait: rethrows what the job threw.
     void Call(Job job);
 
-    // Opens the run again with `data`, on the worker's thread after the queued jobs, and waits. The same host data
+    // Opens the run again with `data`, on the worker's thread after the queued jobs (not preempting), and waits. The same host data
     // (equal content hash) changes nothing. Changed data is checked first (HostedWorld's DataError; the open run is
     // untouched); then the session closes and the run opens again (HostedSession::Open re-embeds the changed lore,
     // then replaces the stored host data). If that open fails, the run opens again with its previous data and the
@@ -93,7 +98,8 @@ public:
 
 private:
     // Queues `work` and returns its completion; refused (InferenceError "the server is stopping") after RequestStop.
-    std::future<void> Enqueue(std::function<void(std::stop_token)> work);
+    // Preempt::Fold stops a running Maintain now.
+    std::future<void> Enqueue(std::function<void(std::stop_token)> work, Preempt preempt);
 };
 
 } // namespace morpheus::server

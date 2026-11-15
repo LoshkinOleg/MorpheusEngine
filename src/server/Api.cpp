@@ -304,7 +304,8 @@ ApiResponse Api::Handle(std::string_view method, std::string_view path, std::str
                     }
 
                     // The turn runs on the run's worker, on its conversation's slot; its events come back through the
-                    // stream. The stream's stop token stops it when the client leaves (TurnStream::Cancel) or the worker
+                    // stream. It is the only job that stops a running background fold: other requests wait for the
+                    // fold's pass, so polling cannot keep folding from finishing. The stream's stop token stops it when the client leaves (TurnStream::Cancel) or the worker
                     // stops. The job logs its own 500s: one after the action reaches no handler, which may have
                     // returned by then, so the job keeps copies of the log and of the route's name.
                     auto stream = std::make_shared<TurnStream>();
@@ -363,7 +364,8 @@ ApiResponse Api::Handle(std::string_view method, std::string_view path, std::str
                                 stream->Push({"error", {{"status", status}, {"message", error.what()}}});
                             }
                             stream->End();
-                        });
+                        },
+                        RunWorker::Preempt::Fold);
 
                     // The status is known with the first event: an error before the action is that error's JSON
                     // answer, as for any other request (the job logged it if it is a 500); otherwise the stream starts
