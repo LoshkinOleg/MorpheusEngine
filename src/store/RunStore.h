@@ -281,17 +281,18 @@ public:
     // application. Then it hides (hidden_by = its id): turns, events, participant changes and conversation ends clocked
     // after `gameTime`; conversations started after it; shared copies and pending shares created after it; and every
     // NPC summary covering a hidden turn (toTurn past the last visible turn of its conversation, or of the run for a
-    // summary with no conversation), then, repeatedly, every condense of a summary it hid. A share applied after `gameTime` is unapplied by it (pending again). Each
-    // conversation's folded_through moves back to its last visible turn `cut` (when past it), and each NPC's mark to
-    // `cut` and before the first turn of its own hidden fold summaries of that conversation that cover a visible turn.
-    // Returns the number of turns it hid. Throws ContractError when a rollback is already open.
+    // summary with no conversation), then, repeatedly, every condense of a summary it hid. A share applied after
+    // `gameTime` is unapplied by it (pending again). Each conversation's folded_through moves back to its last visible
+    // turn `cut` (when past it), and each NPC's mark to `cut` and before the first turn of its own hidden fold
+    // summaries of that conversation that cover a visible turn. Returns the number of turns it hid. Throws
+    // ContractError when a rollback is already open.
     RollbackCounts ApplyRollback(double gameTime);
 
     // Undoes the open rollback, in one transaction: the rows it hid are shown again, the summaries made in it are
     // deleted with their embeddings (and the supersession links of its condenses), every share's application and the
     // saved marks are restored exactly, and its status becomes undone (its saved marks dropped). Returns the number of
-    // turns shown again. Throws ContractError when none is open, and StoreError naming the file and saved_marks when the
-    // saved marks are damaged (nothing is changed then).
+    // turns shown again. Throws ContractError when none is open, and StoreError naming the file and saved_marks when
+    // the saved marks are damaged (nothing is changed then).
     RollbackCounts UndoRollback();
 
     // Abandons the open rollback (playing on after a rewind), in one transaction: what it hid stays hidden for good,

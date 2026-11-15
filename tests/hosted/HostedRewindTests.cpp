@@ -11,6 +11,7 @@
 
 #include "core/Errors.h"
 #include "core/HostedRecord.h"
+#include "core/TurnRecord.h"
 #include "fakes/ScriptedBackend.h"
 #include "hosted/HostedTestSupport.h"
 #include "inference/Llm.h"
@@ -199,4 +200,56 @@ TEST_CASE("A request that records nothing leaves the rollback open", "[hosted][r
     CHECK(forward.rewound);
     CHECK(forward.restoredTurns == 1);
     CHECK(ShowsTurn(session, run.open, 2));
+}
+
+TEST_CASE("A share whose copies are written at once abandons the rollback; one with nothing to copy leaves it open",
+          "[hosted][rewind]")
+{
+    // Conversation `told`: Hulda's turn at 1.0, ended, and Maintain catches Hulda up on it, so a share of it is copied
+    // at once. Conversation `later` starts at 2.0 with Hulda's turn at 2.0, which a rewind to 1.5 hides.
+    test::HostedScript script;
+    script.actions = {R"({"action":"none","params":{}})", R"({"action":"none","params":{}})",
+                      R"({"action":"none","params":{}})"};
+    script.lines = {"One.", "Two.", "Three."};
+    test::ScriptedBackend backend(16384, test::MemoryEchoResponder(script));
+    turn::HostData data = test::FixtureHostData();
+    data.clock = CLOCK;
+    turn::HostedSession session = turn::HostedSession::Open(test::HostedRunFile("hosted_rewind_share_copies"), data,
+                                                            test::HostedSettings(), 42, backend);
+    const std::string told = session.StartConversation({test::HULDA, test::AELA}, At(1.0));
+    REQUIRE(session.RunTurn(TurnAt(told, "Hi.", 1.0), {}, {}));
+    session.EndConversation(told);
+    REQUIRE(session.Maintain({}));
+    const std::string later = session.StartConversation({test::HULDA, test::AELA}, At(2.0));
+    REQUIRE(session.RunTurn(TurnAt(later, "Again.", 2.0), {}, {}));
+    REQUIRE(session.Rewind(1.5).hiddenTurns == 1);
+
+    // The share is complete: Saadia gets her copy now. It is a new record, so the rollback is abandoned before the
+    // copy is written, and the copy is an ordinary memory: a rewind to 2.0 (the old latest time) restores nothing and
+    // keeps it.
+    const turn::ShareResult shared = session.ShareMemories(test::HULDA, test::SAADIA, told);
+    CHECK(shared.shared == 1);
+    CHECK_FALSE(shared.pending);
+    const std::vector<core::Summary> copies = session.Memories(test::SAADIA);
+    REQUIRE(copies.size() == 1);
+    CHECK(copies[0].toldBy == test::HULDA);
+    CHECK(copies[0].madeIn == 0);
+    const turn::RewindResult forward = session.Rewind(2.0);
+    CHECK_FALSE(forward.rewound);
+    CHECK(forward.restoredTurns == 0);
+    CHECK_FALSE(session.Conversation(later).has_value());
+    CHECK(session.Memories(test::SAADIA).size() == 1);
+
+    // A new turn at 3.0, hidden by a rewind to 2.5. The same share again has nothing left to copy: it records nothing,
+    // so the rollback stays open and a rewind to 3.0 shows the turn again.
+    const std::string third = session.StartConversation({test::HULDA, test::AELA}, At(3.0));
+    REQUIRE(session.RunTurn(TurnAt(third, "Once more.", 3.0), {}, {}));
+    REQUIRE(session.Rewind(2.5).hiddenTurns == 1);
+    const turn::ShareResult again = session.ShareMemories(test::HULDA, test::SAADIA, told);
+    CHECK(again.shared == 0);
+    CHECK_FALSE(again.pending);
+    const turn::RewindResult restored = session.Rewind(3.0);
+    CHECK(restored.rewound);
+    CHECK(restored.restoredTurns == 1);
+    CHECK(session.Turns(third).size() == 1);
 }

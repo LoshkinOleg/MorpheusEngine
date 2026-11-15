@@ -105,9 +105,8 @@ public:
 
     // Adds events to an open conversation without a turn, in order (HostedWorld::CheckEvents). They come before the
     // conversation's next turn: every event recorded since its last turn joins that turn's tail. When the tail is over
-    // tail_allowance, the oldest events (these first, then the request's own) are left out of that turn's prompt (RunTurn); the store
-    // keeps them all. An empty list records nothing.
-    // Throws DataError naming the field.
+    // tail_allowance, the oldest events (these first, then the request's own) are left out of that turn's prompt
+    // (RunTurn); the store keeps them all. An empty list records nothing. Throws DataError naming the field.
     void RecordEvents(std::string_view conversationId, const std::vector<nlohmann::json>& events);
 
     // Removes those who `left`, then adds those who `joined` at the end of the join order, with their names and bios
@@ -126,15 +125,14 @@ public:
     // before the stop are, as in Session), and an open rollback stays open, as it does when the turn throws. onAction
     // fires before the line starts, so a turn cancelled during the speak call has already reported its action through
     // onAction and is still not committed: the host must not take a reported action as a committed turn until RunTurn
-    // returns one. Throws DataError naming the field for a
-    // malformed request (before any model call), TurnError when the observation, the player text and the instruction
-    // alone do not fit tail_allowance (before the resolve call; folds the catch-up and the fit loop finished before
-    // it stay), and InferenceError from the backend. The tail holds the observation, every event recorded since the
-    // conversation's last turn (RecordEvents), the request's events and the player text:
-    // when it is over tail_allowance with no retrieved snippet left to shed, the oldest events leave the prompt one by
-    // one until it fits. The record's eventsOmitted counts them; the store keeps them, and the turn's L3 entry leaves
-    // them out as its prompt did. Model mistakes are not exceptions: a refused action is recorded with its reasons and
-    // the turn goes on with no action.
+    // returns one. Throws DataError naming the field for a malformed request (before any model call), TurnError when
+    // the observation, the player text and the instruction alone do not fit tail_allowance (before the resolve call;
+    // folds the catch-up and the fit loop finished before it stay), and InferenceError from the backend. The tail holds
+    // the observation, every event recorded since the conversation's last turn (RecordEvents), the request's events
+    // and the player text: when it is over tail_allowance with no retrieved snippet left to shed, the oldest events
+    // leave the prompt one by one until it fits. The record's eventsOmitted counts them; the store keeps them, and the
+    // turn's L3 entry leaves them out as its prompt did. Model mistakes are not exceptions: a refused action is
+    // recorded with its reasons and the turn goes on with no action.
     std::optional<core::HostedTurn> RunTurn(const HostedTurnRequest& request, const HostedCallbacks& callbacks,
                                             std::stop_token stop);
 
