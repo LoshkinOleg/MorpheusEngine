@@ -13,6 +13,8 @@ Per-speaker memory (design: `docs/superpowers/specs/2026-11-16-per-speaker-memor
 - `GET /v1/runs/{run_id}/actors/{actor_id}/memories` answers `{memories: [{conversation_id, from_turn, to_turn, text,
   told_by, superseded}]}`, oldest first.
 - A turn's prompt shows the speaker's own memories, not the run's; summaries, retrieval and folding are per NPC.
+- A request other than a turn no longer waits for the run's whole background pass: it waits for the current step
+  (one NPC's memory of one conversation, or one share), then the pass pauses and resumes after it.
 
 ## API 1.0.0 (unreleased)
 

@@ -344,3 +344,54 @@ TEST_CASE("Reopen: the same data changes nothing, changed data applies, and a fa
     CHECK_THROWS_AS(worker->Reopen(unembeddable, 42), core::DataError);
     CHECK(look() == std::pair<std::string, bool>{turn::HostDataHash(changed), true});
 }
+
+TEST_CASE("A job that does not preempt waits only for the running catch-up, not the whole pass, which completes later",
+          "[hosted-server][worker]")
+{
+    // An ended conversation that Hulda and Saadia witnessed: the background pass catches up both, one fold call each,
+    // each streaming for about 900 ms.
+    test::HostedScript script;
+    script.actions = {NONE};
+    script.lines = {"Welcome."};
+    std::atomic<int> foldCalls = 0;
+    test::ScriptedBackend::Responder responder = [&script, &foldCalls](const inference::Prompt& prompt,
+                                                                       const inference::GenerationSpec& spec) {
+        if (test::IsHostedFold(prompt)) {
+            ++foldCalls;
+            return std::string("Summary of a long talk at the inn.");
+        }
+        return script.Responder()(prompt, spec);
+    };
+    test::ScriptedBackend* pBackend = nullptr;
+    std::unique_ptr<server::RunWorker> worker =
+        test::MakeWorker("worker_fold_yield", test::HostedRunFile("worker_fold_yield"), responder, &pBackend);
+    std::string id;
+    worker->Call([&](turn::HostedSession& session, server::SlotBackend&, std::stop_token stop) {
+        id = session.StartConversation({test::HULDA, test::SAADIA, test::AELA}, test::FixtureObservation());
+        session.RunTurn(test::Request(id, test::HULDA, "Hello."), {}, stop);
+        pBackend->SetPieceDelay(std::chrono::milliseconds(100));
+        session.EndConversation(id);
+    });
+
+    // While the first catch-up streams, a job arrives: it runs once that catch-up has landed, before the second starts.
+    REQUIRE(test::WaitUntil([&] { return foldCalls.load() >= 1; }));
+    int foldsBeforeJob = 0;
+    std::size_t memories = 0;
+    worker->Call([&](turn::HostedSession& session, server::SlotBackend&, std::stop_token) {
+        foldsBeforeJob = foldCalls.load();
+        memories = session.Memories(test::HULDA).size() + session.Memories(test::SAADIA).size();
+    });
+    CHECK(foldsBeforeJob == 1);
+    CHECK(memories == 1);
+
+    // Then the pass resumes and completes: both remember, and no catch-up was started over.
+    const bool caughtUp = test::WaitUntil([&] {
+        std::size_t both = 0;
+        worker->Call([&](turn::HostedSession& session, server::SlotBackend&, std::stop_token) {
+            both = session.Memories(test::HULDA).size() + session.Memories(test::SAADIA).size();
+        });
+        return both == 2;
+    });
+    CHECK(caughtUp);
+    CHECK(foldCalls.load() == 2);
+}

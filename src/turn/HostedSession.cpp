@@ -410,8 +410,15 @@ void HostedSession::EndConversation(std::string_view conversationId)
     _store.EndConversation(conversation.id);
 }
 
-bool HostedSession::Maintain(std::stop_token stop)
+bool HostedSession::Maintain(std::stop_token stop, std::stop_token yield)
 {
+    // The pass is made of steps: an ended conversation's mark, one NPC's catch-up in one conversation, one applied
+    // share. Each step's writes land as it ends, so a pass that returns early resumes from the marks next time.
+    // Between steps the pass returns false when `yield` is requested, but only after a step of its own, so every pass
+    // makes progress however often requests arrive; a step in progress finishes.
+    bool stepped = false; // This pass finished a step.
+    auto yielding = [&stepped, &yield] { return stepped && yield.stop_requested(); };
+
     // Every NPC catches up in every conversation: an ended conversation is folded through its last turn first, for
     // every NPC witness; an open one through its current cut. Condensing happens in the upkeep, per NPC, when an NPC's
     // memories pass summary_cap. Seeds name the run's latest turn.
@@ -425,19 +432,32 @@ bool HostedSession::Maintain(std::stop_token stop)
         // each witness's memory of them is written below.
         int through = conversation.foldedThrough;
         if (conversation.ended && turns.back().number > through) {
+            if (yielding()) {
+                return false;
+            }
             through = turns.back().number;
             _store.MarkFolded(conversation.id, through);
             SyncHistory();
+            stepped = true;
         }
         for (const std::string& npc : NpcWitnesses(turns)) {
+            // An NPC whose memory already reaches the cut has no step to take.
+            if (_store.RememberedThrough(conversation.id, npc) >= through) {
+                continue;
+            }
+            if (yielding()) {
+                return false;
+            }
             if (!CatchUp(conversation.id, npc, through, latest, stop)) {
                 return false;
             }
+            stepped = true;
         }
     }
 
     // Shares waiting for their teller: applied once the conversation ended and the teller caught up, then removed.
-    // Each applied share may embed its copies, so a stop is honoured before each one.
+    // Each applied share may embed its copies, so a stop is honoured before each one, and a yield before each one
+    // after a step.
     for (const core::PendingShare& share : _store.PendingShares()) {
         if (stop.stop_requested()) {
             return false;
@@ -454,8 +474,12 @@ bool HostedSession::Maintain(std::stop_token stop)
         const bool complete = conversation->ended &&
                               _store.RememberedThrough(share.conversationId, share.fromActor) >= turns.back().number;
         if (complete) {
+            if (yielding()) {
+                return false;
+            }
             ApplyShare(share.fromActor, share.toActor, share.conversationId);
             _store.RemovePendingShare(share.id);
+            stepped = true;
         }
     }
     return true;

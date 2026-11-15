@@ -23,10 +23,11 @@
 namespace morpheus::server {
 
 // One opened run of morpheus_server (spec, section 2): a thread of its own that owns the run's HostedSession and its
-// own backend, and runs the run's jobs one at a time, in arrival order. While no job waits, it folds the run's ended
-// conversations in the background (HostedSession::Maintain, on the upkeep slot); a preempting job (a turn) stops that
-// when it is queued, other jobs wait for Maintain's pass to end, and Maintain resumes once the queue is empty again. HostedSession's contract (one caller at a time) holds because only this thread calls
-// it. Every public method is thread-safe.
+// own backend, and runs the run's jobs one at a time, in arrival order. While no job waits, it keeps the run's memories
+// in the background (HostedSession::Maintain, on the upkeep slot); a preempting job (a turn) stops that when it is
+// queued, every other job asks it to yield and waits only for its current step (one NPC's catch-up, one share), and
+// Maintain resumes once the queue is empty again. HostedSession's contract (one caller at a time) holds because only
+// this thread calls it. Every public method is thread-safe.
 class RunWorker {
 public:
     // A job: the run's session, the backend its calls go through (the job sets the slot), and a stop token that fires
@@ -34,7 +35,8 @@ public:
     using Job = std::function<void(turn::HostedSession& session, SlotBackend& backend, std::stop_token stop)>;
 
     // Whether a job stops a running background fold when it is queued (Post): only a turn does, so a host that polls
-    // or records events often cannot keep folding from finishing. Other jobs wait behind the fold's current pass.
+    // or records events often cannot keep folding from finishing. Other jobs ask Maintain to yield and wait behind its
+    // current step, which finishes.
     enum class Preempt { None, Fold };
 
 private:
@@ -58,6 +60,7 @@ private:
     std::deque<Entry> _queue = {};
     bool _maintenanceDue = true;           // Folding may have work: set after each job, cleared once Maintain is done.
     std::stop_source _maintenanceStop = {}; // Stops the running Maintain; a preempting job and RequestStop request it.
+    std::stop_source _maintenanceYield = {}; // Asks the running Maintain to return between steps; every job does.
     bool _stopping = false;
     std::jthread _thread = {}; // Last: joined first on destruction, before the session and the backend go.
 
@@ -76,9 +79,10 @@ public:
     const std::string& RunId() const;
 
     // Queues `job` after the jobs before it and returns its completion: the future rethrows what the job threw. With
-    // Preempt::Fold a running Maintain stops at once (even with jobs queued before this one); otherwise the job waits
-    // for Maintain's pass to end. A run left closed by a failed Reopen fails the job with InferenceError naming the run.
-    // After RequestStop the job never runs, and the future holds InferenceError "the server is stopping".
+    // Preempt::Fold a running Maintain stops at once (even with jobs queued before this one); otherwise Maintain
+    // returns after its current step and the job waits only for that. A run left closed by a failed Reopen fails the
+    // job with InferenceError naming the run. After RequestStop the job never runs, and the future holds
+    // InferenceError "the server is stopping".
     std::future<void> Post(Job job, Preempt preempt = Preempt::None);
 
     // Post (not preempting), then wait: rethrows what the job threw. Throws ContractError on the worker's own thread
@@ -99,7 +103,7 @@ public:
 
 private:
     // Queues `work` and returns its completion; refused (InferenceError "the server is stopping") after RequestStop.
-    // Preempt::Fold stops a running Maintain now.
+    // Any work asks a running Maintain to yield after its current step; Preempt::Fold stops it now.
     std::future<void> Enqueue(std::function<void(std::stop_token)> work, Preempt preempt);
 };
 

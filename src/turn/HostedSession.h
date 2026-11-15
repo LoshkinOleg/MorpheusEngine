@@ -56,9 +56,10 @@ struct ShareResult {
 //
 // D1's contract: one HostedSession per run file; two sessions on one file are not supported. It is not thread-safe,
 // so its caller serializes every call on a run, turns of different conversations included; Maintain runs between
-// them and stops through its stop token when the next call is due. Every model call uses the backend's default slot
-// (GenerationSpec::slot is left at -1). Choosing a slot per conversation and any concurrency across conversations are
-// left to D2 (morpheus_server), which can add them without changing this API.
+// them and stops through its stop token, or returns between its steps through its yield token, when the next call
+// is due. Every model call uses the backend's default slot (GenerationSpec::slot is left at -1). Choosing a slot per
+// conversation and any concurrency across conversations are left to D2 (morpheus_server), which can add them
+// without changing this API.
 class HostedSession {
 private:
     HostedWorld _world; // Set by the constructor.
@@ -128,10 +129,13 @@ public:
     // then each NPC witness's memory of it is written (in one call when it fits); in an open conversation each NPC
     // witness's memory reaches the transcript's cut. An NPC's memories over summary_cap are condensed on the way.
     // Then every pending share (ShareMemories) whose teller's memory is now complete is applied and removed.
-    // Returns false when `stop` cancelled it; it can simply run again. Throws DataError when summary_cap is too small
-    // for even a condensed summary, and StoreError for a pending share whose conversation is missing or has no turn
-    // (damaged saved data).
-    bool Maintain(std::stop_token stop);
+    // `stop` cancels it, a model call in progress included. `yield` asks it to return between steps (an ended
+    // conversation's mark, one NPC's catch-up in one conversation, one applied share) after it finished at least one,
+    // so a caller with other work waits for one step instead of the whole pass. Returns false when stopped or when it
+    // yielded; it resumes from the marks when run again. Throws DataError when summary_cap is too small for even a
+    // condensed summary, and StoreError for a pending share whose conversation is missing or has no turn (damaged
+    // saved data).
+    bool Maintain(std::stop_token stop, std::stop_token yield = {});
 
     // `toActorId` learns what `fromActorId` remembers of conversation `conversationId`: copies of `fromActorId`'s own
     // summaries of it (superseded or not, shared copies excluded), each told by `fromActorId`, oldest first. A copy is

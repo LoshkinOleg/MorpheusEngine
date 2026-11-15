@@ -50,6 +50,7 @@ RunWorker::RunWorker(std::string runId, std::filesystem::path file, turn::HostDa
             // The next job, or folding when no job waits and folding may have work; nothing until one or the other.
             std::optional<Entry> entry;
             std::stop_token maintenanceToken;
+            std::stop_token yieldToken;
             {
                 std::unique_lock lock(_mutex);
                 _wake.wait(lock, stop, [this] { return !_queue.empty() || _maintenanceDue; });
@@ -63,20 +64,24 @@ RunWorker::RunWorker(std::string runId, std::filesystem::path file, turn::HostDa
                     entry.emplace(std::move(_queue.front()));
                     _queue.pop_front();
                 } else {
+                    // A fresh pass: neither stopped nor asked to yield until work is queued during it.
                     _maintenanceStop = std::stop_source();
                     maintenanceToken = _maintenanceStop.get_token();
+                    _maintenanceYield = std::stop_source();
+                    yieldToken = _maintenanceYield.get_token();
                 }
             }
 
             if (!entry) {
-                // Folding, on the upkeep slot. A preempting job or RequestStop stops it; it then runs again once the
-                // queue is empty. Other jobs queued meanwhile wait for this pass to end. A failure (the model unreachable, a summary cap too small) must not stop the run's turns: it
-                // is logged, and folding is tried again after the next job.
+                // Folding, on the upkeep slot. A preempting job or RequestStop stops it; any other job queued
+                // meanwhile makes it return after its current step. Either way it runs again, resuming from its
+                // marks, once the queue is empty. A failure (the model unreachable, a summary cap too small) must not
+                // stop the run's turns: it is logged, and folding is tried again after the next job.
                 bool finished = true;
                 if (_session) {
                     _backend.SetSlot(SlotPool::UPKEEP_SLOT);
                     try {
-                        finished = _session->Maintain(maintenanceToken);
+                        finished = _session->Maintain(maintenanceToken, yieldToken);
                     } catch (const std::exception& error) {
                         _log(std::format("run {}: background folding failed: {}", _runId, error.what()));
                     }
@@ -140,7 +145,7 @@ void RunWorker::Reopen(turn::HostData data, std::uint64_t seed)
     // On the worker's own thread (from inside a job) the wait could never end: the job waits for itself.
     MORPHEUS_REQUIRE(std::this_thread::get_id() != _thread.get_id(),
                      "RunWorker::Reopen: called from the worker's own thread, it would wait for itself");
-    // Not preempting: reopening waits for a running fold's pass, like every job but a turn.
+    // Not preempting: reopening waits for a running fold's current step, like every job but a turn.
     Enqueue([this, data = std::move(data), seed](std::stop_token) mutable {
         // Changed data is checked before the open run is touched; the same data changes nothing.
         const turn::HostedWorld check(data);
@@ -194,8 +199,9 @@ std::future<void> RunWorker::Enqueue(std::function<void(std::stop_token)> work, 
         }
         _queue.push_back(std::move(entry));
         // Preemption is decided here, when the work is queued, not when it reaches the front: a turn queued behind
-        // jobs that wait still stops a running Maintain now. Maintain runs again once the queue is empty. Other work
-        // waits behind Maintain's current pass.
+        // jobs that wait still stops a running Maintain now. Any work asks a running Maintain to return after its
+        // current step, so it waits for that step only. Maintain runs again once the queue is empty.
+        _maintenanceYield.request_stop();
         if (preempt == Preempt::Fold) {
             _maintenanceStop.request_stop();
         }

@@ -544,3 +544,89 @@ TEST_CASE("A fold during a turn indexes its turns; a share and a catch-up with i
     CHECK(backend.EmbeddedTexts() == embedded + static_cast<int>(saadia.size()) - 1); // All but the copy are new.
     CHECK(turnVectors() == 0);
 }
+
+TEST_CASE("Maintain asked to yield returns between NPC catch-ups and between conversations; the next pass resumes",
+          "[hosted][memory]")
+{
+    // Two ended conversations: Hulda and Saadia witnessed the first, Hulda alone the second. Every fold call asks the
+    // running pass to yield, as a queued request would.
+    test::HostedScript script;
+    script.actions = {NONE, NONE};
+    script.lines = {"Welcome.", "Hello again."};
+    int folds = 0;
+    std::stop_source yield;
+    test::ScriptedBackend backend(16384, [&](const inference::Prompt& prompt, const inference::GenerationSpec& spec) {
+        if (test::IsHostedFold(prompt)) {
+            ++folds;
+            yield.request_stop();
+        }
+        return script.Responder()(prompt, spec);
+    });
+    turn::HostedSession session = turn::HostedSession::Open(test::HostedRunFile("hosted_maintain_yield"),
+                                                            test::FixtureHostData(), test::HostedSettings(), 42, backend);
+    const std::string first =
+        session.StartConversation({test::HULDA, test::SAADIA, test::AELA}, test::FixtureObservation());
+    REQUIRE(session.RunTurn(test::Request(first, test::HULDA, "Hi."), {}, {}));
+    session.EndConversation(first);
+    const std::string second = session.StartConversation({test::HULDA, test::AELA}, test::FixtureObservation());
+    REQUIRE(session.RunTurn(test::Request(second, test::HULDA, "Hi again."), {}, {}));
+    session.EndConversation(second);
+
+    // The first pass writes Hulda's memory of the first conversation, then yields before Saadia's catch-up.
+    CHECK_FALSE(session.Maintain({}, yield.get_token()));
+    CHECK(folds == 1);
+    CHECK(session.Memories(test::HULDA).size() == 1);
+    CHECK(session.Memories(test::SAADIA).empty());
+
+    // The next resumes with Saadia, then yields before the second conversation.
+    yield = std::stop_source();
+    CHECK_FALSE(session.Maintain({}, yield.get_token()));
+    CHECK(folds == 2);
+    CHECK(session.Memories(test::SAADIA).size() == 1);
+    CHECK(session.Conversation(second)->foldedThrough == 0);
+
+    // The last folds the second conversation and finishes: a yield asked for after the last step changes nothing.
+    yield = std::stop_source();
+    CHECK(session.Maintain({}, yield.get_token()));
+    CHECK(folds == 3);
+    CHECK(session.Memories(test::HULDA).size() == 2);
+    CHECK(session.Conversation(second)->foldedThrough == 2);
+    CHECK(session.Maintain({}, {}));
+    CHECK(folds == 3);
+}
+
+TEST_CASE("Maintain asked to yield applies one pending share per pass; the next pass applies the rest",
+          "[hosted][memory]")
+{
+    test::HostedScript script;
+    script.actions = {NONE};
+    script.lines = {"The well is poisoned."};
+    test::ScriptedBackend backend(16384, test::MemoryEchoResponder(script));
+    const std::filesystem::path file = test::HostedRunFile("hosted_maintain_yield_shares");
+    std::string id;
+    {
+        turn::HostedSession session =
+            turn::HostedSession::Open(file, test::FixtureHostData(), test::HostedSettings(), 42, backend);
+        id = session.StartConversation({test::HULDA, test::AELA}, test::FixtureObservation());
+        REQUIRE(session.RunTurn(test::Request(id, test::HULDA, "Any news?"), {}, {}));
+        session.EndConversation(id);
+        REQUIRE(session.Maintain({}));
+    }
+    // Two pending shares whose teller's memory is already complete: only the share loop has work left.
+    {
+        store::RunStore store = store::RunStore::Open(file);
+        store.AddPendingShare({0, test::HULDA, test::SAADIA, id});
+        store.AddPendingShare({0, test::HULDA, test::BELETHOR, id});
+    }
+
+    // A pass asked to yield before it starts still does one step: the first share. It yields before the second.
+    turn::HostedSession session =
+        turn::HostedSession::Open(file, test::FixtureHostData(), test::HostedSettings(), 42, backend);
+    std::stop_source yield;
+    yield.request_stop();
+    CHECK_FALSE(session.Maintain({}, yield.get_token()));
+    CHECK(session.Memories(test::SAADIA).size() == 1);
+    CHECK(session.Memories(test::BELETHOR).empty());
+    CHECK(session.Maintain({}, yield.get_token()));
+    CHECK(session.Memories(test::BELETHOR).size() == 1);
+}
