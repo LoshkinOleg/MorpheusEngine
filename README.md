@@ -275,7 +275,7 @@ To run it, start the two llama-servers as in "Models through llama-server", the 
 
 The flags and their defaults are `--port 4998`, `--runs ./runs` and `--settings ./settings.json`. The server listens on 127.0.0.1 only and owns its port alone: a port already in use ends it at startup with a message. A run's file is `<runs>/<run_id>.morpheus`. Ctrl+C stops it; turns still running commit nothing, and their streams end with `error` 503 ("the server is stopping"). A `run_id` is 1 to 64 characters of `A-Z a-z 0-9 _ -` and not a Windows device name (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`, in any case); one that differs from an opened run's only in case is refused with 400, and so is any `open` once shutdown has begun (503).
 
-Every response carries `"api_version": "1.1.0"` (the changes are in `CHANGELOG.md`), error answers the HTTP layer makes itself (OPTIONS, an unknown method, a malformed request) included. The endpoints:
+Every response carries `"api_version": "1.2.0"` (the changes are in `CHANGELOG.md`), error answers the HTTP layer makes itself (OPTIONS, an unknown method, a malformed request) included. The endpoints:
 
 | Endpoint | Body | Answer |
 |---|---|---|
@@ -289,12 +289,15 @@ Every response carries `"api_version": "1.1.0"` (the changes are in `CHANGELOG.m
 | `GET /v1/runs/{run_id}/conversations/{cid}` | - | `{conversation, turns, events}`: the stored records |
 | `POST /v1/runs/{run_id}/memories/share` | `{from, to, conversation_id}` | `{shared, pending}`; added in 1.1.0: `to` learns what `from` remembers of the conversation |
 | `GET /v1/runs/{run_id}/actors/{actor_id}/memories` | - | `{memories: [{conversation_id, from_turn, to_turn, text, told_by, superseded}]}`, oldest first; added in 1.1.0 |
+| `POST /v1/runs/{run_id}/rewind` | `{game_time}` | `{rewound, hidden_turns, restored_turns, rollback}`; added in 1.2.0: the run as it was at that game time |
 | `POST /v1/tokenize` | `{content}` | `{tokens}`: a token count |
 | `POST /v1/embeddings` | `{input, purpose}` | `{embeddings, model}` |
 
 A turn's stream has these events, in order: `action` (the adjudicated action, sent before the line starts; when the proposal was refused it is `"action": null` plus a separate `"refused": [reasons]` key), `token` (one per streamed piece), `sentence` (each complete sentence, as soon as it is complete), then `done` (the speaker, action, line, turn number, `events_omitted`, timings) or `error` (`status` and `message`, when a failure comes after the stream has started). A client that disconnects stops the turn and nothing is committed. Events recorded since a conversation's last turn that do not fit its tail leave the prompt, oldest first; `events_omitted` says how many, and the store keeps them all.
 
 **Memory.** Each NPC remembers only what it witnessed: the turns it spoke in or heard (it was a participant when they were played). Its memories are summaries written in its own words (the fold names the NPC), shown in the tail of its prompt under `# What <name> remembers`, and retrieval for its turns searches only what it saw and was told. Nobody else's summaries reach its prompt: an NPC that left the room does not know what was said after. `POST /v1/runs/{run_id}/memories/share` lets one NPC tell another what it remembers of a conversation: the listener gets copies marked as told by the teller, which it then keeps, retrieves and condenses like its own. A share of a conversation that has not ended, or whose memory for the teller is not complete yet, waits (`pending: true`) and lands when the teller's memory is complete; `shared` counts the copies made now. A share to the player is refused: the player has no memories in Morpheus (the host's player is a person). `GET .../actors/{actor_id}/memories` shows an NPC's memories, the ones condensed away (`superseded`) included. Design: `docs/superpowers/specs/2026-11-16-per-speaker-memory-design.md`.
+
+**Rewind.** When a player loads an older save, the host calls `POST /v1/runs/{run_id}/rewind` with the save's game time, on every save load (a load of the latest save changes nothing: the call is idempotent). It needs the host data's `clock`, an optional JSON pointer (RFC 6901) to a number in every observation, the game time; every observation then must hold a finite number there, and a rewind of a run whose host data names no clock is refused with 400. Rewinding hides, and deletes nothing: the turns, events, participant changes, conversation ends and shares clocked after that time, and the conversations started after it, leave every prompt, retrieval and memory listing, and an NPC's memory that covers a hidden turn is hidden and written again, in the background, from the turns that remain. A later rewind to a later time brings it all back (roll-forward), exactly as it was, for as long as nothing new has been recorded. The first new record after a rewind (a turn, events, a conversation, a participant change, an end or a share) abandons the hidden future for good: a rewind to the old time then restores nothing. `rollback` in the answer is `{"game_time": T}` of the rollback left open after the call, or null when nothing is hidden. Design: `docs/superpowers/specs/2026-11-16-rollback-design.md`.
 
 A run keeps its NPCs' memories in the background, between requests: it folds its ended conversations and catches up every NPC who is behind. A turn stops a running fold at once (it resumes later); every other request to that run waits only for the current step (one NPC's memory of one conversation, or one share), after which the background work pauses and resumes once the queue is empty.
 
@@ -315,7 +318,7 @@ The turn's stream looks like this:
 
 ```
 event: action
-data: {"action":{"id":"follow","params":{}},"api_version":"1.1.0","speaker":"0001A6A4"}
+data: {"action":{"id":"follow","params":{}},"api_version":"1.2.0","speaker":"0001A6A4"}
 
 event: token
 data: {"text":"Lead"}

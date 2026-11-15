@@ -108,3 +108,26 @@ TEST_CASE("morpheus_server against real llama-servers: nobody remembers what it 
     runs.StopAll();
     http.Stop();
 }
+
+TEST_CASE("morpheus_server against real llama-servers: the reload fixture, over HTTP", "[server][rewind]")
+{
+    const llamaserver::LlamaServerConfig config = test::LiveServerConfig(server::SlotPool::UPKEEP_SLOT);
+    llamaserver::LlamaServerBackend utility(config);
+    server::SlotPool slots(utility.SlotCount());
+    core::Settings settings = test::HostedSettings();
+    settings.contextSize = test::LIVE_CONTEXT_SIZE;
+    server::RunRegistry runs(test::FreshTempDir("server_live_rewind") / "runs", settings,
+                             [config] { return std::make_unique<llamaserver::LlamaServerBackend>(config); },
+                             [](const std::string&) {});
+    server::Api api(runs, slots, utility, {utility.ChatModelId(), utility.EmbeddingModelId(), utility.SlotCount()},
+                    [](const std::string&) {});
+    server::HttpServer http(api);
+    http.Start(0);
+    httplib::Client client("127.0.0.1", http.Port());
+    client.set_read_timeout(std::chrono::seconds(600));
+    // Only what cannot depend on the model's words is checked; a memories check waits up to 5 minutes for the fold.
+    test::PlayMemoryFixtureOverHttp(client, "live_rewind", test::ReadFixture("reload.json"), false,
+                                    std::chrono::minutes(5));
+    runs.StopAll();
+    http.Stop();
+}

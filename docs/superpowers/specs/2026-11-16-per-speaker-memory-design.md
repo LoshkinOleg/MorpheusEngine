@@ -26,7 +26,7 @@ A hosted turn's witnesses are its speaker and its listeners (the other participa
 
 - A summary belongs to one NPC (its actor id) and comes from one conversation. It covers a range of that conversation's turns which the NPC witnessed (`fromTurn`, `toTurn`, run-wide turn numbers) and is written as what that NPC remembers: the hosted fold instruction names the NPC.
 - A summary shared to an NPC is a copy of another NPC's summary, marked with the teller's actor id (`toldBy`). It is the listener's own from then on: shown, retrieved and condensed like the rest.
-- Condensing an NPC's summaries (when they pass `summary_cap`) writes one condensed summary for that NPC and marks the ones it replaced superseded. Superseded summaries leave the NPC's prompt but stay in the store: a later share of their conversation still finds them, and retrieval still searches them. A condensed summary has no conversation and no teller.
+- Condensing an NPC's summaries (when they pass `summary_cap`) writes one condensed summary for that NPC and marks the ones it replaced superseded. Superseded summaries leave the NPC's prompt but stay in the store: a later share of their conversation still finds them, and retrieval still searches them. A condensed summary has no conversation and no teller. Each superseded summary is linked to the condense that replaced it (`summary_supersessions`, store version 6): it is superseded only while a visible condense names it, so a rollback that hides the condense shows it again (rollback spec, `2026-11-16-rollback-design.md`).
 
 ### Fold marks
 
@@ -39,6 +39,8 @@ A hosted turn's witnesses are its speaker and its listeners (the other participa
 ### What a speaker never sees
 
 An NPC that left a conversation halfway never gets a line said after it left: not in L3 (section 3), not in its summaries (written only over turns it witnessed), not in retrieval (section 4).
+
+A rollback to an earlier save (`2026-11-16-rollback-design.md`) can hide an NPC's memories that cover hidden turns; they are written again from the turns that remain.
 
 ## 2. Sharing
 

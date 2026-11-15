@@ -39,6 +39,7 @@ Conversations sit under their run: their ids are short and per run (`c1`, `c2`, 
 | `GET /v1/runs/{run_id}/conversations/{cid}` | - | `{conversation, turns, events}`: the stored records, for debugging and the host's own tests |
 | `POST /v1/runs/{run_id}/memories/share` | `{from, to, conversation_id}` | `{shared, pending}`: `to` learns what `from` remembers of the conversation; added in 1.1.0 (E1) |
 | `GET /v1/runs/{run_id}/actors/{actor_id}/memories` | - | `{memories: [{conversation_id, from_turn, to_turn, text, told_by, superseded}]}`, oldest first; added in 1.1.0 (E1) |
+| `POST /v1/runs/{run_id}/rewind` | `{game_time}` | `{rewound, hidden_turns, restored_turns, rollback}`: the run as it was at that game time (later records hidden, not deleted; restored by a later rewind until new play abandons them); added in 1.2.0 (E2) |
 | `POST /v1/tokenize` | `{content}` | `{tokens}`: the exact count from the chat model |
 | `POST /v1/embeddings` | `{input: [texts], purpose: "query" or "document"}` | `{embeddings: [[...]], model}` |
 
