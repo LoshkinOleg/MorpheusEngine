@@ -20,7 +20,7 @@ The Mantella fork reaches Morpheus over HTTP on localhost. `morpheus_server` is 
 
 - The server listens on 127.0.0.1 only; port 4998 by default (`--port`).
 - Bodies are JSON (UTF-8); a body that is not a JSON object answers 400.
-- Every response, error or not, carries `"api_version": "1.0.0"` (semver), in the JSON body and, for a stream, in its first event. A breaking change bumps the major version and gets a `CHANGELOG.md` entry with a migration note.
+- Every response, error or not, carries `"api_version": "1.0.0"` (semver), in the JSON body and, for a stream, in its first event. That includes the answers cpp-httplib makes itself (a method no route takes such as OPTIONS, a request it refuses, its own 404, an exception that escaped a handler: 500, logged): `HttpServer` gives them the Api's error body. A breaking change bumps the major version and gets a `CHANGELOG.md` entry with a migration note.
 - The listening socket owns its port alone (`SO_EXCLUSIVEADDRUSE` on Windows, plain `SO_REUSEADDR` elsewhere; cpp-httplib's default lets a second server share a live port). A port in use makes the server exit at startup with a message naming it.
 
 ### Endpoints

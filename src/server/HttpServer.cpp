@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <exception>
 #include <format>
 #include <optional>
 #include <string>
@@ -86,6 +87,38 @@ void HttpServer::Start(int port)
     _pServer->Put(".*", handle);
     _pServer->Patch(".*", handle);
     _pServer->Delete(".*", handle);
+
+    // Answers cpp-httplib makes itself (a method no route takes, such as OPTIONS; a request it refuses: an unknown
+    // method, 400, 413, 414; its own 404) come with no body: they get the Api's error body, so every answer is JSON
+    // with the API version. The Api's own errors already have their body.
+    _pServer->set_error_handler([](const httplib::Request& request, httplib::Response& response) {
+        if (!response.body.empty()) {
+            return httplib::Server::HandlerResponse::Unhandled;
+        }
+        const std::string message =
+            request.method.empty() ? std::string(httplib::status_message(response.status))
+                                   : std::format("{} ({} {})", httplib::status_message(response.status), request.method,
+                                                 request.path);
+        response.set_content(ErrorBody(response.status, message).dump(-1, ' ', false,
+                                                                      nlohmann::json::error_handler_t::replace),
+                             "application/json");
+        return httplib::Server::HandlerResponse::Handled;
+    });
+    // An exception that escapes a handler is a bug: a 500 with the Api's error body, logged through the Api.
+    _pServer->set_exception_handler(
+        [this](const httplib::Request& request, httplib::Response& response, std::exception_ptr exception) {
+            std::string what = "an exception that is not a std::exception";
+            try {
+                std::rethrow_exception(exception);
+            } catch (const std::exception& error) {
+                what = error.what();
+            } catch (...) {
+            }
+            response.status = 500;
+            response.set_content(_pApi->EscapedError(request.method, request.path, what)
+                                     .dump(-1, ' ', false, nlohmann::json::error_handler_t::replace),
+                                 "application/json");
+        });
 
     // Each event goes out as soon as it is written: without TCP_NODELAY, Nagle's algorithm holds a small write back
     // until the previous one is acknowledged, and a delayed acknowledgement then stalls the stream for up to 200 ms.

@@ -19,6 +19,10 @@ namespace morpheus::server {
 // gets a CHANGELOG.md entry.
 inline constexpr std::string_view API_VERSION = "1.0.0";
 
+// An error answer's body: {"api_version", "error": {"status", "message"}}. Every error answer has this shape, those the
+// HTTP layer makes itself included.
+nlohmann::json ErrorBody(int status, std::string_view message);
+
 // What /health reports about the models.
 struct HealthInfo {
     std::string chatModel = {};
@@ -54,6 +58,10 @@ public:
     // Never throws for the request's or the run's fault: every failure is its status and
     // {"api_version", "error": {"status", "message"}}; a 500 is logged too.
     ApiResponse Handle(std::string_view method, std::string_view path, std::string_view body);
+
+    // An exception `what` that escaped the HTTP layer while it served `method` `path` (a bug): logged, and its 500
+    // error body.
+    nlohmann::json EscapedError(std::string_view method, std::string_view path, std::string_view what);
 };
 
 } // namespace morpheus::server

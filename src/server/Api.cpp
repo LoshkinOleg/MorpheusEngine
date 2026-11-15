@@ -147,6 +147,11 @@ const nlohmann::json& RequiredObject(const nlohmann::json& body, std::string_vie
 
 } // namespace
 
+nlohmann::json ErrorBody(int status, std::string_view message)
+{
+    return {{"api_version", std::string(API_VERSION)}, {"error", {{"status", status}, {"message", message}}}};
+}
+
 Api::Api(RunRegistry& runs, SlotPool& slots, inference::LlmBackend& utility, HealthInfo health, Log log)
     : _pRuns(&runs)
     , _pSlots(&slots)
@@ -393,7 +398,9 @@ ApiResponse Api::Handle(std::string_view method, std::string_view path, std::str
                         throw inference::InferenceError("the turn was stopped before it began: the server is stopping");
                     }
                     if (first->name == "error") {
-                        response = ApiResponse{first->data.at("status").get<int>(), {{"error", first->data}}, nullptr};
+                        const int status = first->data.at("status").get<int>();
+                        response = ApiResponse{status, ErrorBody(status, first->data.at("message").get<std::string>()),
+                                               nullptr};
                     } else {
                         response.stream = stream;
                     }
@@ -442,12 +449,19 @@ ApiResponse Api::Handle(std::string_view method, std::string_view path, std::str
         if (status == 500) {
             _log(std::format("{} {} failed: {}", method, path, error.what()));
         }
-        response = ApiResponse{status, {{"error", {{"status", status}, {"message", error.what()}}}}, nullptr};
+        response = ApiResponse{status, ErrorBody(status, error.what()), nullptr};
     }
     if (!response.stream) {
         response.body["api_version"] = std::string(API_VERSION);
     }
     return response;
+}
+
+nlohmann::json Api::EscapedError(std::string_view method, std::string_view path, std::string_view what)
+{
+    // Handle catches every std exception, so what escapes is a bug or not a std exception: the operator sees it.
+    _log(std::format("{} {} failed: {}", method, path, what));
+    return ErrorBody(500, what);
 }
 
 } // namespace morpheus::server

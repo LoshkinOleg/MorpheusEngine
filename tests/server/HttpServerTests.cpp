@@ -117,6 +117,28 @@ TEST_CASE("Over HTTP every answer is JSON with the API version, and an unknown r
     CHECK(unknown.body.at("error").at("status") == 404);
 }
 
+TEST_CASE("Answers cpp-httplib makes itself are JSON with the API version too", "[hosted-server][http]")
+{
+    test::HttpHarness harness("http_own_answers");
+    httplib::Client client = harness.Client();
+    // A method no route takes, and a request line cpp-httplib refuses (a method it does not know).
+    for (const std::string method : {"OPTIONS", "BREW"}) {
+        INFO(method);
+        httplib::Request request;
+        request.method = method;
+        request.path = "/health";
+        const httplib::Result result = client.send(request);
+        REQUIRE(result);
+        CHECK(result->status >= 400);
+        CHECK_THAT(result->get_header_value("Content-Type"), StartsWith("application/json"));
+        const nlohmann::json body = nlohmann::json::parse(result->body, nullptr, false);
+        REQUIRE(body.is_object());
+        CHECK(body.at("api_version") == "1.0.0");
+        CHECK(body.at("error").at("status") == result->status);
+        CHECK_FALSE(body.at("error").at("message").get<std::string>().empty());
+    }
+}
+
 TEST_CASE("The conversation fixture plays over HTTP", "[hosted-server][http][fixtures]")
 {
     ReplayOverHttp("conversation.json");

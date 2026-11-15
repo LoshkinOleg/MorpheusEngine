@@ -14,5 +14,7 @@ The first version (design: `docs/superpowers/specs/2026-11-16-morpheus-server-de
 - Errors: 400 (a malformed request, naming the field), 404, 409 (a run not opened in this process), 422 (the
   observation and player text do not fit the tail), 503 (a llama-server unreachable), 500.
 - `speaker: "decide"` is refused with 400 until a later version.
+- Every answer is JSON with `api_version`, those cpp-httplib makes itself included (OPTIONS or an unknown method, a
+  malformed request, an exception that escaped a handler: `{"api_version", "error": {"status", "message"}}`).
 - A turn stopped by the server's shutdown ends its stream with `error` 503 ("the server is stopping"); every stream
   ends with `done` or `error`, except for a client that disconnected.
