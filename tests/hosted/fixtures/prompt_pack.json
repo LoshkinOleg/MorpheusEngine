@@ -1,0 +1,34 @@
+{
+  "description": "R7's acceptance: a host pack replaces the system text, the resolve instruction, the speak instruction and the turn cue; every resolve prompt shows the pack's texts and none of the replaced defaults. The fold and condense texts stay the engine's.",
+  "prompts": {
+    "system": "# Voices\nYou voice the people of a tavern scene that a host game runs. Step 1: reply with one JSON object choosing what the speaker tries; most turns need the action that does nothing. Step 2: write only the speaker's spoken words, one to three sentences, in character.",
+    "resolve": "Step 1 for {speaker}: the JSON object only.",
+    "speak": "Step 2: {speaker} speaks now. Spoken words only.",
+    "turn_cue": "({speaker} goes on talking.)"
+  },
+  "observation": {
+    "game_time": {"days_passed": 213.42, "hour": 14},
+    "location": "Whiterun, The Bannered Mare",
+    "actors": [
+      {"id": "0001A6A4", "name": "Hulda", "is_player": false, "bio": "Owner of the Bannered Mare."},
+      {"id": "0001B07C", "name": "Saadia", "is_player": false, "bio": "A Redguard working at the inn."},
+      {"id": "00000007", "name": "Aela", "is_player": true}
+    ]
+  },
+  "participants": ["0001A6A4", "0001B07C", "00000007"],
+  "steps": [
+    {"turn": {"speaker": "0001A6A4", "player_text": "Good evening."},
+     "model": {"resolve": "{\"action\":\"none\",\"params\":{}}", "line": "Welcome, traveller."},
+     "expect": {"prompt_contains": ["# Voices\nYou voice the people of a tavern scene", "Step 1 for Hulda: the JSON object only."],
+                "prompt_absent": ["You voice the characters of a role-playing game", "Reply with the JSON object only."]}},
+    {"turn": {"speaker": "0001A6A4"},
+     "model": {"resolve": "{\"action\":\"none\",\"params\":{}}", "line": "The stew is fresh today."}},
+    {"turn": {"speaker": "0001B07C", "player_text": "And you, Saadia?"},
+     "model": {"resolve": "{\"action\":\"none\",\"params\":{}}", "line": "I keep the rooms clean."},
+     "expect": {"prompt_contains": ["(Hulda goes on talking.)", "Step 1 for Saadia: the JSON object only."],
+                "prompt_absent": ["(Hulda speaks.)", "You voice the characters of a role-playing game"]}},
+    {"end": true},
+    {"maintain": true},
+    {"memories": {"actor": "0001A6A4", "contains": ["stew is fresh"]}}
+  ]
+}

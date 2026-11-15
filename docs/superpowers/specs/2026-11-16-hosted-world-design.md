@@ -132,7 +132,7 @@ The layers, most stable first, so a new turn adds to the end of the cached part:
 
 ### Default hosted texts
 
-`EngineText` gains the hosted system text, the resolve instruction and the speak instruction. They use named variables (`{speaker}`, `{player}`) filled by the engine. They are generic: no Skyrim knowledge. Sub-project F makes them replaceable by the host.
+`EngineText` gains the hosted system text, the resolve instruction and the speak instruction. They use named variables (`{speaker}`, `{player}`) filled by the engine. They are generic: no Skyrim knowledge. Sub-project F made them replaceable by the host (`2026-11-16-prompt-pack-design.md`).
 
 ### Folding
 

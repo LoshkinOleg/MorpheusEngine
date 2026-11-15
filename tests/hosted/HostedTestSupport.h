@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -211,10 +212,14 @@ inline void PlayMemoryFixture(const std::string& name, inference::LlmBackend& ba
 {
     const nlohmann::json fixture = ReadFixture(name);
     const nlohmann::json& observation = fixture.at("observation");
-    // A fixture with a "clock" names the pointer of the game time in its observations: the host data's clock.
+    // A fixture with a "clock" names the pointer of the game time in its observations: the host data's clock; with "prompts", the host data's pack.
     turn::HostData data = FixtureHostData();
     if (fixture.contains("clock")) {
         data.clock = fixture.at("clock").get<std::string>();
+    }
+    // A fixture with "prompts" sends that pack with the host data.
+    if (fixture.contains("prompts")) {
+        data.prompts = fixture.at("prompts").get<std::map<std::string, std::string>>();
     }
     turn::HostedSession session =
         turn::HostedSession::Open(HostedRunFile("hosted_memory_fixture_" + name), data, settings, 42, backend);

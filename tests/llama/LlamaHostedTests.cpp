@@ -73,3 +73,16 @@ TEST_CASE("The reload fixture on the real model: a rewound run forgets what it h
     // The rewind counts, turns, conversations and memory counts never depend on the model's words.
     test::PlayMemoryFixture("reload.json", backend, settings, false);
 }
+
+TEST_CASE("The prompt-pack fixture on the real model: the host's texts replace the defaults", "[llama][hosted][prompts]")
+{
+    llama::LlamaCppBackend& backend = test::SharedBackend();
+    // As the tests above: budgets that fit the shared backend's context of 4096, greedy sampling.
+    core::Settings settings = test::HostedSettings();
+    settings.contextSize = backend.ContextSize();
+    settings.budget = {96, 160, 128, 1024, 1024, 1024, 512, 256};
+    settings.resolveSampling = {0.0, 40, 0.95};
+    settings.narrateSampling = {0.0, 40, 0.95};
+    // The prompts' texts never depend on the model's words: every prompt_absent is checked.
+    test::PlayMemoryFixture("prompt_pack.json", backend, settings, false);
+}

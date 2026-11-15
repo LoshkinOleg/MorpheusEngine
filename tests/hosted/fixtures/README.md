@@ -19,6 +19,9 @@ fixtures may replace any of these files, as long as they keep the format below.
 - `reload.json`: a memory fixture with a clock (R6's rollback acceptance): a conversation over several game times with
   events, a participant change, a share and an end. A rewind to the middle hides what came after and NPCs forget it; a
   rewind to the end restores it exactly; playing on after a rewind abandons the hidden future.
+- `prompt_pack.json`: a memory fixture with a host pack (F's acceptance): the pack replaces the system text, the resolve
+  instruction, the speak instruction and the turn cue; every resolve prompt shows the pack's texts and none of the
+  replaced defaults.
 
 Every fixture may carry a `description` string; the tests ignore it.
 
@@ -64,12 +67,12 @@ A request is `{"name", "conversation", "turn", "error"}`:
 
 The test also checks that no model call was made and that no turn was committed.
 
-## Memory fixtures (`three_actors.json`, `reload.json`)
+## Memory fixtures (`three_actors.json`, `reload.json`, `prompt_pack.json`)
 
-`{"observation": {...}, "participants": [ids], "steps": [...], "clock"}`. `observation` is the fixture's own
+`{"observation": {...}, "participants": [ids], "steps": [...], "clock", "prompts"}`. `observation` is the fixture's own
 observation: every request and every participants change uses it (a step has no observation of its own). `clock`
 (optional) is a JSON pointer into it, the host data's clock (`open.json`'s host data with this `clock`); a run without
-one cannot be rewound. A turn, leave, join or start step may then carry a `"clock"` number: that step uses a copy of
+one cannot be rewound. `prompts` (optional) is the host data's pack (`open.json`'s host data with these `prompts`). A turn, leave, join or start step may then carry a `"clock"` number: that step uses a copy of
 the observation with the number written at the pointer (its game time). The test starts one conversation with
 `participants` (in this join order) at the observation as it is, and plays `steps` in order. A step is one of these
 kinds.

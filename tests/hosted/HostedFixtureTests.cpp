@@ -158,3 +158,8 @@ TEST_CASE("The reload fixture: a rewind hides what came after, a roll-forward re
 {
     test::PlayMemoryFixture("reload.json");
 }
+
+TEST_CASE("The prompt-pack fixture: every resolve prompt shows the host's texts", "[hosted][fixtures][prompts]")
+{
+    test::PlayMemoryFixture("prompt_pack.json");
+}

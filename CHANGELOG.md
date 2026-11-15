@@ -3,6 +3,18 @@
 The morpheus_server API's versions (`api_version` on every response). A breaking change bumps the major version and
 gets an entry here with a migration note.
 
+## API 1.3.0
+
+The host's prompt pack (design: `docs/superpowers/specs/2026-11-16-prompt-pack-design.md`). Only additions; two default texts changed.
+
+- The host data may carry `prompts`: any of `system`, `resolve`, `speak`, `turn_cue`, `summarize`, `condense`, each a
+  text that replaces the engine's default for the run. Variables: `system` none; `resolve`, `speak`, `turn_cue`
+  `{speaker}` and `{player}`; `summarize` and `condense` `{actor}`. An unknown key, an empty text, a variable the text
+  does not take, or a system text over `engine_rules_cap` fails the `open` with 400 naming `prompts/<key>`.
+- `GET /v1/prompts/default` answers `{prompts, variables}`: the engine's default texts and the variables each takes.
+- The default speak instruction no longer names the player, and the default system text says most turns need no
+  action.
+
 ## API 1.2.0
 
 Rolling a run back (design: `docs/superpowers/specs/2026-11-16-rollback-design.md`). Only additions.

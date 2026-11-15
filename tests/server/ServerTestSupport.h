@@ -284,10 +284,14 @@ inline void PlayMemoryFixtureOverHttp(httplib::Client& client, const std::string
 {
     const nlohmann::json& observation = fixture.at("observation");
     const std::string runBase = "/v1/runs/" + runId;
-    // A fixture with a "clock" names the pointer of the game time in its observations: the host data's clock.
+    // A fixture with a "clock" names the pointer of the game time in its observations: the host data's clock; with "prompts", the host data's pack.
     nlohmann::json hostData = ReadFixture("open.json");
     if (fixture.contains("clock")) {
         hostData["clock"] = fixture.at("clock");
+    }
+    // A fixture with "prompts" sends that pack with the host data.
+    if (fixture.contains("prompts")) {
+        hostData["prompts"] = fixture.at("prompts");
     }
     REQUIRE(JsonPost(client, runBase + "/open", hostData).status == 200);
     // A step's observation: the fixture's, with the step's "clock" (when it has one) written at the clock's pointer.

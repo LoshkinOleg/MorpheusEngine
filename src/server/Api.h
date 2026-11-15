@@ -17,7 +17,7 @@ namespace morpheus::server {
 
 // morpheus_server's API version, on every response (spec, section 1). A breaking change bumps the major version and
 // gets a CHANGELOG.md entry.
-inline constexpr std::string_view API_VERSION = "1.2.0";
+inline constexpr std::string_view API_VERSION = "1.3.0";
 
 // An error answer's body: {"api_version", "error": {"status", "message"}}. Every error answer has this shape, those the
 // HTTP layer makes itself included.

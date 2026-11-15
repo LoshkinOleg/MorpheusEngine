@@ -25,6 +25,7 @@
 #include "turn/HostedSession.h"
 #include "turn/HostedWorld.h"
 #include "turn/MemoryUpkeep.h"
+#include "turn/PromptPack.h"
 
 namespace morpheus::server {
 
@@ -196,6 +197,22 @@ ApiResponse Api::Handle(std::string_view method, std::string_view path, std::str
                              {"chat_model", _health.chatModel},
                              {"embedding_model", _health.embeddingModel},
                              {"slots", _health.slots}};
+        } else if (get && route({"v1", "prompts", "default"})) {
+            // The engine's default texts and the variables each takes, for a host writing its own pack.
+            const turn::PromptPack defaults;
+            nlohmann::json prompts = nlohmann::json::object();
+            nlohmann::json variables = nlohmann::json::object();
+            for (const turn::PromptText& text : turn::PROMPT_TEXTS) {
+                const std::string key(text.key);
+                prompts[key] = defaults.Text(text.key);
+                variables[key] = nlohmann::json::array();
+                for (const std::string_view name : text.variables) {
+                    if (!name.empty()) {
+                        variables[key].push_back(std::string(name));
+                    }
+                }
+            }
+            response.body = {{"prompts", std::move(prompts)}, {"variables", std::move(variables)}};
         } else if (post && route({"v1", "tokenize"})) {
             // Exact counts from the chat model, for the host's own budgeting.
             const std::string content = RequiredString(json, "content");
