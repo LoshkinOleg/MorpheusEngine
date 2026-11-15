@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -17,13 +18,18 @@ struct HostData {
     nlohmann::json catalog = nlohmann::json::object();
     nlohmann::json observationSchema = nlohmann::json::object();
     std::vector<core::LoreEntry> lore = {};
+    // The game's clock (rollback spec, section 1): a JSON pointer to a number in every observation, e.g.
+    // "/game_time/days_passed". Empty: no clock, and a run cannot be rewound.
+    std::string clock = {};
 };
 
 // HostData as a hosted run stores it and as the fixtures write it:
-// {"catalog": ..., "observation_schema": ..., "lore": [{"subject": ..., "data": ..., "always_on": ...}]}.
+// {"catalog": ..., "observation_schema": ..., "lore": [{"subject": ..., "data": ..., "always_on": ...}], "clock": ...};
+// "clock" (a string) is written only when the host data names one.
 nlohmann::json HostDataToJson(const HostData& data);
 
-// Reads HostDataToJson's form; "lore" may be absent (no lore) and "always_on" defaults to false. Checks the shape only
+// Reads HostDataToJson's form; "lore" may be absent (no lore), "clock" may be absent (no clock) and "always_on"
+// defaults to false. Checks the shape only
 // (HostedWorld checks the content): throws DataError "host data at <pointer>: <problem>".
 HostData HostDataFromJson(const nlohmann::json& json);
 
@@ -35,6 +41,7 @@ std::string HostDataHash(const HostData& data);
 struct Observation {
     nlohmann::json json = nlohmann::json::object();
     std::vector<core::Actor> actors = {};
+    std::optional<double> clock = {}; // The observation's game time, when the host data names a clock.
 
     // The actor with `id`, or nullptr when it is not in the observation.
     const core::Actor* Find(std::string_view id) const;
@@ -69,14 +76,20 @@ private:
     std::vector<Action> _actions = {}; // In catalog order.
     nlohmann::json _observationSchema = nlohmann::json::object();
     std::vector<core::LoreEntry> _lore = {};
+    nlohmann::json::json_pointer _clock = nlohmann::json::json_pointer(""); // The whole document: no clock.
+    bool _hasClock = false;                   // A default pointer is the whole document, so this says one was named.
 
 public:
     // Checks the host data and keeps it. Throws DataError naming the first fault: "catalog at <pointer>: ...",
     // "observation_schema: schema at <pointer>: ..." (the schema must be in grammar::Validate's extended subset) or
-    // "lore at /<index>/<field>: ..." (subjects non-empty and unique, data non-empty).
+    // "lore at /<index>/<field>: ..." (subjects non-empty and unique, data non-empty) or "host data at /clock: ..."
+    // (the clock must be a well-formed JSON pointer).
     explicit HostedWorld(const HostData& data);
 
     const std::vector<core::LoreEntry>& Lore() const;
+
+    // True when the host data names a clock: every observation then holds a finite number at its pointer.
+    bool HasClock() const;
 
     // Every action id of the catalog, in order: what a turn allows when the host names no allowed actions.
     std::vector<std::string> ActionIds() const;
@@ -85,7 +98,8 @@ public:
     // host's schema says: `actors`, an array of objects each with `id` and `name` (non-empty strings), `is_player`
     // (a boolean) and an optional `bio` (a string); ids unique; exactly one player. Then grammar::Validate against the
     // host's schema. Every fault of both is collected; any fault is a DataError
-    // "observation at <pointer>: <problem>; observation at ...".
+    // "observation at <pointer>: <problem>; observation at ...". With a clock, the observation must also hold a finite
+    // number at its pointer (a fault "expected the clock, a number"), which `clock` reports.
     Observation Observe(const nlohmann::json& observation) const;
 
     // The core actors of `observation`, read as Observe reads them (core::ReadActors) but without the host's schema,

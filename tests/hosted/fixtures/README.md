@@ -7,7 +7,7 @@ fixtures may replace any of these files, as long as they keep the format below.
 ## Files
 
 - `open.json`: the host data of a run (`turn::HostDataFromJson`): the action `catalog`, the `observation_schema` and
-  the `lore`.
+  the `lore`; and, optionally, the `clock`, a JSON pointer to a number in every observation (rollback spec, section 1).
 - `observation.json`: an observation: Hulda (0001A6A4) and Saadia (0001B07C) at the inn, and Aela (00000007), the
   player. A turn without its own `observation` carries this one.
 - `conversation.json`: a scripted player conversation (events between and with turns, an action with parameters, a

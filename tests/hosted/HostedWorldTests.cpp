@@ -2,6 +2,7 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -446,4 +447,40 @@ TEST_CASE("An empty allowedActions list is named as such, and a minLength reache
         naming.ProposalSchema(naming.Observe(test::FixtureObservation()), HuldaAndAela(), {"name"}, test::HULDA);
     CHECK(schema.at("oneOf")[0].at("properties").at("params").at("properties").at("label") ==
           R"({"type": "string", "maxLength": 10, "minLength": 2})"_json);
+}
+
+TEST_CASE("A host clock is read from every observation, and refused when missing or not a number", "[hosted][clock]")
+{
+    turn::HostData data = test::FixtureHostData();
+    CHECK_FALSE(turn::HostedWorld(data).HasClock());
+    CHECK_FALSE(turn::HostedWorld(data).Observe(test::FixtureObservation()).clock.has_value());
+
+    data.clock = "/game_time/days_passed";
+    const turn::HostedWorld world(data);
+    CHECK(world.HasClock());
+    const std::optional<double> clock = world.Observe(test::FixtureObservation()).clock;
+    REQUIRE(clock.has_value());
+    CHECK(*clock == test::FixtureObservation().at("game_time").at("days_passed").get<double>());
+
+    nlohmann::json missing = test::FixtureObservation();
+    missing.at("game_time").erase("days_passed");
+    CHECK_THROWS_WITH(world.Observe(missing), ContainsSubstring("/game_time/days_passed") &&
+                                                  ContainsSubstring("expected the clock, a number"));
+    nlohmann::json text = test::FixtureObservation();
+    text["game_time"]["days_passed"] = "noon";
+    CHECK_THROWS_AS(world.Observe(text), core::DataError);
+}
+
+TEST_CASE("A host clock must be a JSON pointer, and round-trips through the host data's JSON", "[hosted][clock]")
+{
+    nlohmann::json open = test::ReadFixture("open.json");
+    open["clock"] = "game_time/days_passed"; // No leading '/'.
+    CHECK_THROWS_WITH(turn::HostedWorld(turn::HostDataFromJson(open)), ContainsSubstring("/clock"));
+    open["clock"] = 7;
+    CHECK_THROWS_WITH(turn::HostDataFromJson(open), ContainsSubstring("/clock"));
+    open["clock"] = "/game_time/days_passed";
+    const turn::HostData data = turn::HostDataFromJson(open);
+    CHECK(data.clock == "/game_time/days_passed");
+    CHECK(turn::HostDataToJson(data).at("clock") == "/game_time/days_passed");
+    CHECK_FALSE(turn::HostDataToJson(test::FixtureHostData()).contains("clock"));
 }

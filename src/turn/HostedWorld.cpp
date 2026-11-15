@@ -1,6 +1,7 @@
 #include "turn/HostedWorld.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <format>
 #include <limits>
@@ -37,7 +38,12 @@ nlohmann::json HostDataToJson(const HostData& data)
     for (const core::LoreEntry& entry : data.lore) {
         lore.push_back({{"subject", entry.subject}, {"data", entry.data}, {"always_on", entry.alwaysOn}});
     }
-    return {{"catalog", data.catalog}, {"observation_schema", data.observationSchema}, {"lore", std::move(lore)}};
+    nlohmann::json json = {
+        {"catalog", data.catalog}, {"observation_schema", data.observationSchema}, {"lore", std::move(lore)}};
+    if (!data.clock.empty()) {
+        json["clock"] = data.clock;
+    }
+    return json;
 }
 
 HostData HostDataFromJson(const nlohmann::json& json)
@@ -49,7 +55,8 @@ HostData HostDataFromJson(const nlohmann::json& json)
         throw fault("", "host data must be a JSON object");
     }
     for (auto it = json.begin(); it != json.end(); ++it) {
-        if (it.key() != "catalog" && it.key() != "observation_schema" && it.key() != "lore") {
+        if (it.key() != "catalog" && it.key() != "observation_schema" && it.key() != "lore" &&
+            it.key() != "clock") {
             throw fault("/" + grammar::PointerToken(it.key()), std::format("unknown key '{}'", it.key()));
         }
     }
@@ -62,6 +69,12 @@ HostData HostDataFromJson(const nlohmann::json& json)
     HostData data;
     data.catalog = json.at("catalog");
     data.observationSchema = json.at("observation_schema");
+    if (json.contains("clock")) {
+        if (!json.at("clock").is_string()) {
+            throw fault("/clock", "'clock' must be a JSON pointer string");
+        }
+        data.clock = json.at("clock").get<std::string>();
+    }
     if (!json.contains("lore")) {
         return data;
     }
@@ -319,11 +332,27 @@ HostedWorld::HostedWorld(const HostData& data)
             throw core::DataError(std::format("lore at /{}/data: a lore entry needs data", i));
         }
     }
+
+    // 4. The clock, when named: a well-formed JSON pointer, read from every observation.
+    if (!data.clock.empty()) {
+        try {
+            _clock = nlohmann::json::json_pointer(data.clock);
+        } catch (const nlohmann::json::exception& error) {
+            throw core::DataError(std::format("host data at /clock: '{}' is not a JSON pointer: {}", data.clock,
+                                              error.what()));
+        }
+        _hasClock = true;
+    }
 }
 
 const std::vector<core::LoreEntry>& HostedWorld::Lore() const
 {
     return _lore;
+}
+
+bool HostedWorld::HasClock() const
+{
+    return _hasClock;
 }
 
 std::vector<std::string> HostedWorld::ActionIds() const
@@ -342,10 +371,22 @@ Observation HostedWorld::Observe(const nlohmann::json& observation) const
     for (const grammar::ValidationError& error : grammar::Validate(observation, _observationSchema)) {
         read.faults.push_back({error.path, error.message});
     }
+
+    // The clock, when the host names one: a finite number at its pointer.
+    std::optional<double> clock;
+    if (_hasClock) {
+        const bool present = observation.contains(_clock) && observation.at(_clock).is_number() &&
+                             std::isfinite(observation.at(_clock).get<double>());
+        if (present) {
+            clock = observation.at(_clock).get<double>();
+        } else {
+            read.faults.push_back({_clock.to_string(), "expected the clock, a number"});
+        }
+    }
     if (!read.faults.empty()) {
         throw ObservationError(read.faults);
     }
-    return Observation{observation, std::move(read.actors)};
+    return Observation{observation, std::move(read.actors), clock};
 }
 
 std::vector<core::Actor> HostedWorld::ActorsOf(const nlohmann::json& observation)
