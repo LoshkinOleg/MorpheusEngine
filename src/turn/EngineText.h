@@ -71,8 +71,8 @@ inline constexpr std::string_view CONDENSE_INSTRUCTION =
     "at most 300 words.";
 
 // L0 of a hosted run (hosted-world spec, "Default hosted texts"): voicing characters in a world the host simulates,
-// and the output rules. Generic: it names no game. It has no variable, so L0 never changes between turns. Sub-project
-// F lets the host replace it.
+// and the output rules. Generic: it names no game. It has no variable, so L0 never changes between turns. PromptPack's
+// default `system`; a host's pack may replace it.
 inline constexpr std::string_view HOSTED_SYSTEM_TEXT = R"(# Engine
 You voice the characters of a role-playing game that a host game runs. The host simulates the world: its places, its people, their items and the outcome of everything anyone does. You never decide outcomes. Each turn you speak for one character, the speaker, and choose the action they try.
 
@@ -85,25 +85,28 @@ Step 2, speak. Write only what the speaker says aloud: no name in front, no quot
 The conversation shows each line after the name of whoever said it, with the action the speaker requested in brackets. Events the host reports are in parentheses. The observation is the host's current view of the scene, as JSON.)";
 
 // The task at the end of a hosted resolve prompt's tail. {speaker} and {player} are the speaker's and the player's
-// names.
+// names. PromptPack's default `resolve`.
 inline constexpr std::string_view HOSTED_RESOLVE_INSTRUCTION =
     "Step 1: choose the action {speaker} tries now. Reply with the JSON object only.";
 
-// The user message the speak call appends after the resolve output; it must fit narrate_allowance.
+// The user message the speak call appends after the resolve output; it must fit narrate_allowance. PromptPack's
+// default `speak`.
 inline constexpr std::string_view HOSTED_SPEAK_INSTRUCTION =
     "Step 2: write what {speaker} says now. Spoken words only, in character. {player} is the player's character.";
 
-// L3's user message for a turn that had no events and no player text before the speaker's line.
+// L3's user message for a turn that had no events and no player text before the speaker's line. PromptPack's default
+// `turn_cue`.
 inline constexpr std::string_view HOSTED_TURN_CUE = "({speaker} speaks.)";
 
 // A hosted NPC's fold call (per-speaker memory spec, section 1): its memory of the turns above, in its own terms.
-// {actor} is the NPC's name.
+// {actor} is the NPC's name. PromptPack's default `summarize`.
 inline constexpr std::string_view HOSTED_SUMMARIZE_INSTRUCTION =
     "Summarize the turns above as {actor} remembers them, for {actor}'s own memory, not for the player. Keep names, "
     "places, items, promises, secrets and who said what to whom. Leave out JSON and engine details. Plain prose, at "
     "most 200 words.";
 
-// A hosted NPC's condense call: the memories above (RenderMemories) become one. {actor} is the NPC's name.
+// A hosted NPC's condense call: the memories above (RenderMemories) become one. {actor} is the NPC's name. PromptPack's
+// default `condense`.
 inline constexpr std::string_view HOSTED_CONDENSE_INSTRUCTION =
     "Condense what {actor} remembers, above, into one summary for {actor}'s own memory, not for the player. Keep names, "
     "places, items, promises, secrets, who told {actor} what, and the order of events. Plain prose, at most 250 words.";

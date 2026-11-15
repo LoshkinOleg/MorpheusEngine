@@ -3,6 +3,7 @@ add_library(morpheus_turn STATIC
     HostedSession.cpp
     HostedWorld.cpp
     MemoryUpkeep.cpp
+    PromptPack.cpp
     Replay.cpp
     Resolve.cpp
     ResolveGrammar.cpp
