@@ -65,7 +65,7 @@ A rollback row is added (`rollbacks`: id, game time, status `open`, the marks it
 
 And:
 
-- **Superseded summaries come back:** a summary is shown when it is visible and not superseded by a visible summary. `superseded` becomes `superseded_by` (the condensed summary that replaced it, 0 for none), so a hidden condense shows again the summaries it replaced, and they in turn may be hidden if they cover hidden turns (the rule applies down the chain).
+- **Superseded summaries come back:** a summary is shown when it is visible and not superseded by a visible summary. `superseded` becomes a link from the summary to each condense that replaced it (a summary may be condensed again while a rollback hides its first condense), so a hidden condense shows again the summaries it replaced, and they in turn may be hidden if they cover hidden turns (the rule applies down the chain).
 - **Applied shares are pending again:** a pending share applied after T is marked unapplied by this rollback; its copies are hidden (above), and Maintain applies it again when the teller's memory is complete.
 - **Marks move back, saved first:** the rollback saves every conversation's `folded_through` and every NPC's remembered-through mark. Then, per conversation with last visible turn `cut`:
   - `folded_through` = min(saved, `cut`);
@@ -93,11 +93,11 @@ Turn numbers stay run-wide and unique: the next turn is one past the highest num
 
 - `hidden_by INTEGER NOT NULL DEFAULT 0` on `hosted_turns`, `conversation_events`, `conversations`, `conversation_changes`, `summaries`, `pending_shares`.
 - `clock REAL` (null allowed) on `hosted_turns`, `conversation_events`, `conversations`, `conversation_changes`, `summaries` (shared copies), `pending_shares` (created).
-- `summaries`: `superseded` becomes `superseded_by INTEGER NOT NULL DEFAULT 0`; new `made_in INTEGER NOT NULL DEFAULT 0`.
+- `summaries`: `superseded` is dropped; new `made_in INTEGER NOT NULL DEFAULT 0`. New `summary_supersessions (summary_id, condensed_id)`: one row per summary a condense replaced. A summary is superseded when a link names a visible summary.
 - `pending_shares`: `applied INTEGER NOT NULL DEFAULT 0`, `applied_clock REAL` (when it was applied; null in a run with no clock), `unapplied_by INTEGER NOT NULL DEFAULT 0`; applied shares stay as rows instead of being deleted. A share is pending when it is not applied, or unapplied by the open rollback.
 - `conversations` keeps `id`, `position`, `folded_through`, `clock`, `hidden_by`; `participants` and `ended` move to `conversation_changes (id, conversation_id, clock, participants, ended, hidden_by)`.
 - New `rollbacks (id, game_time, status, saved_marks)`: status `open`, `undone` or `abandoned`; `saved_marks` is JSON: every conversation's folded_through and every NPC mark.
-- Upgrade from version 5 in one transaction: the new columns (clocks null), a change row per conversation from its current participants and ended flag, `superseded_by` from `superseded` (a superseded summary's condense: the actor's next condensed summary by id; if none can be found, the upgrade fails as damaged data), applied shares kept (version 5 deleted them, so none exist to keep). Older versions upgrade through 5. Owned runs gain the columns only.
+- Upgrade from version 5 in one transaction: the new columns (clocks null), a change row per conversation from its current participants and ended flag, a supersession link for each `superseded` summary (to its condense: the actor's next condensed summary by id; if none can be found, the upgrade fails as damaged data), applied shares kept (version 5 deleted them, so none exist to keep). Older versions upgrade through 5. Owned runs gain the columns only.
 - Readers of hosted rows skip hidden rows (`hidden_by` not 0) unless they are the tests' and the debugging route's "all rows" readers.
 
 ## 5. Components
