@@ -89,9 +89,9 @@ Nothing X did not witness or was not told is ever returned. The owned game's sou
 
 - `core::Summary` gains `actorId` (empty for the owned game), `conversationId` (empty for the owned game and for a condensed summary), `toldBy` (empty unless shared), `sourceId` (the summary a shared copy was made from; 0 otherwise), `superseded` (false), and `id` (the store's row id; 0 before it is stored).
 - `store::RunStore`, schema version 5:
-  - `summaries` gains `actor_id`, `conversation_id`, `told_by`, `source_id`, `superseded`; the owned game's rows keep the empty actor.
+  - `summaries` gains `actor_id`, `conversation_id`, `told_by`, `source_id`, `superseded` (replaced in version 6 by `summary_supersessions`, see section 1); the owned game's rows keep the empty actor.
   - New table `actor_memory (conversation_id, actor_id, remembered_through)`, primary key the pair.
-  - New table `pending_shares (id, from_actor, to_actor, conversation_id)`.
+  - New table `pending_shares (id, from_actor, to_actor, conversation_id)` (version 6 keeps applied shares as rows, with `applied`; rollback spec section 4).
   - Methods: an NPC's shown summaries; all of an NPC's summaries (shown and superseded); add a summary; supersede an NPC's shown summaries and add the condensed one, in one transaction; the remembered-through mark (read, move); add, list and remove pending shares; `Summaries()` keeps meaning the owned run's summaries.
   - Upgrade from version 4, in one transaction: the new columns and tables. In a hosted run, each version 4 summary (run-wide) is copied by its two end turns (`from_turn`, `to_turn`): when both are turns of one conversation it is that conversation's fold (D1 stored a fold of interleaved conversations as the range from its first to its last turn, other conversations' turns in between), copied with that conversation's id to the NPC witnesses of that conversation's turns in the range; otherwise it is a condense, copied with no conversation to the NPC witnesses of every turn in the range. A summary whose end turns are not hosted turns is damaged data (`store::StoreError`, the upgrade rolls back). The run-wide row is removed; each NPC witness's mark in a conversation starts at the conversation's `folded_through`. An owned run gains the empty columns only. Version 3 and 2 files upgrade through 4.
 
