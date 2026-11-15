@@ -163,7 +163,7 @@ public:
 
     // Starts a conversation with `participants` in join order at game time `clock`, and returns its id: "c1", "c2",
     // ... in creation order, hidden ones included. Its start row and its first change row land together. Throws
-    // ContractError for no participants.
+    // ContractError for no participants, and while a rollback is open.
     std::string CreateConversation(const std::vector<core::Participant>& participants, std::optional<double> clock);
 
     // The visible conversation `id`, with the participants and end of its latest visible change row; nullopt when there
@@ -174,12 +174,12 @@ public:
     std::vector<core::Conversation> Conversations();
 
     // Appends a change row to conversation `id`: these participants, its end unchanged, at game time `clock`. Throws
-    // ContractError for an unknown conversation or no participants.
+    // ContractError for an unknown conversation or no participants, and while a rollback is open.
     void SetParticipants(std::string_view id, const std::vector<core::Participant>& participants,
                          std::optional<double> clock);
 
     // Appends a change row ending conversation `id`, its participants unchanged, at game time `clock`. Throws
-    // ContractError for an unknown conversation.
+    // ContractError for an unknown conversation, and while a rollback is open.
     void EndConversation(std::string_view id, std::optional<double> clock);
 
     // A fold by the speaker: adds `summary` (its actor's, of conversation `id`) and moves the conversation's
@@ -231,7 +231,7 @@ public:
 
     // Records a share that waits until the teller's memory of the conversation is complete, created at share.clock,
     // and returns its id (share.id, appliedClock and unappliedBy are ignored: it is pending). Throws ContractError for
-    // an empty actor or conversation.
+    // an empty actor or conversation, and while a rollback is open.
     std::int64_t AddPendingShare(const core::PendingShare& share);
 
     // Every visible share that is pending (not applied, or unapplied by a rollback), in the order they were added.
@@ -241,7 +241,8 @@ public:
     void MarkShareApplied(std::int64_t id, std::optional<double> clock);
 
     // Appends `events` to conversation `id`, in order, each with `afterTurn` (the conversation's latest turn, 0 before
-    // its first) and game time `clock`, in one transaction. Throws ContractError for an unknown conversation.
+    // its first) and game time `clock`, in one transaction. Throws ContractError for an unknown conversation, and while
+    // a rollback is open.
     void AddConversationEvents(std::string_view id, int afterTurn, const std::vector<nlohmann::json>& events,
                                std::optional<double> clock);
 
@@ -260,8 +261,8 @@ public:
     // dated with. nullopt when none has a clock.
     std::optional<double> LatestClock();
 
-    // Appends hosted turn NextHostedTurn(), with its clock. Throws ContractError if record.number is not that, or its
-    // conversation is unknown.
+    // Appends hosted turn NextHostedTurn(), with its clock. Throws ContractError if record.number is not that, its
+    // conversation is unknown, or a rollback is open.
     void CommitHostedTurn(const core::HostedTurn& record);
 
     // Conversation `conversationId`'s visible turns, ascending. Throws StoreError naming the file, the turn and the
@@ -323,6 +324,11 @@ private:
 
     // The id of the open rollback (OpenRollback), 0 when none is open. Throws StoreError when more than one is open.
     std::int64_t OpenRollbackId();
+
+    // Throws ContractError naming `method` while a rollback is open: a new record is written only after the rollback
+    // is abandoned, so an undo restores the run exactly (CreateConversation, SetParticipants, EndConversation,
+    // AddConversationEvents, CommitHostedTurn and AddPendingShare).
+    void RequireNoOpenRollback(const char* method);
 
     // Moves conversation `id`'s folded_through to `turn` (FoldConversation and MarkFolded, named by `method`). Throws
     // ContractError for an unknown conversation, and unless `turn` is past its folded_through and at most

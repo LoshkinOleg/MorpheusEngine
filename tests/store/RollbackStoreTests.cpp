@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_exception.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <filesystem>
@@ -172,6 +173,118 @@ TEST_CASE("A rollback shows again what a hidden condense superseded", "[store][r
     REQUIRE(shown.size() == 1);
     CHECK(shown[0].text == "npc-1 remembers 1-2.");
     CHECK(store.RememberedThrough(id, "npc-1") == 2);
+}
+
+TEST_CASE("An undo deletes a condense made while the rollback was open, with its links and its embedding",
+          "[store][rollback]")
+{
+    std::string id;
+    const std::filesystem::path file = Run("rollback_recondense", id);
+    std::int64_t firstCondense = 0;
+    std::int64_t refold = 0;
+    {
+        store::RunStore store = store::RunStore::Open(file);
+        core::Summary condensed;
+        condensed.fromTurn = 1;
+        condensed.toTurn = 4;
+        condensed.text = "npc-1 condensed.";
+        condensed.actorId = "npc-1";
+        firstCondense = store.CondenseActorSummaries("npc-1", condensed);
+        store.ApplyRollback(2.7);
+
+        // While it is open, npc-1 condenses again: the 1-2 shown again is linked to the new condense, which gets a vector.
+        core::Summary again;
+        again.fromTurn = 1;
+        again.toTurn = 2;
+        again.text = "npc-1 condensed again.";
+        again.actorId = "npc-1";
+        refold = store.CondenseActorSummaries("npc-1", again);
+        store.PutEmbedding({store::EmbeddingKind::Summary, std::to_string(refold), "embedder", {1.0f, 0.0f}, "hash"});
+        REQUIRE(store.ActorSummaries("npc-1", false).at(0).id == refold);
+
+        // Undo: the refold and its vector are gone; npc-1 shows only the first condense, its mark is back at 4.
+        store.UndoRollback();
+        CHECK(store.Embeddings(store::EmbeddingKind::Summary, "embedder").empty());
+        const std::vector<core::Summary> shown = store.ActorSummaries("npc-1", false);
+        REQUIRE(shown.size() == 1);
+        CHECK(shown[0].id == firstCondense);
+        CHECK(store.RememberedThrough(id, "npc-1") == 4);
+        for (const core::Summary& summary : store.ActorSummaries("npc-1", true)) {
+            if (summary.id != firstCondense) {
+                CHECK(summary.supersededBy == firstCondense);
+            }
+        }
+    }
+    // The refold's supersession links went with it; the first condense's links are still there.
+    store::Database db = store::Database::Open(file, false);
+    store::Statement links = db.Prepare("SELECT COUNT(*) FROM summary_supersessions WHERE condensed_id = ?1");
+    links.Bind(1, refold);
+    REQUIRE(links.Step());
+    CHECK(links.ColumnInt(0) == 0);
+    store::Statement kept = db.Prepare("SELECT COUNT(*) FROM summary_supersessions WHERE condensed_id = ?1");
+    kept.Bind(1, firstCondense);
+    REQUIRE(kept.Step());
+    CHECK(kept.ColumnInt(0) == 2);
+}
+
+TEST_CASE("A conversation started after the rollback's time is hidden whole and comes back whole on undo",
+          "[store][rollback]")
+{
+    std::string id;
+    store::RunStore store = store::RunStore::Open(Run("rollback_later_conversation", id));
+    const std::vector<core::Participant> participants = {{"npc-1", "Hulda", ""}, {"npc-2", "Saadia", ""}, {"player", "Aela", ""}};
+    const std::string later = store.CreateConversation(participants, 5.0);
+    store.CommitHostedTurn(Turn(5, later, 5.0));
+    store.AddConversationEvents(later, 5, {nlohmann::json{{"text", "A guard walks in."}}}, 5.5);
+    // An event after the rollback's time in the conversation that survives it.
+    store.AddConversationEvents(id, 4, {nlohmann::json{{"text", "The fire dies down."}}}, 5.5);
+
+    const store::RollbackCounts applied = store.ApplyRollback(4.7);
+    CHECK(applied.hiddenTurns == 1);
+    const std::vector<core::Conversation> conversations = store.Conversations();
+    REQUIRE(conversations.size() == 1);
+    CHECK(conversations[0].id == id);
+    CHECK_FALSE(store.Conversation(later).has_value());
+    CHECK(store.HostedTurns(later).empty());
+    CHECK(store.ConversationEvents(later).empty());
+    CHECK(store.ConversationEvents(id).size() == 1);
+    CHECK(store.HostedTurns(id).size() == 4);
+
+    const store::RollbackCounts undone = store.UndoRollback();
+    CHECK(undone.restoredTurns == 1);
+    CHECK(store.Conversations().size() == 2);
+    REQUIRE(store.Conversation(later).has_value());
+    CHECK(store.Conversation(later)->participants.size() == 3);
+    CHECK(store.HostedTurns(later).size() == 1);
+    CHECK(store.ConversationEvents(later).size() == 1);
+    CHECK(store.ConversationEvents(id).size() == 2);
+}
+
+TEST_CASE("The writers of new records refuse while a rollback is open", "[store][rollback]")
+{
+    // An undo is exact only if nothing new was stored while the rollback was open: the session abandons it first.
+    std::string id;
+    store::RunStore store = store::RunStore::Open(Run("rollback_refuses_new", id));
+    store.ApplyRollback(2.7);
+    const std::vector<core::Participant> participants = {{"npc-1", "Hulda", ""}, {"player", "Aela", ""}};
+    CHECK_THROWS_MATCHES(store.CreateConversation(participants, 2.8), core::ContractError,
+                         Catch::Matchers::MessageMatches(ContainsSubstring("CreateConversation")));
+    CHECK_THROWS_MATCHES(store.SetParticipants(id, participants, 2.8), core::ContractError,
+                         Catch::Matchers::MessageMatches(ContainsSubstring("SetParticipants")));
+    CHECK_THROWS_MATCHES(store.EndConversation(id, 2.8), core::ContractError,
+                         Catch::Matchers::MessageMatches(ContainsSubstring("EndConversation")));
+    CHECK_THROWS_MATCHES(store.AddConversationEvents(id, 2, {nlohmann::json{{"text", "A door opens."}}}, 2.8),
+                         core::ContractError, Catch::Matchers::MessageMatches(ContainsSubstring("AddConversationEvents")));
+    CHECK_THROWS_MATCHES(store.CommitHostedTurn(Turn(5, id, 2.8)), core::ContractError,
+                         Catch::Matchers::MessageMatches(ContainsSubstring("CommitHostedTurn")));
+    CHECK_THROWS_MATCHES(store.AddPendingShare(Share(id)), core::ContractError,
+                         Catch::Matchers::MessageMatches(ContainsSubstring("AddPendingShare")));
+    // Nothing was written: the undo restores the run as it was.
+    store.UndoRollback();
+    CHECK(store.Conversations().size() == 1);
+    CHECK(store.HostedTurns(id).size() == 4);
+    CHECK(store.ConversationEvents(id).size() == 1);
+    CHECK(store.PendingShares().empty());
 }
 
 TEST_CASE("Abandoning keeps the hidden rows hidden for good and the refolds as ordinary memories", "[store][rollback]")

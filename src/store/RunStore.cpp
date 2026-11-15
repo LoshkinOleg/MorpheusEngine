@@ -921,6 +921,7 @@ std::string RunStore::CreateConversation(const std::vector<core::Participant>& p
                                          std::optional<double> clock)
 {
     RequireHosted("CreateConversation");
+    RequireNoOpenRollback("CreateConversation");
     MORPHEUS_REQUIRE(!participants.empty(), "CreateConversation: a conversation needs a participant");
     // Conversations are never deleted (a hidden one stays as a row), so their count names the next one: c1, c2, ...
     // The count's statement is finished before the insert.
@@ -980,6 +981,7 @@ void RunStore::SetParticipants(std::string_view id, const std::vector<core::Part
                                std::optional<double> clock)
 {
     RequireHosted("SetParticipants");
+    RequireNoOpenRollback("SetParticipants");
     const std::optional<core::Conversation> conversation = Conversation(id);
     MORPHEUS_REQUIRE(conversation.has_value(), "SetParticipants: no such conversation");
     MORPHEUS_REQUIRE(!participants.empty(), "SetParticipants: a conversation needs a participant");
@@ -995,6 +997,7 @@ void RunStore::SetParticipants(std::string_view id, const std::vector<core::Part
 void RunStore::EndConversation(std::string_view id, std::optional<double> clock)
 {
     RequireHosted("EndConversation");
+    RequireNoOpenRollback("EndConversation");
     const std::optional<core::Conversation> conversation = Conversation(id);
     MORPHEUS_REQUIRE(conversation.has_value(), "EndConversation: no such conversation");
     // A change row that ends it; the participants stay as they are.
@@ -1157,6 +1160,7 @@ void RunStore::SetRememberedThrough(std::string_view conversationId, std::string
 std::int64_t RunStore::AddPendingShare(const core::PendingShare& share)
 {
     RequireHosted("AddPendingShare");
+    RequireNoOpenRollback("AddPendingShare");
     MORPHEUS_REQUIRE(!share.fromActor.empty() && !share.toActor.empty() && !share.conversationId.empty(),
                      "AddPendingShare: a share needs its teller, its listener and its conversation");
     // The id SQLite assigns is the share's, read back on the same connection right after the insert. It is pending: not
@@ -1214,6 +1218,7 @@ void RunStore::AddConversationEvents(std::string_view id, int afterTurn, const s
                                      std::optional<double> clock)
 {
     RequireHosted("AddConversationEvents");
+    RequireNoOpenRollback("AddConversationEvents");
     MORPHEUS_REQUIRE(Conversation(id).has_value(), "AddConversationEvents: no such conversation");
     _db.Transaction([&] {
         for (const nlohmann::json& event : events) {
@@ -1297,6 +1302,7 @@ std::optional<double> RunStore::LatestClock()
 void RunStore::CommitHostedTurn(const core::HostedTurn& record)
 {
     RequireHosted("CommitHostedTurn");
+    RequireNoOpenRollback("CommitHostedTurn");
     // Turn numbers are never reused: the next is one past every turn stored, hidden ones included.
     const int expected = NextHostedTurn();
     MORPHEUS_REQUIRE(record.number == expected,
@@ -1788,6 +1794,13 @@ std::int64_t RunStore::OpenRollbackId()
     // OpenRollback is the one reader of the open rollback, and its check of more than one open.
     const std::optional<Rollback> open = OpenRollback();
     return open ? open->id : 0;
+}
+
+void RunStore::RequireNoOpenRollback(const char* method)
+{
+    // A record written while a rollback is open would outlive its undo, or be hidden with nothing to show it again.
+    MORPHEUS_REQUIRE(OpenRollbackId() == 0,
+                     std::format("RunStore::{}: a rollback is open; abandon it before storing a new record", method));
 }
 
 void RunStore::MoveFoldedThrough(const char* method, std::string_view id, int turn)
