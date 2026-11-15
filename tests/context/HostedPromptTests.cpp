@@ -117,7 +117,7 @@ TEST_CASE("AssembleHostedPrompt counts and budgets like the resolve prompt", "[c
           backend.CountTokens("Aela: Hello.") + backend.CountTokens("Hulda [none]: Welcome."));
     CHECK(assembly.tokens.tail == backend.CountTokens(assembly.prompt.messages[3].content));
     CHECK(assembly.tokens.total == backend.CountPromptTokens(assembly.prompt));
-    const int systemCost = backend.CountTokens(assembly.prompt.messages[0].content) + 4;
+    const int systemCost = backend.CountTokens(assembly.prompt.messages[0].content) + 4 + 4; // With the tail's frame.
     CHECK(assembly.transcriptBudget == 8192 - 64 - 64 - 48 - 512 - systemCost);
     CHECK(assembly.transcriptCost ==
           backend.CountTokens("Aela: Hello.") + 4 + backend.CountTokens("Hulda [none]: Welcome.") + 4);

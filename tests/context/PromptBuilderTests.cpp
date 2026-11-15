@@ -46,7 +46,7 @@ context::ContextInputs Inputs(const core::World& world)
 // Template-inclusive quantities of an assembly, measured on a backend with room to spare, so tests can pick
 // exact context sizes from them.
 struct Measured {
-    int systemCost = 0;     // The system message alone, templated.
+    int systemCost = 0;     // The system message templated, with the tail message's frame.
     int transcriptCost = 0; // What L3 adds to the templated prompt.
     int tail = 0;           // Raw tail tokens.
 };
@@ -55,7 +55,9 @@ Measured Measure(const core::World& world, const context::ContextInputs& inputs,
 {
     test::FakeBackend roomy(100000);
     const context::Assembly assembly = context::AssembleResolvePrompt(world, inputs, budget, roomy);
-    return {roomy.CountTokens(assembly.prompt.messages[0].content) + 4, assembly.transcriptCost, assembly.tokens.tail};
+    // FakeBackend's frame is 4 tokens a message: the system message's and the tail's.
+    return {roomy.CountTokens(assembly.prompt.messages[0].content) + 4 + 4, assembly.transcriptCost,
+            assembly.tokens.tail};
 }
 
 // The context size that gives L3 exactly `transcriptBudget` tokens.
@@ -131,7 +133,8 @@ TEST_CASE("AssembleResolvePrompt budgets the transcript with template-inclusive 
     test::FakeBackend backend(8192);
     const context::Assembly assembly = context::AssembleResolvePrompt(world, Inputs(world), RoomyBudget(), backend);
 
-    const int systemCost = backend.CountTokens(assembly.prompt.messages[0].content) + 4;
+    // The templated system message counts the tail message's frame too: the tail allowance budgets only its text.
+    const int systemCost = backend.CountTokens(assembly.prompt.messages[0].content) + 4 + 4;
     CHECK(assembly.transcriptBudget == 8192 - 64 - 64 - 48 - 512 - systemCost);
     CHECK(assembly.transcriptCost ==
           backend.CountTokens("I knock.") + 4 + backend.CountTokens("The door creaks.") + 4);
@@ -172,7 +175,8 @@ TEST_CASE("AssembleResolvePrompt reports budget overruns", "[context]")
     }
     SECTION("only the context overflows")
     {
-        // The tail exactly fills its allowance, so the 4 template tokens of its message push the prompt over.
+        // The tail exactly fills its allowance, so the narrate call's two message frames (4 template tokens each)
+        // push the prompt over.
         const context::ContextInputs inputs = Inputs(world);
         core::BudgetSettings budget = roomy;
         budget.tailAllowance = Measure(world, inputs, roomy).tail;
@@ -336,11 +340,11 @@ TEST_CASE("narrate_allowance and the narrate message overhead count toward the c
     const context::ContextInputs inputs = Inputs(world);
     const Measured measured = Measure(world, inputs, budget);
 
-    // The tail leaves no slack: total (which holds the tail message's 4 template tokens) + both generations +
-    // allowance + 4 template tokens each for the assistant and the user message of the narrate call is exactly the
-    // context at tailAllowance = tail + 4 + 4 + 4, and one token over below that.
+    // The tail leaves no slack: total (whose tail message frame the system cost already budgets) + both generations
+    // + allowance + 4 template tokens each for the assistant and the user message of the narrate call is exactly the
+    // context at tailAllowance = tail + 4 + 4, and one token over below that.
     core::BudgetSettings exact = budget;
-    exact.tailAllowance = measured.tail + 4 + 4 + 4;
+    exact.tailAllowance = measured.tail + 4 + 4;
     {
         const Measured exactMeasured = Measure(world, inputs, exact);
         test::FakeBackend backend(ContextSizeFor(exact, exactMeasured, exactMeasured.transcriptCost));

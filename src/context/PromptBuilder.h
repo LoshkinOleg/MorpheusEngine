@@ -73,14 +73,17 @@ struct Assembly {
 // volatile tail (T1-T4). L1 is the world's rules, game reference (RenderWorldReference) and always-on lore.
 // prompt.stableCount marks the end of L3. Throws ContractError if L0 exceeds engine_rules_cap (engine text too
 // long) and DataError if L1 exceeds world_cap (the world is too big) or if the context leaves no room for the
-// transcript after the system message (its summary counted at most at summary_cap), the tail allowance, the narrate
+// transcript after the system message (its summary counted at most at summary_cap; the tail message's template frame
+// counted with it), the tail allowance, the narrate
 // allowance and both generations, thinking blocks included (folding cannot fix that). Other overruns, an over-cap
 // summary among them, are flags for the turn layer to act on.
 //
 // The narrate call appends two messages that are not part of this prompt: the resolve output (assistant, up to
 // resolveMaxTokens) and the resolution record + instruction (user). budget.narrateAllowance is reserved for the
 // user message's text: transcriptBudget excludes it. contextOverflow counts it together with the template
-// overhead of both messages (assistant and user), each approximated by the cost of an empty one-message prompt.
+// overhead of both messages (assistant and user): the user message's approximated by the cost of an empty user prompt,
+// the assistant message's by what an empty one adds to it. No prompt counted lacks a user message, which some chat
+// templates (Qwen3.5's) refuse.
 Assembly AssembleResolvePrompt(const core::World& world, const ContextInputs& inputs,
                                const core::BudgetSettings& budget, inference::LlmBackend& backend);
 

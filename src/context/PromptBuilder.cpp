@@ -52,8 +52,9 @@ void LayOut(Assembly& assembly, std::string systemText, const std::vector<Transc
     MORPHEUS_REQUIRE(assembly.prompt.messages.empty() && assembly.tokens.transcript == 0,
                      "LayOut: expects a fresh assembly with no messages and no transcript tokens");
 
-    // The fixed part of the prompt: the system message and the tail. Counting it, with and without the tail,
-    // gives the template-inclusive costs the transcript budget needs.
+    // The fixed part of the prompt: the system message and the tail. Counting it gives the template-inclusive costs
+    // the transcript budget needs. No prompt counted here lacks a user message: some chat templates (Qwen3.5's) refuse
+    // a message list without one.
     inference::Prompt fixed;
     fixed.messages.push_back({inference::Role::System, std::move(systemText)});
     fixed.messages.push_back({inference::Role::User, std::move(tail)});
@@ -62,9 +63,13 @@ void LayOut(Assembly& assembly, std::string systemText, const std::vector<Transc
     LayerTokens& tokens = assembly.tokens;
     tokens.tail = backend.CountTokens(fixed.messages.back().content);
     const int fixedTotal = backend.CountPromptTokens(fixed); // System message and tail, no transcript.
+    // The templated system message, with the tail message's frame and the generation prompt: the fixed part less the
+    // tail's text. Exact, because both backends tokenize the template pieces and each content separately, so the
+    // tail's content adds exactly CountTokens(tail) to the count, wherever it sits. The tail allowance budgets only
+    // that text, so its frame belongs here.
+    const int systemCost = fixedTotal - tokens.tail;
     inference::Message tailMessage = std::move(fixed.messages.back());
     fixed.messages.pop_back();
-    const int systemCost = backend.CountPromptTokens(fixed); // The system message alone, templated.
 
     // Messages: stable prefix (system, transcript), then the tail.
     inference::Prompt& prompt = assembly.prompt;
@@ -83,7 +88,7 @@ void LayOut(Assembly& assembly, std::string systemText, const std::vector<Transc
     assembly.summaryOverBudget = tokens.summary > budget.summaryCap;
     assembly.tailOverBudget = tokens.tail > budget.tailAllowance;
 
-    // L3 gets what the templated system message, the tail allowance, the narrate allowance and both generations
+    // L3 gets what the templated system message (with the tail's frame), the tail allowance, the narrate allowance and both generations
     // leave, with the summary counted at most at its cap: an over-cap summary is a flag (condense it), not a
     // settings error. A generation is a call's thinking block plus its answer. Reserving both thinking blocks is
     // conservative: the resolve call's block is not part of the narrate prompt, so the two never share a context.
@@ -102,14 +107,15 @@ void LayOut(Assembly& assembly, std::string systemText, const std::vector<Transc
 
     // Final safety check on the whole templated prompt, as seen by the narrate call: the prompt, the narrate
     // message (its template overhead plus the allowance for its text), the resolve output's assistant message
-    // (template overhead only: its text is the resolve generation) and both generations. Each overhead is
-    // approximated by the cost of an empty one-message prompt.
+    // (template overhead only: its text is the resolve generation) and both generations. The narrate message's
+    // overhead is approximated by the cost of an empty user prompt, and the assistant message's by what an empty one
+    // adds after an empty user message (an assistant-only prompt is refused by some templates).
     inference::Prompt emptyUser;
     emptyUser.messages.push_back({inference::Role::User, ""});
     const int narrateMessageOverhead = backend.CountPromptTokens(emptyUser);
-    inference::Prompt emptyAssistant;
-    emptyAssistant.messages.push_back({inference::Role::Assistant, ""});
-    const int resolveOutputOverhead = backend.CountPromptTokens(emptyAssistant);
+    inference::Prompt emptyExchange = emptyUser;
+    emptyExchange.messages.push_back({inference::Role::Assistant, ""});
+    const int resolveOutputOverhead = backend.CountPromptTokens(emptyExchange) - narrateMessageOverhead;
     assembly.contextOverflow = tokens.total + budget.narrateAllowance + narrateMessageOverhead +
                                    resolveOutputOverhead + budget.ResolveGenerationTokens() +
                                    budget.NarrateGenerationTokens() >

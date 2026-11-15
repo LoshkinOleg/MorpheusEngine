@@ -148,7 +148,8 @@ inline std::vector<std::string> Pieces(const std::string& text)
 }
 
 // The whole server over real sockets, with fake llama-servers behind it, for test `name`: each run's backend and the
-// utility backend on the fakes, HostedSettings, and the server on a free port of 127.0.0.1. Log lines are dropped.
+// utility backend on the fakes, HostedSettings, and the server on a free port of 127.0.0.1. The chat fake refuses
+// prompts without a user message, as llama-server does with Qwen3.5, the host's model. Log lines are dropped.
 struct HttpHarness {
     FakeLlamaServer chat;
     FakeLlamaServer embed;
@@ -170,6 +171,7 @@ struct HttpHarness {
               [](const std::string&) {})
         , http(api)
     {
+        chat.RefuseWithoutUserMessage(true);
         http.Start(0);
     }
 

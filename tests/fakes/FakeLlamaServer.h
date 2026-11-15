@@ -33,7 +33,8 @@ namespace morpheus::test {
 // - POST /tokenize: the tokenizer's ids for content, add_special (default false) and parse_special (default true), as
 //   llama-server defaults them. By default DefaultTokens.
 // - POST /apply-template: the renderer's text as "prompt" (by default chatml, with the assistant's opening when
-//   add_generation_prompt is set).
+//   add_generation_prompt is set). With RefuseWithoutUserMessage, a message list without a user message answers HTTP
+//   400 instead, as llama-server does for Qwen3.5's template.
 // - POST /completion: the next queued CompletionScript, streamed as llama-server streams: a "data: {...}" message
 //   per piece, then the last message with stop_type, tokens_cached and timings. With none queued: HTTP 500.
 // - POST /embedding: llama-server's own answer, [{"index": 0, "embedding": [vectors]}], with the embedding maker's
@@ -105,6 +106,7 @@ private:
     std::map<std::string, int> _drops = {};              // Path -> how many of its next requests lose their connection.
     std::vector<Request> _requests = {};
     bool _clientClosedStream = false;
+    bool _refuseWithoutUserMessage = false; // /apply-template refuses a message list without a user message.
     std::atomic<bool> _stopping = false; // Set by the destructor: held streams end at once.
     httplib::Server _server = {};
     int _port = 0;
@@ -149,6 +151,18 @@ public:
             }
             nlohmann::json body;
             if (!ParseBody(request, response, body)) {
+                return;
+            }
+            // Qwen3.5's template raises for a list without a user message, and llama-server answers its message.
+            const nlohmann::json& messages = body.at("messages");
+            const bool hasUser = std::any_of(messages.begin(), messages.end(), [](const nlohmann::json& message) {
+                return message.at("role") == "user";
+            });
+            if (!hasUser && Copy(_refuseWithoutUserMessage)) {
+                response.status = 400;
+                response.set_content(
+                    R"({"error":{"code":400,"message":"No user query found in messages.","type":"invalid_request_error"}})",
+                    "application/json");
                 return;
             }
             const Renderer renderer = Copy(_renderer);
@@ -357,6 +371,14 @@ public:
     {
         std::scoped_lock lock(_mutex);
         _renderer = std::move(renderer);
+    }
+
+    // Whether /apply-template refuses a message list without a user message (HTTP 400, llama-server's message), as
+    // llama-server does with Qwen3.5's chat template. Off by default.
+    void RefuseWithoutUserMessage(bool refuse)
+    {
+        std::scoped_lock lock(_mutex);
+        _refuseWithoutUserMessage = refuse;
     }
 
     void SetEmbeddingMaker(EmbeddingMaker maker)
