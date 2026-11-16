@@ -6,6 +6,7 @@
 
 #include "TestPaths.h"
 #include "core/Errors.h"
+#include "core/HostedRecord.h"
 #include "core/World.h"
 #include "turn/EngineText.h"
 #include "turn/Resolve.h"
@@ -129,4 +130,42 @@ TEST_CASE("ParseReviewOutput bounds problems and the digest in characters, not b
     const turn::Review many =
         turn::ParseReviewOutput(R"({"consistent":false,"problems":["a","b","c","d"]})", true, false);
     CHECK_THAT(many.error, ContainsSubstring("more than 3 contradictions"));
+}
+
+TEST_CASE("HostedReviewPrompt lays out the speaker, the player, the action, the observation and the line",
+          "[review][hosted]")
+{
+    core::Adjudication follow;
+    follow.requested = true;
+    follow.actionId = "follow";
+    follow.params = nlohmann::json::object();
+    const nlohmann::json observation = {{"location", "inn"}};
+    const inference::Prompt prompt =
+        turn::HostedReviewPrompt("RULES", "Hulda", "Aela: Follow me.", follow, observation, "Lead the way.");
+    REQUIRE(prompt.messages.size() == 2);
+    CHECK(prompt.stableCount == 1);
+    CHECK(prompt.messages[0].role == inference::Role::System);
+    CHECK(prompt.messages[0].content == "RULES");
+    CHECK(prompt.messages[1].content == "# Speaker\nHulda\n\n# Player\nAela: Follow me.\n\n# Requested action\nfollow\n\n"
+                                        "# Observation\n{\"location\":\"inn\"}\n\n# Line\nLead the way.\n\n# Task\n" +
+                                            std::string(turn::HOSTED_REVIEW_INSTRUCTION));
+
+    // An action with parameters shows them; a refused one says so; no player text, no Player section.
+    core::Adjudication give = follow;
+    give.actionId = "give_item";
+    give.params = {{"item", "Sweetroll"}};
+    CHECK_THAT(turn::HostedReviewPrompt("R", "Hulda", "", give, observation, "Here.").messages[1].content,
+               Catch::Matchers::ContainsSubstring("# Requested action\ngive_item {\"item\":\"Sweetroll\"}\n\n"));
+    core::Adjudication refused;
+    const std::string none = turn::HostedReviewPrompt("R", "Hulda", "", refused, observation, "Hm.").messages[1].content;
+    CHECK(none.starts_with("# Speaker\nHulda\n\n# Requested action\nnone (the proposal was refused)\n\n"));
+}
+
+TEST_CASE("The default review rules name the speaking rules", "[review][hosted]")
+{
+    const std::string rules(turn::HOSTED_REVIEW_RULES);
+    CHECK(rules.starts_with("# Review\nYou check one spoken line"));
+    CHECK_THAT(rules, Catch::Matchers::ContainsSubstring("no name or label in front"));
+    CHECK(std::string(turn::HOSTED_RESPEAK_CORRECTION) ==
+          "Your previous line broke the speaking rules. Say it again without these problems:");
 }

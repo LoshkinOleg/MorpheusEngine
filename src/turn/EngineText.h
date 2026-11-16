@@ -117,4 +117,22 @@ inline constexpr std::string_view HOSTED_CONDENSE_INSTRUCTION =
     "Condense what {actor} remembers, above, into one summary for {actor}'s own memory, not for the player. Keep names, "
     "places, items, promises, secrets, who told {actor} what, and the order of events. Plain prose, at most 250 words.";
 
+// A hosted turn's review call: its system message, and PromptPack's default `review` (no variable). The review reads one
+// spoken line against these rules (hosted-review spec, section 4).
+inline constexpr std::string_view HOSTED_REVIEW_RULES = R"(# Review
+You check one spoken line of a character in a role-playing game that a host game runs. Reply with one JSON object and nothing else: "consistent" is false when the line breaks a rule below, true otherwise, and "problems" names each broken rule in one short sentence, at most three (empty when consistent).
+The rules:
+- The line is only what the speaker says aloud: no name or label in front, no action in brackets, no narration or description of actions, no quotation marks around it.
+- The line agrees with the action the speaker requested: it does not promise or describe a different action, and it does not present a refused action as done.
+- The line does not state an outcome the host has not reported.
+Tone, style and details the rules do not decide are not problems.)";
+
+// Ends the review call's user message, after the line under review.
+inline constexpr std::string_view HOSTED_REVIEW_INSTRUCTION =
+    "Review the line above against the rules. Reply with the JSON object only.";
+
+// Opens the respeak message: the speak message, with the review's problems listed under this.
+inline constexpr std::string_view HOSTED_RESPEAK_CORRECTION =
+    "Your previous line broke the speaking rules. Say it again without these problems:";
+
 } // namespace morpheus::turn

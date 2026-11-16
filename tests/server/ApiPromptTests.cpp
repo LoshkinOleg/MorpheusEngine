@@ -23,7 +23,7 @@ TEST_CASE("The defaults route answers every default text and the variables it ta
     CHECK(response.body.at("api_version") == "1.4.0");
     const turn::PromptPack defaults;
     const nlohmann::json& prompts = response.body.at("prompts");
-    CHECK(prompts.size() == 7);
+    CHECK(prompts.size() == 8);
     for (const turn::PromptText& text : turn::PROMPT_TEXTS) {
         INFO(std::string(text.key));
         CHECK(prompts.at(std::string(text.key)) == defaults.Text(text.key));
@@ -34,7 +34,8 @@ TEST_CASE("The defaults route answers every default text and the variables it ta
                                                           {"turn_cue", {"speaker", "player"}},
                                                           {"decide", {"player"}},
                                                           {"summarize", {"actor"}},
-                                                          {"condense", {"actor"}}});
+                                                          {"condense", {"actor"}},
+                                                          {"review", nlohmann::json::array()}});
 }
 
 TEST_CASE("Open takes a pack: the next turn's prompt shows it; a bad pack is a 400 naming the text and the variable",

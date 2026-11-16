@@ -24,7 +24,7 @@ struct PromptText {
 };
 
 // The pack's texts in the spec's table order: the order FromHost checks them in and the defaults route lists them in.
-inline constexpr std::array<PromptText, 7> PROMPT_TEXTS = {{
+inline constexpr std::array<PromptText, 8> PROMPT_TEXTS = {{
     {"system", {}},
     {"resolve", {"speaker", "player"}},
     {"speak", {"speaker", "player"}},
@@ -32,6 +32,7 @@ inline constexpr std::array<PromptText, 7> PROMPT_TEXTS = {{
     {"decide", {"player", ""}},
     {"summarize", {"actor", ""}},
     {"condense", {"actor", ""}},
+    {"review", {}},
 }};
 
 // The texts a hosted run speaks to the model (prompt pack spec): the engine's defaults (EngineText's HOSTED_*), with the
@@ -45,6 +46,7 @@ public:
     std::string decide = std::string(HOSTED_DECIDE_INSTRUCTION);
     std::string summarize = std::string(HOSTED_SUMMARIZE_INSTRUCTION);
     std::string condense = std::string(HOSTED_CONDENSE_INSTRUCTION);
+    std::string review = std::string(HOSTED_REVIEW_RULES);
 
     // The host's texts (HostData::prompts, by key) over the defaults. Throws DataError for the first fault: an unknown
     // key ("prompts/<key>: unknown text; ..."), checked in key order before any text; then, text by text in
