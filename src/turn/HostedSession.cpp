@@ -522,7 +522,8 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
     speakSpec.thinkingMaxTokens = _settings.budget.narrateThinkingTokens;
     speakSpec.sampling =
         SamplingFrom(_settings.narrateSampling, core::SamplingSeed(seed, turn, core::CallKind::Narrate, 0));
-    const inference::Completion spoken = _pBackend->Complete(speakPrompt, speakSpec, request.review ? inference::TokenCallback() : callbacks.onToken, stop);
+    const inference::Completion spoken = _pBackend->Complete(
+        speakPrompt, speakSpec, request.review ? inference::TokenCallback() : callbacks.onToken, stop);
     if (spoken.cancelled) {
         return std::nullopt;
     }

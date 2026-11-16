@@ -123,6 +123,8 @@ TEST_CASE("A consistent review: the line is delivered once, after the review", "
     const test::ScriptedBackend::Call& call = backend.Calls().at(2);
     CHECK(call.spec.grammar == turn::BuildReviewGrammar(true, false));
     CHECK(call.spec.maxTokens == test::HostedSettings().budget.reviewMaxTokens);
+    CHECK(call.spec.thinkingMaxTokens == test::HostedSettings().budget.reviewThinkingTokens);
+    CHECK(call.spec.sampling.seed == core::SamplingSeed(42, record->number, core::CallKind::Review, 0));
     const inference::Prompt expected =
         turn::HostedReviewPrompt(std::string(turn::HOSTED_REVIEW_RULES), "Hulda", "Aela: " + PLAYER_TEXT,
                                  record->adjudication, test::FixtureObservation(), "Hello there.");
@@ -154,6 +156,9 @@ TEST_CASE("An inconsistent review: the line is spoken once more with the problem
     // The respeak prompt is the speak prompt with the correction and the problems before the speak message.
     const inference::Prompt& speak = backend.Calls().at(1).prompt;
     const inference::Prompt& respeak = backend.Calls().at(3).prompt;
+    const test::ScriptedBackend::Call& respeakCall = backend.Calls().at(3);
+    CHECK(respeakCall.spec.maxTokens == backend.Calls().at(1).spec.maxTokens);
+    CHECK(respeakCall.spec.sampling.seed == core::SamplingSeed(42, record->number, core::CallKind::Renarrate, 0));
     REQUIRE(respeak.messages.size() == speak.messages.size());
     for (std::size_t i = 0; i + 1 < speak.messages.size(); ++i) {
         CHECK(respeak.messages[i].content == speak.messages[i].content);
@@ -238,6 +243,12 @@ TEST_CASE("A respeak message over narrate_allowance drops problems", "[hosted][r
     CHECK_THAT(fitting, !ContainsSubstring(longOne));
     CHECK_THAT(fitting, !ContainsSubstring(longTwo));
 
+    // Room for the correction and the first problem, not both: the second is dropped from the end.
+    const std::string withFirst = std::string(turn::HOSTED_RESPEAK_CORRECTION) + "\n- " + longOne + "\n\n" + speak;
+    const std::string partial = respeakMessage(tokens(withFirst) + 1);
+    CHECK(partial == withFirst);
+    CHECK_THAT(partial, !ContainsSubstring(longTwo));
+
     // Room for the speak instruction alone: the plain speak message.
     const std::string plain = respeakMessage(tokens(speak));
     CHECK(plain == speak);
@@ -291,4 +302,52 @@ TEST_CASE("A stop during the review commits nothing", "[hosted][review]")
     CHECK(session.Turns(id).empty());
     CHECK(delivery.pieces == 0);
     CHECK(delivery.text.empty());
+}
+
+TEST_CASE("A stop during the respeak commits nothing", "[hosted][review]")
+{
+    test::HostedScript script;
+    script.actions = {NONE};
+    script.lines = {"Hulda [wait]: Fine.", "Fine, I will wait."};
+    script.reviews = {R"({"consistent":false,"problems":["The line starts with a label."]})"};
+    std::stop_source stopSource;
+    test::ScriptedBackend::Responder scripted = script.Responder();
+    // The stop is requested as the respeak call starts, so its reply is cancelled at its first piece.
+    test::ScriptedBackend backend(
+        16384, [&](const inference::Prompt& prompt, const inference::GenerationSpec& spec) -> std::string {
+            if (spec.callTag == "respeak") {
+                stopSource.request_stop();
+            }
+            return scripted(prompt, spec);
+        });
+    turn::HostedSession session = OpenRun("hosted_review_stop_respeak", backend);
+    const std::string id = session.StartConversation({test::HULDA, test::AELA}, test::FixtureObservation());
+    turn::HostedTurnRequest request = test::Request(id, test::HULDA, PLAYER_TEXT);
+    request.review = true;
+
+    Delivery delivery;
+    CHECK_FALSE(session.RunTurn(request, Recording(delivery, backend), stopSource.get_token()));
+    CHECK(Tags(backend) == std::vector<std::string>{"resolve", "speak", "review", "respeak"});
+    CHECK(session.Turns(id).empty());
+    CHECK(delivery.pieces == 0);
+    CHECK(delivery.text.empty());
+}
+
+TEST_CASE("A review turn with no player text has no Player section in the review prompt", "[hosted][review]")
+{
+    test::HostedScript script;
+    script.actions = {NONE};
+    script.lines = {"Hello there."};
+    script.reviews = {CONSISTENT};
+    test::ScriptedBackend backend(16384, script.Responder());
+    turn::HostedSession session = OpenRun("hosted_review_no_player", backend);
+    const std::string id = session.StartConversation({test::HULDA, test::AELA}, test::FixtureObservation());
+    turn::HostedTurnRequest request = test::Request(id, test::HULDA, "");
+    request.review = true;
+
+    REQUIRE(session.RunTurn(request, {}, {}));
+    REQUIRE(backend.Calls().size() == 3);
+    const std::string& user = backend.Calls().at(2).prompt.messages.back().content;
+    CHECK_THAT(user, Catch::Matchers::StartsWith("# Speaker\nHulda\n\n# Requested action\n"));
+    CHECK_THAT(user, !ContainsSubstring("# Player"));
 }

@@ -67,7 +67,7 @@ inline nlohmann::json FixtureObservation()
 
 // Settings for hosted session tests: a context of 16384 with roomy budgets (resolve_max_tokens 64, narrate_max_tokens
 // 256, narrate_allowance 128, tail_allowance 1024, engine_rules_cap 1024, world_cap 1024, summary_cap 512,
-// retrieval_cap 256, review_max_tokens 96) and no thinking. Both samplings carry min_p 0.05, so the live hosted and
+// retrieval_cap 256, review_max_tokens 384) and no thinking. Both samplings carry min_p 0.05, so the live hosted and
 // [server] runs, which start from these settings, sample with it (the fakes ignore sampling).
 inline core::Settings HostedSettings()
 {
@@ -78,7 +78,7 @@ inline core::Settings HostedSettings()
     settings.embeddingDocumentPrefix = "search_document: ";
     settings.contextSize = 16384;
     settings.budget = {64, 256, 128, 1024, 1024, 1024, 512, 256};
-    settings.budget.reviewMaxTokens = 96; // The review call's answer; its prompt is standalone.
+    settings.budget.reviewMaxTokens = 384; // The review call's answer: room for a review's longest JSON (3 problems).
     settings.resolveSampling = {0.3, 40, 0.9, 0.05};
     settings.narrateSampling = {0.8, 40, 0.95, 0.05};
     return settings;
@@ -115,7 +115,8 @@ inline bool IsHostedDecide(const inference::Prompt& prompt)
 
 // A scripted model for hosted turns. Resolve calls (they carry the proposal grammar) get `actions` in order, speak
 // calls and respeak calls (no grammar) get `lines` in order, decide calls get `decisions` in order, review calls (tag
-// `review`) get `reviews` in order, and fold and condense calls "Summary.". Running out of replies is a test bug. The script must outlive the backends that call it.
+// `review`) get `reviews` in order, and fold and condense calls "Summary.". Running out of replies is a test bug. The
+// script must outlive the backends that call it.
 struct HostedScript {
     std::vector<std::string> actions = {};
     std::vector<std::string> lines = {};
