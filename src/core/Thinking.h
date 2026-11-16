@@ -21,7 +21,9 @@ struct ThinkingFormat {
 };
 
 // Auto: the chat template says (Qwen's block when it has the enable_thinking switch, no thinking otherwise).
-// Format: the setting's own texts. None: no call thinks.
+// Format: the setting's own texts. None: the model has no thinking block, so the backend writes none (not a way
+// to switch a thinking model's thinking off: that is Auto or Format with every thinking budget at 0, and the backend
+// then writes the empty block).
 enum class ThinkingMode { Auto, Format, None };
 
 struct ThinkingSetting {

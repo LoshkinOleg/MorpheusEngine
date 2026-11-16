@@ -78,8 +78,8 @@ private:
     std::optional<ThinkingMarkers> _thinking = {}; // Set when a thinking format resolved.
 
 public:
-    // Loads both models and creates their contexts. Throws InferenceError if either fails, or if the chat template
-    // has a thinking switch but "<think>" and "</think>" are not single tokens.
+    // Loads both models and creates their contexts. Throws InferenceError if either fails, or if the resolved
+    // thinking format's end marker is not a single token.
     explicit LlamaCppBackend(LlamaConfig config);
     ~LlamaCppBackend() override;
     LlamaCppBackend(const LlamaCppBackend&) = delete;

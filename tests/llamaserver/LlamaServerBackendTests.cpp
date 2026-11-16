@@ -592,3 +592,27 @@ TEST_CASE("LlamaServerBackend writes the thinking block its setting names", "[ll
         CHECK_FALSE(chat.RequestsTo("/apply-template").back().body.contains("chat_template_kwargs"));
     }
 }
+
+TEST_CASE("LlamaServerBackend keeps a prompt's end that only looks like a custom open text", "[llamaserver][thinking]")
+{
+    test::FakeLlamaServer chat;
+    test::FakeLlamaServer embed;
+    // A template without the enable_thinking switch writes no block of its own; its generation prompt ends with "\n",
+    // which is also the custom format's open text. The newline stays: only a template with the switch is cut.
+    llamaserver::LlamaServerConfig config = test::ConfigFor(chat, embed);
+    config.thinking = {core::ThinkingMode::Format, {"\n", "", "[/T]", "\n", "x[/T]\n"}};
+    llamaserver::LlamaServerBackend backend(config);
+    chat.SetRenderer([](const nlohmann::json& body) {
+        std::string prompt;
+        for (const nlohmann::json& message : body.at("messages")) {
+            prompt += "<|im_start|>" + message.at("role").get<std::string>() + "\n" +
+                      message.at("content").get<std::string>() + "<|im_end|>\n";
+        }
+        return prompt + "<|im_start|>assistant\n";
+    });
+    // The prompt without the custom format: the same renderer, the template's own ending kept, no skip text added.
+    llamaserver::LlamaServerConfig plainConfig = test::ConfigFor(chat, embed);
+    plainConfig.thinking = {core::ThinkingMode::None, {}};
+    llamaserver::LlamaServerBackend plain(plainConfig);
+    CHECK(backend.CountPromptTokens(test::SERVER_PROMPT) == plain.CountPromptTokens(test::SERVER_PROMPT));
+}

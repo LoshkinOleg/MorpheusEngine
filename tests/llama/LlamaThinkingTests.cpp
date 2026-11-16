@@ -68,7 +68,8 @@ TEST_CASE("A thinking model thinks, then writes a grammar-constrained answer", "
     spec.maxTokens = 1024;
     spec.thinkingMaxTokens = 2048;
 
-    // The same call under the default (Auto) setting and under the Qwen format named in the setting.
+    // The same call under the default (Auto) setting and under the Qwen format named in the setting (the Format run
+    // loads a second copy of the model: cheap for the 0.8B test model).
     const std::unique_ptr<llama::LlamaCppBackend> pFormatBackend =
         test::MakeThinkingBackend({core::ThinkingMode::Format, core::QWEN_THINKING});
     for (llama::LlamaCppBackend* pBackend : {&autoBackend, pFormatBackend.get()}) {
@@ -132,4 +133,10 @@ TEST_CASE("A thinking budget too small to close the block is a contract error", 
     spec.maxTokens = 8;
     spec.thinkingMaxTokens = 2;
     CHECK_THROWS_AS(backend.Complete(QuestionPrompt("Say hi."), spec, {}, {}), core::ContractError);
+}
+
+TEST_CASE("A thinking format whose end marker is not a single token is refused at load", "[llama]")
+{
+    CHECK_THROWS_WITH(test::MakeThinkingBackend({core::ThinkingMode::Format, {"[T]", "", "[/T]", "\n", "x[/T]\n"}}),
+                      ContainsSubstring("the thinking format's end marker '[/T]' is not a single token"));
 }

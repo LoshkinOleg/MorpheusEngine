@@ -48,8 +48,9 @@ struct LlamaServerConfig {
 // fails (5xx) or answers what cannot be read throws a plain InferenceError.
 //
 // Thinking models (a resolved thinking format: Auto is Qwen's when the chat template has the enable_thinking switch):
-// as LlamaCppBackend, the backend writes the thinking block's texts itself. A call that thinks is two /completion calls on one slot: the block, which stops at
-// the format's end marker or at its budget, then the answer, whose prompt extends the first one's, so the server reuses its cache.
+// as LlamaCppBackend, the backend writes the thinking block's texts itself. A call that thinks is two /completion
+// calls on one slot: the block, which stops at the format's end marker or at its budget, then the answer, whose prompt
+// extends the first one's, so the server reuses its cache.
 //
 // Not thread-safe: one thread owns it. Several backends may talk to one server at once, each on its own slot.
 class LlamaServerBackend final : public inference::LlmBackend {
@@ -61,7 +62,8 @@ private:
         std::vector<std::int32_t> close = {};    // the format's close text, special tokens parsed.
         std::vector<std::int32_t> end = {};      // the format's end text, special tokens parsed.
         std::vector<std::int32_t> afterEnd = {}; // the format's afterEnd text, as plain text.
-        std::string openText = {};               // The open text: a template that ends with it has it cut off.
+        std::string openText = {};               // The open text, cut off a rendered prompt that ends with it.
+        bool templateWritesOpen = false;         // The chat template has the switch: only then may it write the open text.
         std::string endText = {};                // The end marker's text: the thinking request's stop string.
     };
 
@@ -78,13 +80,13 @@ private:
 
 public:
     // Makes the kept-alive clients (the chat server's two, the embedding server's one), then reads both servers' GET
-    // /props: the chat server's context per slot, which must hold config.contextSize, its chat template (whether
-    // the model thinks), its slot count and its model file; the embedding server's model file. Then tokenizes the thinking texts (thinking models) and an
-    // empty text with add_special (the special tokens the model adds: a BOS in front of a text is kept, an EOS after
-    // it ignored). Throws InferenceError
-    // naming the URL for a URL that is not http://host or http://host:port (a port from 1 to 65535), an unreachable
-    // server, an HTTP error, an unexpected answer, slots smaller than config.contextSize, a chat server with no slot, or a model that adds more
-    // than one special token to a text. Throws ContractError for a context size below 1 or a slot below 0.
+    // /props: the chat server's context per slot, which must hold config.contextSize, its chat template (the
+    // thinking setting decides whether the model thinks, the template only under Auto), its slot count and its model
+    // file; the embedding server's model file. Then tokenizes the thinking texts (thinking models) and an empty text
+    // with add_special (the special tokens the model adds: a BOS in front of a text is kept, an EOS after it ignored).
+    // Throws InferenceError naming the URL for a URL that is not http://host or http://host:port (a port from 1 to
+    // 65535), an unreachable server, an HTTP error, an unexpected answer, slots smaller than config.contextSize, a chat
+    // server with no slot, or a model that adds more than one special token to a text. Throws ContractError for a context size below 1 or a slot below 0.
     explicit LlamaServerBackend(LlamaServerConfig config);
     ~LlamaServerBackend() override;
     LlamaServerBackend(const LlamaServerBackend&) = delete;

@@ -45,7 +45,7 @@ Three small controls over model calls: one more sampling field, an explicit tag 
 - settings.json `thinking_format` (optional; absent is `"auto"`):
   - `"auto"`: today's behaviour: the Qwen format when the chat template has the `enable_thinking` switch, none otherwise;
   - `"qwen"`: the Qwen format, whatever the template says;
-  - `"none"`: no thinking;
+  - `"none"`: the model has no thinking block, so the backends write none. It is not a way to switch a thinking model's thinking off: that is `"auto"` (or `"qwen"`) with every thinking budget at 0, and then the backend writes the empty block;
   - an object `{"open", "skip", "end", "after_end", "close"}`, all strings, all required.
 - Checks when settings load (`DataError` naming the key): an unknown preset name; a custom format whose `open` or `end` is empty, or whose `close` does not end with `end` followed by `after_end`; an unknown or missing key of the object; with `"none"`, a thinking budget above 0 ("thinking_format is \"none\": budget '<key>' must be 0").
 - The backends' configs (`llama::LlamaConfig`, `llamaserver::LlamaServerConfig`) gain `core::ThinkingSetting thinking`; the app, `morpheus_server`, `morpheus_probe` and `morpheus_play` pass the one settings.json names. Each backend resolves it when it loads (`Auto` reads the template as today) and tokenizes the format's texts as it tokenizes today's. The in-process backend requires `end` to be a single token (it recognises the end of the block by that token while generating), with an InferenceError naming the marker when it is not; the other texts may be any tokens.
