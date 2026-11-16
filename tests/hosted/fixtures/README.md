@@ -38,9 +38,10 @@ an object with a required `text` string; other keys (`type`, `action`, `actor`, 
 **A turn step**: `{"turn": {...}, "model": {...}, "expect": {...}}`.
 
 - `turn` is the request: `speaker` (required, an actor id, or `"decide"` to have the engine choose), and optionally
-  `player_text`, `events` (event objects sent with the turn), `review` (optional boolean: check the line with one
-  more model call, G3), `allowed_actions` (action ids; absent means every action of the
-  catalog) and `observation` (absent means `observation.json`).
+  `player_text`, `events` (event objects sent with the turn), `allowed_actions` (action ids; absent means every
+  action of the catalog) and `observation` (absent means `observation.json`). A host's request may also carry
+  `review` (G3); the fixture runners do not send it yet, so no fixture step uses it (the review is tested in
+  `tests/hosted/HostedReviewTests.cpp` and `tests/server/ApiReviewTests.cpp`).
 - `model` says what the fake backend replies; it exists only for the fake and is not part of what a host sends.
   `resolve` is the reply to the resolve call (the proposal JSON text, which may be invalid on purpose) and `line` the
   reply to the speak call. Replies are used in step order. `decide` (optional) is the reply to the decide call,
