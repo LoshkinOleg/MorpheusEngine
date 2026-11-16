@@ -42,9 +42,14 @@ struct ActorsCore {
 
 // Reads the fixed core of a hosted observation that the engine needs whatever the host's schema says (hosted-world
 // spec, section 1): an object with `actors`, an array of objects each with `id` and `name` (non-empty strings),
-// `is_player` (a boolean), an optional `bio` (a string) and an optional `knows` (an array of non-empty strings); ids unique; exactly one player. Every mistake is a fault;
-// never throws. turn::HostedWorld turns the faults into its DataError, store::RunStore into its StoreError.
+// `is_player` (a boolean), an optional `bio` (a string) and an optional `knows` (an array of non-empty strings); ids
+// unique; exactly one player. Every mistake is a fault; never throws. turn::HostedWorld turns the faults into its
+// DataError, store::RunStore into its StoreError.
 ActorsCore ReadActors(const nlohmann::json& observation);
+
+// The strings of `value` when it is an array of non-empty strings (empty array included); none otherwise. The one
+// check behind an actor's `knows` and a lore entry's `scopes`.
+std::optional<std::vector<std::string>> ReadStringArray(const nlohmann::json& value);
 
 // One conversation of a hosted run (hosted-world spec, section 5).
 struct Conversation {

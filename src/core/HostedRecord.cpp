@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <format>
 #include <map>
+#include <optional>
 #include <utility>
 
 namespace morpheus::core {
@@ -59,13 +60,8 @@ ActorsCore ReadActors(const nlohmann::json& observation)
             }
         }
         if (entry.contains("knows")) {
-            const nlohmann::json& knows = entry.at("knows");
-            bool sound = knows.is_array();
-            for (std::size_t k = 0; sound && k < knows.size(); ++k) {
-                sound = knows[k].is_string() && !knows[k].get_ref<const std::string&>().empty();
-            }
-            if (sound) {
-                actor.knows = knows.get<std::vector<std::string>>();
+            if (std::optional<std::vector<std::string>> knows = ReadStringArray(entry.at("knows"))) {
+                actor.knows = std::move(*knows);
             } else {
                 read.faults.push_back({at + "/knows", "'knows' must be an array of non-empty strings"});
                 whole = false;
@@ -88,6 +84,18 @@ ActorsCore ReadActors(const nlohmann::json& observation)
         read.faults.push_back({"/actors", std::format("exactly one actor must be the player, not {}", players)});
     }
     return read;
+}
+
+std::optional<std::vector<std::string>> ReadStringArray(const nlohmann::json& value) {
+    if (!value.is_array()) {
+        return std::nullopt;
+    }
+    for (const nlohmann::json& item : value) {
+        if (!item.is_string() || item.get_ref<const std::string&>().empty()) {
+            return std::nullopt;
+        }
+    }
+    return value.get<std::vector<std::string>>();
 }
 
 } // namespace morpheus::core

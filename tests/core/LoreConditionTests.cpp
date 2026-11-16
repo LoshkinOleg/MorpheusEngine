@@ -83,6 +83,15 @@ TEST_CASE("LoreCondition does not hold on a missing value or a value of another 
     CHECK(Condition("/quests/MG03", 40, std::nullopt, nlohmann::json(55)).Holds(OBSERVATION));
 }
 
+TEST_CASE("LoreCondition: an array index with a leading zero does not hold and does not throw", "[lore]")
+{
+    // JSON Pointer array indexes have no leading zeros: /items/01 names nothing.
+    const nlohmann::json items = R"({"items": [5, 6]})"_json;
+    CHECK_FALSE(Condition("/items/01", 0, std::nullopt).Holds(items));
+    CHECK_NOTHROW(Condition("/items/01", 0, std::nullopt).Holds(items));
+    CHECK(Condition("/items/1", 6, 6).Holds(items));
+}
+
 TEST_CASE("LoreCondition with a pointer that is not well-formed is a contract error", "[lore]")
 {
     CHECK_THROWS_AS(Condition("quests", 0, std::nullopt).Holds(OBSERVATION), ContractError);

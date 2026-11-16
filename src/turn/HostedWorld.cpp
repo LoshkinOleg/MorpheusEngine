@@ -11,6 +11,7 @@
 
 #include "core/ContentHash.h"
 #include "core/Errors.h"
+#include "core/HostedRecord.h"
 #include "core/JsonInt.h"
 #include "grammar/Gbnf.h"
 #include "grammar/Schema.h"
@@ -150,15 +151,11 @@ HostData HostDataFromJson(const nlohmann::json& json)
         read.alwaysOn = entry.value("always_on", false);
         // Optional scopes: an array of non-empty strings.
         if (entry.contains("scopes")) {
-            const nlohmann::json& scopes = entry.at("scopes");
-            bool sound = scopes.is_array();
-            for (std::size_t k = 0; sound && k < scopes.size(); ++k) {
-                sound = scopes[k].is_string() && !scopes[k].get_ref<const std::string&>().empty();
-            }
-            if (!sound) {
+            std::optional<std::vector<std::string>> scopes = core::ReadStringArray(entry.at("scopes"));
+            if (!scopes) {
                 throw fault(at + "/scopes", "'scopes' must be an array of non-empty strings");
             }
-            read.scopes = scopes.get<std::vector<std::string>>();
+            read.scopes = std::move(*scopes);
         }
         // Optional condition: a pointer string and at least one of min, max, equals (the pointer's form is checked
         // at open, like the clock's).
