@@ -109,9 +109,9 @@ Assembly AssembleResolvePrompt(const core::World& world, const ContextInputs& in
 // instruction). prompt.stableCount marks the end of L3. A join or a leave changes the prompt from the participants on;
 // a new turn only adds entries before the tail, and another speaker changes it only from the tail on (when it
 // witnessed the same turns). Budgets and flags are AssembleResolvePrompt's, with the speak call in the narrate
-// call's place and the memories as the summary: tokens.summary counts them, against summary_cap, and the tail counts them at most at that cap. tokens.world counts
-// the lore and the participants together against world_cap (a DataError over it: the host's data); the system text
-// over engine_rules_cap is a ContractError.
+// call's place and the memories as the summary: tokens.summary counts them, against summary_cap, and the tail
+// counts them at most at that cap. tokens.world counts the lore and the participants together against world_cap (a
+// DataError over it: the host's data); the system text over engine_rules_cap is a ContractError.
 Assembly AssembleHostedPrompt(const HostedInputs& inputs, const core::BudgetSettings& budget,
                               inference::LlmBackend& backend);
 

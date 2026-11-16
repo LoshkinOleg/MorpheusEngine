@@ -16,6 +16,8 @@ fixtures may replace any of these files, as long as they keep the format below.
 - `invalid_requests.json`: requests that must fail with a `DataError` before any model call.
 - `three_actors.json`: a memory fixture (R6's acceptance): Hulda, Saadia and Belethor with Aela, the player. Belethor
   leaves halfway and Hulda tells a secret while Saadia is away; nobody may remember what it did not witness.
+- `decide.json`: the engine chooses the speaker (R8): Hulda and Saadia with Aela, the player. Turns with `"speaker":
+  "decide"` and scripted decide answers, with and without player text; each step expects its speaker.
 - `reload.json`: a memory fixture with a clock (R6's rollback acceptance): a conversation over several game times with
   events, a participant change, a share and an end. A rewind to the middle hides what came after and NPCs forget it; a
   rewind to the end restores it exactly; playing on after a rewind abandons the hidden future.
@@ -35,9 +37,9 @@ an object with a required `text` string; other keys (`type`, `action`, `actor`, 
 
 **A turn step**: `{"turn": {...}, "model": {...}, "expect": {...}}`.
 
-- `turn` is the request: `speaker` (required, an actor id, or `"decide"` to have the engine choose), and optionally `player_text`, `events` (event objects
-  sent with the turn), `allowed_actions` (action ids; absent means every action of the catalog) and `observation`
-  (absent means `observation.json`).
+- `turn` is the request: `speaker` (required, an actor id, or `"decide"` to have the engine choose), and optionally
+  `player_text`, `events` (event objects sent with the turn), `allowed_actions` (action ids; absent means every action of the
+  catalog) and `observation` (absent means `observation.json`).
 - `model` says what the fake backend replies; it exists only for the fake and is not part of what a host sends.
   `resolve` is the reply to the resolve call (the proposal JSON text, which may be invalid on purpose) and `line` the
   reply to the speak call. Replies are used in step order. `decide` (optional) is the reply to the decide call,

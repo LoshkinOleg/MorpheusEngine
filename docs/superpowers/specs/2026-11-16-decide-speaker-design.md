@@ -66,8 +66,8 @@ A host that does not know who should talk next sends `speaker: "decide"`, and th
   - a cancel after the decide call commits nothing;
   - an observation actor with id `decide` is a DataError naming its pointer.
 - `[hosted-server]`: a decided turn's `action` event names the chosen speaker; the defaults route lists `decide`.
-- A hosted fixture `decide.json`: Hulda, Saadia and Belethor with Aela; turns with `"speaker": "decide"` and scripted decide answers, with and without player text; each step expects its speaker. It runs in-process, over HTTP and on the real model; on the real model only validity is checked (the speaker is a candidate, and never the last speaker on a turn with no input).
-- The radiant fixture (two NPCs, six turns with no player input) gains a variant with `"decide"` on every turn: with two NPCs and no input there is one candidate, so it alternates with no decide call.
+- A hosted fixture `decide.json`: Hulda and Saadia with Aela (no Belethor); turns with `"speaker": "decide"` and scripted decide answers, with and without player text; each step expects its speaker. It runs in-process, over HTTP and on the real model; on the real model only validity is checked (the speaker is a candidate, and never the last speaker on a turn with no input).
+- The radiant fixture (two NPCs, six turns with no player input) gains a variant with `"decide"` on every turn: its first turn has no turn before it, so both NPCs are candidates and one decide call runs; after that, with two NPCs and no input there is one candidate, so it alternates with no decide call.
 
 ## Out of scope
 

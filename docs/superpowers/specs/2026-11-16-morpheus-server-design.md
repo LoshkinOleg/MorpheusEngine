@@ -187,7 +187,7 @@ The `conversation` fixture end to end over HTTP against real llama-servers. The 
 
 ## Out of scope
 
-- R8's `"decide"`, the optional review per turn, and an explicit call tag: later sub-projects.
+- The optional review per turn (G3) and an explicit call tag (G2): later sub-projects. R8's `"decide"` is done (G1, API 1.4.0).
 - Per-speaker memory (E) and the host's prompt pack (F).
 - Concurrent turns within one run.
 - Authentication or binding beyond 127.0.0.1.

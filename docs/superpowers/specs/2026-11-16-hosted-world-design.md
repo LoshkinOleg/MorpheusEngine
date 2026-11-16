@@ -16,7 +16,7 @@ Everything in D1 is engine code in `src/turn` and below, with no HTTP. Morpheus'
 ## Owner decisions
 
 - D1 (this spec, the engine seam) first, then D2 (`morpheus_server`), as two specs and plans.
-- A turn names its speaker. Player text is optional, so NPC-to-NPC turns work; R8's `"decide"` waits for a later sub-project.
+- A turn names its speaker. Player text is optional, so NPC-to-NPC turns work; R8's `"decide"` was added later by G1 (`2026-11-16-decide-speaker-design.md`).
 - The engine reads a fixed generic core of the observation (the actors); the rest is opaque, validated against the host's schema, and shown in the prompt.
 - Memory (replaced by E1: summaries and retrieval are per NPC, see `2026-11-16-per-speaker-memory-design.md`): the transcript layer is the current conversation; its turns fold into run-wide summaries, and turns of this and earlier conversations are retrieved run-wide. Turns store their speaker, listeners and conversation, so per-speaker memory (sub-project E) has the data.
 - Texts: the engine ships default hosted texts. The host may send lore at open. The host's full prompt pack is sub-project F.
@@ -243,7 +243,7 @@ The model writes `{"action":"attack","params":{"target":"0001A6A4"}}` (compact).
 - **D2:** `morpheus_server`, HTTP, SSE and `sentence` events, one slot per conversation and any concurrency across conversations (added without changing `HostedSession`'s API; section 1, D1's contract), and `model_id` under llama-server.
 - **E:** per-speaker memory, sharing, and rollback to a game time.
 - **F:** the host's prompt pack and its layer and variable validation.
-- **Later:** R8's `"decide"`, the optional review per turn, and an explicit call tag (R9).
+- **Later:** the optional review per turn and an explicit call tag (R9); R8's `"decide"` is done (G1, `2026-11-16-decide-speaker-design.md`).
 
 ## Documentation
 

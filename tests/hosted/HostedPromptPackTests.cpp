@@ -27,7 +27,7 @@ namespace {
 
 const std::string NONE = R"({"action":"none","params":{}})";
 
-// A host's pack replacing all six texts; each marked "PACK" and naming its variables, so a test sees them filled.
+// A host's pack replacing the six texts it names (not decide); each marked "PACK" and naming its variables, so a test sees them filled.
 std::map<std::string, std::string> CustomPack()
 {
     return {{"system", "# Pack\nYou voice the people of a test scene. Act as step 1 asks, then speak as step 2 asks."},

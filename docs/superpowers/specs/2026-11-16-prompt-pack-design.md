@@ -30,7 +30,7 @@ The open body (and `turn::HostData`) gains an optional `prompts` object:
 
 - The host may send any subset; a key it leaves out takes the engine's default (`EngineText`'s `HOSTED_*` constants). An empty `prompts` object is the same as none.
 - `HostDataFromJson` checks the shape: `prompts`, when present, is an object whose every value is a string (a `DataError` "host data at /prompts...: ..." otherwise). `HostData::prompts` holds what the host sent, key by key.
-- The content is checked when the run's `HostedWorld` is built (section 2): an unknown key is a `DataError` "prompts/<key>: unknown text; the pack's texts are system, resolve, speak, turn_cue, summarize, condense"; an empty string is a `DataError` "prompts/<key>: empty".
+- The content is checked when the run's `HostedWorld` is built (section 2): an unknown key is a `DataError` "prompts/<key>: unknown text; the pack's texts are system, resolve, speak, turn_cue, decide, summarize, condense"; an empty string is a `DataError` "prompts/<key>: empty".
 - `HostDataToJson` writes `prompts` only when the host sent at least one text, and then only the texts it sent. A run that sent no pack keeps the content hash it had before F, so existing runs reopen as they are, and a run follows changes to the engine's defaults for every text it did not send.
 - A changed pack is changed host data: `open` takes D1's existing re-embed-then-replace path. The next turn renders its whole prompt, conversation entries included, with the new texts.
 
@@ -54,7 +54,7 @@ The open body (and `turn::HostData`) gains an optional `prompts` object:
 
 ## 4. Components
 
-- `turn::PromptPack` (new, `src/turn/PromptPack.{h,cpp}`): the six texts as members, defaulted to `EngineText`'s `HOSTED_*` constants; `PromptPack::FromHost(const std::map<std::string, std::string>&)`, which applies the host's texts over the defaults and checks them (sections 1 and 2); `Fill(text, variables)`; and the table of each text's variables, which the check, `Fill` and the defaults route share.
+- `turn::PromptPack` (new, `src/turn/PromptPack.{h,cpp}`): the seven texts as members (`decide` added by G1), defaulted to `EngineText`'s `HOSTED_*` constants; `PromptPack::FromHost(const std::map<std::string, std::string>&)`, which applies the host's texts over the defaults and checks them (sections 1 and 2); `Fill(text, variables)`; and the table of each text's variables, which the check, `Fill` and the defaults route share.
 - `turn::HostData` gains `prompts` (the host's texts, by key); `HostDataFromJson` and `HostDataToJson` read and write it (section 1).
 - `turn::HostedWorld` builds the run's `PromptPack` in its constructor, with the other host data checks, and exposes it (`Prompts()`).
 - `turn::HostedSession` reads every hosted text from `_world.Prompts()` instead of the constants: the system text in `Pass`, the resolve and speak instructions and the cue in `RunTurn` and `Entries`, the summarize and condense instructions in its upkeep scope. `Open` adds section 3's check.
