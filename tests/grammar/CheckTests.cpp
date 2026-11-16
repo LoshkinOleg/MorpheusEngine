@@ -8,6 +8,19 @@
 
 using namespace morpheus;
 
+namespace {
+
+// How long the nested-repetition text may take to check. AddressSanitizer's Debug build runs the matcher about 8x
+// slower (0.8 s measured without it, 6.7 s with it), so it gets more room; either limit is far below what an
+// unmemoised matcher takes.
+#if defined(__SANITIZE_ADDRESS__)
+constexpr std::chrono::seconds NESTED_REPETITION_LIMIT = std::chrono::seconds(30);
+#else
+constexpr std::chrono::seconds NESTED_REPETITION_LIMIT = std::chrono::seconds(5);
+#endif
+
+} // namespace
+
 TEST_CASE("grammar::Check reads literals, classes, groups and repetitions", "[grammar-check]")
 {
     const std::string gbnf = R"gbnf(root ::= "a" ("b" | "cd")? [x-z]{1,2} digits
@@ -147,5 +160,5 @@ TEST_CASE("grammar::Check stays fast on nested repetitions over a long text", "[
     const auto start = std::chrono::steady_clock::now();
     CHECK(grammar::Check(words, text).empty());
     CHECK(grammar::Check(words, text + "b") == "the grammar rejects 'b' after '..." + text.substr(text.size() - 60) + "'");
-    CHECK(std::chrono::steady_clock::now() - start < std::chrono::seconds(5));
+    CHECK(std::chrono::steady_clock::now() - start < NESTED_REPETITION_LIMIT);
 }
