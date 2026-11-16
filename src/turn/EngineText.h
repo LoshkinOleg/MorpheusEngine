@@ -117,15 +117,18 @@ inline constexpr std::string_view HOSTED_CONDENSE_INSTRUCTION =
     "Condense what {actor} remembers, above, into one summary for {actor}'s own memory, not for the player. Keep names, "
     "places, items, promises, secrets, who told {actor} what, and the order of events. Plain prose, at most 250 words.";
 
-// A hosted turn's review call: its system message, and PromptPack's default `review` (no variable). The review
-// reads one spoken line against these rules (hosted-review spec, section 4).
+// A hosted turn's review call: the start of its user message, and PromptPack's default `review` (no variable). The
+// review continues the speak prompt, so the model reads the line above against these rules (host-feedback spec,
+// section 3).
 inline constexpr std::string_view HOSTED_REVIEW_RULES = R"(# Review
-You check one spoken line of a character in a role-playing game that a host game runs. Reply with one JSON object and nothing else: "consistent" is false when the line breaks a rule below, true otherwise, and "problems" names each broken rule in one short sentence, at most three (empty when consistent).
-The rules:
+Check the line above, the speaker's spoken words, against these rules. Reply with one JSON object and nothing else: "consistent" is false when the line breaks a rule, true otherwise, and "problems" names each broken rule in one short sentence, at most three (empty when consistent).
 - The line is only what the speaker says aloud: no name or label in front, no action in brackets, no narration or description of actions, no quotation marks around it.
-- The line agrees with the action the speaker requested: it does not promise or describe a different action, and it does not present a refused action as done.
+- The line agrees with the action the speaker requested in the JSON object above: it does not promise or describe a different action, and it does not present a refused action as done.
 - The line does not state an outcome the host has not reported.
 Tone, style and details the rules do not decide are not problems.)";
+
+// The review message's note when the proposal was refused, between the rules and the instruction.
+inline constexpr std::string_view HOSTED_REVIEW_REFUSED = "The host refused that action: the speaker takes no action.";
 
 // Ends the review call's user message, after the line under review.
 inline constexpr std::string_view HOSTED_REVIEW_INSTRUCTION =

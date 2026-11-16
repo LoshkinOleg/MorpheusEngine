@@ -97,34 +97,16 @@ inference::Prompt ReviewPrompt(const std::string& input, const ResolveProposal& 
     return prompt;
 }
 
-inference::Prompt HostedReviewPrompt(std::string_view rules, std::string_view speakerName, std::string_view playerLine,
-                                     const core::Adjudication& adjudication, const nlohmann::json& observation,
-                                     std::string_view line)
+std::string HostedReviewMessage(std::string_view rules, bool refused)
 {
-    // The host's JSON may hold text that is not UTF-8: the replace handler keeps it from throwing.
-    auto compact = [](const nlohmann::json& value) {
-        return value.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
-    };
-    // Who speaks, what the player said, the action the speaker requested, the scene, then the line under review.
-    std::string user = std::format("# Speaker\n{}\n\n", speakerName);
-    if (!playerLine.empty()) {
-        user += std::format("# Player\n{}\n\n", playerLine);
+    std::string message(rules);
+    message += "\n\n";
+    if (refused) {
+        message += HOSTED_REVIEW_REFUSED;
+        message += "\n\n";
     }
-    user += "# Requested action\n";
-    if (!adjudication.requested) {
-        user += "none (the proposal was refused)";
-    } else {
-        user += adjudication.actionId;
-        if (!adjudication.params.empty()) {
-            user += " " + compact(adjudication.params);
-        }
-    }
-    user += std::format("\n\n# Observation\n{}\n\n# Line\n{}\n\n# Task\n{}", compact(observation), line,
-                        HOSTED_REVIEW_INSTRUCTION);
-    inference::Prompt prompt;
-    prompt.messages = {{inference::Role::System, std::string(rules)}, {inference::Role::User, std::move(user)}};
-    prompt.stableCount = 1;
-    return prompt;
+    message += HOSTED_REVIEW_INSTRUCTION;
+    return message;
 }
 
 } // namespace morpheus::turn

@@ -17,8 +17,13 @@ Lore scopes and conditions, and the review as a continuation (design:
   system message, the decide prompt and the fold prompts only while its `requires` holds on the observation the prompt
   is built from (a quest stage reached changes the system message once). An always-on entry may not have `scopes`: a
   400 at `open`. Host data without the new keys is unchanged and keeps its hash.
-- The review becomes a continuation of the speak prompt: it keeps the conversation's prompt cache, so a reviewed turn
-  no longer re-reads the whole conversation prompt afterwards. The shapes are the same.
+- The review becomes a continuation of the speak prompt: the speak call's messages, the first line as an assistant
+  message, then one user message (the pack's `review` text, a refusal note for a refused action, the instruction). It
+  sees the conversation and keeps the conversation's prompt cache, so a reviewed turn no longer re-reads the whole
+  prompt afterwards. The pack's `review` text is now the start of a user message, not a system message, and its
+  default is reworded for that. A reviewed turn keeps room for the review in its prompt (the review message,
+  `review_max_tokens`, `review_thinking_tokens` and 16 tokens of template), so its transcript budget is smaller by
+  that much. The shapes are the same.
 
 ## API 1.5.0
 

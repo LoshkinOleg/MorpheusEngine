@@ -119,21 +119,93 @@ TEST_CASE("A consistent review: the line is delivered once, after the review", "
     CHECK_FALSE(record->timings.at("review").contains("error"));
     CHECK_FALSE(record->timings.contains("respeak"));
 
-    // The review call: its grammar, its answer allowance and its standalone prompt.
+    // The review call: its grammar, its answer allowance and its prompt, a continuation of the speak call's.
     const test::ScriptedBackend::Call& call = backend.Calls().at(2);
     CHECK(call.spec.grammar == turn::BuildReviewGrammar(true, false));
     CHECK(call.spec.maxTokens == test::HostedSettings().budget.reviewMaxTokens);
     CHECK(call.spec.thinkingMaxTokens == test::HostedSettings().budget.reviewThinkingTokens);
     CHECK(call.spec.sampling.seed == core::SamplingSeed(42, record->number, core::CallKind::Review, 0));
-    const inference::Prompt expected =
-        turn::HostedReviewPrompt(std::string(turn::HOSTED_REVIEW_RULES), "Hulda", "Aela: " + PLAYER_TEXT,
-                                 record->adjudication, test::FixtureObservation(), "Hello there.");
-    REQUIRE(call.prompt.messages.size() == expected.messages.size());
-    for (std::size_t i = 0; i < expected.messages.size(); ++i) {
-        CHECK(call.prompt.messages[i].role == expected.messages[i].role);
-        CHECK(call.prompt.messages[i].content == expected.messages[i].content);
+    // The speak call's messages, then the line as the model wrote it (an assistant message), then the review message.
+    const inference::Prompt& speak = backend.Calls().at(1).prompt;
+    REQUIRE(call.prompt.messages.size() == speak.messages.size() + 2);
+    for (std::size_t i = 0; i < speak.messages.size(); ++i) {
+        CHECK(call.prompt.messages[i].role == speak.messages[i].role);
+        CHECK(call.prompt.messages[i].content == speak.messages[i].content);
     }
-    CHECK(call.prompt.stableCount == expected.stableCount);
+    CHECK(call.prompt.messages[speak.messages.size()].role == inference::Role::Assistant);
+    CHECK(call.prompt.messages[speak.messages.size()].content == "Hello there.");
+    CHECK(call.prompt.messages.back().role == inference::Role::User);
+    CHECK(call.prompt.messages.back().content ==
+          turn::HostedReviewMessage(std::string(turn::HOSTED_REVIEW_RULES), false));
+    CHECK(call.prompt.stableCount == speak.stableCount);
+}
+
+TEST_CASE("The review's assistant message is the speak call's text untrimmed", "[hosted][review]")
+{
+    test::HostedScript script;
+    script.actions = {NONE};
+    script.lines = {"  Hello there.\n"};
+    script.reviews = {CONSISTENT};
+    test::ScriptedBackend backend(16384, script.Responder());
+    turn::HostedSession session = OpenRun("hosted_review_raw_line", backend);
+    const std::string id = session.StartConversation({test::HULDA, test::AELA}, test::FixtureObservation());
+    turn::HostedTurnRequest request = test::Request(id, test::HULDA, PLAYER_TEXT);
+    request.review = true;
+
+    const std::optional<core::HostedTurn> record = session.RunTurn(request, {}, {});
+    REQUIRE(record);
+    CHECK(record->line == "Hello there.");
+    // The cache matches what the model wrote, spaces and newline included.
+    CHECK(backend.Calls().at(2).prompt.messages.at(backend.Calls().at(1).prompt.messages.size()).content ==
+          "  Hello there.\n");
+}
+
+TEST_CASE("A refused proposal's review message carries the refusal note", "[hosted][review]")
+{
+    test::HostedScript script;
+    script.actions = {R"({"action":"no_such_action","params":{}})"};
+    script.lines = {"Hello there."};
+    script.reviews = {CONSISTENT};
+    test::ScriptedBackend backend(16384, script.Responder());
+    turn::HostedSession session = OpenRun("hosted_review_refused", backend);
+    const std::string id = session.StartConversation({test::HULDA, test::AELA}, test::FixtureObservation());
+    turn::HostedTurnRequest request = test::Request(id, test::HULDA, PLAYER_TEXT);
+    request.review = true;
+
+    const std::optional<core::HostedTurn> record = session.RunTurn(request, {}, {});
+    REQUIRE(record);
+    REQUIRE_FALSE(record->adjudication.requested);
+    REQUIRE(backend.Calls().size() == 3);
+    CHECK(backend.Calls().at(2).prompt.messages.back().content ==
+          turn::HostedReviewMessage(std::string(turn::HOSTED_REVIEW_RULES), true));
+    CHECK_THAT(backend.Calls().at(2).prompt.messages.back().content,
+               ContainsSubstring(std::string(turn::HOSTED_REVIEW_REFUSED)));
+}
+
+TEST_CASE("A reviewed turn's transcript budget is smaller by the review's reserve", "[hosted][review]")
+{
+    // The fake counts (bytes + 3) / 4 per text.
+    auto tokens = [](const std::string& text) { return (static_cast<int>(text.size()) + 3) / 4; };
+    const core::Settings settings = test::HostedSettings();
+    const std::string rules(turn::HOSTED_REVIEW_RULES);
+
+    // The same turn, once without and once with `review`: the budget of the resolve prompt's transcript.
+    auto transcriptBudget = [&](bool review) {
+        test::HostedScript script;
+        script.actions = {NONE};
+        script.lines = {"Hello there."};
+        script.reviews = {CONSISTENT};
+        test::ScriptedBackend backend(16384, script.Responder());
+        turn::HostedSession session = OpenRun(review ? "hosted_review_reserve_on" : "hosted_review_reserve_off", backend);
+        const std::string id = session.StartConversation({test::HULDA, test::AELA}, test::FixtureObservation());
+        turn::HostedTurnRequest request = test::Request(id, test::HULDA, PLAYER_TEXT);
+        request.review = review;
+        REQUIRE(session.RunTurn(request, {}, {}));
+        return session.LastAssembly().transcriptBudget;
+    };
+    const int reserve = tokens(turn::HostedReviewMessage(rules, true)) + settings.budget.reviewMaxTokens +
+                        settings.budget.reviewThinkingTokens + 16;
+    CHECK(transcriptBudget(false) - transcriptBudget(true) == reserve);
 }
 
 TEST_CASE("An inconsistent review: the line is spoken once more with the problems", "[hosted][review]")
@@ -255,7 +327,7 @@ TEST_CASE("A respeak message over narrate_allowance drops problems", "[hosted][r
     CHECK(plain == speak);
 }
 
-TEST_CASE("A host pack's review text is the review call's system message", "[hosted][review]")
+TEST_CASE("A host pack's review text starts the review call's user message", "[hosted][review]")
 {
     turn::HostData data = test::FixtureHostData();
     data.prompts = {{"review", "MY RULES"}};
@@ -272,8 +344,9 @@ TEST_CASE("A host pack's review text is the review call's system message", "[hos
     REQUIRE(session.RunTurn(request, {}, {}));
     REQUIRE(backend.Calls().size() == 3);
     const inference::Prompt& prompt = backend.Calls().at(2).prompt;
-    CHECK(prompt.messages.front().role == inference::Role::System);
-    CHECK(prompt.messages.front().content == "MY RULES");
+    CHECK(prompt.messages.back().role == inference::Role::User);
+    CHECK(prompt.messages.back().content == turn::HostedReviewMessage("MY RULES", false));
+    CHECK(prompt.messages.back().content.starts_with("MY RULES\n\n"));
 }
 
 TEST_CASE("A stop during the review commits nothing", "[hosted][review]")
@@ -332,23 +405,4 @@ TEST_CASE("A stop during the respeak commits nothing", "[hosted][review]")
     CHECK(session.Turns(id).empty());
     CHECK(delivery.pieces == 0);
     CHECK(delivery.text.empty());
-}
-
-TEST_CASE("A review turn with no player text has no Player section in the review prompt", "[hosted][review]")
-{
-    test::HostedScript script;
-    script.actions = {NONE};
-    script.lines = {"Hello there."};
-    script.reviews = {CONSISTENT};
-    test::ScriptedBackend backend(16384, script.Responder());
-    turn::HostedSession session = OpenRun("hosted_review_no_player", backend);
-    const std::string id = session.StartConversation({test::HULDA, test::AELA}, test::FixtureObservation());
-    turn::HostedTurnRequest request = test::Request(id, test::HULDA, "");
-    request.review = true;
-
-    REQUIRE(session.RunTurn(request, {}, {}));
-    REQUIRE(backend.Calls().size() == 3);
-    const std::string& user = backend.Calls().at(2).prompt.messages.back().content;
-    CHECK_THAT(user, Catch::Matchers::StartsWith("# Speaker\nHulda\n\n# Requested action\n"));
-    CHECK_THAT(user, !ContainsSubstring("# Player"));
 }

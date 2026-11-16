@@ -42,13 +42,9 @@ Review ParseReviewOutput(std::string_view text, bool check, bool digest);
 inference::Prompt ReviewPrompt(const std::string& input, const ResolveProposal& proposal,
                                const Resolution& resolution, const std::string& narration);
 
-// The review call of a hosted turn (hosted-review spec, section 2), standalone: `rules` (the run's pack `review`)
-// as the system message, then one user message: "# Speaker\n<name>\n\n", "# Player\n<playerLine>\n\n" when there is one,
-// "# Requested action\n<id>" (then " <params as compact JSON>" when it has parameters; "none (the proposal was
-// refused)" for a refused one), "\n\n# Observation\n<compact JSON>\n\n# Line\n<line>\n\n# Task\n" and
-// HOSTED_REVIEW_INSTRUCTION. stableCount is 1 (the rules).
-inference::Prompt HostedReviewPrompt(std::string_view rules, std::string_view speakerName, std::string_view playerLine,
-                                     const core::Adjudication& adjudication, const nlohmann::json& observation,
-                                     std::string_view line);
+// The user message that ends a hosted turn's review call (host-feedback spec, section 3). The call continues the speak
+// prompt: its messages, the first line as an assistant message, then this: `rules` (the run's pack `review`), "\n\n"
+// and HOSTED_REVIEW_REFUSED when the proposal was refused, "\n\n" and HOSTED_REVIEW_INSTRUCTION.
+std::string HostedReviewMessage(std::string_view rules, bool refused);
 
 } // namespace morpheus::turn

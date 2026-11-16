@@ -231,10 +231,11 @@ private:
 
     // One pass of the memory upkeep for `actorId` in conversation `conversationId`: the hosted prompt with
     // `transcript` as L3, `actorId`'s shown summaries as its memories (tellers by name), `hits` and the tail parts
-    // `inputs` already holds, read from the store as it is now.
+    // `inputs` already holds, read from the store as it is now. `reserve` tokens (a reviewed turn's review call) are
+    // kept free after the tail on top of the narrate allowance.
     FitPass Pass(std::string_view conversationId, std::string_view actorId,
                  std::vector<context::TranscriptEntry> transcript, const std::vector<RetrievalHit>& hits,
-                 context::HostedInputs inputs);
+                 context::HostedInputs inputs, int reserve = 0);
 
     // The shared memory upkeep for `actorId`'s memory of conversation `conversationId`, its seeds naming turn `turn`:
     // `actorId`'s scope with the hosted texts, which name the actor and the tellers as Pass does (the conversation's

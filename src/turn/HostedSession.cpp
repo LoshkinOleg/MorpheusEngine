@@ -33,6 +33,8 @@ constexpr std::string_view HOST_LORE_SOURCE = "host data: lore";
 // apart from the resolve call's attempts).
 constexpr int DECIDE_TOKEN_MARGIN = 8;
 constexpr int DECIDE_SEED_ATTEMPT = 1 << 22;
+// Tokens kept for the chat template of the review call's two extra messages (the assistant's and the user's).
+constexpr int REVIEW_TEMPLATE_MARGIN = 16;
 // What a hosted tail holds, for the TurnError when it does not fit tail_allowance.
 constexpr std::string_view HOSTED_TAIL_NAME =
     "the observation, the events, the player text and the resolve instruction (prompts/resolve)";
@@ -482,12 +484,20 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
     // The speaker's L3 is the conversation's unfolded turns it witnessed, the mark read again each pass (a fold moves
     // it; no turn is committed meanwhile, so `played` stays the conversation's turns); a fold during this turn is the
     // speaker's memory and cuts the shared transcript.
+    // A reviewed turn also makes room for the review call, which continues the speak prompt: its message (the refusal
+    // note, the larger form), the answer, the thinking block and the template margin are kept free after the tail, as
+    // the narrate allowance is, so the transcript shrinks by that much.
+    const int reviewReserve =
+        request.review ? _pBackend->CountTokens(HostedReviewMessage(_world.Prompts().review, true)) +
+                             _settings.budget.reviewMaxTokens + _settings.budget.reviewThinkingTokens +
+                             REVIEW_TEMPLATE_MARGIN
+                       : 0;
     auto speakerPass = [&](const std::vector<RetrievalHit>& kept) {
         const std::optional<core::Conversation> now = _store.Conversation(conversation.id);
         MORPHEUS_REQUIRE(now.has_value(), "HostedSession::RunTurn: the conversation is not in the store");
         return Pass(conversation.id, speakerId,
                     Entries(*now, played, now->foldedThrough, _store.LatestHostedTurn(), speakerId), kept,
-                    tail);
+                    tail, reviewReserve);
     };
     MemoryUpkeep upkeep = Upkeep(conversation.id, speakerId, observation.json, turn, true);
     std::optional<context::Assembly> assembly = upkeep.Fit(
@@ -540,6 +550,9 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
 
     // 3b. The review (hosted-review spec), when the request asks for it: the line was held back; the model reviews it
     // against the requested action and the speaking rules; problems get one respeak; the line is then delivered.
+    // The review continues the speak prompt, so the conversation's cache holds: only the line and the review message
+    // are new. The assistant message is the speak call's text as it came back, so the prefix matches what the model
+    // wrote.
     std::string line = core::Trim(spoken.text);
     nlohmann::json reviewTelemetry = nullptr;
     nlohmann::json respeakTelemetry = nullptr;
@@ -551,10 +564,11 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
         reviewSpec.callTag = std::string(REVIEW_TAG);
         reviewSpec.sampling =
             SamplingFrom(_settings.resolveSampling, core::SamplingSeed(seed, turn, core::CallKind::Review, 0));
-        const inference::Completion reviewed =
-            _pBackend->Complete(HostedReviewPrompt(_world.Prompts().review, pSpeaker->name, tail.playerLine,
-                                                   adjudication, observation.json, line),
-                                reviewSpec, {}, stop);
+        inference::Prompt reviewPrompt = speakPrompt;
+        reviewPrompt.messages.push_back({inference::Role::Assistant, spoken.text});
+        reviewPrompt.messages.push_back(
+            {inference::Role::User, HostedReviewMessage(_world.Prompts().review, !adjudication.requested)});
+        const inference::Completion reviewed = _pBackend->Complete(reviewPrompt, reviewSpec, {}, stop);
         if (reviewed.cancelled) {
             return std::nullopt;
         }
@@ -997,7 +1011,7 @@ void HostedSession::SyncMemories()
 
 FitPass HostedSession::Pass(std::string_view conversationId, std::string_view actorId,
                             std::vector<context::TranscriptEntry> transcript, const std::vector<RetrievalHit>& hits,
-                            context::HostedInputs inputs)
+                            context::HostedInputs inputs, int reserve)
 {
     // The conversation as the store holds it now: a fold since the last pass moved its marks.
     const std::optional<core::Conversation> conversation = _store.Conversation(conversationId);
@@ -1022,8 +1036,12 @@ FitPass HostedSession::Pass(std::string_view conversationId, std::string_view ac
         inputs.retrieved.push_back(hit.text);
     }
 
+    // `reserve` raises the narrate allowance the fit leaves free after the tail. Only the fit sees it: a speak or
+    // respeak message is still checked against the settings' narrate_allowance, which is what the speak call needs.
+    core::BudgetSettings budget = _settings.budget;
+    budget.narrateAllowance += reserve;
     FitPass pass;
-    pass.assembly = context::AssembleHostedPrompt(inputs, _settings.budget, *_pBackend);
+    pass.assembly = context::AssembleHostedPrompt(inputs, budget, *_pBackend);
     pass.transcript = std::move(inputs.transcript);
     return pass;
 }
