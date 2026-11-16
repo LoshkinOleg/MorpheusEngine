@@ -20,7 +20,7 @@ TEST_CASE("The defaults route answers every default text and the variables it ta
     test::ApiHarness harness("api_prompts_default", script.Responder());
     const server::ApiResponse response = harness.Get("/v1/prompts/default");
     CHECK(response.status == 200);
-    CHECK(response.body.at("api_version") == "1.3.0");
+    CHECK(response.body.at("api_version") == "1.4.0");
     const turn::PromptPack defaults;
     const nlohmann::json& prompts = response.body.at("prompts");
     CHECK(prompts.size() == 7);

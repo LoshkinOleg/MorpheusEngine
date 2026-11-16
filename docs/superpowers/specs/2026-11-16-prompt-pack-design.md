@@ -24,6 +24,7 @@ The open body (and `turn::HostData`) gains an optional `prompts` object:
 | `resolve` | the resolve instruction | the `# Task` section of a turn's tail | `{speaker}`, `{player}` |
 | `speak` | the speak instruction | the user message the speak call appends | `{speaker}`, `{player}` |
 | `turn_cue` | the turn cue | L3's user message for a turn with no events and no player text before the line | `{speaker}`, `{player}` |
+| `decide` | the decide instruction | the decide call's tail, after the `# Who may speak` list (added by G1, `2026-11-16-decide-speaker-design.md`) | `{player}` |
 | `summarize` | the summarize instruction | the end of an NPC's fold call | `{actor}` |
 | `condense` | the condense instruction | the end of an NPC's condense call | `{actor}` |
 

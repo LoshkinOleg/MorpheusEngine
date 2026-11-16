@@ -350,9 +350,6 @@ ApiResponse Api::Handle(std::string_view method, std::string_view path, std::str
                     turn::HostedTurnRequest request;
                     request.conversationId = conversationId;
                     request.speakerId = RequiredString(json, "speaker");
-                    if (request.speakerId == "decide") {
-                        throw core::DataError("speaker: \"decide\" (the engine choosing the speaker) is not supported yet");
-                    }
                     if (json.contains("player_text")) {
                         if (!json.at("player_text").is_string()) {
                             throw core::DataError("player_text: expected a string");
@@ -392,9 +389,13 @@ ApiResponse Api::Handle(std::string_view method, std::string_view path, std::str
                                 backend.SetSlot(pSlots->Acquire(slotKey));
                                 SentenceSplitter sentences;
                                 turn::HostedCallbacks callbacks;
+                                // The turn's speaker as the session reports it: the named one, or the NPC a "decide"
+                                // turn chose.
+                                std::string speakerId = request.speakerId;
+                                callbacks.onSpeaker = [&speakerId](const std::string& id) { speakerId = id; };
                                 callbacks.onAction = [&](const core::Adjudication& adjudication) {
                                     nlohmann::json action = {{"api_version", std::string(API_VERSION)},
-                                                             {"speaker", request.speakerId},
+                                                             {"speaker", speakerId},
                                                              {"action", ActionJson(adjudication)}};
                                     if (!adjudication.requested) {
                                         action["refused"] = adjudication.reasons;

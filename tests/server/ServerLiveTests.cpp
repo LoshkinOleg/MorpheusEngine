@@ -84,6 +84,54 @@ TEST_CASE("morpheus_server against real llama-servers: the conversation fixture 
     http.Stop();
 }
 
+TEST_CASE("morpheus_server against real llama-servers: the decide fixture over HTTP chooses valid speakers",
+          "[server][decide]")
+{
+    const llamaserver::LlamaServerConfig config = test::LiveServerConfig(server::SlotPool::UPKEEP_SLOT);
+    llamaserver::LlamaServerBackend utility(config);
+    server::SlotPool slots(utility.SlotCount());
+    core::Settings settings = test::HostedSettings();
+    settings.contextSize = test::LIVE_CONTEXT_SIZE;
+    server::RunRegistry runs(test::FreshTempDir("server_live_decide") / "runs", settings,
+                             [config] { return std::make_unique<llamaserver::LlamaServerBackend>(config); },
+                             [](const std::string&) {});
+    server::Api api(runs, slots, utility, {utility.ChatModelId(), utility.EmbeddingModelId(), utility.SlotCount()},
+                    [](const std::string&) {});
+    server::HttpServer http(api);
+    http.Start(0);
+    httplib::Client client("127.0.0.1", http.Port());
+    client.set_read_timeout(std::chrono::seconds(600));
+
+    REQUIRE(test::JsonPost(client, "/v1/runs/live/open", test::ReadFixture("open.json")).status == 200);
+    const nlohmann::json fixture = test::ReadFixture("decide.json");
+    const test::HttpJson started =
+        test::JsonPost(client, "/v1/runs/live/conversations",
+                       {{"participants", fixture.at("participants")}, {"observation", test::FixtureObservation()}});
+    REQUIRE(started.status == 200);
+    const std::string base = "/v1/runs/live/conversations/" + started.body.at("conversation_id").get<std::string>();
+
+    std::string previous; // The last turn's speaker.
+    for (const nlohmann::json& step : fixture.at("steps")) {
+        nlohmann::json body = step.at("turn");
+        body["observation"] = test::FixtureObservation();
+        const test::HttpTurn turn = test::PostTurn(client, base + "/turn", body);
+        REQUIRE(turn.status == 200);
+        REQUIRE_FALSE(turn.events.empty());
+        REQUIRE(turn.events.front().name == "action");
+        const std::string speaker = turn.events.front().data.at("speaker").get<std::string>();
+        // Only what cannot depend on the model's words: a candidate, and never the last speaker with no input.
+        CHECK((speaker == test::HULDA || speaker == test::SAADIA));
+        const bool noInput = !body.contains("player_text") && !body.contains("events");
+        if (noInput && !previous.empty()) {
+            CHECK(speaker != previous);
+        }
+        CHECK(turn.events.back().name == "done");
+        previous = speaker;
+    }
+    runs.StopAll();
+    http.Stop();
+}
+
 TEST_CASE("morpheus_server against real llama-servers: nobody remembers what it did not witness, over HTTP",
           "[server][memory]")
 {

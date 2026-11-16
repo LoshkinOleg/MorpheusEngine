@@ -43,7 +43,7 @@ turn::HostedTurnRequest RequestFrom(const nlohmann::json& turnJson, const std::s
 
 // Plays the conversation fixture `name` with the fake backend replying as its steps say, and checks each turn
 // against its "expect": the record, the L3 its prompt showed and the new events its tail listed.
-void PlayFixture(const std::string& name)
+void PlayFixture(const std::string& name, bool decideEveryTurn = false)
 {
     const nlohmann::json fixture = test::ReadFixture(name);
     const nlohmann::json& steps = fixture.at("steps");
@@ -52,6 +52,18 @@ void PlayFixture(const std::string& name)
         if (step.contains("model")) {
             script.actions.push_back(step.at("model").at("resolve").get<std::string>());
             script.lines.push_back(step.at("model").at("line").get<std::string>());
+            if (step.at("model").contains("decide")) {
+                script.decisions.push_back(step.at("model").at("decide").get<std::string>());
+            }
+        }
+    }
+    if (decideEveryTurn) {
+        // Only the first turn has two candidates (no turn before it): one decide call, choosing that turn's speaker.
+        for (const nlohmann::json& step : steps) {
+            if (step.contains("turn")) {
+                script.decisions = {R"({"speaker":")" + step.at("turn").at("speaker").get<std::string>() + R"("})"};
+                break;
+            }
         }
     }
     test::ScriptedBackend backend(16384, script.Responder());
@@ -68,7 +80,12 @@ void PlayFixture(const std::string& name)
             session.RecordEvents(id, step.at("events").get<std::vector<nlohmann::json>>());
             continue;
         }
-        const std::optional<core::HostedTurn> record = session.RunTurn(RequestFrom(step.at("turn"), id), {}, {});
+        turn::HostedTurnRequest request = RequestFrom(step.at("turn"), id);
+        const std::string namedSpeaker = request.speakerId; // The step's own speaker.
+        if (decideEveryTurn) {
+            request.speakerId = "decide";
+        }
+        const std::optional<core::HostedTurn> record = session.RunTurn(request, {}, {});
         REQUIRE(record);
         ++played;
 
@@ -85,6 +102,7 @@ void PlayFixture(const std::string& name)
         }
         CHECK(record->line == expect.at("line").get<std::string>());
         CHECK(record->listenerIds == expect.at("listeners").get<std::vector<std::string>>());
+        CHECK(record->speakerId == (expect.contains("speaker") ? expect.at("speaker").get<std::string>() : namedSpeaker));
 
         // The turn's prompt: its L3 messages, and the new events in its tail.
         const inference::Prompt& prompt = session.LastAssembly().prompt;
@@ -111,6 +129,9 @@ void PlayFixture(const std::string& name)
         }
     }
     CHECK(session.Turns(id).size() == static_cast<std::size_t>(played));
+    if (decideEveryTurn) {
+        CHECK(script.decided == 1);
+    }
 }
 
 } // namespace
@@ -123,6 +144,17 @@ TEST_CASE("The scripted conversation fixture plays with the records and the L3 i
 TEST_CASE("The radiant fixture: two NPCs talk for six turns with no player text", "[hosted][fixtures]")
 {
     PlayFixture("radiant.json");
+}
+
+TEST_CASE("The decide fixture: the engine chooses the speaker, with a decide call only when two may answer",
+          "[hosted][fixtures][decide]")
+{
+    PlayFixture("decide.json");
+}
+
+TEST_CASE("The radiant fixture with 'decide' on every turn alternates, with one decide call", "[hosted][fixtures][decide]")
+{
+    PlayFixture("radiant.json", true);
 }
 
 TEST_CASE("Each invalid request fixture is a DataError naming its field, before any model call", "[hosted][fixtures]")

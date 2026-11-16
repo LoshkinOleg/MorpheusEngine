@@ -43,7 +43,7 @@ TEST_CASE("The memories of an actor read back, and a share copies them, told by 
     const server::ApiResponse early = harness.Post("/v1/runs/save_1/memories/share",
                                                    {{"from", test::HULDA}, {"to", test::SAADIA}, {"conversation_id", "c1"}});
     CHECK(early.status == 200);
-    CHECK(early.body == nlohmann::json{{"shared", 0}, {"pending", true}, {"api_version", "1.3.0"}});
+    CHECK(early.body == nlohmann::json{{"shared", 0}, {"pending", true}, {"api_version", "1.4.0"}});
 
     // Ended, the conversation is folded in the background; the pending share then applies.
     REQUIRE(harness.Post("/v1/runs/save_1/conversations/c1/end", nlohmann::json::object()).status == 200);
@@ -79,7 +79,7 @@ TEST_CASE("Memory routes answer their errors with the API version", "[hosted-ser
     auto check = [](const server::ApiResponse& response, int status, const std::string& part) {
         INFO(response.body.dump());
         CHECK(response.status == status);
-        CHECK(response.body.at("api_version") == "1.3.0");
+        CHECK(response.body.at("api_version") == "1.4.0");
         CHECK_THAT(response.body.at("error").at("message").get<std::string>(), ContainsSubstring(part));
     };
     check(harness.Post("/v1/runs/save_1/memories/share", {{"from", test::HULDA}, {"to", test::SAADIA}, {"conversation_id", "c9"}}),

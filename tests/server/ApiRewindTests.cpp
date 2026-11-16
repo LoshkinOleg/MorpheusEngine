@@ -40,7 +40,7 @@ TEST_CASE("The rewind route answers what it hid and the open rollback", "[hosted
                                       {"hidden_turns", 1},
                                       {"restored_turns", 0},
                                       {"rollback", {{"game_time", 1.5}}},
-                                      {"api_version", "1.3.0"}});
+                                      {"api_version", "1.4.0"}});
     const server::ApiResponse forward = harness.Post("/v1/runs/save_1/rewind", {{"game_time", 5.0}});
     CHECK(forward.body.at("restored_turns") == 1);
     CHECK(forward.body.at("rollback").is_null());
@@ -54,7 +54,7 @@ TEST_CASE("The rewind route's errors", "[hosted-server][api][rewind]")
     auto check = [](const server::ApiResponse& response, int status, const std::string& part) {
         INFO(response.body.dump());
         CHECK(response.status == status);
-        CHECK(response.body.at("api_version") == "1.3.0");
+        CHECK(response.body.at("api_version") == "1.4.0");
         CHECK_THAT(response.body.at("error").at("message").get<std::string>(), ContainsSubstring(part));
     };
     check(harness.Post("/v1/runs/save_1/rewind", {{"game_time", 1.0}}), 400, "no clock");

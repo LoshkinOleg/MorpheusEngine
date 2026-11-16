@@ -25,7 +25,7 @@ fixtures may replace any of these files, as long as they keep the format below.
 
 Every fixture may carry a `description` string; the tests ignore it.
 
-## Conversation fixtures (`conversation.json`, `radiant.json`)
+## Conversation fixtures (`conversation.json`, `radiant.json`, `decide.json`)
 
 `{"participants": [ids], "steps": [...]}`. The test starts one conversation with `participants` (in this join order)
 and plays `steps` in order. A step is one of two kinds.
@@ -35,15 +35,17 @@ an object with a required `text` string; other keys (`type`, `action`, `actor`, 
 
 **A turn step**: `{"turn": {...}, "model": {...}, "expect": {...}}`.
 
-- `turn` is the request: `speaker` (required, an actor id), and optionally `player_text`, `events` (event objects
+- `turn` is the request: `speaker` (required, an actor id, or `"decide"` to have the engine choose), and optionally `player_text`, `events` (event objects
   sent with the turn), `allowed_actions` (action ids; absent means every action of the catalog) and `observation`
   (absent means `observation.json`).
 - `model` says what the fake backend replies; it exists only for the fake and is not part of what a host sends.
   `resolve` is the reply to the resolve call (the proposal JSON text, which may be invalid on purpose) and `line` the
-  reply to the speak call. Replies are used in step order.
+  reply to the speak call. Replies are used in step order. `decide` (optional) is the reply to the decide call,
+  used in step order by the steps whose turn makes one.
 - `expect` is checked against the committed turn and its prompt:
   - `requested` (required, boolean): whether the adjudication accepted an action.
   - `line` (required): the committed line.
+  - `speaker` (optional): the committed turn's speaker id.
   - `listeners` (required, ids): the turn's listener ids, in order.
   - `action` (optional, `{"id", "params"}`): the adjudicated action id and params.
   - `reasons` (optional, strings): the adjudication's refusal reasons, in order.

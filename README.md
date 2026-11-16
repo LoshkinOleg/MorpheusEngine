@@ -275,7 +275,7 @@ To run it, start the two llama-servers as in "Models through llama-server", the 
 
 The flags and their defaults are `--port 4998`, `--runs ./runs` and `--settings ./settings.json`. The server listens on 127.0.0.1 only and owns its port alone: a port already in use ends it at startup with a message. A run's file is `<runs>/<run_id>.morpheus`. Ctrl+C stops it; turns still running commit nothing, and their streams end with `error` 503 ("the server is stopping"). A `run_id` is 1 to 64 characters of `A-Z a-z 0-9 _ -` and not a Windows device name (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`, in any case); one that differs from an opened run's only in case is refused with 400, and so is any `open` once shutdown has begun (503).
 
-Every response carries `"api_version": "1.3.0"` (the changes are in `CHANGELOG.md`), error answers the HTTP layer makes itself (OPTIONS, an unknown method, a malformed request) included. The endpoints:
+Every response carries `"api_version": "1.4.0"` (the changes are in `CHANGELOG.md`), error answers the HTTP layer makes itself (OPTIONS, an unknown method, a malformed request) included. The endpoints:
 
 | Endpoint | Body | Answer |
 |---|---|---|
@@ -283,7 +283,7 @@ Every response carries `"api_version": "1.3.0"` (the changes are in `CHANGELOG.m
 | `GET /v1/prompts/default` | - | `{prompts, variables}`: the default texts and their variables; added in 1.3.0 (F) |
 | `POST /v1/runs/{run_id}/open` | `{catalog, observation_schema, lore?, clock?, prompts?, seed?}` | `{run_id, created}`; the same host data reopens the run as it is |
 | `POST /v1/runs/{run_id}/conversations` | `{participants, observation}` | `{conversation_id}` |
-| `POST /v1/runs/{run_id}/conversations/{cid}/turn` | `{speaker, player_text?, events?, observation, allowed_actions?}` | a Server-Sent Events stream |
+| `POST /v1/runs/{run_id}/conversations/{cid}/turn` | `{speaker, player_text?, events?, observation, allowed_actions?}` (`speaker` is an NPC id or `"decide"`, added in 1.4.0 (G1)) | a Server-Sent Events stream |
 | `POST /v1/runs/{run_id}/conversations/{cid}/events` | `{events}` | `{}` |
 | `POST /v1/runs/{run_id}/conversations/{cid}/participants` | `{joined?, left?, observation}` | `{participants}` |
 | `POST /v1/runs/{run_id}/conversations/{cid}/end` | `{}` | `{}`; folding follows in the background |
@@ -300,7 +300,9 @@ A turn's stream has these events, in order: `action` (the adjudicated action, se
 
 **Rewind.** When a player loads an older save, the host calls `POST /v1/runs/{run_id}/rewind` with the save's game time, on every save load (a load of the latest save changes nothing: the call is idempotent). It needs the host data's `clock`, an optional JSON pointer (RFC 6901) to a number in every observation, the game time; every observation then must hold a finite number there, and a rewind of a run whose host data names no clock is refused with 400. Rewinding hides, and deletes nothing: the turns, events, participant changes, conversation ends and shares clocked after that time, and the conversations started after it, leave every prompt, retrieval and memory listing, and an NPC's memory that covers a hidden turn is hidden and written again, in the background, from the turns that remain. A later rewind to a later time brings it all back (roll-forward), exactly as it was, for as long as nothing new has been recorded. The first new record after a rewind (a turn, events, a conversation, a participant change, an end or a share) abandons the hidden future for good: a rewind to the old time then restores nothing. `rewound` says whether the call changed what is hidden, and `hidden_turns` and `restored_turns` are the net counts of turns it hid and showed again (a turn shown by the undo and hidden again by the new rollback counts as neither). `rollback` in the answer is `{"game_time": T}` of the rollback left open after the call, or null when nothing is hidden. Design: `docs/superpowers/specs/2026-11-16-rollback-design.md`.
 
-**Prompt pack.** The host data may carry `prompts`, an object of texts that replace the engine's defaults for the run. The six keys are `system` (the system text, no variable), `resolve` (the instruction that asks for the speaker's action), `speak` (the instruction that asks for the spoken words) and `turn_cue` (the user message shown for a turn with no events and no player text, before the speaker's line; each taking `{speaker}` and `{player}`), and `summarize` and `condense` (the instructions that fold a conversation into an NPC's memory and condense memories, each taking `{actor}`). A key left out keeps the engine's default; `GET /v1/prompts/default` answers every default text and the variables it takes. A variable is `{` then lower-case letters and underscores, then `}`; every other brace is literal text. An unknown key, an empty text, a variable the text does not take, or a system text over `engine_rules_cap` fails the `open` with 400 naming `prompts/<key>`. A changed pack is changed host data: the run's next prompt uses it. Design: `docs/superpowers/specs/2026-11-16-prompt-pack-design.md`.
+**Prompt pack.** The host data may carry `prompts`, an object of texts that replace the engine's defaults for the run. The seven keys are `system` (the system text, no variable), `resolve` (the instruction that asks for the speaker's action), `speak` (the instruction that asks for the spoken words) and `turn_cue` (the user message shown for a turn with no events and no player text, before the speaker's line; each taking `{speaker}` and `{player}`), `decide` (the instruction of the call that chooses the speaker of a `"decide"` turn, taking `{player}`), and `summarize` and `condense` (the instructions that fold a conversation into an NPC's memory and condense memories, each taking `{actor}`). A key left out keeps the engine's default; `GET /v1/prompts/default` answers every default text and the variables it takes. A variable is `{` then lower-case letters and underscores, then `}`; every other brace is literal text. An unknown key, an empty text, a variable the text does not take, or a system text over `engine_rules_cap` fails the `open` with 400 naming `prompts/<key>`. A changed pack is changed host data: the run's next prompt uses it. Design: `docs/superpowers/specs/2026-11-16-prompt-pack-design.md`.
+
+**Decide.** A turn whose `speaker` is `"decide"` asks the engine to choose who speaks (added in 1.4.0). The candidates are the conversation's NPCs that are in the turn's observation, in join order; the player is never one. On a turn with no player text and no events the last speaker is left out while another candidate remains, so two NPCs with no input alternate. With one candidate it is chosen at once, with no model call; with more, a short grammar-constrained model call chooses among them. No NPC in the observation is a 400, and an observation actor with the id `decide` is a 400 (the id is reserved). The `action` event's `speaker` names the NPC chosen, and the stored turn's speaker is that NPC. When the model's answer is refused, the candidate who spoke least recently is chosen instead; a decided turn's `timings` gain `decide` (the call's telemetry, with `refused` holding the reasons in that case) only when a call ran. Design: `docs/superpowers/specs/2026-11-16-decide-speaker-design.md`.
 
 A run keeps its NPCs' memories in the background, between requests: it folds its ended conversations and catches up every NPC who is behind. A turn stops a running fold at once (it resumes later); every other request to that run waits only for the current step (one NPC's memory of one conversation, or one share), after which the background work pauses and resumes once the queue is empty.
 
@@ -321,7 +323,7 @@ The turn's stream looks like this:
 
 ```
 event: action
-data: {"action":{"id":"follow","params":{}},"api_version":"1.3.0","speaker":"0001A6A4"}
+data: {"action":{"id":"follow","params":{}},"api_version":"1.4.0","speaker":"0001A6A4"}
 
 event: token
 data: {"text":"Lead"}
@@ -335,7 +337,7 @@ data: {"action":{"id":"follow","params":{}},"events_omitted":0,"line":"Lead the 
 
 Errors answer `{"api_version", "error": {"status", "message"}}` with these statuses:
 
-- 400: a malformed body or field (the message names it), a bad `run_id`, `speaker: "decide"` (not supported yet), or a lore entry the embedding server refuses (too long for its context)
+- 400: a malformed body or field (the message names it), a bad `run_id`, no NPC participant in the observation for a `"decide"` turn, or a lore entry the embedding server refuses (too long for its context)
 - 404: an unknown route, or an unknown conversation of an opened run
 - 409: a run not opened in this server process
 - 422: the observation and player text do not fit the tail

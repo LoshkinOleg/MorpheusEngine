@@ -3,6 +3,20 @@
 The morpheus_server API's versions (`api_version` on every response). A breaking change bumps the major version and
 gets an entry here with a migration note.
 
+## API 1.4.0
+
+The engine chooses the speaker (design: `docs/superpowers/specs/2026-11-16-decide-speaker-design.md`). Only additions.
+
+- A turn's `speaker` may be `"decide"`: the engine chooses one of the conversation's NPCs present (not the player).
+  On a turn with no player text and no events the last speaker is left out while another remains. With one candidate
+  it is chosen at once; with more, a short model call chooses. The `action` event's `speaker` names the chosen NPC.
+  No NPC participant in the observation is a 400.
+- The prompt pack gains `decide` (variable `{player}`), the decide call's instruction; `GET /v1/prompts/default`
+  lists it.
+- `decide` is reserved: an observation actor with that id is a 400.
+- A decided turn's `timings` gain `decide` (the call, and `refused` with the reasons when the model's answer was
+  refused and the candidate who spoke least recently was chosen instead).
+
 ## API 1.3.0
 
 The host's prompt pack (design: `docs/superpowers/specs/2026-11-16-prompt-pack-design.md`). Only additions; two default texts changed.

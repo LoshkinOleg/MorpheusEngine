@@ -1,0 +1,26 @@
+{
+  "description": "R8's 'decide': Hulda and Saadia with Aela, the player. With player text or events both NPCs may answer (a decide call); with no input the last speaker is left out, so one candidate remains (no call).",
+  "participants": ["0001A6A4", "0001B07C", "00000007"],
+  "steps": [
+    {
+      "turn": {"speaker": "decide", "player_text": "Good evening, both of you."},
+      "model": {"decide": "{\"speaker\":\"0001B07C\"}", "resolve": "{\"action\":\"none\",\"params\":{}}", "line": "Evening, traveller."},
+      "expect": {"speaker": "0001B07C", "requested": true, "line": "Evening, traveller.", "listeners": ["0001A6A4", "00000007"]}
+    },
+    {
+      "turn": {"speaker": "decide", "player_text": "And you, Hulda?"},
+      "model": {"decide": "{\"speaker\":\"0001A6A4\"}", "resolve": "{\"action\":\"none\",\"params\":{}}", "line": "Business is slow."},
+      "expect": {"speaker": "0001A6A4", "requested": true, "line": "Business is slow.", "listeners": ["0001B07C", "00000007"]}
+    },
+    {
+      "turn": {"speaker": "decide"},
+      "model": {"resolve": "{\"action\":\"none\",\"params\":{}}", "line": "It will pick up."},
+      "expect": {"speaker": "0001B07C", "requested": true, "line": "It will pick up.", "listeners": ["0001A6A4", "00000007"]}
+    },
+    {
+      "turn": {"speaker": "decide", "events": [{"type": "ambient", "text": "A bard starts to sing."}]},
+      "model": {"decide": "{\"speaker\":\"0001B07C\"}", "resolve": "{\"action\":\"none\",\"params\":{}}", "line": "I love this song."},
+      "expect": {"speaker": "0001B07C", "requested": true, "line": "I love this song.", "listeners": ["0001A6A4", "00000007"]}
+    }
+  ]
+}
