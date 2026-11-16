@@ -236,3 +236,21 @@ TEST_CASE("SaveSettingsEdit writes min_p", "[settings_edit]")
     CHECK(nlohmann::json::parse(test::ReadFile(file)).at("sampling").at("resolve").at("min_p").get<double>() == 0.1);
     CHECK(core::LoadSettings(file).resolveSampling.minP == 0.1);
 }
+
+TEST_CASE("SaveSettingsEdit keeps thinking_format, which the editor does not show", "[settings_edit]")
+{
+    const std::filesystem::path dir = test::SettingsFolder("settings_edit_thinking_format");
+    const std::filesystem::path file = dir / "settings.json";
+    nlohmann::json json = nlohmann::json::parse(test::ReadFile(file));
+    json["thinking_format"] = "qwen";
+    test::WriteFile(file, json.dump(2));
+
+    app::SettingsEdit edit = app::ReadSettingsEdit(file);
+    edit.narrateSampling.temperature = 1.1; // Any edit: the file is rewritten.
+    const core::Settings saved = app::SaveSettingsEdit(file, edit);
+
+    // The key is still in the file as written, and the saved settings still use the preset.
+    CHECK(nlohmann::json::parse(test::ReadFile(file)).at("thinking_format") == "qwen");
+    CHECK(saved.thinking.mode == core::ThinkingMode::Format);
+    CHECK(core::LoadSettings(file).thinking == saved.thinking);
+}
