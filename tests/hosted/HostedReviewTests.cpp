@@ -237,9 +237,10 @@ TEST_CASE("A respeak message over narrate_allowance drops problems", "[hosted][r
         return backend.Calls().at(3).prompt.messages.back().content;
     };
 
-    // Room for the bare correction and the speak instruction, not for a problem: both problems are dropped.
+    // Room for the bare correction and the speak instruction, not for a problem: both problems are dropped, and a
+    // correction that lists no problem says nothing, so the message is the plain speak message.
     const std::string fitting = respeakMessage(tokens(bare) + 1);
-    CHECK(fitting == bare);
+    CHECK(fitting == speak);
     CHECK_THAT(fitting, !ContainsSubstring(longOne));
     CHECK_THAT(fitting, !ContainsSubstring(longTwo));
 

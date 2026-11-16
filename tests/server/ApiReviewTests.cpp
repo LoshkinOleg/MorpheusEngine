@@ -1,7 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
 
-#include <algorithm>
-#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -37,17 +35,16 @@ TEST_CASE("A review turn streams the action, then the line after the review, the
     CHECK(events.front().name == "action");
     CHECK(events.front().data.at("api_version") == "1.5.0");
 
-    // The tokens and sentences, after the action, say the line; the last event is done.
-    std::string spoken;
-    std::size_t firstToken = events.size();
-    for (std::size_t i = 0; i < events.size(); ++i) {
-        if (events[i].name == "token") {
-            spoken += events[i].data.at("text").get<std::string>();
-            firstToken = std::min(firstToken, i);
+    // The line is held back until the review is done and then delivered in one piece (an unreviewed turn streams it
+    // in several): exactly one token event, whose text is the whole line, after the action.
+    std::vector<std::string> tokens;
+    for (const server::StreamEvent& event : events) {
+        if (event.name == "token") {
+            tokens.push_back(event.data.at("text").get<std::string>());
         }
     }
-    CHECK(spoken == "Stay close.");
-    CHECK(firstToken > 0); // The action event came first: the line is held back until the review is done.
+    REQUIRE(tokens.size() == 1);
+    CHECK(tokens.front() == "Stay close.");
     CHECK(events.back().name == "done");
     const nlohmann::json& timings = events.back().data.at("timings");
     CHECK(timings.contains("review"));

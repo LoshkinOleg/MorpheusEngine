@@ -91,6 +91,20 @@ TEST_CASE("morpheus_server against real llama-servers: the conversation fixture 
         WARN(std::format("turn {}: first sentence after {} ms; action {}; line: {}", turnNumber,
                          firstSentence ? std::chrono::duration_cast<std::chrono::milliseconds>(*firstSentence).count() : -1,
                          done.at("action").dump(), done.at("line").get<std::string>()));
+        if (stepIndex == lastTurnStep) {
+            // The review's own timings do not depend on the model's words. Its cost is printed: the review replaces
+            // the conversation slot's cached prompt, so a turn after it would read its whole prompt again (the
+            // fixture ends with this turn, so that share cannot be printed here).
+            const nlohmann::json& timings = done.at("timings");
+            REQUIRE(timings.contains("review"));
+            const nlohmann::json& review = timings.at("review");
+            WARN(std::format("turn {}: review call {} ms (prompt {}, generate {}); consistent {}; respeak ran: {}",
+                             turnNumber,
+                             review.at("prompt_ms").get<double>() + review.at("generate_ms").get<double>(),
+                             review.at("prompt_ms").get<double>(), review.at("generate_ms").get<double>(),
+                             review.contains("consistent") ? review.at("consistent").dump() : "unreadable",
+                             timings.contains("respeak")));
+        }
     }
     runs.StopAll();
     http.Stop();

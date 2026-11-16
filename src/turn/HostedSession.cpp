@@ -17,8 +17,8 @@
 #include "grammar/Schema.h"
 #include "turn/CallTag.h"
 #include "turn/PromptPack.h"
-#include "turn/Review.h"
 #include "turn/ResolveGrammar.h"
+#include "turn/Review.h"
 #include "turn/Session.h"
 
 namespace morpheus::turn {
@@ -381,8 +381,9 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
             decideSpec.grammar = grammar::FromSchema(schema);
             decideSpec.maxTokens = longestAnswer + DECIDE_TOKEN_MARGIN;
             decideSpec.callTag = std::string(DECIDE_TAG);
-            decideSpec.sampling = SamplingFrom(_settings.resolveSampling,
-                                               core::SamplingSeed(seed, turn, core::CallKind::Resolve, DECIDE_SEED_ATTEMPT));
+            decideSpec.sampling =
+                SamplingFrom(_settings.resolveSampling,
+                             core::SamplingSeed(seed, turn, core::CallKind::Resolve, DECIDE_SEED_ATTEMPT));
             const inference::Completion decided = _pBackend->Complete(decideAssembly.prompt, decideSpec, {}, stop);
             if (decided.cancelled) {
                 return std::nullopt;
@@ -561,7 +562,8 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
         }
         if (review.consistent == false) {
             // The respeak message: the correction, the problems that fit narrate_allowance (dropped from the end), a
-            // blank line and the speak instruction; when even the bare correction is too long, the speak instruction.
+            // blank line and the speak instruction; when no problem fits, the plain speak instruction (a correction
+            // that lists no problem says nothing; the turn is still corrected by one more sampling).
             std::vector<std::string> problems = review.problems;
             auto respeakMessage = [&] {
                 std::string text = std::string(HOSTED_RESPEAK_CORRECTION) + "\n";
@@ -575,7 +577,7 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
                 problems.pop_back();
                 message = respeakMessage();
             }
-            if (_pBackend->CountTokens(message) > _settings.budget.narrateAllowance) {
+            if (problems.empty()) {
                 message = speakMessage;
             }
             inference::Prompt respeakPrompt = assembly->prompt;
@@ -799,7 +801,8 @@ RewindResult HostedSession::Rewind(double gameTime)
     if (open && open->gameTime == gameTime) {
         return {false, 0, 0, gameTime};
     }
-    // Undo the open rollback, then apply one when the time is before the latest live record.
+    // Undo the open rollback, then apply one when the time is before the latest seen clock (the highest visible record,
+    // raised to the most recent rollback not undone).
     RewindResult result;
     if (open) {
         result.restoredTurns = _store.UndoRollback().restoredTurns;

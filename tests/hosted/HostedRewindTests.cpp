@@ -2,6 +2,7 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <algorithm>
+#include <filesystem>
 #include <limits>
 #include <stop_token>
 #include <string>
@@ -15,6 +16,7 @@
 #include "fakes/ScriptedBackend.h"
 #include "hosted/HostedTestSupport.h"
 #include "inference/Llm.h"
+#include "store/RunStore.h"
 #include "turn/HostedSession.h"
 
 using namespace morpheus;
@@ -299,6 +301,36 @@ TEST_CASE("A conversation end after an abandon is dated at the rollback's time",
     // conversation is open again.
     REQUIRE(session.Rewind(1.4).rewound);
     CHECK_FALSE(session.Conversation(run.open)->ended);
+}
+
+TEST_CASE("A share made after an abandon is dated at the rollback's time", "[hosted][rewind]")
+{
+    // The rewind to 1.5 hid turn 2 (at 2.0) and left its rollback open; a new share abandons it. The visible records are
+    // at 1.0, so the run is at 1.5 (the rollback's time): the share is dated 1.5, not 1.0.
+    test::HostedScript script;
+    script.actions = {R"({"action":"none","params":{}})", R"({"action":"none","params":{}})"};
+    script.lines = {"One.", "Two."};
+    test::ScriptedBackend backend(16384, test::MemoryEchoResponder(script));
+    turn::HostData data = test::FixtureHostData();
+    data.clock = CLOCK;
+    const std::filesystem::path file = test::HostedRunFile("hosted_rewind_share_clock");
+    turn::HostedSession session = turn::HostedSession::Open(file, data, test::HostedSettings(), 42, backend);
+    const Rewound run = PlayAndRewind(session);
+    // Hulda's memory of the open conversation is not complete, so the share waits as a pending one.
+    REQUIRE(session.ShareMemories(test::HULDA, test::BELETHOR, run.open).pending);
+    const std::vector<core::PendingShare> shares = store::RunStore::Open(file).PendingShares();
+    const auto made = std::find_if(shares.begin(), shares.end(), [](const core::PendingShare& share) {
+        return share.toActor == test::BELETHOR;
+    });
+    REQUIRE(made != shares.end());
+    CHECK(made->clock == 1.5);
+
+    // A rewind to 1.4 hides what is dated after it: the new share is (dated 1.0 it would stay pending).
+    REQUIRE(session.Rewind(1.4).rewound);
+    const std::vector<core::PendingShare> after = store::RunStore::Open(file).PendingShares();
+    CHECK(std::none_of(after.begin(), after.end(), [](const core::PendingShare& share) {
+        return share.toActor == test::BELETHOR;
+    }));
 }
 
 TEST_CASE("A rewind that changes nothing does not resync the retrieval index", "[hosted][rewind]")
