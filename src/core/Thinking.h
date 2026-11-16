@@ -41,6 +41,9 @@ inline const ThinkingFormat QWEN_THINKING = {
     "\n\nConsidering the limited time, I have to give the solution based on the thinking directly now.\n</think>\n\n",
 };
 
+// Whether the chat template has Qwen's enable_thinking switch (it then writes the thinking block itself).
+bool HasThinkingSwitch(std::string_view chatTemplate);
+
 // The format a backend uses: Auto is QWEN_THINKING when `chatTemplate` has the enable_thinking switch and none
 // otherwise; Format is its format; None is none.
 std::optional<ThinkingFormat> ResolveThinking(const ThinkingSetting& setting, std::string_view chatTemplate);

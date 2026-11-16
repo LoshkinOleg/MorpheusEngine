@@ -172,8 +172,8 @@ LlamaCppBackend::LlamaCppBackend(LlamaConfig config)
     // must be a single token, or the block's end could not be recognised while generating; the other texts may be
     // any tokens.
     const char* pTemplate = llama_model_chat_template(_pChatModel.get(), nullptr);
-    if (const std::optional<core::ThinkingFormat> format =
-            core::ResolveThinking(_config.thinking, pTemplate != nullptr ? std::string_view(pTemplate) : std::string_view())) {
+    const std::string_view chatTemplate = pTemplate != nullptr ? std::string_view(pTemplate) : std::string_view();
+    if (const std::optional<core::ThinkingFormat> format = core::ResolveThinking(_config.thinking, chatTemplate)) {
         const llama_vocab* pVocab = llama_model_get_vocab(_pChatModel.get());
         const std::vector<std::int32_t> end = Tokenize(pVocab, format->end, false, true);
         if (end.size() != 1) {

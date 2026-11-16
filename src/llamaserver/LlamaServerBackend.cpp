@@ -376,7 +376,7 @@ LlamaServerBackend::LlamaServerBackend(LlamaServerConfig config)
         markers.end = ServerTokens(format->end, false, true);
         markers.afterEnd = ServerTokens(format->afterEnd, false, false);
         markers.openText = format->open;
-        markers.templateWritesOpen = chatTemplate.find("enable_thinking") != std::string::npos;
+        markers.templateWritesOpen = core::HasThinkingSwitch(chatTemplate);
         markers.endText = format->end;
         _thinking = std::move(markers);
     }
@@ -660,8 +660,8 @@ std::vector<std::int32_t> LlamaServerBackend::TokenizePrompt(const inference::Pr
     }
     std::string rendered = Ask(*_pChatClient, _config.chatUrl, "/apply-template", body,
                                [](const nlohmann::json& answer) { return answer.at("prompt").get<std::string>(); });
-    // A template with the enable_thinking switch opens the block itself when thinking is on, so its prompt ends with the
-    // open text; the texts come from the backend, so it goes. A template without the switch writes no block: its
+    // A template with the enable_thinking switch opens the block itself when thinking is on, so its prompt ends with
+    // the open text; the texts come from the backend, so it goes. A template without the switch writes no block: its
     // prompt may end with the open text only by chance, and keeps it.
     if (_thinking && _thinking->templateWritesOpen && rendered.ends_with(_thinking->openText)) {
         rendered.resize(rendered.size() - _thinking->openText.size());

@@ -63,7 +63,7 @@ private:
         std::vector<std::int32_t> end = {};      // the format's end text, special tokens parsed.
         std::vector<std::int32_t> afterEnd = {}; // the format's afterEnd text, as plain text.
         std::string openText = {};               // The open text, cut off a rendered prompt that ends with it.
-        bool templateWritesOpen = false;         // The chat template has the switch: only then may it write the open text.
+        bool templateWritesOpen = false; // The chat template has the switch: only then may it write the open text.
         std::string endText = {};                // The end marker's text: the thinking request's stop string.
     };
 
@@ -86,7 +86,9 @@ public:
     // with add_special (the special tokens the model adds: a BOS in front of a text is kept, an EOS after it ignored).
     // Throws InferenceError naming the URL for a URL that is not http://host or http://host:port (a port from 1 to
     // 65535), an unreachable server, an HTTP error, an unexpected answer, slots smaller than config.contextSize, a chat
-    // server with no slot, or a model that adds more than one special token to a text. Throws ContractError for a context size below 1 or a slot below 0.
+    // server with no slot, a thinking format whose close text uses core::MIN_THINKING_TOKENS tokens or more, or a
+    // model that adds more than one special token to a text. Throws ContractError for a context size below 1 or a
+    // slot below 0.
     explicit LlamaServerBackend(LlamaServerConfig config);
     ~LlamaServerBackend() override;
     LlamaServerBackend(const LlamaServerBackend&) = delete;

@@ -79,7 +79,8 @@ private:
 
 public:
     // Loads both models and creates their contexts. Throws InferenceError if either fails, or if the resolved
-    // thinking format's end marker is not a single token.
+    // thinking format's end marker is not a single token or its close text uses core::MIN_THINKING_TOKENS tokens or
+    // more.
     explicit LlamaCppBackend(LlamaConfig config);
     ~LlamaCppBackend() override;
     LlamaCppBackend(const LlamaCppBackend&) = delete;

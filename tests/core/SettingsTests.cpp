@@ -493,14 +493,16 @@ TEST_CASE("LoadSettings reads an optional min_p per call type", "[settings]")
     // It round-trips.
     CHECK(LoadSettings(WriteSettings("settings_min_p_copy", SettingsToJson(set))).narrateSampling.minP == 0.05);
 
-    for (const double bad : {-0.1, 1.0, 1.5}) {
-        INFO(bad);
+    // Any other value is refused with the engine's own rendering of it: a number, or a string that is no number.
+    for (const nlohmann::json& bad : {nlohmann::json(-0.1), nlohmann::json(1.0), nlohmann::json(1.5),
+                                      nlohmann::json("0.1")}) {
+        INFO(bad.dump());
         nlohmann::json wrong = ValidSettingsJson();
         wrong["sampling"]["resolve"]["min_p"] = bad;
         CHECK_THROWS_WITH(LoadSettings(WriteSettings("settings_min_p_bad", wrong)),
                           ContainsSubstring(std::format("sampling 'resolve': 'min_p' must be at least 0 and below 1, "
                                                         "not {}",
-                                                        bad)));
+                                                        bad.dump())));
     }
 }
 

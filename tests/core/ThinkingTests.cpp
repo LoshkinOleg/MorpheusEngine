@@ -28,3 +28,10 @@ TEST_CASE("ResolveThinking: auto reads the template's switch, a format is used a
     CHECK(ResolveThinking({ThinkingMode::Format, custom}, without) == std::optional<ThinkingFormat>(custom));
     CHECK(ResolveThinking({ThinkingMode::None, {}}, withSwitch) == std::nullopt);
 }
+
+TEST_CASE("HasThinkingSwitch: the chat template names Qwen's enable_thinking switch", "[thinking]")
+{
+    CHECK(HasThinkingSwitch("{%- if enable_thinking is defined %}...{%- endif %}"));
+    CHECK_FALSE(HasThinkingSwitch("{% for message in messages %}{{ message.content }}{% endfor %}"));
+    CHECK_FALSE(HasThinkingSwitch(""));
+}
