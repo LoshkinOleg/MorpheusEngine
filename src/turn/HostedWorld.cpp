@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <format>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <set>
@@ -461,11 +462,38 @@ std::vector<core::LoreEntry> HostedWorld::AlwaysOnLore(const nlohmann::json& obs
 {
     std::vector<core::LoreEntry> shown;
     for (const core::LoreEntry& entry : _lore) {
-        if (entry.alwaysOn && (!entry.condition || entry.condition->Holds(observation))) {
+        // Always-on entries have no scopes, so `knows` does not matter for them.
+        if (entry.alwaysOn && LoreVisible(entry, observation, {})) {
             shown.push_back(entry);
         }
     }
     return shown;
+}
+
+bool HostedWorld::LoreVisible(const core::LoreEntry& entry, const nlohmann::json& observation,
+                              const std::vector<std::string>& knows)
+{
+    if (entry.condition && !entry.condition->Holds(observation)) {
+        return false;
+    }
+    if (entry.scopes.empty()) {
+        return true;
+    }
+    return std::any_of(entry.scopes.begin(), entry.scopes.end(), [&knows](const std::string& scope) {
+        return std::find(knows.begin(), knows.end(), scope) != knows.end();
+    });
+}
+
+std::set<std::string, std::less<>> HostedWorld::VisibleSubjects(const nlohmann::json& observation,
+                                                                const std::vector<std::string>& knows) const
+{
+    std::set<std::string, std::less<>> subjects;
+    for (const core::LoreEntry& entry : _lore) {
+        if (!entry.alwaysOn && LoreVisible(entry, observation, knows)) {
+            subjects.insert(entry.subject);
+        }
+    }
+    return subjects;
 }
 
 bool HostedWorld::HasClock() const

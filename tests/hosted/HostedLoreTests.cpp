@@ -36,6 +36,9 @@ turn::HostData LoreData()
     data.lore.push_back({"Wards", "Wards are runes that keep intruders from a door.", false});
     data.lore.back().scopes = {"magic"};
     data.lore.push_back({"Bread", "Bread is baked at dawn for the whole inn.", false});
+    // A retrieved entry with a condition and no scopes: every speaker may retrieve it from stage 40 on.
+    data.lore.push_back({"Ledger", "The ledger lists the wards and the bread owed to the inn.", false});
+    data.lore.back().condition = core::LoreCondition{"/quests/MG03", 40, std::nullopt, std::nullopt};
     data.lore.push_back({"The College", "The College of Winterhold teaches magic.", true});
     data.lore.back().condition = core::LoreCondition{"/quests/MG03", 40, std::nullopt, std::nullopt};
     return data;
@@ -76,7 +79,7 @@ core::HostedTurn Ask(const std::string& name, const std::string& speaker, const 
     turn::HostedSession session = turn::HostedSession::Open(test::HostedRunFile(name), LoreData(), test::HostedSettings(),
                                                             42, backend);
     const std::string id = session.StartConversation({test::HULDA, test::SAADIA, test::AELA}, observation);
-    turn::HostedTurnRequest request = test::Request(id, speaker, "What are wards, and is there bread?");
+    turn::HostedTurnRequest request = test::Request(id, speaker, "What are wards, is there bread, and what does the ledger say?");
     request.observation = observation;
     const std::optional<core::HostedTurn> record = session.RunTurn(request, {}, {});
     REQUIRE(record);
@@ -94,6 +97,13 @@ TEST_CASE("A scoped lore entry is retrieved by a speaker who knows its scope and
     const core::HostedTurn saadia = Ask("hosted_lore_saadia", test::SAADIA, Observation(40));
     CHECK_FALSE(LoreHits(saadia).contains("Wards"));
     CHECK(LoreHits(saadia).contains("Bread"));
+}
+
+TEST_CASE("A retrieved lore entry with a condition is searched only while the condition holds", "[hosted][lore]")
+{
+    // Saadia knows nothing and the entry has no scopes: the condition alone decides.
+    CHECK_FALSE(LoreHits(Ask("hosted_lore_cond30", test::SAADIA, Observation(30))).contains("Ledger"));
+    CHECK(LoreHits(Ask("hosted_lore_cond40", test::SAADIA, Observation(40))).contains("Ledger"));
 }
 
 TEST_CASE("Always-on lore with a condition is in the system message only while the condition holds", "[hosted][lore]")

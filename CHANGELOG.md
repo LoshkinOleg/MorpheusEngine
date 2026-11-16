@@ -13,7 +13,7 @@ Lore scopes and conditions, and the review as a continuation (design:
   inclusive, `equals` any JSON value, compared by JSON equality), and an observation actor's optional `knows` (an array
   of non-empty strings). A lore entry is visible to a speaker on a turn when its `requires` holds on that turn's
   observation (a missing value, or a value of another type, does not hold) and its `scopes` are empty or share one with
-  the speaker's `knows`. A retrieved entry that is not visible is not searched; an always-on entry is shown in the
+  the speaker's `knows`. A lore entry that is not visible to the speaker is not searched; an always-on entry is shown in the
   system message, the decide prompt and the fold prompts only while its `requires` holds on the observation the prompt
   is built from (a quest stage reached changes the system message once). An always-on entry may not have `scopes`: a
   400 at `open`. Host data without the new keys is unchanged and keeps its hash.

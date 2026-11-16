@@ -1,7 +1,9 @@
 #pragma once
 
+#include <functional>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -105,6 +107,15 @@ public:
     // The always-on lore a prompt built from `observation` shows: the always-on entries whose condition (if any) holds
     // on it, in the host's order.
     std::vector<core::LoreEntry> AlwaysOnLore(const nlohmann::json& observation) const;
+
+    // The visibility rule (host-feedback spec, section 2): `entry` is visible when its condition (if any) holds on
+    // `observation` and its scopes are empty or share one with `knows`.
+    static bool LoreVisible(const core::LoreEntry& entry, const nlohmann::json& observation,
+                            const std::vector<std::string>& knows);
+
+    // The subjects of the retrieved (not always-on) lore visible to a speaker who knows `knows`, on `observation`.
+    std::set<std::string, std::less<>> VisibleSubjects(const nlohmann::json& observation,
+                                                       const std::vector<std::string>& knows) const;
 
     // True when the host data names a clock: every observation then holds a finite number at its pointer.
     bool HasClock() const;

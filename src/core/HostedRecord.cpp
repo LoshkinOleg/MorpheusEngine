@@ -86,7 +86,8 @@ ActorsCore ReadActors(const nlohmann::json& observation)
     return read;
 }
 
-std::optional<std::vector<std::string>> ReadStringArray(const nlohmann::json& value) {
+std::optional<std::vector<std::string>> ReadStringArray(const nlohmann::json& value)
+{
     if (!value.is_array()) {
         return std::nullopt;
     }

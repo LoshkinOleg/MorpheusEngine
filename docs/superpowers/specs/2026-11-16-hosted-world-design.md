@@ -121,7 +121,7 @@ The layers, most stable first, so a new turn adds to the end of the cached part:
 | Layer | Content |
 |---|---|
 | L0 system | The default hosted system text: voicing characters in a world the host simulates, and the output rules |
-| L1 world | The host's always-on lore entries |
+| L1 world | The host's always-on lore entries whose condition holds on the observation |
 | Participants | Each participant's name and bio, in join order. A join or a leave changes the prompt from this layer on |
 | L2 summaries | Run-wide summaries of folded turns (E1: empty in a hosted run; the speaker's own memories are in the tail, see `2026-11-16-per-speaker-memory-design.md`) |
 | L3 conversation | This conversation's unfolded turns and events in order: `Aela: ...`, `Hulda [follow]: ...`, `(Hulda is now following Aela.)` |

@@ -459,21 +459,11 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
     query.input = playerText.value_or("");
     query.scene = {pSpeaker->name};
     query.digest = played.empty() ? std::string() : played.back().line;
-    // A lore entry is searched only when the speaker may see it on this turn's observation: its condition (if any)
-    // holds and its scopes are empty or share one with the speaker's `knows`.
-    const std::function<bool(std::string_view)> loreVisible = [&](std::string_view subject) {
-        for (const core::LoreEntry& entry : _world.Lore()) {
-            if (entry.subject != subject) {
-                continue;
-            }
-            if (entry.condition && !entry.condition->Holds(observation.json)) {
-                return false;
-            }
-            return entry.scopes.empty() || std::any_of(entry.scopes.begin(), entry.scopes.end(), [&](const std::string& scope) {
-                       return std::find(pSpeaker->knows.begin(), pSpeaker->knows.end(), scope) != pSpeaker->knows.end();
-                   });
-        }
-        return false; // Not host lore: the index holds only the host's lore, so this cannot happen.
+    // A lore entry is searched only when the speaker may see it on this turn's observation (HostedWorld::LoreVisible):
+    // the turn's visible subjects are worked out once. The index holds only the host's retrieved lore.
+    const std::set<std::string, std::less<>> visibleLore = _world.VisibleSubjects(observation.json, pSpeaker->knows);
+    const std::function<bool(std::string_view)> loreVisible = [&visibleLore](std::string_view subject) {
+        return visibleLore.contains(subject);
     };
     std::vector<RetrievalHit> hits =
         _index.Retrieve(query, HOSTED_SOURCES, _settings.budget.retrievalCap, RETRIEVAL_MAX_HITS, *_pBackend,
