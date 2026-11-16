@@ -14,6 +14,7 @@
 #include <nlohmann/json.hpp>
 
 #include "core/Errors.h"
+#include "core/Thinking.h"
 #include "fakes/FakeLlamaServer.h"
 #include "inference/Llm.h"
 #include "llamaserver/LlamaServerBackend.h"
@@ -277,17 +278,17 @@ TEST_CASE("LlamaServerBackend::Complete thinks in a first call, then answers in 
     const std::vector<test::FakeLlamaServer::Request> requests = chat.RequestsTo("/completion");
     REQUIRE(requests.size() == 2);
     // The prompt's tokens end with the open block (the marker tokenized with special tokens parsed).
-    const std::vector<int> opened = Joined({test::ServerPromptTokens(), Tokens(inference::THINKING_OPEN_TEXT)});
+    const std::vector<int> opened = Joined({test::ServerPromptTokens(), Tokens(core::QWEN_THINKING.open)});
     // The thinking call: the open block, no grammar, its budget less the closing sentence, stopping at the end marker.
     CHECK(requests[0].body.at("prompt") == nlohmann::json(opened));
     CHECK_FALSE(requests[0].body.contains("grammar"));
-    CHECK(requests[0].body.at("n_predict") == 256 - static_cast<int>(Tokens(inference::CLOSE_THINKING_TEXT).size()));
+    CHECK(requests[0].body.at("n_predict") == 256 - static_cast<int>(Tokens(core::QWEN_THINKING.close).size()));
     CHECK(requests[0].body.at("stop") == nlohmann::json::array({"</think>"}));
     // The answer call continues the same tokens on the same slot: the thinking text as plain text, the end marker and
     // the blank line, then the answer under the grammar.
     CHECK(requests[1].body.at("prompt") == nlohmann::json(Joined({opened, Tokens("The gate is shut."),
-                                                                 Tokens(inference::THINKING_END_TEXT),
-                                                                 Tokens(inference::THINKING_AFTER_END_TEXT)})));
+                                                                 Tokens(core::QWEN_THINKING.end),
+                                                                 Tokens(core::QWEN_THINKING.afterEnd)})));
     const std::vector<test::FakeLlamaServer::Request> tokenized = chat.RequestsTo("/tokenize");
     CHECK(std::any_of(tokenized.begin(), tokenized.end(), [](const test::FakeLlamaServer::Request& request) {
         return request.body == nlohmann::json{{"content", "The gate is shut."}, {"add_special", false}, {"parse_special", false}};
@@ -308,7 +309,7 @@ TEST_CASE("LlamaServerBackend::Complete thinks in a first call, then answers in 
     CHECK(completion.tokensEvaluated == 5);
     CHECK(completion.tokensReused == promptTokens - 5);
     CHECK(completion.promptMs == 10.0);
-    CHECK(completion.thinkingTokens == 4 + static_cast<int>(Tokens(inference::THINKING_AFTER_END_TEXT).size()));
+    CHECK(completion.thinkingTokens == 4 + static_cast<int>(Tokens(core::QWEN_THINKING.afterEnd).size()));
     CHECK(completion.thinkingMs == 30.0 + 2.0);
     CHECK_FALSE(completion.thinkingStoppedAtLimit);
     CHECK(completion.tokensGenerated == 1);
@@ -321,7 +322,7 @@ TEST_CASE("LlamaServerBackend::Complete closes a thinking block that reaches its
     test::FakeLlamaServer embed;
     chat.SetProps(test::ThinkingProps());
     llamaserver::LlamaServerBackend backend(test::ConfigFor(chat, embed));
-    const int closeTokens = static_cast<int>(Tokens(inference::CLOSE_THINKING_TEXT).size());
+    const int closeTokens = static_cast<int>(Tokens(core::QWEN_THINKING.close).size());
     test::FakeLlamaServer::CompletionScript thought;
     thought.pieces = {"Hmm, "};
     thought.stopType = "limit";
@@ -338,8 +339,8 @@ TEST_CASE("LlamaServerBackend::Complete closes a thinking block that reaches its
 
     const std::vector<test::FakeLlamaServer::Request> requests = chat.RequestsTo("/completion");
     REQUIRE(requests.size() == 2);
-    CHECK(requests[1].body.at("prompt") == nlohmann::json(Joined({test::ServerPromptTokens(), Tokens(inference::THINKING_OPEN_TEXT),
-                                                                 Tokens("Hmm, "), Tokens(inference::CLOSE_THINKING_TEXT)})));
+    CHECK(requests[1].body.at("prompt") == nlohmann::json(Joined({test::ServerPromptTokens(), Tokens(core::QWEN_THINKING.open),
+                                                                 Tokens("Hmm, "), Tokens(core::QWEN_THINKING.close)})));
     CHECK(completion.thinkingStoppedAtLimit);
     CHECK(completion.thinkingTokens == 256);
     CHECK(completion.thinking == "Hmm, ");
@@ -382,7 +383,7 @@ TEST_CASE("LlamaServerBackend::Complete refuses thinking it cannot do", "[llamas
     // A budget that cannot hold the closing sentence: an engine bug.
     chat.SetProps(test::ThinkingProps());
     llamaserver::LlamaServerBackend thinking(test::ConfigFor(chat, embed));
-    spec.thinkingMaxTokens = static_cast<int>(Tokens(inference::CLOSE_THINKING_TEXT).size());
+    spec.thinkingMaxTokens = static_cast<int>(Tokens(core::QWEN_THINKING.close).size());
     CHECK_THROWS_AS(thinking.Complete(test::SERVER_PROMPT, spec, {}, {}), core::ContractError);
 }
 
@@ -522,4 +523,43 @@ TEST_CASE("LlamaServerBackend::Complete checks the server's count of the answer'
     spec.thinkingMaxTokens = 256;
     CHECK_THROWS_WITH(backend.Complete(test::SERVER_PROMPT, spec, {}, {}),
                       ContainsSubstring("999") && ContainsSubstring("prompt tokens"));
+}
+
+TEST_CASE("LlamaServerBackend::Complete thinks in the block its setting names", "[llamaserver][thinking]")
+{
+    test::FakeLlamaServer chat;
+    test::FakeLlamaServer embed;
+    // A custom format on a template without the enable_thinking switch.
+    const core::ThinkingFormat format = {"[T]", "", "[/T]", "\n", "Answer now.[/T]\n"};
+    llamaserver::LlamaServerConfig config = test::ConfigFor(chat, embed);
+    config.thinking = {core::ThinkingMode::Format, format};
+    llamaserver::LlamaServerBackend backend(config);
+    test::FakeLlamaServer::CompletionScript thought;
+    thought.pieces = {"The gate is shut."};
+    thought.stopType = "word";
+    thought.predictedN = 4;
+    chat.QueueCompletion(thought);
+    test::FakeLlamaServer::CompletionScript answer;
+    answer.pieces = {"no"};
+    chat.QueueCompletion(answer);
+
+    inference::GenerationSpec spec;
+    spec.grammar = YES_NO;
+    spec.maxTokens = 16;
+    spec.thinkingMaxTokens = 256;
+    const inference::Completion completion = backend.Complete(test::SERVER_PROMPT, spec, {}, {});
+
+    const std::vector<test::FakeLlamaServer::Request> requests = chat.RequestsTo("/completion");
+    REQUIRE(requests.size() == 2);
+    // The thinking call: the prompt ends with the format's open text, it stops at the format's end marker, and its
+    // budget is less the format's close text.
+    CHECK(requests[0].body.at("prompt") == nlohmann::json(Joined({test::ServerPromptTokens(), Tokens("[T]")})));
+    CHECK(requests[0].body.at("stop") == nlohmann::json::array({"[/T]"}));
+    CHECK(requests[0].body.at("n_predict") == 256 - static_cast<int>(Tokens("Answer now.[/T]\n").size()));
+    // The answer call continues with the format's end marker and its after-end text.
+    CHECK(requests[1].body.at("prompt") ==
+          nlohmann::json(Joined({test::ServerPromptTokens(), Tokens("[T]"), Tokens("The gate is shut."), Tokens("[/T]"),
+                                 Tokens("\n")})));
+    CHECK(completion.thinking == "The gate is shut.");
+    CHECK(completion.text == "no");
 }

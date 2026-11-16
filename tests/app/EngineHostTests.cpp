@@ -13,6 +13,7 @@
 #include "app/AppTestSupport.h"
 #include "app/model/EngineHost.h"
 #include "core/Errors.h"
+#include "core/Thinking.h"
 #include "fakes/ScriptedBackend.h"
 
 using namespace morpheus;
@@ -153,4 +154,28 @@ TEST_CASE("EngineHost rebuilds the backend when the backend kind, a server URL o
     host.Start(test::EngineSettings()); // Back to llama-cpp.
     PollWhileLoading(host);
     CHECK(made == 5);
+}
+
+TEST_CASE("EngineHost rebuilds the backend when the thinking format changes", "[engine_host]")
+{
+    std::atomic<int> made = 0;
+    app::EngineHost host(CountingFactory(made));
+    core::Settings settings = test::EngineSettings();
+    host.Start(settings);
+    PollWhileLoading(host);
+    CHECK(made == 1);
+
+    // The backend resolves the format when it loads: a settings copy that differs only in it loads a new one.
+    core::Settings none = settings;
+    none.thinking = {core::ThinkingMode::None, {}};
+    none.budget.resolveThinkingTokens = 0;
+    none.budget.narrateThinkingTokens = 0;
+    host.Start(none);
+    PollWhileLoading(host);
+    CHECK(made == 2);
+
+    // The same format again keeps it.
+    host.Start(none);
+    CHECK(host.CurrentStatus() == app::EngineHost::Status::Ready);
+    CHECK(made == 2);
 }

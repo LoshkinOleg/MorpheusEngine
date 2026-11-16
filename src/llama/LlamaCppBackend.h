@@ -10,6 +10,7 @@
 #include <string_view>
 #include <vector>
 
+#include "core/Thinking.h"
 #include "inference/Llm.h"
 
 struct llama_context;
@@ -37,16 +38,18 @@ struct LlamaConfig {
     int contextSize = 8192;
     int gpuLayers = -1;                       // -1 puts every layer on the GPU.
     int embeddingContextSize = 2048;          // Longest text (in tokens) that can be embedded.
+    core::ThinkingSetting thinking = {};      // settings.json's thinking_format; Auto reads the chat template.
 };
 
 // llama.cpp in-process: a chat model for generation and token counting, plus a sentence-embedding model.
 // The chat KV cache is reused by longest common token prefix across calls. Not thread-safe: one thread owns it.
 //
-// Thinking models: a chat model whose template has the enable_thinking switch (Qwen3 and later) reasons in a
-// "<think>...</think>" block before it answers. llama_chat_apply_template renders such templates as plain chatml,
-// without the block, so the backend writes it itself, as the model's own template would: every prompt ends with an
-// empty block ("<think>\n\n</think>\n\n", thinking off), or with the open marker when the call may think. A block
-// that reaches its budget is closed with inference::CLOSE_THINKING_TEXT.
+// Thinking models: a chat model that reasons in a block before it answers. The block's texts come from the resolved
+// thinking format (core::ResolveThinking: Auto is Qwen's when the chat template has the enable_thinking switch).
+// llama_chat_apply_template renders such templates as plain chatml, without the block, so the backend writes it
+// itself, as the model's own template would: every prompt ends with the format's skip text (an empty block, thinking
+// off), or with its open text when the call may think. A block that reaches its budget is closed with the format's
+// close text.
 class LlamaCppBackend final : public inference::LlmBackend {
 public:
     struct ModelDeleter {
@@ -58,11 +61,11 @@ public:
 
     // The thinking block's markers, tokenized with the chat model's vocabulary.
     struct ThinkingMarkers {
-        std::vector<std::int32_t> open = {};     // inference::THINKING_OPEN_TEXT: the prompt's end when the call may think.
-        std::vector<std::int32_t> skip = {};     // inference::THINKING_SKIP_TEXT: the prompt's end otherwise.
-        std::vector<std::int32_t> close = {};    // inference::CLOSE_THINKING_TEXT: ends a block that ran out of budget.
-        std::vector<std::int32_t> afterEnd = {}; // inference::THINKING_AFTER_END_TEXT: follows "</think>" when the model ends the block itself.
-        std::int32_t endToken = 0;               // "</think>", a single token.
+        std::vector<std::int32_t> open = {};     // the format's open text: the prompt's end when the call may think.
+        std::vector<std::int32_t> skip = {};     // the format's skip text: the prompt's end otherwise.
+        std::vector<std::int32_t> close = {};    // the format's close text: ends a block that ran out of budget.
+        std::vector<std::int32_t> afterEnd = {}; // the format's afterEnd text: follows the end marker when the model ends the block itself.
+        std::int32_t endToken = 0;               // The format's end marker, a single token.
     };
 
 private:
@@ -72,7 +75,7 @@ private:
     std::unique_ptr<llama_model, ModelDeleter> _pEmbedModel = nullptr;
     std::unique_ptr<llama_context, ContextDeleter> _pEmbedContext = nullptr;
     std::vector<std::int32_t> _cachedTokens = {}; // Exactly the tokens in the chat KV cache (sequence 0), in order.
-    std::optional<ThinkingMarkers> _thinking = {}; // Set when the chat model is a thinking model.
+    std::optional<ThinkingMarkers> _thinking = {}; // Set when a thinking format resolved.
 
 public:
     // Loads both models and creates their contexts. Throws InferenceError if either fails, or if the chat template

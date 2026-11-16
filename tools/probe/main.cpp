@@ -38,6 +38,7 @@ int main(int argc, char** argv)
             config.embeddingModel = settings.embeddingModel;
             config.embeddingQueryPrefix = settings.embeddingQueryPrefix;
             config.embeddingDocumentPrefix = settings.embeddingDocumentPrefix;
+            config.thinking = settings.thinking;
             config.contextSize = settings.contextSize;
             config.gpuLayers = settings.gpuLayers;
             pBackend = std::make_unique<llama::LlamaCppBackend>(config);
@@ -49,6 +50,7 @@ int main(int argc, char** argv)
             config.contextSize = settings.contextSize;
             config.embeddingQueryPrefix = settings.embeddingQueryPrefix;
             config.embeddingDocumentPrefix = settings.embeddingDocumentPrefix;
+            config.thinking = settings.thinking;
             pBackend = std::make_unique<llamaserver::LlamaServerBackend>(config);
             std::cout << std::format("backend: llama-server at {} (slot {})\n", settings.chatUrl, settings.serverSlot);
         }

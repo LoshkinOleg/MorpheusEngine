@@ -12,6 +12,7 @@
 #include <nlohmann/json.hpp>
 
 #include "core/Errors.h"
+#include "core/Thinking.h"
 #include "fakes/FakeLlamaServer.h"
 #include "inference/Llm.h"
 #include "llamaserver/LlamaServerBackend.h"
@@ -229,7 +230,7 @@ TEST_CASE("LlamaServerBackend renders a thinking model's prompt with the empty t
 
     // The template renders with its switch on, so it writes no block of its own; the backend appends the empty block
     // (as the server tokenizes it, special tokens parsed), as the in-process backend does for a call that does not think.
-    const std::size_t skipTokens = test::FakeLlamaServer::DefaultTokens(std::string(inference::THINKING_SKIP_TEXT), false, true).size();
+    const std::size_t skipTokens = test::FakeLlamaServer::DefaultTokens(core::QWEN_THINKING.skip, false, true).size();
     const int expected = static_cast<int>(test::ServerPromptTokens().size() + skipTokens);
     CHECK(backend.CountPromptTokens(test::SERVER_PROMPT) == expected);
     CHECK(chat.RequestsTo("/apply-template").back().body.at("chat_template_kwargs") ==
@@ -562,5 +563,32 @@ TEST_CASE("LlamaServerBackend refuses a chat server with no slot or no model fil
         chat.SetProps(props);
         CHECK_THROWS_WITH(llamaserver::LlamaServerBackend(test::ConfigFor(chat, embed)),
                           ContainsSubstring(chat.Url()) && ContainsSubstring("model_path"));
+    }
+}
+
+TEST_CASE("LlamaServerBackend writes the thinking block its setting names", "[llamaserver][thinking]")
+{
+    test::FakeLlamaServer embed;
+    // A custom format on a template without the switch: the prompt ends with its skip text, and enable_thinking is sent.
+    {
+        test::FakeLlamaServer chat;
+        llamaserver::LlamaServerConfig config = test::ConfigFor(chat, embed);
+        config.thinking = {core::ThinkingMode::Format, {"[T]", "[T][/T]\n", "[/T]", "\n", "Answer now.[/T]\n"}};
+        llamaserver::LlamaServerBackend backend(config);
+        const std::size_t skipTokens = test::FakeLlamaServer::DefaultTokens("[T][/T]\n", false, true).size();
+        CHECK(backend.CountPromptTokens(test::SERVER_PROMPT) ==
+              static_cast<int>(test::ServerPromptTokens().size() + skipTokens));
+        CHECK(chat.RequestsTo("/apply-template").back().body.at("chat_template_kwargs") ==
+              nlohmann::json{{"enable_thinking", true}});
+    }
+    // "none" on a template with the switch: no block, and no enable_thinking.
+    {
+        test::FakeLlamaServer chat;
+        chat.SetProps(test::ThinkingProps());
+        llamaserver::LlamaServerConfig config = test::ConfigFor(chat, embed);
+        config.thinking = {core::ThinkingMode::None, {}};
+        llamaserver::LlamaServerBackend backend(config);
+        CHECK(backend.CountPromptTokens(test::SERVER_PROMPT) == static_cast<int>(test::ServerPromptTokens().size()));
+        CHECK_FALSE(chat.RequestsTo("/apply-template").back().body.contains("chat_template_kwargs"));
     }
 }

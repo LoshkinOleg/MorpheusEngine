@@ -88,19 +88,6 @@ enum class EmbedPurpose { Query, Document };
 // Receives generated text as it streams. Pieces never split a UTF-8 character.
 using TokenCallback = std::function<void(std::string_view piece)>;
 
-// The thinking block of a thinking model (one whose chat template has the enable_thinking switch, Qwen3 and later),
-// as its template writes it. Every backend writes these itself: a prompt ends with THINKING_SKIP_TEXT when the call
-// does not think, or with THINKING_OPEN_TEXT when it may. The model ends its block with THINKING_END_TEXT, which
-// THINKING_AFTER_END_TEXT follows before the answer; a block that reaches its budget is closed by the backend with
-// CLOSE_THINKING_TEXT: a nudge to answer from the thinking so far (the wording Qwen documents for budget-limited
-// thinking), then the end marker and the blank line before the answer.
-constexpr std::string_view THINKING_OPEN_TEXT = "<think>\n";
-constexpr std::string_view THINKING_SKIP_TEXT = "<think>\n\n</think>\n\n";
-constexpr std::string_view THINKING_END_TEXT = "</think>";
-constexpr std::string_view THINKING_AFTER_END_TEXT = "\n\n";
-constexpr std::string_view CLOSE_THINKING_TEXT =
-    "\n\nConsidering the limited time, I have to give the solution based on the thinking directly now.\n</think>\n\n";
-
 // Message contents are text, never control tokens: "<|im_end|>" typed by a player must not end its message. A chat
 // template writes each content verbatim, so a backend renders the template with a marker in place of every content
 // (MarkContents with ContentMarker), cuts the rendered text at the markers (TemplatePieces), and tokenizes the

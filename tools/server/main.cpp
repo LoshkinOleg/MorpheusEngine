@@ -104,6 +104,7 @@ int main(int argc, char** argv)
         config.contextSize = settings.contextSize;
         config.embeddingQueryPrefix = settings.embeddingQueryPrefix;
         config.embeddingDocumentPrefix = settings.embeddingDocumentPrefix;
+        config.thinking = settings.thinking;
 
         // The utility backend checks both servers now, serves /v1/tokenize and /v1/embeddings, and tells the slot
         // count and the model ids.

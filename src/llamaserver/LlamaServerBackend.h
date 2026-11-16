@@ -9,6 +9,7 @@
 #include <string_view>
 #include <vector>
 
+#include "core/Thinking.h"
 #include "inference/Llm.h"
 
 namespace httplib {
@@ -25,6 +26,7 @@ struct LlamaServerConfig {
     int contextSize = 0;                      // settings.json's context_size: ContextSize(), what the budgets use.
     std::string embeddingQueryPrefix = {};    // Prepended for EmbedPurpose::Query.
     std::string embeddingDocumentPrefix = {}; // Prepended for EmbedPurpose::Document.
+    core::ThinkingSetting thinking = {};      // settings.json's thinking_format; Auto reads the chat template.
 };
 
 // The models through llama-server over HTTP (cpp-httplib), so one model host can serve several consumers. Token
@@ -45,20 +47,22 @@ struct LlamaServerConfig {
 // inference::InputRefused: the input was refused, and sending it again cannot help. A server that cannot be reached,
 // fails (5xx) or answers what cannot be read throws a plain InferenceError.
 //
-// Thinking models (the chat template has the enable_thinking switch): as LlamaCppBackend, the backend writes the
-// thinking block's markers itself. A call that thinks is two /completion calls on one slot: the block, which stops at
-// "</think>" or at its budget, then the answer, whose prompt extends the first one's, so the server reuses its cache.
+// Thinking models (a resolved thinking format: Auto is Qwen's when the chat template has the enable_thinking switch):
+// as LlamaCppBackend, the backend writes the thinking block's texts itself. A call that thinks is two /completion calls on one slot: the block, which stops at
+// the format's end marker or at its budget, then the answer, whose prompt extends the first one's, so the server reuses its cache.
 //
 // Not thread-safe: one thread owns it. Several backends may talk to one server at once, each on its own slot.
 class LlamaServerBackend final : public inference::LlmBackend {
 private:
     // The thinking block's texts as the chat server tokenizes them, as LlamaCppBackend::ThinkingMarkers.
     struct ThinkingMarkers {
-        std::vector<std::int32_t> open = {};     // inference::THINKING_OPEN_TEXT, special tokens parsed.
-        std::vector<std::int32_t> skip = {};     // inference::THINKING_SKIP_TEXT, special tokens parsed.
-        std::vector<std::int32_t> close = {};    // inference::CLOSE_THINKING_TEXT, special tokens parsed.
-        std::vector<std::int32_t> end = {};      // inference::THINKING_END_TEXT, special tokens parsed.
-        std::vector<std::int32_t> afterEnd = {}; // inference::THINKING_AFTER_END_TEXT, as plain text.
+        std::vector<std::int32_t> open = {};     // the format's open text, special tokens parsed.
+        std::vector<std::int32_t> skip = {};     // the format's skip text, special tokens parsed.
+        std::vector<std::int32_t> close = {};    // the format's close text, special tokens parsed.
+        std::vector<std::int32_t> end = {};      // the format's end text, special tokens parsed.
+        std::vector<std::int32_t> afterEnd = {}; // the format's afterEnd text, as plain text.
+        std::string openText = {};               // The open text: a template that ends with it has it cut off.
+        std::string endText = {};                // The end marker's text: the thinking request's stop string.
     };
 
     LlamaServerConfig _config = {};
@@ -66,7 +70,7 @@ private:
                                                                   // but /completion.
     std::unique_ptr<httplib::Client> _pStreamClient = nullptr;    // Kept alive to the chat server, for /completion only.
     std::unique_ptr<httplib::Client> _pEmbeddingClient = nullptr; // Kept alive to the embedding server.
-    std::optional<ThinkingMarkers> _thinking = {}; // Set when the chat template has the enable_thinking switch.
+    std::optional<ThinkingMarkers> _thinking = {}; // Set when a thinking format resolved.
     std::optional<std::int32_t> _bos = {};         // The BOS token the chat model adds at a prompt's start, if any.
     std::string _embeddingModelId = {};            // The embedding server's model file name, without its extension.
     int _slotCount = 0;                            // The chat server's slots (/props total_slots).

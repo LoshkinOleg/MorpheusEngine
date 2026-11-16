@@ -23,6 +23,7 @@
 #include <httplib.h>
 
 #include "core/Errors.h"
+#include "core/Thinking.h"
 
 namespace morpheus::llamaserver {
 
@@ -357,15 +358,18 @@ LlamaServerBackend::LlamaServerBackend(LlamaServerConfig config)
                                          "--parallel)",
                                          _config.chatUrl, slotContext, _config.contextSize));
     }
-    if (chatTemplate.find("enable_thinking") != std::string::npos) {
-        // The thinking block's texts, tokenized once as the in-process backend tokenizes them: the markers with
-        // special tokens parsed, the blank line after the end marker as plain text.
+    // The thinking format: settings.json's, Auto reading the chat template's enable_thinking switch. Its texts are
+    // tokenized once as the in-process backend tokenizes them: special tokens parsed, the text after the end marker
+    // as plain text.
+    if (const std::optional<core::ThinkingFormat> format = core::ResolveThinking(_config.thinking, chatTemplate)) {
         ThinkingMarkers markers;
-        markers.open = ServerTokens(inference::THINKING_OPEN_TEXT, false, true);
-        markers.skip = ServerTokens(inference::THINKING_SKIP_TEXT, false, true);
-        markers.close = ServerTokens(inference::CLOSE_THINKING_TEXT, false, true);
-        markers.end = ServerTokens(inference::THINKING_END_TEXT, false, true);
-        markers.afterEnd = ServerTokens(inference::THINKING_AFTER_END_TEXT, false, false);
+        markers.open = ServerTokens(format->open, false, true);
+        markers.skip = format->skip.empty() ? std::vector<std::int32_t>() : ServerTokens(format->skip, false, true);
+        markers.close = ServerTokens(format->close, false, true);
+        markers.end = ServerTokens(format->end, false, true);
+        markers.afterEnd = ServerTokens(format->afterEnd, false, false);
+        markers.openText = format->open;
+        markers.endText = format->end;
         _thinking = std::move(markers);
     }
     // The BOS the model adds, if any. What add_special puts around an empty text are the model's special tokens: one
@@ -497,7 +501,7 @@ inference::Completion LlamaServerBackend::Complete(const inference::Prompt& prom
     if (think) {
         nlohmann::json thinking = body;
         thinking["n_predict"] = spec.thinkingMaxTokens - static_cast<int>(_thinking->close.size());
-        thinking["stop"] = nlohmann::json::array({std::string(inference::THINKING_END_TEXT)});
+        thinking["stop"] = nlohmann::json::array({_thinking->endText});
         const StreamResult thought =
             StreamCompletion(*_pStreamClient, _config.chatUrl, thinking,
                              [&completion](std::string_view piece) { completion.thinking += piece; }, stop);
@@ -650,8 +654,8 @@ std::vector<std::int32_t> LlamaServerBackend::TokenizePrompt(const inference::Pr
                                [](const nlohmann::json& answer) { return answer.at("prompt").get<std::string>(); });
     // A template that opens the block itself when thinking is on ends with the open marker; the markers come from the
     // backend, so it goes.
-    if (_thinking && rendered.ends_with(inference::THINKING_OPEN_TEXT)) {
-        rendered.resize(rendered.size() - inference::THINKING_OPEN_TEXT.size());
+    if (_thinking && rendered.ends_with(_thinking->openText)) {
+        rendered.resize(rendered.size() - _thinking->openText.size());
     }
     const std::vector<std::string> pieces = inference::TemplatePieces(rendered, marker, prompt.messages.size());
 

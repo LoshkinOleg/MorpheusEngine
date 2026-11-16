@@ -2,6 +2,7 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <format>
+#include <memory>
 #include <string>
 #include <string_view>
 
@@ -12,6 +13,7 @@
 #include "context/StateView.h"
 #include "context/WorldReference.h"
 #include "core/Errors.h"
+#include "core/Thinking.h"
 #include "core/World.h"
 #include "inference/Llm.h"
 #include "turn/ResolveGrammar.h"
@@ -57,7 +59,7 @@ TEST_CASE("A model without a thinking mode refuses a thinking budget", "[llama]"
 
 TEST_CASE("A thinking model thinks, then writes a grammar-constrained answer", "[llama]")
 {
-    llama::LlamaCppBackend& backend = test::SharedThinkingBackend();
+    llama::LlamaCppBackend& autoBackend = test::SharedThinkingBackend();
     const core::World world = core::LoadWorld(test::RepoDir() / "game_projects" / "sandcrawler");
     const inference::Prompt prompt = ResolvePrompt(world);
 
@@ -65,24 +67,30 @@ TEST_CASE("A thinking model thinks, then writes a grammar-constrained answer", "
     spec.grammar = turn::BuildResolveGrammar(world, world.initialState, core::MemoryMode::Engine);
     spec.maxTokens = 1024;
     spec.thinkingMaxTokens = 2048;
-    std::string streamed;
-    const inference::Completion completion =
-        backend.Complete(prompt, spec, [&](std::string_view piece) { streamed += piece; }, {});
-    WARN(std::format("thinking: {} tokens in {:.0f} ms (stopped at limit: {}); answer: {} tokens in {:.0f} ms",
-                     completion.thinkingTokens, completion.thinkingMs, completion.thinkingStoppedAtLimit,
-                     completion.tokensGenerated, completion.generateMs));
 
-    // The block stays out of the answer and the stream; the answer alone follows the grammar.
-    CHECK_FALSE(completion.thinking.empty());
-    CHECK(completion.thinkingTokens <= spec.thinkingMaxTokens);
-    CHECK(streamed == completion.text);
-    CHECK_THAT(completion.text, !ContainsSubstring("<think>") && !ContainsSubstring("</think>"));
-    REQUIRE_FALSE(completion.stoppedAtLimit);
-    const nlohmann::json output = nlohmann::json::parse(completion.text);
-    CHECK(output.at("intent").is_string());
+    // The same call under the default (Auto) setting and under the Qwen format named in the setting.
+    const std::unique_ptr<llama::LlamaCppBackend> pFormatBackend =
+        test::MakeThinkingBackend({core::ThinkingMode::Format, core::QWEN_THINKING});
+    for (llama::LlamaCppBackend* pBackend : {&autoBackend, pFormatBackend.get()}) {
+        std::string streamed;
+        const inference::Completion completion =
+            pBackend->Complete(prompt, spec, [&](std::string_view piece) { streamed += piece; }, {});
+        WARN(std::format("thinking: {} tokens in {:.0f} ms (stopped at limit: {}); answer: {} tokens in {:.0f} ms",
+                         completion.thinkingTokens, completion.thinkingMs, completion.thinkingStoppedAtLimit,
+                         completion.tokensGenerated, completion.generateMs));
 
-    // The thinking call evaluates no more prompt than CountPromptTokens promises.
-    CHECK(completion.promptTokens <= backend.CountPromptTokens(prompt));
+        // The block stays out of the answer and the stream; the answer alone follows the grammar.
+        CHECK_FALSE(completion.thinking.empty());
+        CHECK(completion.thinkingTokens <= spec.thinkingMaxTokens);
+        CHECK(streamed == completion.text);
+        CHECK_THAT(completion.text, !ContainsSubstring("<think>") && !ContainsSubstring("</think>"));
+        REQUIRE_FALSE(completion.stoppedAtLimit);
+        const nlohmann::json output = nlohmann::json::parse(completion.text);
+        CHECK(output.at("intent").is_string());
+
+        // The thinking call evaluates no more prompt than CountPromptTokens promises.
+        CHECK(completion.promptTokens <= pBackend->CountPromptTokens(prompt));
+    }
 }
 
 TEST_CASE("A thinking block that runs out of budget is closed by the backend", "[llama]")

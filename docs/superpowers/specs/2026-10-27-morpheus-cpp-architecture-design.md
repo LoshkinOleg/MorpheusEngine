@@ -123,7 +123,7 @@ Embedder
 LlmBackend = Tokenizer + ChatModel + Embedder
 ```
 
-- Callers that need the whole backend take `LlmBackend`; code that needs one part (sub-project D's server) can take `Tokenizer`, `ChatModel` or `Embedder` alone. `GenerationSpec::slot` names the server slot whose prompt cache a call uses: -1 (the default, Morpheus's own game) is the backend's default slot; the in-process backend has one cache and ignores it. `turn::SamplingFrom` builds a call's sampling from `settings.json`. The thinking block's texts (`inference::THINKING_OPEN_TEXT`, `THINKING_SKIP_TEXT`, `THINKING_END_TEXT`, `THINKING_AFTER_END_TEXT`, `CLOSE_THINKING_TEXT`) are shared by both backends.
+- Callers that need the whole backend take `LlmBackend`; code that needs one part (sub-project D's server) can take `Tokenizer`, `ChatModel` or `Embedder` alone. `GenerationSpec::slot` names the server slot whose prompt cache a call uses: -1 (the default, Morpheus's own game) is the backend's default slot; the in-process backend has one cache and ignores it. `turn::SamplingFrom` builds a call's sampling from `settings.json`. The thinking block's texts are settings data (`thinking_format` in settings.json, `core/Thinking.h`): both backends take a `core::ThinkingSetting` in their config and resolve it when they load.
 
 - `LlamaCppBackend` loads two GGUF models in-process: a chat model and an embedding model. llama.cpp is built with the GPU backend `MORPHEUS_GPU_BACKEND` names: Vulkan (the default), CUDA or the CPU.
 - `save_state`/`restore_state` carry the cached token list together with the KV sequence state, so prefix reuse still works after a restore.

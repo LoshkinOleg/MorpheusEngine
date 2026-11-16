@@ -15,6 +15,7 @@
 #include "context/StateView.h"
 #include "context/WorldReference.h"
 #include "core/MemoryMode.h"
+#include "core/Thinking.h"
 #include "core/World.h"
 #include "grammar/Check.h"
 #include "inference/Llm.h"
@@ -113,7 +114,6 @@ TEST_CASE("llama-server: a resolve call completes under its grammar and a narrat
 
 TEST_CASE("llama-server: a thinking model thinks before it answers under the grammar", "[server]")
 {
-    llamaserver::LlamaServerBackend backend(test::LiveServerConfig(0));
     inference::Prompt prompt;
     prompt.messages = {{inference::Role::User, "Is sea water salty? Answer yes or no."}};
     inference::GenerationSpec spec;
@@ -121,20 +121,27 @@ TEST_CASE("llama-server: a thinking model thinks before it answers under the gra
     spec.maxTokens = 8;
     spec.thinkingMaxTokens = 256;
 
-    inference::Completion completion;
-    try {
-        completion = backend.Complete(prompt, spec, {}, {});
-    } catch (const inference::InferenceError& error) {
-        if (std::string_view(error.what()).find("no thinking mode") == std::string_view::npos) {
-            throw;
+    // The same call under the default (Auto) setting and under the Qwen format named in the setting.
+    llamaserver::LlamaServerConfig formatConfig = test::LiveServerConfig(0);
+    formatConfig.thinking = {core::ThinkingMode::Format, core::QWEN_THINKING};
+    for (const llamaserver::LlamaServerConfig& config : {test::LiveServerConfig(0), formatConfig}) {
+        llamaserver::LlamaServerBackend backend(config);
+        inference::Completion completion;
+        try {
+            completion = backend.Complete(prompt, spec, {}, {});
+        } catch (const inference::InferenceError& error) {
+            if (std::string_view(error.what()).find("no thinking mode") == std::string_view::npos) {
+                throw;
+            }
+            SKIP("the chat server's model has no thinking mode");
         }
-        SKIP("the chat server's model has no thinking mode");
+        WARN(std::format("thinking: {} tokens in {:.0f} ms{}; answer '{}'", completion.thinkingTokens,
+                         completion.thinkingMs, completion.thinkingStoppedAtLimit ? " (closed at the budget)" : "",
+                         completion.text));
+        CHECK(completion.thinkingTokens > 0);
+        CHECK(completion.thinkingTokens <= spec.thinkingMaxTokens);
+        CHECK((completion.text == "yes" || completion.text == "no"));
     }
-    WARN(std::format("thinking: {} tokens in {:.0f} ms{}; answer '{}'", completion.thinkingTokens, completion.thinkingMs,
-                     completion.thinkingStoppedAtLimit ? " (closed at the budget)" : "", completion.text));
-    CHECK(completion.thinkingTokens > 0);
-    CHECK(completion.thinkingTokens <= spec.thinkingMaxTokens);
-    CHECK((completion.text == "yes" || completion.text == "no"));
 }
 
 TEST_CASE("llama-server: three sessions on three slots reuse their own cached prompts", "[server]")

@@ -119,6 +119,7 @@ std::unique_ptr<inference::LlmBackend> MakeLlamaBackend(const core::Settings& se
     config.embeddingModel = settings.embeddingModel;
     config.embeddingQueryPrefix = settings.embeddingQueryPrefix;
     config.embeddingDocumentPrefix = settings.embeddingDocumentPrefix;
+    config.thinking = settings.thinking;
     config.contextSize = settings.contextSize;
     config.gpuLayers = settings.gpuLayers;
     return std::make_unique<llama::LlamaCppBackend>(config);
@@ -135,6 +136,7 @@ std::unique_ptr<inference::LlmBackend> MakeServerBackend(const core::Settings& s
     config.contextSize = settings.contextSize;
     config.embeddingQueryPrefix = settings.embeddingQueryPrefix;
     config.embeddingDocumentPrefix = settings.embeddingDocumentPrefix;
+    config.thinking = settings.thinking;
     return std::make_unique<llamaserver::LlamaServerBackend>(config);
 }
 

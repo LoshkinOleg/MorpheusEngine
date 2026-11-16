@@ -209,6 +209,7 @@ int main(int argc, char** argv)
             config.embeddingModel = settings.embeddingModel;
             config.embeddingQueryPrefix = settings.embeddingQueryPrefix;
             config.embeddingDocumentPrefix = settings.embeddingDocumentPrefix;
+            config.thinking = settings.thinking;
             config.contextSize = settings.contextSize;
             config.gpuLayers = settings.gpuLayers;
             pModels = std::make_unique<llama::LlamaCppBackend>(config);
@@ -220,6 +221,7 @@ int main(int argc, char** argv)
             config.contextSize = settings.contextSize;
             config.embeddingQueryPrefix = settings.embeddingQueryPrefix;
             config.embeddingDocumentPrefix = settings.embeddingDocumentPrefix;
+            config.thinking = settings.thinking;
             pModels = std::make_unique<llamaserver::LlamaServerBackend>(config);
         }
         std::optional<turn::RecordingBackend> recording;

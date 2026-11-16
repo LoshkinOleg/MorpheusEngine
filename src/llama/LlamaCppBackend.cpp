@@ -9,12 +9,14 @@
 #include <functional>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <string_view>
 
 #include <llama.h>
 
 #include "core/Errors.h"
 #include "core/Text.h"
+#include "core/Thinking.h"
 
 namespace morpheus::llama {
 
@@ -165,23 +167,23 @@ LlamaCppBackend::LlamaCppBackend(LlamaConfig config)
         }
     }
 
-    // Thinking mode: the chat template's own enable_thinking switch marks a model that reasons in a <think> block.
-    // Its markers must be single special tokens, or the block could not be recognised while generating.
-    if (const char* pTemplate = llama_model_chat_template(_pChatModel.get(), nullptr);
-        pTemplate != nullptr && std::string_view(pTemplate).find("enable_thinking") != std::string_view::npos) {
+    // The thinking format: settings.json's, Auto reading the chat template's enable_thinking switch. Its end marker
+    // must be a single token, or the block's end could not be recognised while generating; the other texts may be
+    // any tokens.
+    const char* pTemplate = llama_model_chat_template(_pChatModel.get(), nullptr);
+    if (const std::optional<core::ThinkingFormat> format =
+            core::ResolveThinking(_config.thinking, pTemplate != nullptr ? std::string_view(pTemplate) : std::string_view())) {
         const llama_vocab* pVocab = llama_model_get_vocab(_pChatModel.get());
-        const std::vector<std::int32_t> start = Tokenize(pVocab, "<think>", false, true);
-        const std::vector<std::int32_t> end = Tokenize(pVocab, inference::THINKING_END_TEXT, false, true);
-        if (start.size() != 1 || end.size() != 1) {
-            throw InferenceError(std::format("'{}' has a thinking switch in its chat template, but '<think>' and "
-                                             "'</think>' are not single tokens",
-                                             core::PathText(_config.chatModel)));
+        const std::vector<std::int32_t> end = Tokenize(pVocab, format->end, false, true);
+        if (end.size() != 1) {
+            throw InferenceError(std::format("the thinking format's end marker '{}' is not a single token of '{}'",
+                                             format->end, core::PathText(_config.chatModel)));
         }
         ThinkingMarkers markers;
-        markers.open = Tokenize(pVocab, inference::THINKING_OPEN_TEXT, false, true);
-        markers.skip = Tokenize(pVocab, inference::THINKING_SKIP_TEXT, false, true);
-        markers.close = Tokenize(pVocab, inference::CLOSE_THINKING_TEXT, false, true);
-        markers.afterEnd = Tokenize(pVocab, inference::THINKING_AFTER_END_TEXT, false, false);
+        markers.open = Tokenize(pVocab, format->open, false, true);
+        markers.skip = Tokenize(pVocab, format->skip, false, true);
+        markers.close = Tokenize(pVocab, format->close, false, true);
+        markers.afterEnd = Tokenize(pVocab, format->afterEnd, false, false);
         markers.endToken = end.front();
         _thinking = std::move(markers);
     }

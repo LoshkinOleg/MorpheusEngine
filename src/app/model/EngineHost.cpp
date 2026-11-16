@@ -15,7 +15,8 @@ EngineHost::EngineHost(BackendFactory factory)
 void EngineHost::Start(core::Settings settings)
 {
     MORPHEUS_REQUIRE(_status != Status::Loading, "EngineHost: Start while models load");
-    // Whether the loaded backend was made for the same kind of backend, models or servers, prefixes and context.
+    // Whether the loaded backend was made for the same kind of backend, models or servers, prefixes, context and
+    // thinking format (the backend resolves the format when it loads).
     const bool sameBackend = _pBackend && settings.backend == _settings.backend &&
                              settings.chatModel == _settings.chatModel &&
                              settings.embeddingModel == _settings.embeddingModel &&
@@ -23,7 +24,8 @@ void EngineHost::Start(core::Settings settings)
                              settings.serverSlot == _settings.serverSlot &&
                              settings.embeddingQueryPrefix == _settings.embeddingQueryPrefix &&
                              settings.embeddingDocumentPrefix == _settings.embeddingDocumentPrefix &&
-                             settings.contextSize == _settings.contextSize && settings.gpuLayers == _settings.gpuLayers;
+                             settings.contextSize == _settings.contextSize && settings.gpuLayers == _settings.gpuLayers &&
+                             settings.thinking == _settings.thinking;
     _pWorker.reset(); // Cancels its command and joins it; the run it had open closes.
     _settings = std::move(settings);
     _failure.clear();
