@@ -1,0 +1,4 @@
+# G1 Task 3 report
+Implemented per brief: Api.cpp stops refusing "decide" and reports speaker via onSpeaker; API_VERSION 1.4.0 (all pins); decide.json; PlayFixture(decideEveryTurn); ReplayOverHttp decide/speaker; ApiDecideTests; live [server][decide] case with full setup; ApiTurnTests 400 check removed; docs (README, CHANGELOG, server spec, prompt-pack spec, fixtures README).
+Evidence: `ctest --preset tests` 100% passed out of 691 (live cases skipped); "[decide]" 18 passed, 1 skipped (live). ASCII/control greps print 0 on all changed files.
+Deviations: the RED run was skipped (tests and implementation written in one pass, a shell heredoc failure meant edits were applied in pieces); the HostedFixtureTests turn-step request is built into a local to override speakerId. The prompt-pack spec's error-message key list (section 1, line 32) was not updated (not in the brief).
