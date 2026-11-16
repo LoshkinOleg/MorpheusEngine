@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <climits>
 #include <cmath>
 #include <cstddef>
 #include <format>
@@ -10,6 +11,7 @@
 #include <system_error>
 #include <utility>
 
+#include "context/PromptBuilder.h"
 #include "core/Dice.h"
 #include "core/Errors.h"
 #include "core/Text.h"
@@ -22,6 +24,10 @@ namespace morpheus::turn {
 namespace {
 
 // The names of the host's lore in errors.
+// The decide call's answer allowance over its longest possible answer, and its seed's attempt (the resolve call's kind,
+// apart from the resolve call's attempts).
+constexpr int DECIDE_TOKEN_MARGIN = 8;
+constexpr int DECIDE_SEED_ATTEMPT = 1 << 22;
 constexpr std::string_view HOST_LORE_SOURCE = "host data: lore";
 // What a hosted tail holds, for the TurnError when it does not fit tail_allowance.
 constexpr std::string_view HOSTED_TAIL_NAME =
@@ -217,31 +223,28 @@ void HostedSession::SetParticipants(std::string_view conversationId, const std::
 std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& request,
                                                        const HostedCallbacks& callbacks, std::stop_token stop)
 {
-    // 0. Check the request: nothing is stored and no model call is made before it passes. The conversation exists and
-    // is open, the observation passes Observe, the speaker takes part, is present and is not the player, every
-    // allowed action is in the catalog with one left after the actor scopes, and every event has its text.
+    // 0. Check the request: nothing is stored before it passes, and no model call is made before it passes but a
+    // "decide" turn's decide call (step 0b). The conversation exists and is open, the observation passes Observe,
+    // every event has its text, and the speaker (the host's, or each candidate of a "decide" turn) takes part, is
+    // present, is not the player, keeps an allowed action after the actor scopes and has a speak instruction that fits.
     const core::Conversation conversation = OpenConversation(request.conversationId);
     const Observation observation = _world.Observe(request.observation);
-    const bool participates = std::any_of(conversation.participants.begin(), conversation.participants.end(),
-                                          [&](const core::Participant& participant) { return participant.id == request.speakerId; });
-    if (!participates) {
-        throw core::DataError(std::format("speaker: '{}' is not a participant of conversation '{}'", request.speakerId,
-                                          conversation.id));
-    }
-    const core::Actor* pSpeaker = observation.Find(request.speakerId);
-    if (pSpeaker == nullptr) {
-        throw core::DataError(std::format("speaker: '{}' is not an actor of the observation", request.speakerId));
-    }
-    if (pSpeaker->isPlayer) {
-        throw core::DataError(
-            std::format("speaker: '{}' is the player; the host speaks for the player", request.speakerId));
-    }
-    const std::vector<std::string> allowed = request.allowedActions.value_or(_world.ActionIds());
-    const nlohmann::json proposalSchema =
-        _world.ProposalSchema(observation, conversation.participants, allowed, request.speakerId);
-    // The resolve call's grammar is that schema's (HostedWorld::ProposalGrammar), built once here with the schema.
-    const std::string proposalGrammar = grammar::FromSchema(proposalSchema);
     HostedWorld::CheckEvents(request.events);
+    const core::Actor& player = observation.Player();
+    const std::vector<std::string> allowed = request.allowedActions.value_or(_world.ActionIds());
+    // What a speaker must pass before any call: its proposal schema builds (an allowed action is left), and its speak
+    // instruction fits narrate_allowance, which the prompt reserves for it; the names come from the host.
+    auto checkSpeaker = [&](const core::Actor& actor) {
+        _world.ProposalSchema(observation, conversation.participants, allowed, actor.id);
+        const std::string speak =
+            PromptPack::Fill(_world.Prompts().speak, {.speaker = actor.name, .player = player.name});
+        const int speakTokens = _pBackend->CountTokens(speak);
+        if (speakTokens > _settings.budget.narrateAllowance) {
+            throw core::DataError(std::format("prompts/speak: the speak instruction for '{}' uses {} tokens, over "
+                                              "narrate_allowance {}",
+                                              actor.name, speakTokens, _settings.budget.narrateAllowance));
+        }
+    };
 
     // Player text is cleaned as Session cleans input: control characters other than newline and tab go (they have no
     // place in a prompt), and it is trimmed. Nothing left means no player text.
@@ -253,18 +256,6 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
         }
     }
 
-    // The instructions name the speaker and the player (the run's pack). The speak instruction must fit
-    // narrate_allowance, which the prompt reserves for it; the names come from the host.
-    const core::Actor& player = observation.Player();
-    const PromptVariables names{.speaker = pSpeaker->name, .player = player.name};
-    const std::string resolveInstruction = PromptPack::Fill(_world.Prompts().resolve, names);
-    const std::string speakMessage = PromptPack::Fill(_world.Prompts().speak, names);
-    const int speakTokens = _pBackend->CountTokens(speakMessage);
-    if (speakTokens > _settings.budget.narrateAllowance) {
-        throw core::DataError(std::format("prompts/speak: the speak instruction for '{}' uses {} tokens, over "
-                                          "narrate_allowance {}",
-                                          pSpeaker->name, speakTokens, _settings.budget.narrateAllowance));
-    }
     // Run-wide, shared with the summaries' ranges, and never reused: one past every turn stored, hidden ones included.
     const int turn = _store.NextHostedTurn();
     const std::uint64_t seed = _store.Meta().rngSeed;
@@ -282,9 +273,163 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
         newEvents.push_back(event.at("text").get<std::string>());
     }
 
+    std::string speakerId = request.speakerId;
+    nlohmann::json decideTelemetry = nullptr; // The decide call's telemetry, when one ran (step 0b).
+    if (speakerId != DECIDE_SPEAKER) {
+        // 0a. The host's speaker takes part, is present and is not the player.
+        const bool participates =
+            std::any_of(conversation.participants.begin(), conversation.participants.end(),
+                        [&](const core::Participant& participant) { return participant.id == speakerId; });
+        if (!participates) {
+            throw core::DataError(
+                std::format("speaker: '{}' is not a participant of conversation '{}'", speakerId, conversation.id));
+        }
+        const core::Actor* pNamed = observation.Find(speakerId);
+        if (pNamed == nullptr) {
+            throw core::DataError(std::format("speaker: '{}' is not an actor of the observation", speakerId));
+        }
+        if (pNamed->isPlayer) {
+            throw core::DataError(std::format("speaker: '{}' is the player; the host speaks for the player", speakerId));
+        }
+        checkSpeaker(*pNamed);
+    } else {
+        // 0b. The engine chooses (decide-speaker spec). The candidates: the NPC participants present, in join order;
+        // on a turn with no input the last speaker is left out while another remains.
+        std::vector<const core::Actor*> candidates;
+        for (const core::Participant& participant : conversation.participants) {
+            const core::Actor* pActor = observation.Find(participant.id);
+            if (pActor != nullptr && !pActor->isPlayer) {
+                candidates.push_back(pActor);
+            }
+        }
+        const bool noInput = !playerText && request.events.empty();
+        if (noInput && !played.empty() && candidates.size() > 1) {
+            const std::string& last = played.back().speakerId;
+            const bool lastIsCandidate = std::any_of(candidates.begin(), candidates.end(),
+                                                     [&](const core::Actor* pActor) { return pActor->id == last; });
+            if (lastIsCandidate) {
+                std::erase_if(candidates, [&](const core::Actor* pActor) { return pActor->id == last; });
+            }
+        }
+        if (candidates.empty()) {
+            throw core::DataError("speaker: \"decide\" needs an NPC participant in the observation");
+        }
+        // Every candidate passes the speaker's checks, so nothing after the decide call fails for the request.
+        for (const core::Actor* pCandidate : candidates) {
+            checkSpeaker(*pCandidate);
+        }
+
+        if (candidates.size() == 1) {
+            speakerId = candidates.front()->id;
+        } else {
+            // The decide prompt: the speakers' system message, every visible line of the conversation from its folded
+            // mark whoever witnessed it, and a tail with the observation, the new events, the player's line, who may
+            // speak and the pack's decide text. No memories and no retrieval: it is no NPC's view.
+            context::HostedInputs inputs;
+            inputs.systemText = _world.Prompts().system;
+            inputs.lore = _world.Lore();
+            inputs.participants = conversation.participants;
+            inputs.transcript = Entries(conversation, played, conversation.foldedThrough, _store.LatestHostedTurn(), "");
+            inputs.observation = observation.json;
+            inputs.events = newEvents;
+            inputs.playerLine = playerText ? player.name + ": " + *playerText : std::string();
+            for (const core::Actor* pCandidate : candidates) {
+                inputs.candidates.push_back(std::format("{} ({})", pCandidate->name, pCandidate->id));
+            }
+            inputs.instruction = PromptPack::Fill(_world.Prompts().decide, {.player = player.name});
+            // The oldest lines leave until it fits: the decide view is no NPC's memory, so nothing folds.
+            context::Assembly decideAssembly = context::AssembleHostedPrompt(inputs, _settings.budget, *_pBackend);
+            while ((decideAssembly.transcriptOverBudget || decideAssembly.contextOverflow) &&
+                   !inputs.transcript.empty()) {
+                inputs.transcript.erase(inputs.transcript.begin());
+                decideAssembly = context::AssembleHostedPrompt(inputs, _settings.budget, *_pBackend);
+            }
+            if (!decideAssembly.Fits()) {
+                throw TurnError(std::format("the decide prompt does not fit: its tail uses {} tokens, tail_allowance {}",
+                                            decideAssembly.tokens.tail, _settings.budget.tailAllowance));
+            }
+
+            // The answer's schema: one key, the candidates' ids. Its allowance: the longest answer, and a margin.
+            nlohmann::json ids = nlohmann::json::array();
+            int longestAnswer = 0;
+            for (const core::Actor* pCandidate : candidates) {
+                ids.push_back(pCandidate->id);
+                longestAnswer =
+                    std::max(longestAnswer, _pBackend->CountTokens(R"({"speaker":")" + pCandidate->id + R"("})"));
+            }
+            const nlohmann::json schema = {{"type", "object"},
+                                           {"properties", {{"speaker", {{"enum", ids}}}}},
+                                           {"required", nlohmann::json::array({"speaker"})},
+                                           {"additionalProperties", false}};
+            inference::GenerationSpec decideSpec;
+            decideSpec.grammar = grammar::FromSchema(schema);
+            decideSpec.maxTokens = longestAnswer + DECIDE_TOKEN_MARGIN;
+            decideSpec.sampling = SamplingFrom(_settings.resolveSampling,
+                                               core::SamplingSeed(seed, turn, core::CallKind::Resolve, DECIDE_SEED_ATTEMPT));
+            const inference::Completion decided = _pBackend->Complete(decideAssembly.prompt, decideSpec, {}, stop);
+            if (decided.cancelled) {
+                return std::nullopt;
+            }
+            decideTelemetry = CallTelemetry(decided, decideSpec);
+
+            // A valid answer names the speaker. Any other is the model's mistake, not an error: the candidate who
+            // spoke least recently speaks (one who never spoke is the least recent; ties go to candidate order), and
+            // the reasons are kept.
+            std::vector<std::string> reasons;
+            nlohmann::json answer;
+            try {
+                answer = nlohmann::json::parse(decided.text);
+            } catch (const nlohmann::json::exception& error) {
+                reasons.push_back(std::format("the output is not valid JSON: {}", error.what()));
+            }
+            if (reasons.empty()) {
+                for (const grammar::ValidationError& error : grammar::Validate(answer, schema)) {
+                    reasons.push_back(
+                        std::format("{}: {}", error.path.empty() ? "the output" : error.path, error.message));
+                }
+            }
+            if (reasons.empty()) {
+                speakerId = answer.at("speaker").get<std::string>();
+            } else {
+                const core::Actor* pLeast = nullptr;
+                int leastAt = 0;
+                for (const core::Actor* pCandidate : candidates) {
+                    int at = -1; // The index in `played` of its latest turn; -1 when it never spoke.
+                    for (std::size_t i = played.size(); i-- > 0;) {
+                        if (played[i].speakerId == pCandidate->id) {
+                            at = static_cast<int>(i);
+                            break;
+                        }
+                    }
+                    if (pLeast == nullptr || at < leastAt) {
+                        pLeast = pCandidate;
+                        leastAt = at;
+                    }
+                }
+                speakerId = pLeast->id;
+                decideTelemetry["refused"] = reasons;
+            }
+        }
+    }
+
+    // The speaker is known: the host hears of it before the resolve call.
+    const core::Actor* pSpeaker = observation.Find(speakerId);
+    MORPHEUS_REQUIRE(pSpeaker != nullptr, "HostedSession::RunTurn: the speaker passed its checks, so it is present");
+    if (callbacks.onSpeaker) {
+        callbacks.onSpeaker(speakerId);
+    }
+    const nlohmann::json proposalSchema =
+        _world.ProposalSchema(observation, conversation.participants, allowed, speakerId);
+    // The resolve call's grammar is that schema's (HostedWorld::ProposalGrammar), built once here with the schema.
+    const std::string proposalGrammar = grammar::FromSchema(proposalSchema);
+    // The instructions name the speaker and the player (the run's pack); checkSpeaker checked the speak instruction.
+    const PromptVariables names{.speaker = pSpeaker->name, .player = player.name};
+    const std::string resolveInstruction = PromptPack::Fill(_world.Prompts().resolve, names);
+    const std::string speakMessage = PromptPack::Fill(_world.Prompts().speak, names);
+
     // The speaker's own memory of this conversation reaches the transcript's cut before it speaks, so nothing it
     // witnessed is in neither its L3 nor its memory.
-    if (!CatchUp(conversation.id, request.speakerId, conversation.foldedThrough, turn, stop)) {
+    if (!CatchUp(conversation.id, speakerId, conversation.foldedThrough, turn, stop)) {
         return std::nullopt;
     }
 
@@ -296,7 +441,7 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
     query.digest = played.empty() ? std::string() : played.back().line;
     std::vector<RetrievalHit> hits =
         _index.Retrieve(query, HOSTED_SOURCES, _settings.budget.retrievalCap, RETRIEVAL_MAX_HITS, *_pBackend,
-                        request.speakerId);
+                        speakerId);
 
     // 2. Resolve: a prompt that fits (the fit loop sheds hits, condenses and folds), under the proposal grammar.
     context::HostedInputs tail;
@@ -314,11 +459,11 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
     auto speakerPass = [&](const std::vector<RetrievalHit>& kept) {
         const std::optional<core::Conversation> now = _store.Conversation(conversation.id);
         MORPHEUS_REQUIRE(now.has_value(), "HostedSession::RunTurn: the conversation is not in the store");
-        return Pass(conversation.id, request.speakerId,
-                    Entries(*now, played, now->foldedThrough, _store.LatestHostedTurn(), request.speakerId), kept,
+        return Pass(conversation.id, speakerId,
+                    Entries(*now, played, now->foldedThrough, _store.LatestHostedTurn(), speakerId), kept,
                     tail);
     };
-    MemoryUpkeep upkeep = Upkeep(conversation.id, request.speakerId, observation.json, turn, true);
+    MemoryUpkeep upkeep = Upkeep(conversation.id, speakerId, observation.json, turn, true);
     std::optional<context::Assembly> assembly = upkeep.Fit(
         hits,
         [&](const std::vector<RetrievalHit>& kept) {
@@ -368,9 +513,9 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
     core::HostedTurn record;
     record.number = turn;
     record.conversationId = conversation.id;
-    record.speakerId = request.speakerId;
+    record.speakerId = speakerId;
     for (const core::Participant& participant : conversation.participants) {
-        if (participant.id != request.speakerId && observation.Find(participant.id) != nullptr) {
+        if (participant.id != speakerId && observation.Find(participant.id) != nullptr) {
             record.listenerIds.push_back(participant.id);
         }
     }
@@ -387,6 +532,9 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
         timings["resolve"]["refused"] = adjudication.reasons; // The log of why the speaker took no action.
     }
     timings["speak"] = CallTelemetry(spoken, speakSpec);
+    if (!decideTelemetry.is_null()) {
+        timings["decide"] = decideTelemetry; // The decide call, and why its answer was refused, if it was.
+    }
     // The hits that made it into the prompt, and why they matched: the host's lore, the speaker's own memories (by
     // summary id) and the folded turns it witnessed (by turn number).
     timings["retrieval"] = nlohmann::json::array();

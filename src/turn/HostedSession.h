@@ -38,6 +38,8 @@ struct HostedTurnRequest {
 
 // What a hosted turn reports while it runs.
 struct HostedCallbacks {
+    // Once the speaker is known, before the resolve call: the named speaker, or the NPC a "decide" turn chose.
+    std::function<void(const std::string&)> onSpeaker = {};
     // After the resolve call, before the line starts: what became of the speaker's proposed action.
     std::function<void(const core::Adjudication&)> onAction = {};
     // The line's pieces as they are written.
@@ -134,7 +136,12 @@ public:
     // and the player text: when it is over tail_allowance with no retrieved snippet left to shed, the oldest events
     // leave the prompt one by one until it fits. The record's eventsOmitted counts them; the store keeps them, and the
     // turn's L3 entry leaves them out as its prompt did. Model mistakes are not exceptions: a refused action is
-    // recorded with its reasons and the turn goes on with no action.
+    // recorded with its reasons and the turn goes on with no action. With `speakerId` DECIDE_SPEAKER the engine chooses
+    // the speaker among the conversation's NPCs present (decide-speaker spec): the last speaker is left out on a turn
+    // with no player text and no events while another remains; one candidate is chosen without a call, more with a
+    // decide call; a refused decide answer goes to the candidate who spoke least recently, its reasons in
+    // `timings.decide.refused`. A DataError "speaker: "decide" needs an NPC participant in the observation" when there
+    // is none.
     std::optional<core::HostedTurn> RunTurn(const HostedTurnRequest& request, const HostedCallbacks& callbacks,
                                             std::stop_token stop);
 

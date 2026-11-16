@@ -105,14 +105,22 @@ inline bool IsHostedCondense(const inference::Prompt& prompt)
     return !prompt.messages.empty() && prompt.messages.back().content.ends_with(ending);
 }
 
+// Whether `prompt` is a decide call: its tail lists who may speak (the engine's own heading, whatever the pack says).
+inline bool IsHostedDecide(const inference::Prompt& prompt)
+{
+    return !prompt.messages.empty() && prompt.messages.back().content.find("\n# Who may speak\n") != std::string::npos;
+}
+
 // A scripted model for hosted turns. Resolve calls (they carry the proposal grammar) get `actions` in order, speak
-// calls (no grammar) get `lines` in order, and fold and condense calls "Summary.". Running out of replies is a test
+// calls (no grammar) get `lines` in order, decide calls get `decisions` in order, and fold and condense calls "Summary.". Running out of replies is a test
 // bug. The script must outlive the backends that call it.
 struct HostedScript {
     std::vector<std::string> actions = {};
     std::vector<std::string> lines = {};
+    std::vector<std::string> decisions = {};
     std::size_t acted = 0;
     std::size_t spoken = 0;
+    std::size_t decided = 0;
 
     ScriptedBackend::Responder Responder()
     {
@@ -122,6 +130,10 @@ struct HostedScript {
             if (last == turn::SUMMARIZE_INSTRUCTION || last == turn::CONDENSE_INSTRUCTION || IsHostedFold(prompt) ||
                 IsHostedCondense(prompt)) {
                 return "Summary.";
+            }
+            if (IsHostedDecide(prompt)) {
+                MORPHEUS_REQUIRE(decided < decisions.size(), "HostedScript: no decision left");
+                return decisions[decided++];
             }
             if (!spec.grammar.empty()) {
                 MORPHEUS_REQUIRE(acted < actions.size(), "HostedScript: no action left");
@@ -192,6 +204,9 @@ inline HostedScript ScriptOf(const nlohmann::json& fixture)
     HostedScript script;
     for (const nlohmann::json& step : fixture.at("steps")) {
         if (step.contains("model")) {
+            if (step.at("model").contains("decide")) {
+                script.decisions.push_back(step.at("model").at("decide").get<std::string>());
+            }
             script.actions.push_back(step.at("model").at("resolve").get<std::string>());
             script.lines.push_back(step.at("model").at("line").get<std::string>());
         }
