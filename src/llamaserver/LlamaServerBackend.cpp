@@ -86,6 +86,9 @@ std::unique_ptr<httplib::Client> MakeClient(const std::string& url, const std::s
     pClient->set_connection_timeout(CONNECT_TIMEOUT_SECONDS, 0);
     pClient->set_read_timeout(readTimeoutSeconds, 0);
     pClient->set_keep_alive(true);
+    // Each request goes out in small writes (headers, then body); without TCP_NODELAY, Linux holds the second until
+    // the peer's delayed ACK, about 40 ms a request.
+    pClient->set_tcp_nodelay(true);
     return pClient;
 }
 

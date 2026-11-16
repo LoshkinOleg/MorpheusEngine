@@ -163,8 +163,10 @@ Status: an earlier Vulkan build of llama.cpp was tested in an Ubuntu 24.04 distr
 
 Packages for `linux-tests`: `clang`, `cmake`, `ninja-build`, `git`.
 
+The presets name no compiler, so `CC` and `CXX` (any clang 17 or later, versioned names included) or the system default is used.
+
 ```
-cmake --preset linux-tests
+CC=clang-20 CXX=clang++-20 cmake --preset linux-tests
 cmake --build --preset linux-tests
 ctest --preset linux-tests
 ```
@@ -176,7 +178,7 @@ ctest --preset linux-tests
 - SDL3's X11 and Wayland development libraries: `libx11-dev`, `libxext-dev`, `libxrandr-dev`, `libxcursor-dev`, `libxi-dev`, `libxss-dev`, `libxfixes-dev`, `libxtst-dev`, `libxkbcommon-dev`, `libwayland-dev`, `wayland-protocols`, `libegl-dev`, `libgl-dev`, `libdrm-dev`, `libgbm-dev`, `libdecor-0-dev`, `libdbus-1-dev`, `libudev-dev`.
 
 ```
-cmake --preset linux-release
+CC=clang-20 CXX=clang++-20 cmake --preset linux-release
 cmake --build --preset linux-release
 ./build/linux-release/bin/morpheus .
 ```

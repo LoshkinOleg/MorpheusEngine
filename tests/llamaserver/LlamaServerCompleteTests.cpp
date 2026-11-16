@@ -489,14 +489,19 @@ TEST_CASE("A stop from another thread ends LlamaServerBackend::Complete while th
 
     std::stop_source source;
     const auto start = std::chrono::steady_clock::now();
-    std::jthread stopper([&source] {
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    std::jthread stopper([&source, &chat] {
+        // Stop only once the fake has received /completion (up to 5 s), so a slow first write cannot beat the stop.
+        const auto sent = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (chat.RequestsTo("/completion").empty() && std::chrono::steady_clock::now() < sent) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
         source.request_stop();
     });
     const inference::Completion completion =
         backend.Complete(test::SERVER_PROMPT, inference::GenerationSpec{}, {}, source.get_token());
     const auto elapsed = std::chrono::steady_clock::now() - start;
     CHECK(completion.cancelled);
+    CHECK(!chat.RequestsTo("/completion").empty());
     // The stop closed the connection at once, not when the silent server gave up (10 s).
     CHECK(elapsed < std::chrono::seconds(5));
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);

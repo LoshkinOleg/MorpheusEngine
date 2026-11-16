@@ -34,7 +34,7 @@ TEST_CASE("RunRegistry accepts run ids of 1 to 64 letters, digits, '_' and '-'",
 {
     CHECK_NOTHROW(server::RunRegistry::CheckRunId("skyrim_save-01"));
     CHECK_NOTHROW(server::RunRegistry::CheckRunId(std::string(64, 'a')));
-    for (const std::string bad : {std::string(), std::string(65, 'a'), std::string("a/b"), std::string("a.b"),
+    for (const std::string& bad : {std::string(), std::string(65, 'a'), std::string("a/b"), std::string("a.b"),
                                   std::string(".."), std::string("a b")}) {
         INFO("'" << bad << "'");
         CHECK_THROWS_AS(server::RunRegistry::CheckRunId(bad), core::DataError);
