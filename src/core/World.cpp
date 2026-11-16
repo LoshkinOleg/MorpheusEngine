@@ -320,4 +320,29 @@ World LoadWorld(const std::filesystem::path& directory)
     return world;
 }
 
+bool LoreCondition::Holds(const nlohmann::json& observation) const
+{
+    // A pointer that is not well-formed is a broken contract: open refused it.
+    std::optional<nlohmann::json::json_pointer> parsed;
+    try {
+        parsed = nlohmann::json::json_pointer(pointer);
+    } catch (const nlohmann::json::exception& error) {
+        throw ContractError(std::format("lore condition pointer '{}' is not a JSON pointer: {}", pointer, error.what()));
+    }
+    if (!observation.contains(*parsed)) {
+        return false;
+    }
+    const nlohmann::json& value = observation.at(*parsed);
+    if (min || max) {
+        if (!value.is_number()) {
+            return false;
+        }
+        const double number = value.get<double>();
+        if ((min && number < *min) || (max && number > *max)) {
+            return false;
+        }
+    }
+    return !equals || value == *equals;
+}
+
 } // namespace morpheus::core

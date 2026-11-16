@@ -23,6 +23,8 @@ struct Actor {
     std::string name = {};
     bool isPlayer = false;
     std::string bio = {}; // Empty when the observation gives none.
+    // The actor's knowledge scopes: the scoped lore it may retrieve. Empty when the observation gives none.
+    std::vector<std::string> knows = {};
 };
 
 // One fault of an observation: where it is (a JSON pointer; "" for the observation itself) and what is wrong.
@@ -40,7 +42,7 @@ struct ActorsCore {
 
 // Reads the fixed core of a hosted observation that the engine needs whatever the host's schema says (hosted-world
 // spec, section 1): an object with `actors`, an array of objects each with `id` and `name` (non-empty strings),
-// `is_player` (a boolean) and an optional `bio` (a string); ids unique; exactly one player. Every mistake is a fault;
+// `is_player` (a boolean), an optional `bio` (a string) and an optional `knows` (an array of non-empty strings); ids unique; exactly one player. Every mistake is a fault;
 // never throws. turn::HostedWorld turns the faults into its DataError, store::RunStore into its StoreError.
 ActorsCore ReadActors(const nlohmann::json& observation);
 

@@ -14,10 +14,28 @@
 
 namespace morpheus::core {
 
+// A host lore entry's condition (host-feedback spec, section 2): a value of the turn's observation, found by a JSON
+// pointer, that must meet every comparison given.
+struct LoreCondition {
+    std::string pointer = {};                  // A well-formed JSON pointer into the observation.
+    std::optional<double> min = {};            // Inclusive; the value must be a number.
+    std::optional<double> max = {};            // Inclusive; the value must be a number.
+    std::optional<nlohmann::json> equals = {}; // Any JSON, compared with JSON equality.
+
+    // True when `observation` holds a value at the pointer that meets every comparison given. A missing value, or a
+    // value of another type than a comparison needs, does not hold. Throws ContractError for a pointer that is not
+    // well-formed: the host's data is checked at open, so none reaches here.
+    bool Holds(const nlohmann::json& observation) const;
+};
+
 struct LoreEntry {
     std::string subject = {};
     std::string data = {};
     bool alwaysOn = false; // Always in the prompt (layer L1) instead of retrieved when relevant.
+    // Hosted runs only (lore.csv sets neither). Empty scopes: every speaker may retrieve the entry; otherwise only a
+    // speaker whose `knows` shares one.
+    std::vector<std::string> scopes = {};
+    std::optional<LoreCondition> condition = {}; // The entry is visible only while it holds on the observation.
 };
 
 // world.json's optional "scene": the state values that describe where the player is, for scene retrieval. Each path

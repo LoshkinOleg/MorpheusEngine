@@ -19,7 +19,7 @@ namespace morpheus::turn {
 inline constexpr std::string_view DECIDE_SPEAKER = "decide";
 
 // What the host sends once per run (hosted-world spec, section 1): its action catalog and the JSON Schema of its
-// observation, both as the host wrote them, and its lore.
+// observation, both as the host wrote them, and its lore (an entry may carry `scopes` and a `requires` condition).
 struct HostData {
     nlohmann::json catalog = nlohmann::json::object();
     nlohmann::json observationSchema = nlohmann::json::object();

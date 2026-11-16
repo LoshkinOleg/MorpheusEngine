@@ -133,6 +133,101 @@ TEST_CASE("Host data reads and writes its JSON form and hashes its content", "[h
                       "host data at /lore/0/always_on: 'always_on' must be true or false");
 }
 
+TEST_CASE("Host data carries lore scopes and conditions; without them it hashes as before", "[hosted][lore]")
+{
+    // An entry with both round-trips exactly, and the others write neither key.
+    nlohmann::json withLore = test::ReadFixture("open.json");
+    withLore["lore"][2]["scopes"] = {"hulda", "inn"};
+    withLore["lore"][2]["requires"] = {{"pointer", "/quests/MG03"}, {"min", 40}, {"max", 60.5}, {"equals", 55}};
+    withLore["lore"][3]["requires"] = {{"pointer", "/gate"}, {"equals", {{"state", "shut"}}}};
+    const turn::HostData data = turn::HostDataFromJson(withLore);
+    CHECK(data.lore[2].scopes == std::vector<std::string>{"hulda", "inn"});
+    REQUIRE(data.lore[2].condition.has_value());
+    CHECK(data.lore[2].condition->pointer == "/quests/MG03");
+    CHECK(data.lore[2].condition->min == 40);
+    CHECK(data.lore[2].condition->max == 60.5);
+    CHECK(data.lore[2].condition->equals == nlohmann::json(55));
+    REQUIRE(data.lore[3].condition.has_value());
+    CHECK_FALSE(data.lore[3].condition->min.has_value());
+    CHECK(data.lore[3].condition->equals == R"({"state": "shut"})"_json);
+    CHECK(data.lore[0].scopes.empty());
+    CHECK_FALSE(data.lore[0].condition.has_value());
+    CHECK(turn::HostDataToJson(data) == withLore);
+    CHECK(turn::HostDataHash(data) != turn::HostDataHash(test::FixtureHostData()));
+
+    // Host data without them writes neither key and keeps its hash.
+    const nlohmann::json plain = turn::HostDataToJson(test::FixtureHostData());
+    for (const nlohmann::json& entry : plain.at("lore")) {
+        CHECK_FALSE(entry.contains("scopes"));
+        CHECK_FALSE(entry.contains("requires"));
+    }
+    CHECK(turn::HostDataHash(test::FixtureHostData()) == "35856ce76ac0af2e");
+    // An empty scopes array is no scopes.
+    nlohmann::json emptyScopes = test::ReadFixture("open.json");
+    emptyScopes["lore"][2]["scopes"] = nlohmann::json::array();
+    CHECK(turn::HostDataHash(turn::HostDataFromJson(emptyScopes)) == turn::HostDataHash(test::FixtureHostData()));
+
+    // Each fault names its pointer. faultOf puts `value` at the entry's key and reads the data.
+    auto faultOf = [](const char* key, const nlohmann::json& value) -> std::string {
+        nlohmann::json json = test::ReadFixture("open.json");
+        json["lore"][2][key] = value;
+        try {
+            turn::HostDataFromJson(json);
+        } catch (const core::DataError& error) {
+            return error.what();
+        }
+        return "";
+    };
+    const std::string scopes = "host data at /lore/2/scopes: 'scopes' must be an array of non-empty strings";
+    CHECK(faultOf("scopes", "inn") == scopes);
+    CHECK(faultOf("scopes", R"(["inn", ""])"_json) == scopes);
+    CHECK(faultOf("scopes", R"(["inn", 3])"_json) == scopes);
+    CHECK(faultOf("requires", "/quests/MG03") == "host data at /lore/2/requires: 'requires' must be an object");
+    CHECK(faultOf("requires", R"({"pointer": "/a", "min": 1, "max_by": 2})"_json) ==
+          "host data at /lore/2/requires/max_by: unknown key 'max_by'");
+    const std::string pointer = "host data at /lore/2/requires/pointer: 'pointer' must be a JSON pointer string";
+    CHECK(faultOf("requires", R"({"min": 1})"_json) == pointer);
+    CHECK(faultOf("requires", R"({"pointer": 4, "min": 1})"_json) == pointer);
+    CHECK(faultOf("requires", R"({"pointer": "/a"})"_json) ==
+          "host data at /lore/2/requires: 'requires' needs a comparison: 'min', 'max' or 'equals'");
+    CHECK(faultOf("requires", R"({"pointer": "/a", "min": "40"})"_json) ==
+          "host data at /lore/2/requires/min: 'min' must be a number");
+    CHECK(faultOf("requires", R"({"pointer": "/a", "max": null})"_json) ==
+          "host data at /lore/2/requires/max: 'max' must be a number");
+}
+
+TEST_CASE("Opening host data checks lore scopes and conditions", "[hosted][lore]")
+{
+    // An always-on entry with scopes.
+    turn::HostData data = test::FixtureHostData();
+    data.lore[0].scopes = {"inn"};
+    CHECK(OpenError(data) == "lore at /0/scopes: an always-on entry is in every speaker's prompt: scopes apply to "
+                             "retrieved entries");
+    // Scopes on a retrieved entry, and a condition on an always-on entry, are fine.
+    data = test::FixtureHostData();
+    data.lore[2].scopes = {"inn"};
+    data.lore[0].condition = core::LoreCondition{"/quests/MG03", 40, std::nullopt, std::nullopt};
+    CHECK(OpenError(data) == "");
+    CHECK(turn::HostedWorld(data).Lore()[2].scopes == std::vector<std::string>{"inn"});
+
+    // A pointer that is not a JSON pointer.
+    data = test::FixtureHostData();
+    data.lore[2].condition = core::LoreCondition{"quests/MG03", 40, std::nullopt, std::nullopt};
+    CHECK_THAT(OpenError(data), ContainsSubstring("lore at /2/requires/pointer: 'quests/MG03' is not a JSON pointer: "));
+}
+
+TEST_CASE("Observe reads an actor's knows", "[hosted][lore]")
+{
+    const turn::HostedWorld world(test::FixtureHostData());
+    nlohmann::json json = test::FixtureObservation();
+    json.at("actors").at(0)["knows"] = {"inn", "mages guild"};
+    json.at("actors").at(1)["knows"] = nlohmann::json::array();
+    const turn::Observation observation = world.Observe(json);
+    CHECK(observation.actors[0].knows == std::vector<std::string>{"inn", "mages guild"});
+    CHECK(observation.actors[1].knows.empty());
+    CHECK(observation.actors[2].knows.empty()); // Absent: none.
+}
+
 TEST_CASE("Host data carries the host's prompt texts; without them it hashes as before packs", "[hosted][prompts]")
 {
     // Without a pack the JSON form has no "prompts" and the hash is the one open.json had before packs existed.
@@ -396,6 +491,10 @@ TEST_CASE("Each fault of the observation core is a DataError naming its pointer"
     CHECK(ObserveError(world, withActor(1, "is_player", "no")) ==
           "observation at /actors/1/is_player: an actor needs 'is_player', true or false");
     CHECK(ObserveError(world, withActor(0, "bio", 5)) == "observation at /actors/0/bio: 'bio' must be a string");
+    const std::string knows = "'knows' must be an array of non-empty strings";
+    CHECK(ObserveError(world, withActor(0, "knows", "inn")) == "observation at /actors/0/knows: " + knows);
+    CHECK(ObserveError(world, withActor(0, "knows", R"(["inn", ""])"_json)) == "observation at /actors/0/knows: " + knows);
+    CHECK(ObserveError(world, withActor(1, "knows", R"(["inn", 3])"_json)) == "observation at /actors/1/knows: " + knows);
     CHECK(ObserveError(world, withActor(2, "id", test::HULDA)) ==
           "observation at /actors/2/id: the id '0001A6A4' is repeated: /actors/0 has it too");
     CHECK(ObserveError(world, withActor(0, "is_player", true)) ==

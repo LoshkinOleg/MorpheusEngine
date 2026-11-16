@@ -58,6 +58,19 @@ ActorsCore ReadActors(const nlohmann::json& observation)
                 whole = false;
             }
         }
+        if (entry.contains("knows")) {
+            const nlohmann::json& knows = entry.at("knows");
+            bool sound = knows.is_array();
+            for (std::size_t k = 0; sound && k < knows.size(); ++k) {
+                sound = knows[k].is_string() && !knows[k].get_ref<const std::string&>().empty();
+            }
+            if (sound) {
+                actor.knows = knows.get<std::vector<std::string>>();
+            } else {
+                read.faults.push_back({at + "/knows", "'knows' must be an array of non-empty strings"});
+                whole = false;
+            }
+        }
         // Ids are unique: the engine names actors by them.
         if (!actor.id.empty()) {
             const auto [first, inserted] = seen.emplace(actor.id, i);

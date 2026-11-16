@@ -36,7 +36,25 @@ nlohmann::json HostDataToJson(const HostData& data)
 {
     nlohmann::json lore = nlohmann::json::array();
     for (const core::LoreEntry& entry : data.lore) {
-        lore.push_back({{"subject", entry.subject}, {"data", entry.data}, {"always_on", entry.alwaysOn}});
+        nlohmann::json written = {{"subject", entry.subject}, {"data", entry.data}, {"always_on", entry.alwaysOn}};
+        // Only what the entry has, so host data without scopes and conditions keeps its hash.
+        if (!entry.scopes.empty()) {
+            written["scopes"] = entry.scopes;
+        }
+        if (entry.condition) {
+            nlohmann::json condition = {{"pointer", entry.condition->pointer}};
+            if (entry.condition->min) {
+                condition["min"] = *entry.condition->min;
+            }
+            if (entry.condition->max) {
+                condition["max"] = *entry.condition->max;
+            }
+            if (entry.condition->equals) {
+                condition["equals"] = *entry.condition->equals;
+            }
+            written["requires"] = std::move(condition);
+        }
+        lore.push_back(std::move(written));
     }
     nlohmann::json json = {
         {"catalog", data.catalog}, {"observation_schema", data.observationSchema}, {"lore", std::move(lore)}};
@@ -112,7 +130,8 @@ HostData HostDataFromJson(const nlohmann::json& json)
             throw fault(at, "a lore entry must be a JSON object");
         }
         for (auto it = entry.begin(); it != entry.end(); ++it) {
-            if (it.key() != "subject" && it.key() != "data" && it.key() != "always_on") {
+            if (it.key() != "subject" && it.key() != "data" && it.key() != "always_on" && it.key() != "scopes" &&
+                it.key() != "requires") {
                 throw fault(at + "/" + grammar::PointerToken(it.key()), std::format("unknown key '{}'", it.key()));
             }
         }
@@ -125,8 +144,61 @@ HostData HostDataFromJson(const nlohmann::json& json)
         if (entry.contains("always_on") && !entry.at("always_on").is_boolean()) {
             throw fault(at + "/always_on", "'always_on' must be true or false");
         }
-        data.lore.push_back({entry.at("subject").get<std::string>(), entry.at("data").get<std::string>(),
-                             entry.value("always_on", false)});
+        core::LoreEntry read;
+        read.subject = entry.at("subject").get<std::string>();
+        read.data = entry.at("data").get<std::string>();
+        read.alwaysOn = entry.value("always_on", false);
+        // Optional scopes: an array of non-empty strings.
+        if (entry.contains("scopes")) {
+            const nlohmann::json& scopes = entry.at("scopes");
+            bool sound = scopes.is_array();
+            for (std::size_t k = 0; sound && k < scopes.size(); ++k) {
+                sound = scopes[k].is_string() && !scopes[k].get_ref<const std::string&>().empty();
+            }
+            if (!sound) {
+                throw fault(at + "/scopes", "'scopes' must be an array of non-empty strings");
+            }
+            read.scopes = scopes.get<std::vector<std::string>>();
+        }
+        // Optional condition: a pointer string and at least one of min, max, equals (the pointer's form is checked
+        // at open, like the clock's).
+        if (entry.contains("requires")) {
+            const nlohmann::json& requirement = entry.at("requires");
+            const std::string where = at + "/requires";
+            if (!requirement.is_object()) {
+                throw fault(where, "'requires' must be an object");
+            }
+            for (auto it = requirement.begin(); it != requirement.end(); ++it) {
+                if (it.key() != "pointer" && it.key() != "min" && it.key() != "max" && it.key() != "equals") {
+                    throw fault(where + "/" + grammar::PointerToken(it.key()),
+                                std::format("unknown key '{}'", it.key()));
+                }
+            }
+            if (!requirement.contains("pointer") || !requirement.at("pointer").is_string()) {
+                throw fault(where + "/pointer", "'pointer' must be a JSON pointer string");
+            }
+            core::LoreCondition condition;
+            condition.pointer = requirement.at("pointer").get<std::string>();
+            for (const char* key : {"min", "max"}) {
+                if (requirement.contains(key) && !requirement.at(key).is_number()) {
+                    throw fault(std::format("{}/{}", where, key), std::format("'{}' must be a number", key));
+                }
+            }
+            if (requirement.contains("min")) {
+                condition.min = requirement.at("min").get<double>();
+            }
+            if (requirement.contains("max")) {
+                condition.max = requirement.at("max").get<double>();
+            }
+            if (requirement.contains("equals")) {
+                condition.equals = requirement.at("equals");
+            }
+            if (!condition.min && !condition.max && !condition.equals) {
+                throw fault(where, "'requires' needs a comparison: 'min', 'max' or 'equals'");
+            }
+            read.condition = std::move(condition);
+        }
+        data.lore.push_back(std::move(read));
     }
     return data;
 }
@@ -351,6 +423,20 @@ HostedWorld::HostedWorld(const HostData& data)
         }
         if (entry.data.empty()) {
             throw core::DataError(std::format("lore at /{}/data: a lore entry needs data", i));
+        }
+        if (entry.alwaysOn && !entry.scopes.empty()) {
+            throw core::DataError(std::format("lore at /{}/scopes: an always-on entry is in every speaker's prompt: "
+                                              "scopes apply to retrieved entries",
+                                              i));
+        }
+        // A condition's pointer must be well-formed, so Holds never meets one that is not.
+        if (entry.condition) {
+            try {
+                const nlohmann::json::json_pointer pointer(entry.condition->pointer);
+            } catch (const nlohmann::json::exception& error) {
+                throw core::DataError(std::format("lore at /{}/requires/pointer: '{}' is not a JSON pointer: {}", i,
+                                                  entry.condition->pointer, error.what()));
+            }
         }
     }
 
