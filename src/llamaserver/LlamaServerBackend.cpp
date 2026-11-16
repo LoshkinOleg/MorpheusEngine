@@ -374,7 +374,8 @@ LlamaServerBackend::LlamaServerBackend(LlamaServerConfig config)
                                              markers.close.size(), core::MIN_THINKING_TOKENS));
         }
         markers.end = ServerTokens(format->end, false, true);
-        markers.afterEnd = ServerTokens(format->afterEnd, false, false);
+        markers.afterEnd =
+            format->afterEnd.empty() ? std::vector<std::int32_t>() : ServerTokens(format->afterEnd, false, false);
         markers.openText = format->open;
         markers.templateWritesOpen = core::HasThinkingSwitch(chatTemplate);
         markers.endText = format->end;

@@ -594,6 +594,28 @@ TEST_CASE("LlamaServerBackend writes the thinking block its setting names", "[ll
     }
 }
 
+TEST_CASE("LlamaServerBackend loads a custom format with empty skip and after_end without tokenizing the empty texts",
+          "[llamaserver][thinking]")
+{
+    test::FakeLlamaServer chat;
+    test::FakeLlamaServer embed;
+    llamaserver::LlamaServerConfig config = test::ConfigFor(chat, embed);
+    // An empty after_end, and a close that ends with the end marker alone.
+    config.thinking = {core::ThinkingMode::Format, {"[T]", "", "[/T]", "", "Answer now.[/T]"}};
+    const llamaserver::LlamaServerBackend backend(config);
+
+    // The non-empty texts were tokenized; an empty text is no tokens without a request (the BOS probe asks for the
+    // empty text with add_special, which is a different body).
+    const std::vector<test::FakeLlamaServer::Request> requests = chat.RequestsTo("/tokenize");
+    bool openAsked = false;
+    for (const test::FakeLlamaServer::Request& request : requests) {
+        CHECK(request.body != TokenizeBody("", false, false));
+        CHECK(request.body != TokenizeBody("", false, true));
+        openAsked = openAsked || request.body == TokenizeBody("[T]", false, true);
+    }
+    CHECK(openAsked);
+}
+
 TEST_CASE("LlamaServerBackend keeps a prompt's end that only looks like a custom open text", "[llamaserver][thinking]")
 {
     test::FakeLlamaServer chat;
