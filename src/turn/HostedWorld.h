@@ -14,6 +14,10 @@
 
 namespace morpheus::turn {
 
+// The speaker a turn request names to have the engine choose one of the conversation's NPCs (decide-speaker spec). No
+// actor may take it as its id.
+inline constexpr std::string_view DECIDE_SPEAKER = "decide";
+
 // What the host sends once per run (hosted-world spec, section 1): its action catalog and the JSON Schema of its
 // observation, both as the host wrote them, and its lore.
 struct HostData {
@@ -112,7 +116,8 @@ public:
     // (a boolean) and an optional `bio` (a string); ids unique; exactly one player. Then grammar::Validate against the
     // host's schema. Every fault of both is collected; any fault is a DataError
     // "observation at <pointer>: <problem>; observation at ...". With a clock, the observation must also hold a finite
-    // number at its pointer (a fault "expected the clock, a number"), which `clock` reports.
+    // number at its pointer (a fault "expected the clock, a number"), which `clock` reports. An actor whose id is
+    // DECIDE_SPEAKER is a fault "'decide' is reserved: it asks the engine to choose the speaker" at its id.
     Observation Observe(const nlohmann::json& observation) const;
 
     // The core actors of `observation`, read as Observe reads them (core::ReadActors) but without the host's schema,

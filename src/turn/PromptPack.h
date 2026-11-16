@@ -24,11 +24,12 @@ struct PromptText {
 };
 
 // The pack's texts in the spec's table order: the order FromHost checks them in and the defaults route lists them in.
-inline constexpr std::array<PromptText, 6> PROMPT_TEXTS = {{
+inline constexpr std::array<PromptText, 7> PROMPT_TEXTS = {{
     {"system", {}},
     {"resolve", {"speaker", "player"}},
     {"speak", {"speaker", "player"}},
     {"turn_cue", {"speaker", "player"}},
+    {"decide", {"player", ""}},
     {"summarize", {"actor", ""}},
     {"condense", {"actor", ""}},
 }};
@@ -41,6 +42,7 @@ public:
     std::string resolve = std::string(HOSTED_RESOLVE_INSTRUCTION);
     std::string speak = std::string(HOSTED_SPEAK_INSTRUCTION);
     std::string turnCue = std::string(HOSTED_TURN_CUE);
+    std::string decide = std::string(HOSTED_DECIDE_INSTRUCTION);
     std::string summarize = std::string(HOSTED_SUMMARIZE_INSTRUCTION);
     std::string condense = std::string(HOSTED_CONDENSE_INSTRUCTION);
 

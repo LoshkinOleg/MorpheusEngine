@@ -219,6 +219,13 @@ Assembly AssembleHostedPrompt(const HostedInputs& inputs, const core::BudgetSett
     if (!inputs.playerLine.empty()) {
         tail += "\n# Player\n" + inputs.playerLine + "\n";
     }
+    // A decide call lists who may speak, before its task.
+    if (!inputs.candidates.empty()) {
+        tail += "\n# Who may speak\n";
+        for (const std::string& candidate : inputs.candidates) {
+            tail += "- " + candidate + "\n";
+        }
+    }
     tail += "\n# Task\n" + inputs.instruction;
 
     // The system layers' counts, then their caps: L0 is the run's system text (the host's

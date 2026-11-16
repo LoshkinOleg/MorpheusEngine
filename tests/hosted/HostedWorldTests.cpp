@@ -529,3 +529,13 @@ TEST_CASE("A host clock must be a JSON pointer, and round-trips through the host
     CHECK(turn::HostDataToJson(data).at("clock") == "/game_time/days_passed");
     CHECK_FALSE(turn::HostDataToJson(test::FixtureHostData()).contains("clock"));
 }
+
+TEST_CASE("Observe refuses an actor whose id is the reserved 'decide'", "[hosted][decide]")
+{
+    const turn::HostedWorld world(WithOpenSchema());
+    nlohmann::json observation = test::FixtureObservation();
+    observation["actors"][1]["id"] = "decide";
+    CHECK(ObserveError(world, observation) ==
+          "observation at /actors/1/id: 'decide' is reserved: it asks the engine to choose the speaker");
+    CHECK(std::string(turn::DECIDE_SPEAKER) == "decide");
+}

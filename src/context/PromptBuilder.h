@@ -47,6 +47,7 @@ struct HostedInputs {
     nlohmann::json observation = nullptr;             // Tail: shown as compact JSON.
     std::vector<std::string> events = {};             // Tail: the new events' texts, in order.
     std::string playerLine = {};                      // Tail: "<player name>: <text>", or empty.
+    std::vector<std::string> candidates = {};        // Tail: who may speak, "<name> (<id>)" each (a decide call).
     std::string instruction = {};                     // Tail: the resolve instruction.
 };
 

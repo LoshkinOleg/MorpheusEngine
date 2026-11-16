@@ -261,3 +261,16 @@ TEST_CASE("The default hosted texts are generic, fit their cap and use only the 
     test::FakeBackend backend(8192);
     CHECK(backend.CountTokens(turn::HOSTED_SYSTEM_TEXT) <= 1024);
 }
+
+TEST_CASE("A hosted tail lists the speaker candidates before the task", "[context][hosted]")
+{
+    test::FakeBackend backend(8192);
+    context::HostedInputs inputs = Inputs();
+    inputs.candidates = {"Hulda (0001A6A4)", "Saadia (0001B07C)"};
+    const context::Assembly assembly = context::AssembleHostedPrompt(inputs, RoomyBudget(), backend);
+    CHECK(assembly.prompt.messages.back().content.ends_with(
+        "# Player\nAela: Follow me.\n\n# Who may speak\n- Hulda (0001A6A4)\n- Saadia (0001B07C)\n\n# Task\nTASK"));
+    // Without candidates the tail has no such section.
+    CHECK_THAT(context::AssembleHostedPrompt(Inputs(), RoomyBudget(), backend).prompt.messages.back().content,
+               !ContainsSubstring("# Who may speak"));
+}

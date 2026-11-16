@@ -98,6 +98,12 @@ inline constexpr std::string_view HOSTED_SPEAK_INSTRUCTION =
 // `turn_cue`.
 inline constexpr std::string_view HOSTED_TURN_CUE = "({speaker} speaks.)";
 
+// PromptPack's default `decide`: the task of a "decide" turn's decide call (decide-speaker spec, section 3), after the
+// tail's list of who may speak. {player} is the player's name.
+inline constexpr std::string_view HOSTED_DECIDE_INSTRUCTION =
+    "Choose who speaks next: the character listed above who would most naturally speak now. Reply with the JSON "
+    "object only.";
+
 // A hosted NPC's fold call (per-speaker memory spec, section 1): its memory of the turns above, in its own terms.
 // {actor} is the NPC's name. PromptPack's default `summarize`.
 inline constexpr std::string_view HOSTED_SUMMARIZE_INSTRUCTION =

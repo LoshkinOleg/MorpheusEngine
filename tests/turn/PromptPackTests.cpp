@@ -32,6 +32,7 @@ TEST_CASE("A prompt pack defaults to the engine's hosted texts", "[prompts]")
     CHECK(pack.resolve == std::string(turn::HOSTED_RESOLVE_INSTRUCTION));
     CHECK(pack.speak == std::string(turn::HOSTED_SPEAK_INSTRUCTION));
     CHECK(pack.turnCue == std::string(turn::HOSTED_TURN_CUE));
+    CHECK(pack.decide == std::string(turn::HOSTED_DECIDE_INSTRUCTION));
     CHECK(pack.summarize == std::string(turn::HOSTED_SUMMARIZE_INSTRUCTION));
     CHECK(pack.condense == std::string(turn::HOSTED_CONDENSE_INSTRUCTION));
 
@@ -40,6 +41,7 @@ TEST_CASE("A prompt pack defaults to the engine's hosted texts", "[prompts]")
     CHECK(&pack.Text("resolve") == &pack.resolve);
     CHECK(&pack.Text("speak") == &pack.speak);
     CHECK(&pack.Text("turn_cue") == &pack.turnCue);
+    CHECK(&pack.Text("decide") == &pack.decide);
     CHECK(&pack.Text("summarize") == &pack.summarize);
     CHECK(&pack.Text("condense") == &pack.condense);
     CHECK_THROWS_AS(pack.Text("narrate"), core::ContractError);
@@ -62,13 +64,14 @@ TEST_CASE("A host's texts replace the defaults they name and leave the others", 
     CHECK(pack.system == std::string(turn::HOSTED_SYSTEM_TEXT));
     CHECK(pack.speak == std::string(turn::HOSTED_SPEAK_INSTRUCTION));
     CHECK(pack.turnCue == std::string(turn::HOSTED_TURN_CUE));
+    CHECK(pack.decide == std::string(turn::HOSTED_DECIDE_INSTRUCTION));
     CHECK(pack.summarize == std::string(turn::HOSTED_SUMMARIZE_INSTRUCTION));
 }
 
 TEST_CASE("A pack's faults name the text and the variable", "[prompts]")
 {
     CHECK(PackError({{"narrate", "Say it."}}) ==
-          "prompts/narrate: unknown text; the pack's texts are system, resolve, speak, turn_cue, summarize, condense");
+          "prompts/narrate: unknown text; the pack's texts are system, resolve, speak, turn_cue, decide, summarize, condense");
     CHECK(PackError({{"speak", ""}}) == "prompts/speak: empty");
     CHECK(PackError({{"system", "You are {speaker}."}}) ==
           "prompts/system: unknown variable {speaker}; this text takes no variable");
@@ -78,13 +81,15 @@ TEST_CASE("A pack's faults name the text and the variable", "[prompts]")
           "prompts/speak: unknown variable {loudly}; this text takes {speaker}, {player}");
     CHECK(PackError({{"turn_cue", "({speaker} and {friend})"}}) ==
           "prompts/turn_cue: unknown variable {friend}; this text takes {speaker}, {player}");
+    CHECK(PackError({{"decide", "{speaker} or {actor}?"}}) ==
+          "prompts/decide: unknown variable {speaker}; this text takes {player}");
     CHECK(PackError({{"summarize", "Remember, {speaker}."}}) ==
           "prompts/summarize: unknown variable {speaker}; this text takes {actor}");
     CHECK(PackError({{"condense", "{player}"}}) == "prompts/condense: unknown variable {player}; this text takes {actor}");
 
     // The first fault: an unknown key before any text; then texts in the table's order, variables in text order.
     CHECK(PackError({{"zzz", "x"}, {"system", ""}}) ==
-          "prompts/zzz: unknown text; the pack's texts are system, resolve, speak, turn_cue, summarize, condense");
+          "prompts/zzz: unknown text; the pack's texts are system, resolve, speak, turn_cue, decide, summarize, condense");
     CHECK(PackError({{"speak", "{a}"}, {"resolve", "{b} {c}"}}) ==
           "prompts/resolve: unknown variable {b}; this text takes {speaker}, {player}");
     CHECK(PackError({{"speak", ""}, {"resolve", "{b}"}}) ==
@@ -121,4 +126,12 @@ TEST_CASE("The default texts do not invite naming the player and say most turns 
               .find("Choose what the speaker would do now. Most turns need no action: when the speaker would only talk, "
                     "choose the action that does nothing, if the turn allows one. The host decides whether it happens") !=
           std::string::npos);
+}
+
+TEST_CASE("The default decide text asks for the next speaker", "[prompts][decide]")
+{
+    CHECK(std::string(turn::HOSTED_DECIDE_INSTRUCTION) ==
+          "Choose who speaks next: the character listed above who would most naturally speak now. Reply with the "
+          "JSON object only.");
+    CHECK(turn::PromptPack::FromHost({{"decide", "Who answers {player}?"}}).decide == "Who answers {player}?");
 }

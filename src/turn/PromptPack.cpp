@@ -11,9 +11,9 @@ namespace morpheus::turn {
 namespace {
 
 // The pack's members, in PROMPT_TEXTS' order: index i holds the text whose key is PROMPT_TEXTS[i].key.
-constexpr std::array<std::string PromptPack::*, 6> MEMBERS = {
-    &PromptPack::system,    &PromptPack::resolve, &PromptPack::speak, &PromptPack::turnCue,
-    &PromptPack::summarize, &PromptPack::condense};
+constexpr std::array<std::string PromptPack::*, 7> MEMBERS = {
+    &PromptPack::system, &PromptPack::resolve,   &PromptPack::speak,    &PromptPack::turnCue,
+    &PromptPack::decide, &PromptPack::summarize, &PromptPack::condense};
 
 // The length of the variable that starts at `at` in `text` ("{", one or more of a-z and _, "}"), or 0 when none does.
 std::size_t VariableLength(std::string_view text, std::size_t at)

@@ -397,6 +397,18 @@ Observation HostedWorld::Observe(const nlohmann::json& observation) const
 {
     // The core first (core::ReadActors), then the host's schema; every fault of both is collected.
     core::ActorsCore read = core::ReadActors(observation);
+    // No actor may take the id that asks the engine to choose the speaker.
+    if (observation.is_object() && observation.contains("actors") && observation.at("actors").is_array()) {
+        const nlohmann::json& actors = observation.at("actors");
+        for (std::size_t i = 0; i < actors.size(); ++i) {
+            const bool reserved = actors[i].is_object() && actors[i].contains("id") && actors[i].at("id").is_string() &&
+                                  actors[i].at("id").get_ref<const std::string&>() == DECIDE_SPEAKER;
+            if (reserved) {
+                read.faults.push_back({std::format("/actors/{}/id", i),
+                                       "'decide' is reserved: it asks the engine to choose the speaker"});
+            }
+        }
+    }
     for (const grammar::ValidationError& error : grammar::Validate(observation, _observationSchema)) {
         read.faults.push_back({error.path, error.message});
     }
