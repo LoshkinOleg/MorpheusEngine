@@ -4,6 +4,7 @@
 #include <iterator>
 
 #include "core/Errors.h"
+#include "turn/CallTag.h"
 
 namespace morpheus::turn {
 
@@ -11,19 +12,19 @@ core::CallKind CallKindOf(const inference::GenerationSpec& spec)
 {
     // The tag the turn layer set; a renarrate's and a condense's replies join the narrate and summarize replies.
     const std::string& tag = spec.callTag;
-    if (tag == "lookup") {
+    if (tag == LOOKUP_TAG) {
         return core::CallKind::Lookup;
     }
-    if (tag == "resolve") {
+    if (tag == RESOLVE_TAG) {
         return core::CallKind::Resolve;
     }
-    if (tag == "narrate" || tag == "renarrate") {
+    if (tag == NARRATE_TAG || tag == RENARRATE_TAG) {
         return core::CallKind::Narrate;
     }
-    if (tag == "review") {
+    if (tag == REVIEW_TAG) {
         return core::CallKind::Review;
     }
-    if (tag == "summarize" || tag == "condense") {
+    if (tag == SUMMARIZE_TAG || tag == CONDENSE_TAG) {
         return core::CallKind::Summarize;
     }
     throw core::ContractError(std::format("CallKindOf: no call kind for the call tag '{}'", tag));

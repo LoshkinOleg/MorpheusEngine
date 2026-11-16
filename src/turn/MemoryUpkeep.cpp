@@ -6,6 +6,7 @@
 
 #include "core/Dice.h"
 #include "core/Errors.h"
+#include "turn/CallTag.h"
 #include "turn/Folding.h"
 #include "turn/Session.h"
 
@@ -152,7 +153,7 @@ bool MemoryUpkeep::FoldOldest(const inference::Message& systemMessage,
                      "FoldOldest: needs 1 to transcript.size() entries to fold");
     inference::GenerationSpec spec;
     spec.maxTokens = std::max(1, _pSettings->budget.summaryCap / FOLD_SUMMARY_DIVISOR);
-    spec.callTag = "summarize";
+    spec.callTag = std::string(SUMMARIZE_TAG);
     spec.sampling = SamplingFrom(_pSettings->resolveSampling, core::SamplingSeed(_pStore->Meta().rngSeed, _turn,
                                                                                 core::CallKind::Summarize, _attempt));
 
@@ -206,7 +207,7 @@ bool MemoryUpkeep::Condense(const inference::Message& systemMessage, std::stop_t
 {
     inference::GenerationSpec spec;
     spec.maxTokens = std::max(1, _pSettings->budget.summaryCap / CONDENSE_SUMMARY_DIVISOR);
-    spec.callTag = "condense";
+    spec.callTag = std::string(CONDENSE_TAG);
     spec.sampling = SamplingFrom(_pSettings->resolveSampling, core::SamplingSeed(_pStore->Meta().rngSeed, _turn,
                                                                                 core::CallKind::Summarize, _attempt));
     // The scope's shown summaries, and the condense call's message for them.

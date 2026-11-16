@@ -22,6 +22,7 @@
 #include "core/Settings.h"
 #include "core/TurnRecord.h"
 #include "fakes/ScriptedBackend.h"
+#include "turn/CallTag.h"
 #include "turn/EngineText.h"
 #include "turn/HostedSession.h"
 #include "turn/HostedWorld.h"
@@ -140,7 +141,7 @@ struct HostedScript {
                 MORPHEUS_REQUIRE(decided < decisions.size(), "HostedScript: no decision left");
                 return decisions[decided++];
             }
-            if (spec.callTag == "review") {
+            if (spec.callTag == turn::REVIEW_TAG) {
                 MORPHEUS_REQUIRE(reviewed < reviews.size(), "HostedScript: no review left");
                 return reviews[reviewed++];
             }

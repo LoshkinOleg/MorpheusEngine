@@ -8,6 +8,7 @@
 #include "core/Errors.h"
 #include "grammar/Check.h"
 #include "inference/Llm.h"
+#include "turn/CallTag.h"
 
 namespace morpheus::app {
 
@@ -36,25 +37,25 @@ SeatLabel SeatLabelOf(const inference::GenerationSpec& spec)
 {
     // The tag the turn layer set: each owned call has its own label.
     const std::string& tag = spec.callTag;
-    if (tag == "resolve") {
+    if (tag == turn::RESOLVE_TAG) {
         return SeatLabel::Resolve;
     }
-    if (tag == "narrate") {
+    if (tag == turn::NARRATE_TAG) {
         return SeatLabel::Narrate;
     }
-    if (tag == "renarrate") {
+    if (tag == turn::RENARRATE_TAG) {
         return SeatLabel::Rewrite;
     }
-    if (tag == "lookup") {
+    if (tag == turn::LOOKUP_TAG) {
         return SeatLabel::Lookup;
     }
-    if (tag == "review") {
+    if (tag == turn::REVIEW_TAG) {
         return SeatLabel::Review;
     }
-    if (tag == "summarize") {
+    if (tag == turn::SUMMARIZE_TAG) {
         return SeatLabel::Summarize;
     }
-    if (tag == "condense") {
+    if (tag == turn::CONDENSE_TAG) {
         return SeatLabel::Condense;
     }
     throw core::ContractError(std::format("SeatLabelOf: no seat label for the call tag '{}'", tag));

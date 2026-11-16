@@ -15,6 +15,7 @@
 #include "core/Errors.h"
 #include "core/Text.h"
 #include "grammar/Schema.h"
+#include "turn/CallTag.h"
 #include "turn/PromptPack.h"
 #include "turn/Review.h"
 #include "turn/ResolveGrammar.h"
@@ -379,7 +380,7 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
             inference::GenerationSpec decideSpec;
             decideSpec.grammar = grammar::FromSchema(schema);
             decideSpec.maxTokens = longestAnswer + DECIDE_TOKEN_MARGIN;
-            decideSpec.callTag = "decide";
+            decideSpec.callTag = std::string(DECIDE_TAG);
             decideSpec.sampling = SamplingFrom(_settings.resolveSampling,
                                                core::SamplingSeed(seed, turn, core::CallKind::Resolve, DECIDE_SEED_ATTEMPT));
             const inference::Completion decided = _pBackend->Complete(decideAssembly.prompt, decideSpec, {}, stop);
@@ -498,7 +499,7 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
     inference::GenerationSpec resolveSpec;
     resolveSpec.grammar = proposalGrammar;
     resolveSpec.maxTokens = _settings.budget.resolveMaxTokens;
-    resolveSpec.callTag = "resolve";
+    resolveSpec.callTag = std::string(RESOLVE_TAG);
     resolveSpec.thinkingMaxTokens = _settings.budget.resolveThinkingTokens;
     resolveSpec.sampling =
         SamplingFrom(_settings.resolveSampling, core::SamplingSeed(seed, turn, core::CallKind::Resolve, 0));
@@ -518,7 +519,7 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
     context::ExtendForNarrate(speakPrompt, resolved.text, speakMessage);
     inference::GenerationSpec speakSpec;
     speakSpec.maxTokens = _settings.budget.narrateMaxTokens;
-    speakSpec.callTag = "speak";
+    speakSpec.callTag = std::string(SPEAK_TAG);
     speakSpec.thinkingMaxTokens = _settings.budget.narrateThinkingTokens;
     speakSpec.sampling =
         SamplingFrom(_settings.narrateSampling, core::SamplingSeed(seed, turn, core::CallKind::Narrate, 0));
@@ -538,7 +539,7 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
         reviewSpec.grammar = BuildReviewGrammar(true, false);
         reviewSpec.maxTokens = _settings.budget.reviewMaxTokens;
         reviewSpec.thinkingMaxTokens = _settings.budget.reviewThinkingTokens;
-        reviewSpec.callTag = "review";
+        reviewSpec.callTag = std::string(REVIEW_TAG);
         reviewSpec.sampling =
             SamplingFrom(_settings.resolveSampling, core::SamplingSeed(seed, turn, core::CallKind::Review, 0));
         const inference::Completion reviewed =
@@ -580,7 +581,7 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
             inference::Prompt respeakPrompt = assembly->prompt;
             context::ExtendForNarrate(respeakPrompt, resolved.text, message);
             inference::GenerationSpec respeakSpec = speakSpec;
-            respeakSpec.callTag = "respeak";
+            respeakSpec.callTag = std::string(RESPEAK_TAG);
             respeakSpec.sampling =
                 SamplingFrom(_settings.narrateSampling, core::SamplingSeed(seed, turn, core::CallKind::Renarrate, 0));
             const inference::Completion respoken = _pBackend->Complete(respeakPrompt, respeakSpec, {}, stop);

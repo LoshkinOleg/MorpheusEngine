@@ -11,6 +11,7 @@
 #include "core/Dice.h"
 #include "core/Errors.h"
 #include "core/Text.h"
+#include "turn/CallTag.h"
 #include "turn/EngineText.h"
 #include "turn/Resolve.h"
 #include "turn/ResolveGrammar.h"
@@ -302,7 +303,7 @@ std::optional<core::TurnRecord> Session::PlayTurn(const std::string& input, int 
         inference::GenerationSpec lookupSpec;
         lookupSpec.grammar = BuildLookupGrammar();
         lookupSpec.maxTokens = LOOKUP_MAX_TOKENS;
-        lookupSpec.callTag = "lookup";
+        lookupSpec.callTag = std::string(LOOKUP_TAG);
         lookupSpec.sampling = SamplingFrom(
             _settings.resolveSampling, core::SamplingSeed(seed, turn, core::CallKind::Lookup, attempt));
         const inference::Completion looked = _pBackend->Complete(lookupAssembly->prompt, lookupSpec, {}, stop);
@@ -355,7 +356,7 @@ std::optional<core::TurnRecord> Session::PlayTurn(const std::string& input, int 
     inference::GenerationSpec resolveSpec;
     resolveSpec.grammar = BuildResolveGrammar(_world, state, _mode);
     resolveSpec.maxTokens = _settings.budget.resolveMaxTokens;
-    resolveSpec.callTag = "resolve";
+    resolveSpec.callTag = std::string(RESOLVE_TAG);
     resolveSpec.thinkingMaxTokens = _settings.budget.resolveThinkingTokens;
     resolveSpec.sampling =
         SamplingFrom(_settings.resolveSampling, core::SamplingSeed(seed, turn, core::CallKind::Resolve, attempt));
@@ -395,7 +396,7 @@ std::optional<core::TurnRecord> Session::PlayTurn(const std::string& input, int 
                                   RenderNarrateMessage(proposal, resolution, problems,
                                                        _settings.budget.narrateAllowance, *_pBackend));
         inference::GenerationSpec spec = narrateSpec;
-        spec.callTag = kind == core::CallKind::Renarrate ? "renarrate" : "narrate";
+        spec.callTag = std::string(kind == core::CallKind::Renarrate ? RENARRATE_TAG : NARRATE_TAG);
         spec.sampling =
             SamplingFrom(_settings.narrateSampling, core::SamplingSeed(seed, turn, kind, attempt));
         return _pBackend->Complete(narratePrompt, spec, callbacks.onNarrationToken, stop);
@@ -416,7 +417,7 @@ std::optional<core::TurnRecord> Session::PlayTurn(const std::string& input, int 
         inference::GenerationSpec reviewSpec;
         reviewSpec.grammar = BuildReviewGrammar(check, digest);
         reviewSpec.maxTokens = _settings.budget.reviewMaxTokens;
-        reviewSpec.callTag = "review";
+        reviewSpec.callTag = std::string(REVIEW_TAG);
         reviewSpec.thinkingMaxTokens = _settings.budget.reviewThinkingTokens;
         telemetry["review"] = nlohmann::json::array();
         // Reviews `narration` with the sampling seed of `seedAttempt` and adds the call to timings.review; nullopt
