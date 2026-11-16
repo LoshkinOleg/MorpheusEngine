@@ -48,8 +48,11 @@ inline void RequireThinkingModel()
     }
 }
 
-// A new backend on the thinking model with the given thinking setting (a test that loads its own setting).
-inline std::unique_ptr<llama::LlamaCppBackend> MakeThinkingBackend(const core::ThinkingSetting& thinking)
+// A new backend on the thinking model with the given thinking setting (a test that loads its own setting). A test that
+// only checks the setting at load, while the shared backend still holds the GPU, passes 0 gpuLayers (the model on the
+// CPU) and a small contextSize so the load does not compete for GPU memory.
+inline std::unique_ptr<llama::LlamaCppBackend> MakeThinkingBackend(
+    const core::ThinkingSetting& thinking, int gpuLayers = -1, int contextSize = 8192)
 {
     RequireThinkingModel();
     llama::LlamaConfig config;
@@ -57,8 +60,8 @@ inline std::unique_ptr<llama::LlamaCppBackend> MakeThinkingBackend(const core::T
     config.embeddingModel = EnvironmentVariable("MORPHEUS_TEST_EMBED_MODEL");
     config.embeddingQueryPrefix = "search_query: ";
     config.embeddingDocumentPrefix = "search_document: ";
-    config.contextSize = 8192; // A resolve prompt, a thinking block and a long answer.
-    config.gpuLayers = -1;
+    config.contextSize = contextSize; // The default holds a resolve prompt, a thinking block and a long answer.
+    config.gpuLayers = gpuLayers;
     config.thinking = thinking;
     return std::make_unique<llama::LlamaCppBackend>(config);
 }

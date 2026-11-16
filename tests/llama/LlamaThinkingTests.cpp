@@ -131,8 +131,10 @@ TEST_CASE("A thinking budget too small to close the block is a contract error", 
 TEST_CASE("A thinking format whose end marker is not a single token is refused at load", "[llama]")
 {
     test::RequireThinkingModel(); // Outside the CHECK: a skip inside it would be caught as a throw.
-    CHECK_THROWS_WITH(test::MakeThinkingBackend({core::ThinkingMode::Format, {"[T]", "", "[/T]", "\n", "x[/T]\n"}}),
-                      ContainsSubstring("the thinking format's end marker '[/T]' is not a single token"));
+    // On the CPU with a small context: the format check runs right after the load and the shared backend holds the GPU.
+    CHECK_THROWS_WITH(
+        test::MakeThinkingBackend({core::ThinkingMode::Format, {"[T]", "", "[/T]", "\n", "x[/T]\n"}}, 0, 512),
+        ContainsSubstring("the thinking format's end marker '[/T]' is not a single token"));
 }
 
 TEST_CASE("A thinking format whose close text fills the smallest budget is refused at load", "[llama]")
@@ -146,7 +148,7 @@ TEST_CASE("A thinking format whose close text fills the smallest budget is refus
     close += "</think>\n\n";
     const core::ThinkingSetting setting = {
         core::ThinkingMode::Format, {"<think>\n", "<think>\n\n</think>\n\n", "</think>", "\n\n", close}};
-    CHECK_THROWS_WITH(test::MakeThinkingBackend(setting),
+    CHECK_THROWS_WITH(test::MakeThinkingBackend(setting, 0, 512), // CPU, small context, as above.
                       ContainsSubstring("the thinking format's close text uses") &&
                           ContainsSubstring("it must be under 64 (the smallest thinking budget)"));
 }
