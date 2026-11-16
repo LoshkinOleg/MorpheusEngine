@@ -269,7 +269,7 @@ When the review finds that a narration contradicts the outcome, the terminal pri
 
 It builds in every top-level preset (`MORPHEUS_BUILD_SERVER`, default on when top level), with no llama.cpp. The binary is `build/<preset>/bin/<config>/morpheus_server(.exe)`: `build/tests/bin/Debug/` in the `tests` preset, `build/dev/bin/<config>/` in `dev`.
 
-To run it, start the two llama-servers as in "Models through llama-server", the chat server with `--parallel 3` or more (slot 0 is for folding, the others for conversations), and set `"backend": "llama_server"` in settings.json (its `server.slot` is not used: the server hands out slots itself). Then:
+To run it, start the two llama-servers as in "Models through llama-server", the chat server with `--parallel 3` or more (slot 0 is for folding, the others for conversations), and set `"backend": "llama-server"` in settings.json (its `server.slot` is not used: the server hands out slots itself). Then:
 
 ```
 ./build/dev/bin/Release/morpheus_server --port 4998 --runs runs --settings settings.json
