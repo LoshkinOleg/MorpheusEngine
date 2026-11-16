@@ -1498,9 +1498,10 @@ TEST_CASE("The latest clock skips hidden rows and the applied clocks of unapplie
     Damage(file, "INSERT INTO rollbacks (id, game_time, status, saved_marks) VALUES (1, 1.5, 'open', '{}');"
                  "UPDATE pending_shares SET unapplied_by = 1;");
     CHECK(store::RunStore::Open(file).LatestClock() == 2.5);
-    // Hidden: neither the share nor the turn counts; the conversation's start does.
+    // Hidden: neither the share nor the turn counts; the conversation's start does, and the open rollback's time (1.5)
+    // is higher.
     Damage(file, "UPDATE pending_shares SET hidden_by = 1; UPDATE hosted_turns SET hidden_by = 1;");
-    CHECK(store::RunStore::Open(file).LatestClock() == 1.0);
+    CHECK(store::RunStore::Open(file).LatestClock() == 1.5);
 }
 
 TEST_CASE("A summary written while a rollback is open is made in it; two open rollbacks are damaged saved data",

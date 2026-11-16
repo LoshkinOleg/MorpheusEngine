@@ -815,6 +815,10 @@ RewindResult HostedSession::Rewind(double gameTime)
     result.hiddenTurns -= both;
     // Rewound: the open rollback changed (one was undone, applied, or both; the same time returned early above).
     result.rewound = open.has_value() || result.rollbackTime.has_value();
+    // Nothing changed: the index is as it was.
+    if (!result.rewound) {
+        return result;
+    }
     // Turns, folded marks and summaries all changed: the searchable history and memories are indexed again.
     SyncHistory();
     return result;

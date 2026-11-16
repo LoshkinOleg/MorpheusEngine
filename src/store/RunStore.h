@@ -258,8 +258,9 @@ public:
     int NextHostedTurn();
 
     // The highest clock among the visible hosted turns, conversations, conversation changes, events, summaries and
-    // shares (created, and applied unless a rollback unapplied them): what a record with no observation of its own is
-    // dated with. nullopt when none has a clock.
+    // shares (created, and applied unless a rollback unapplied them), raised to the game time of the most recent
+    // rollback that is not undone (open or abandoned): after a rewind to T the run is at T, so a record with no
+    // observation of its own is dated T, not with the last record before T. nullopt when none has a clock.
     std::optional<double> LatestClock();
 
     // Appends hosted turn NextHostedTurn(), with its clock. Throws ContractError if record.number is not that, its

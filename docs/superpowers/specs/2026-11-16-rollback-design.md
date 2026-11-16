@@ -18,7 +18,7 @@ When the player loads a save, the host tells Morpheus the save's game time, and 
 - `turn::HostData` gains an optional `clock`: a JSON pointer (RFC 6901) into the observation, e.g. `"/game_time/days_passed"`. `HostDataFromJson` reads it (a string; anything else is a `DataError` naming `/clock`); `HostedWorld` checks it is a well-formed pointer.
 - With a clock, every observation must hold a finite number at the pointer: `HostedWorld::Observe` reports a fault there ("observation at <pointer>: expected the clock, a number") as it reports any other fault. `Observation` gains `std::optional<double> clock`.
 - Without a clock, nothing changes for the host, and a rewind is refused (section 3).
-- The run's latest seen clock is the highest clock among its visible records (turns, conversation starts, participant changes, events, ends, shares); none before the first.
+- The run's latest seen clock is the highest clock among its visible records (turns, conversation starts, participant changes, events, ends, shares), raised to the game time of the most recent rollback that is not undone (open or abandoned), when that is higher: after a rewind to T the run is at T, so a record with no observation of its own is dated T, not with the last record before T. None before the first.
 
 ## 2. Records and their clocks
 
@@ -48,6 +48,8 @@ A run is its live records plus at most one open rollback. Rewind:
 
 1. Undoes the open rollback, if any (below).
 2. If `gameTime` is below the latest live clock, applies a rollback to `gameTime`.
+
+A rewind that changes nothing (`rewound` false: no rollback was open and none applied) does not resync the retrieval index.
 
 So a rewind to an earlier time hides, a rewind to a later time restores (up to that time), and a rewind to or past the latest live clock restores everything.
 

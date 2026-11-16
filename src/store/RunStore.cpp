@@ -1283,7 +1283,10 @@ int RunStore::NextHostedTurn()
 std::optional<double> RunStore::LatestClock()
 {
     RequireHosted("LatestClock");
-    // The highest clock among visible records: what a request with no observation of its own is dated with.
+    // The highest clock among visible records, raised to the time of the most recent rollback that is not undone:
+    // what a request with no observation of its own is dated with. After a rewind to T the run is at T, so such a
+    // record is dated T, not with the last record before T (an undone rollback is gone; an abandoned one still marks
+    // the time play went on from).
     Statement query = _db.Prepare(
         "SELECT MAX(c) FROM ("
         " SELECT clock AS c FROM hosted_turns WHERE hidden_by = 0 UNION ALL"
@@ -1292,7 +1295,8 @@ std::optional<double> RunStore::LatestClock()
         " SELECT clock FROM conversation_events WHERE hidden_by = 0 UNION ALL"
         " SELECT clock FROM summaries WHERE hidden_by = 0 UNION ALL"
         " SELECT clock FROM pending_shares WHERE hidden_by = 0 UNION ALL"
-        " SELECT applied_clock FROM pending_shares WHERE hidden_by = 0 AND unapplied_by = 0)");
+        " SELECT applied_clock FROM pending_shares WHERE hidden_by = 0 AND unapplied_by = 0 UNION ALL"
+        " SELECT game_time FROM rollbacks WHERE id = (SELECT MAX(id) FROM rollbacks WHERE status <> 'undone'))");
     if (!query.Step() || query.ColumnIsNull(0)) {
         return std::nullopt;
     }

@@ -122,7 +122,7 @@ TEST_CASE("A rollback hides what came after its time, moves the marks back, and 
     CHECK(store.ConversationEvents(id).size() == 1);
     CHECK(store.Conversation(id)->participants.size() == 3);
     CHECK_FALSE(store.Conversation(id)->ended);
-    CHECK(store.LatestClock() == 2.5);
+    CHECK(store.LatestClock() == 2.7); // The open rollback's time: the run is at 2.7, not at its event at 2.5.
 
     // npc-1's 3-4 is hidden, its 1-2 stays; npc-2's 1-4 straddles: hidden, and its mark moves back before it.
     const std::vector<core::Summary> npc1 = store.ActorSummaries("npc-1", false);
@@ -150,6 +150,33 @@ TEST_CASE("A rollback hides what came after its time, moves the marks back, and 
     REQUIRE(npc2.size() == 1);
     CHECK(npc2[0].toTurn == 4);
     CHECK(store.LatestClock() == 4.5);
+}
+
+TEST_CASE("The latest clock is raised to the time of the most recent rollback that is not undone", "[store][rollback]")
+{
+    // After a rewind to T the run is at T: a record with no observation of its own is dated T, not with the last
+    // record before T.
+    std::string id;
+    store::RunStore store = store::RunStore::Open(Run("rollback_latest_clock", id));
+    REQUIRE(store.LatestClock() == 4.5);
+
+    // Open: the highest visible record is 2.5 (the event) and the rollback is at 2.7.
+    store.ApplyRollback(2.7);
+    CHECK(store.LatestClock() == 2.7);
+    // Undone: the rollback is gone and the clock is the records' again.
+    store.UndoRollback();
+    CHECK(store.LatestClock() == 4.5);
+
+    // Abandoned: it still marks the time play went on from; the most recent rollback counts, not the abandoned one.
+    store.ApplyRollback(2.2);
+    CHECK(store.LatestClock() == 2.2);
+    store.AbandonRollback();
+    CHECK(store.LatestClock() == 2.2);
+    store.ApplyRollback(2.1);
+    CHECK(store.LatestClock() == 2.1);
+    store.UndoRollback();
+    // The abandoned 2.2 is the most recent one that is not undone; the visible records reach 2.0.
+    CHECK(store.LatestClock() == 2.2);
 }
 
 TEST_CASE("The run's summaries leave out the hidden ones", "[store][rollback]")

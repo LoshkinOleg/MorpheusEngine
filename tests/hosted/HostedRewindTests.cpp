@@ -253,3 +253,54 @@ TEST_CASE("A share whose copies are written at once abandons the rollback; one w
     CHECK(restored.restoredTurns == 1);
     CHECK(session.Turns(third).size() == 1);
 }
+
+TEST_CASE("A record written after a rewind is dated at the rewind's time", "[hosted][rewind]")
+{
+    // Turns at 1.0, 2.0 and 4.0; a rewind to 2.5 hides the last. The run is at 2.5 now: an event with no observation
+    // of its own is dated 2.5, not 2.0 (the last record before it).
+    test::HostedScript script;
+    script.actions = {R"({"action":"none","params":{}})", R"({"action":"none","params":{}})",
+                      R"({"action":"none","params":{}})"};
+    script.lines = {"One.", "Two.", "Three."};
+    test::ScriptedBackend backend(16384, test::MemoryEchoResponder(script));
+    turn::HostData data = test::FixtureHostData();
+    data.clock = CLOCK;
+    turn::HostedSession session = turn::HostedSession::Open(test::HostedRunFile("hosted_rewind_clock"), data,
+                                                            test::HostedSettings(), 42, backend);
+    const std::string id = session.StartConversation({test::HULDA, test::AELA}, At(1.0));
+    REQUIRE(session.RunTurn(TurnAt(id, "Hi.", 1.0), {}, {}));
+    REQUIRE(session.RunTurn(TurnAt(id, "Again.", 2.0), {}, {}));
+    REQUIRE(session.RunTurn(TurnAt(id, "Once more.", 4.0), {}, {}));
+    REQUIRE(session.Rewind(2.5).hiddenTurns == 1);
+
+    session.RecordEvents(id, {nlohmann::json{{"text", "A door opens."}}});
+    const std::vector<core::ConversationEvent> events = session.Events(id);
+    REQUIRE(events.size() == 1);
+    CHECK(events[0].clock == 2.5);
+}
+
+TEST_CASE("A rewind that changes nothing does not resync the retrieval index", "[hosted][rewind]")
+{
+    test::HostedScript script;
+    script.actions = {R"({"action":"none","params":{}})"};
+    script.lines = {"One."};
+    test::ScriptedBackend backend(16384, test::MemoryEchoResponder(script));
+    turn::HostData data = test::FixtureHostData();
+    data.clock = CLOCK;
+    turn::HostedSession session = turn::HostedSession::Open(test::HostedRunFile("hosted_rewind_noop"), data,
+                                                            test::HostedSettings(), 42, backend);
+    const std::string id = session.StartConversation({test::HULDA, test::AELA}, At(1.0));
+    REQUIRE(session.RunTurn(TurnAt(id, "Hi.", 1.0), {}, {}));
+
+    // At the latest clock, and past it, with no open rollback: nothing to hide or restore, so no backend call.
+    const std::size_t calls = backend.Calls().size();
+    const int embedded = backend.EmbeddedTexts();
+    for (const double gameTime : {1.0, 3.0}) {
+        CAPTURE(gameTime);
+        const turn::RewindResult result = session.Rewind(gameTime);
+        CHECK_FALSE(result.rewound);
+        CHECK_FALSE(result.rollbackTime.has_value());
+        CHECK(backend.Calls().size() == calls);
+        CHECK(backend.EmbeddedTexts() == embedded);
+    }
+}

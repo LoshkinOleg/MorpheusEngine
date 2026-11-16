@@ -180,7 +180,8 @@ public:
 
     // The run as it was at game time `gameTime` (rollback spec, section 3): the host calls it on every save load. It
     // undoes the open rollback, if any, then applies one to `gameTime` when that is before the latest live clock; a
-    // rewind to the open rollback's own time changes nothing. Hidden records are kept; a later rewind restores them
+    // rewind to the open rollback's own time changes nothing, and a rewind that changes nothing (rewound false) does
+    // not resync the retrieval index. Hidden records are kept; a later rewind restores them
     // until a new record abandons them (a turn committed, events recorded, a conversation started or ended,
     // participants changed, a share stored or copied: see the writers above). The background upkeep then refolds what
     // NPCs are missing. Throws DataError "game_time: ..." when the host data names no clock or `gameTime` is not
