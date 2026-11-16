@@ -44,9 +44,12 @@ std::string RenderSummaries(const std::vector<core::Summary>& summaries)
 // (the stable prefix ends after them), then one user message with `tail`. Then measures it against `budget`: the
 // layer counts the caller has not set (tail, transcript, total), the transcript's budget and cost, and every flag. The
 // caller has set tokens.summary: an over-cap summary is counted at most at its cap, in the system message or the tail
-// as `place` says. Throws DataError when the context leaves no room for the transcript (folding cannot fix that).
+// as `place` says. `reviewReserve` is the part of budget.narrateAllowance that a reviewed hosted turn added for its
+// review call (zero otherwise): only the no-room error names it. Throws DataError when the context leaves no room for
+// the transcript (folding cannot fix that).
 void LayOut(Assembly& assembly, std::string systemText, const std::vector<TranscriptEntry>& transcript,
-            std::string tail, const core::BudgetSettings& budget, SummaryPlace place, inference::LlmBackend& backend)
+            std::string tail, const core::BudgetSettings& budget, SummaryPlace place, int reviewReserve,
+            inference::LlmBackend& backend)
 {
     // The caller passes a fresh result: this appends to its prompt and adds to its transcript count.
     MORPHEUS_REQUIRE(assembly.prompt.messages.empty() && assembly.tokens.transcript == 0,
@@ -104,10 +107,17 @@ void LayOut(Assembly& assembly, std::string systemText, const std::vector<Transc
                                 systemShare;
     if (assembly.transcriptBudget <= 0) {
         // Folding turns cannot fix this: the settings or the world leave L3 nothing, so it is not a flag.
-        throw core::DataError(std::format("context_size {} leaves no room for the transcript after the system "
+        std::string message = std::format("context_size {} leaves no room for the transcript after the system "
                                           "layers ({} tokens), the tail allowance, the narrate allowance and both "
                                           "generations",
-                                          backend.ContextSize(), systemShare));
+                                          backend.ContextSize(), systemShare);
+        if (reviewReserve > 0) {
+            // A reviewed turn: say what the host can tune, as the review's share is part of the narrate allowance.
+            message += std::format(" (the narrate allowance includes the review's reserve of {} tokens: the review "
+                                   "message, review_max_tokens, review_thinking_tokens and the chat-template margin)",
+                                   reviewReserve);
+        }
+        throw core::DataError(message);
     }
     assembly.transcriptOverBudget = assembly.transcriptCost > assembly.transcriptBudget;
 
@@ -175,7 +185,7 @@ Assembly AssembleResolvePrompt(const core::World& world, const ContextInputs& in
                                           world.id, tokens.world, budget.worldCap));
     }
     LayOut(assembly, inputs.engineRules + "\n\n" + worldText + summaryText, inputs.transcript, std::move(tail), budget,
-           SummaryPlace::System, backend);
+           SummaryPlace::System, 0, backend);
     return assembly;
 }
 
@@ -243,9 +253,12 @@ Assembly AssembleHostedPrompt(const HostedInputs& inputs, const core::BudgetSett
         throw core::DataError(std::format("host lore and participants use {} tokens, over world_cap {}", tokens.world,
                                           budget.worldCap));
     }
-    // The speaker's memories sit in the tail: the system message holds no L2.
-    LayOut(assembly, inputs.systemText + "\n\n" + worldText, inputs.transcript, std::move(tail), budget,
-           SummaryPlace::Tail, backend);
+    // The speaker's memories sit in the tail: the system message holds no L2. A reviewed turn's reserve is kept free
+    // after the tail with the narrate allowance, so the transcript shrinks by that much.
+    core::BudgetSettings reserved = budget;
+    reserved.narrateAllowance += inputs.reviewReserve;
+    LayOut(assembly, inputs.systemText + "\n\n" + worldText, inputs.transcript, std::move(tail), reserved,
+           SummaryPlace::Tail, inputs.reviewReserve, backend);
     return assembly;
 }
 

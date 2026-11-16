@@ -327,7 +327,8 @@ bool LoreCondition::Holds(const nlohmann::json& observation) const
     try {
         parsed = nlohmann::json::json_pointer(pointer);
     } catch (const nlohmann::json::exception& error) {
-        throw ContractError(std::format("lore condition pointer '{}' is not a JSON pointer: {}", pointer, error.what()));
+        throw ContractError(
+            std::format("lore condition pointer '{}' is not a JSON pointer: {}", pointer, error.what()));
     }
     if (!observation.contains(*parsed)) {
         return false;

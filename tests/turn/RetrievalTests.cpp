@@ -126,7 +126,8 @@ TEST_CASE("Retrieve with a lore filter skips the lore entries the filter refuses
         asked.emplace_back(subject);
         return subject != "storm";
     };
-    const std::vector<turn::RetrievalHit> filtered = index.Retrieve(query, ALL_SOURCES, 1000, 6, backend, std::nullopt, noStorm);
+    const std::vector<turn::RetrievalHit> filtered =
+        index.Retrieve(query, ALL_SOURCES, 1000, 6, backend, std::nullopt, noStorm);
     CHECK(FindLore(filtered, "storm") == nullptr);
     CHECK(filtered.size() == all.size() - 1);
     for (const turn::RetrievalHit& hit : filtered) {
@@ -136,7 +137,8 @@ TEST_CASE("Retrieve with a lore filter skips the lore entries the filter refuses
 
     // A filter that accepts everything changes nothing.
     const std::function<bool(std::string_view)> everything = [](std::string_view) { return true; };
-    const std::vector<turn::RetrievalHit> same = index.Retrieve(query, ALL_SOURCES, 1000, 6, backend, std::nullopt, everything);
+    const std::vector<turn::RetrievalHit> same =
+        index.Retrieve(query, ALL_SOURCES, 1000, 6, backend, std::nullopt, everything);
     CHECK(same.size() == all.size());
 }
 

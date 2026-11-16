@@ -213,7 +213,8 @@ TEST_CASE("Opening host data checks lore scopes and conditions", "[hosted][lore]
     // A pointer that is not a JSON pointer.
     data = test::FixtureHostData();
     data.lore[2].condition = core::LoreCondition{"quests/MG03", 40, std::nullopt, std::nullopt};
-    CHECK_THAT(OpenError(data), ContainsSubstring("lore at /2/requires/pointer: 'quests/MG03' is not a JSON pointer: "));
+    CHECK_THAT(OpenError(data),
+               ContainsSubstring("lore at /2/requires/pointer: 'quests/MG03' is not a JSON pointer: "));
 }
 
 TEST_CASE("Observe reads an actor's knows", "[hosted][lore]")
@@ -493,8 +494,10 @@ TEST_CASE("Each fault of the observation core is a DataError naming its pointer"
     CHECK(ObserveError(world, withActor(0, "bio", 5)) == "observation at /actors/0/bio: 'bio' must be a string");
     const std::string knows = "'knows' must be an array of non-empty strings";
     CHECK(ObserveError(world, withActor(0, "knows", "inn")) == "observation at /actors/0/knows: " + knows);
-    CHECK(ObserveError(world, withActor(0, "knows", R"(["inn", ""])"_json)) == "observation at /actors/0/knows: " + knows);
-    CHECK(ObserveError(world, withActor(1, "knows", R"(["inn", 3])"_json)) == "observation at /actors/1/knows: " + knows);
+    CHECK(ObserveError(world, withActor(0, "knows", R"(["inn", ""])"_json)) ==
+          "observation at /actors/0/knows: " + knows);
+    CHECK(ObserveError(world, withActor(1, "knows", R"(["inn", 3])"_json)) ==
+          "observation at /actors/1/knows: " + knows);
     CHECK(ObserveError(world, withActor(2, "id", test::HULDA)) ==
           "observation at /actors/2/id: the id '0001A6A4' is repeated: /actors/0 has it too");
     CHECK(ObserveError(world, withActor(0, "is_player", true)) ==

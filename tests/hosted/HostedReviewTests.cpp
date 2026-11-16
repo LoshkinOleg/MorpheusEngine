@@ -11,6 +11,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "core/Errors.h"
 #include "core/HostedRecord.h"
 #include "fakes/ScriptedBackend.h"
 #include "hosted/HostedTestSupport.h"
@@ -196,7 +197,8 @@ TEST_CASE("A reviewed turn's transcript budget is smaller by the review's reserv
         script.lines = {"Hello there."};
         script.reviews = {CONSISTENT};
         test::ScriptedBackend backend(16384, script.Responder());
-        turn::HostedSession session = OpenRun(review ? "hosted_review_reserve_on" : "hosted_review_reserve_off", backend);
+        turn::HostedSession session =
+            OpenRun(review ? "hosted_review_reserve_on" : "hosted_review_reserve_off", backend);
         const std::string id = session.StartConversation({test::HULDA, test::AELA}, test::FixtureObservation());
         turn::HostedTurnRequest request = test::Request(id, test::HULDA, PLAYER_TEXT);
         request.review = review;
@@ -204,8 +206,41 @@ TEST_CASE("A reviewed turn's transcript budget is smaller by the review's reserv
         return session.LastAssembly().transcriptBudget;
     };
     const int reserve = tokens(turn::HostedReviewMessage(rules, true)) + settings.budget.reviewMaxTokens +
-                        settings.budget.reviewThinkingTokens + 16;
+                        settings.budget.reviewThinkingTokens +
+                        16; // REVIEW_TEMPLATE_MARGIN in HostedSession.cpp.
     CHECK(transcriptBudget(false) - transcriptBudget(true) == reserve);
+}
+
+TEST_CASE("A reviewed turn with no transcript room names the review's reserve", "[hosted][review]")
+{
+    // The transcript budget of an unreviewed turn at the full context: a context smaller by all but one token of it
+    // leaves the unreviewed turn one token of room, and the reviewed turn none.
+    auto turnAt = [&](int contextSize, bool review) {
+        test::HostedScript script;
+        script.actions = {NONE};
+        script.lines = {"Hello there."};
+        script.reviews = {CONSISTENT};
+        test::ScriptedBackend backend(contextSize, script.Responder());
+        turn::HostedSession session = OpenRun(review ? "hosted_review_noroom_on" : "hosted_review_noroom_off", backend);
+        const std::string id = session.StartConversation({test::HULDA, test::AELA}, test::FixtureObservation());
+        turn::HostedTurnRequest request = test::Request(id, test::HULDA, PLAYER_TEXT);
+        request.review = review;
+        const bool delivered = session.RunTurn(request, {}, {}).has_value();
+        return std::pair{delivered, session.LastAssembly().transcriptBudget};
+    };
+    const int fullBudget = turnAt(16384, false).second;
+    const int tightContext = 16384 - fullBudget + 1;
+
+    CHECK(turnAt(tightContext, false).first); // Unreviewed: the turn fits with one token to spare.
+    try {
+        turnAt(tightContext, true);
+        FAIL("a reviewed turn with no transcript room must throw");
+    } catch (const core::DataError& error) {
+        const std::string message = error.what();
+        CHECK_THAT(message, ContainsSubstring("the review's reserve of"));
+        CHECK_THAT(message, ContainsSubstring("review_max_tokens"));
+        CHECK_THAT(message, ContainsSubstring("review_thinking_tokens"));
+    }
 }
 
 TEST_CASE("An inconsistent review: the line is spoken once more with the problems", "[hosted][review]")

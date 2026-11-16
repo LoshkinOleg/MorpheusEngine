@@ -49,6 +49,9 @@ struct HostedInputs {
     std::string playerLine = {};                      // Tail: "<player name>: <text>", or empty.
     std::vector<std::string> candidates = {};         // Tail: who may speak, "<name> (<id>)" each (a decide call).
     std::string instruction = {};                     // Tail: the resolve instruction.
+    // Tokens a reviewed turn keeps free after the tail for the review call, on top of the narrate allowance: added to
+    // it by the fit, and named in the no-room error. Zero for an unreviewed turn.
+    int reviewReserve = 0;
 };
 
 // Where a prompt's summaries sit: in the system message (the owned game's L2) or in the tail (a hosted speaker's

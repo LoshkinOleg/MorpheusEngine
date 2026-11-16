@@ -154,7 +154,7 @@ Ways to faster turns, not done yet:
 
 ## Build (Linux)
 
-Status: an earlier Vulkan build of llama.cpp was tested in an Ubuntu 24.04 distrobox; these presets have not been run yet. On Linux, `cmake --list-presets` shows two presets (and on Windows only the Windows ones):
+Status: the `linux-tests` preset was built and its suite passed (744 of 744; the server tests skip without servers) in an Ubuntu 24.04 container with clang 18 and Ninja; `linux-release` (CUDA) has not been run. An earlier Vulkan build of llama.cpp was tested in an Ubuntu 24.04 distrobox. On Linux, `cmake --list-presets` shows two presets (and on Windows only the Windows ones):
 
 | Preset | Builds |
 |---|---|

@@ -1036,12 +1036,12 @@ FitPass HostedSession::Pass(std::string_view conversationId, std::string_view ac
         inputs.retrieved.push_back(hit.text);
     }
 
-    // `reserve` raises the narrate allowance the fit leaves free after the tail. Only the fit sees it: a speak or
-    // respeak message is still checked against the settings' narrate_allowance, which is what the speak call needs.
-    core::BudgetSettings budget = _settings.budget;
-    budget.narrateAllowance += reserve;
+    // `reserve` raises the narrate allowance the fit leaves free after the tail (the builder adds it, and names it when
+    // it leaves no room). Only the fit sees it: a speak or respeak message is still checked against the settings'
+    // narrate_allowance, which is what the speak call needs.
+    inputs.reviewReserve = reserve;
     FitPass pass;
-    pass.assembly = context::AssembleHostedPrompt(inputs, budget, *_pBackend);
+    pass.assembly = context::AssembleHostedPrompt(inputs, _settings.budget, *_pBackend);
     pass.transcript = std::move(inputs.transcript);
     return pass;
 }

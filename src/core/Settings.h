@@ -45,7 +45,9 @@ struct BudgetSettings {
     // Last, so positional initializers of the fields above stay valid.
     int resolveThinkingTokens = 0; // The resolve call's thinking block; 0 turns its thinking off.
     int narrateThinkingTokens = 0; // The narrate call's thinking block; 0 turns its thinking off.
-    // The review call: its prompt is standalone and short, so neither is reserved in the resolve prompt's context.
+    // The review call. The owned game's narration review has its own short prompt, so neither is reserved in the
+    // resolve prompt's context; a hosted review continues the speak prompt, so a reviewed hosted turn reserves both
+    // (and the review message) out of its transcript budget.
     int reviewMaxTokens = 0;      // The review call's answer (its JSON).
     int reviewThinkingTokens = 0; // The review call's thinking block; 0 turns its thinking off.
 

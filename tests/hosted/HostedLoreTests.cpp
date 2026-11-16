@@ -76,10 +76,12 @@ core::HostedTurn Ask(const std::string& name, const std::string& speaker, const 
     script.actions = {NONE};
     script.lines = {"Hm."};
     test::ScriptedBackend backend(16384, script.Responder());
-    turn::HostedSession session = turn::HostedSession::Open(test::HostedRunFile(name), LoreData(), test::HostedSettings(),
+    turn::HostedSession session = turn::HostedSession::Open(test::HostedRunFile(name), LoreData(),
+                                                            test::HostedSettings(),
                                                             42, backend);
     const std::string id = session.StartConversation({test::HULDA, test::SAADIA, test::AELA}, observation);
-    turn::HostedTurnRequest request = test::Request(id, speaker, "What are wards, is there bread, and what does the ledger say?");
+    turn::HostedTurnRequest request =
+        test::Request(id, speaker, "What are wards, is there bread, and what does the ledger say?");
     request.observation = observation;
     const std::optional<core::HostedTurn> record = session.RunTurn(request, {}, {});
     REQUIRE(record);

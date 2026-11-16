@@ -145,7 +145,8 @@ TEST_CASE("The default review rules name the speaking rules", "[review][hosted]"
     const std::string rules(turn::HOSTED_REVIEW_RULES);
     CHECK(rules.starts_with("# Review\nCheck the line above, the speaker's spoken words, against these rules."));
     CHECK_THAT(rules, Catch::Matchers::ContainsSubstring("the action the speaker requested in the JSON object above"));
-    CHECK_THAT(rules, Catch::Matchers::ContainsSubstring("The line does not state an outcome the host has not reported."));
+    CHECK_THAT(rules,
+               Catch::Matchers::ContainsSubstring("The line does not state an outcome the host has not reported."));
     CHECK_THAT(rules, Catch::Matchers::ContainsSubstring("no name or label in front"));
     CHECK(std::string(turn::HOSTED_RESPEAK_CORRECTION) ==
           "Your previous line broke the speaking rules. Say it again without these problems:");

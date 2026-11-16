@@ -16,7 +16,8 @@ Lore scopes and conditions, and the review as a continuation (design:
   the speaker's `knows`. A lore entry that is not visible to the speaker is not searched; an always-on entry is shown in the
   system message, the decide prompt and the fold prompts only while its `requires` holds on the observation the prompt
   is built from (a quest stage reached changes the system message once). An always-on entry may not have `scopes`: a
-  400 at `open`. Host data without the new keys is unchanged and keeps its hash.
+  400 at `open`. An actor's `knows` is a new reserved key in observations: a host whose observations already carried
+  `knows` in another shape now gets a 400. Host data without the new keys is unchanged and keeps its hash.
 - The review becomes a continuation of the speak prompt: the speak call's messages, the first line as an assistant
   message, then one user message (the pack's `review` text, a refusal note for a refused action, the instruction). It
   sees the conversation and keeps the conversation's prompt cache, so a reviewed turn no longer re-reads the whole

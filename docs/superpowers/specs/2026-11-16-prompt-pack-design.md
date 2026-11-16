@@ -27,7 +27,7 @@ The open body (and `turn::HostData`) gains an optional `prompts` object:
 | `decide` | the decide instruction | the decide call's tail, after the `# Who may speak` list (added by G1, `2026-11-16-decide-speaker-design.md`) | `{player}` |
 | `summarize` | the summarize instruction | the end of an NPC's fold call | `{actor}` |
 | `condense` | the condense instruction | the end of an NPC's condense call | `{actor}` |
-| `review` | the review call's system message | the system message of a turn's review call (added by G3) | none |
+| `review` | the review call's message | the start of the review call's user message, a continuation of the speak prompt (added by G3, reshaped in API 1.6.0: `2026-11-16-host-feedback-design.md`, section 3) | none |
 
 - The host may send any subset; a key it leaves out takes the engine's default (`EngineText`'s `HOSTED_*` constants). An empty `prompts` object is the same as none.
 - `HostDataFromJson` checks the shape: `prompts`, when present, is an object whose every value is a string (a `DataError` "host data at /prompts...: ..." otherwise). `HostData::prompts` holds what the host sent, key by key.
