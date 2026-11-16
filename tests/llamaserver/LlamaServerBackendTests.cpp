@@ -12,6 +12,7 @@
 #include <nlohmann/json.hpp>
 
 #include "core/Errors.h"
+#include "core/Settings.h"
 #include "core/Thinking.h"
 #include "fakes/FakeLlamaServer.h"
 #include "inference/Llm.h"
@@ -615,4 +616,31 @@ TEST_CASE("LlamaServerBackend keeps a prompt's end that only looks like a custom
     plainConfig.thinking = {core::ThinkingMode::None, {}};
     llamaserver::LlamaServerBackend plain(plainConfig);
     CHECK(backend.CountPromptTokens(test::SERVER_PROMPT) == plain.CountPromptTokens(test::SERVER_PROMPT));
+}
+
+TEST_CASE("LlamaServerBackend refuses a thinking format whose close text is as long as the smallest budget",
+          "[llamaserver][thinking]")
+{
+    test::FakeLlamaServer chat;
+    test::FakeLlamaServer embed;
+    // The fake tokenizer makes a token of 4 characters. A close text ends with the end marker and what follows it.
+    const std::string tail = "[/T]\n";
+    const auto formatWithCloseOf = [&tail](std::size_t characters) {
+        return core::ThinkingSetting{
+            core::ThinkingMode::Format,
+            {"[T]", "[T][/T]\n", "[/T]", "\n", std::string(characters - tail.size(), 'x') + tail}};
+    };
+
+    // 256 characters are 64 tokens: as many as the smallest thinking budget, so no budget could hold it.
+    llamaserver::LlamaServerConfig tooLong = test::ConfigFor(chat, embed);
+    tooLong.thinking = formatWithCloseOf(core::MIN_THINKING_TOKENS * 4);
+    CHECK_THROWS_AS(llamaserver::LlamaServerBackend(tooLong), inference::InferenceError);
+    CHECK_THROWS_WITH(llamaserver::LlamaServerBackend(tooLong),
+                      ContainsSubstring("the thinking format's close text uses 64 tokens; it must be under 64 (the "
+                                        "smallest thinking budget)"));
+
+    // 252 characters are 63 tokens: it fits.
+    llamaserver::LlamaServerConfig fits = test::ConfigFor(chat, embed);
+    fits.thinking = formatWithCloseOf(core::MIN_THINKING_TOKENS * 4 - 4);
+    CHECK_NOTHROW(llamaserver::LlamaServerBackend(fits));
 }

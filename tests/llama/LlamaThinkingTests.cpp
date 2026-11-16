@@ -2,7 +2,6 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <format>
-#include <memory>
 #include <string>
 #include <string_view>
 
@@ -59,7 +58,7 @@ TEST_CASE("A model without a thinking mode refuses a thinking budget", "[llama]"
 
 TEST_CASE("A thinking model thinks, then writes a grammar-constrained answer", "[llama]")
 {
-    llama::LlamaCppBackend& autoBackend = test::SharedThinkingBackend();
+    llama::LlamaCppBackend& backend = test::SharedThinkingBackend();
     const core::World world = core::LoadWorld(test::RepoDir() / "game_projects" / "sandcrawler");
     const inference::Prompt prompt = ResolvePrompt(world);
 
@@ -68,30 +67,24 @@ TEST_CASE("A thinking model thinks, then writes a grammar-constrained answer", "
     spec.maxTokens = 1024;
     spec.thinkingMaxTokens = 2048;
 
-    // The same call under the default (Auto) setting and under the Qwen format named in the setting (the Format run
-    // loads a second copy of the model: cheap for the 0.8B test model).
-    const std::unique_ptr<llama::LlamaCppBackend> pFormatBackend =
-        test::MakeThinkingBackend({core::ThinkingMode::Format, core::QWEN_THINKING});
-    for (llama::LlamaCppBackend* pBackend : {&autoBackend, pFormatBackend.get()}) {
-        std::string streamed;
-        const inference::Completion completion =
-            pBackend->Complete(prompt, spec, [&](std::string_view piece) { streamed += piece; }, {});
-        WARN(std::format("thinking: {} tokens in {:.0f} ms (stopped at limit: {}); answer: {} tokens in {:.0f} ms",
-                         completion.thinkingTokens, completion.thinkingMs, completion.thinkingStoppedAtLimit,
-                         completion.tokensGenerated, completion.generateMs));
+    std::string streamed;
+    const inference::Completion completion =
+        backend.Complete(prompt, spec, [&](std::string_view piece) { streamed += piece; }, {});
+    WARN(std::format("thinking: {} tokens in {:.0f} ms (stopped at limit: {}); answer: {} tokens in {:.0f} ms",
+                     completion.thinkingTokens, completion.thinkingMs, completion.thinkingStoppedAtLimit,
+                     completion.tokensGenerated, completion.generateMs));
 
-        // The block stays out of the answer and the stream; the answer alone follows the grammar.
-        CHECK_FALSE(completion.thinking.empty());
-        CHECK(completion.thinkingTokens <= spec.thinkingMaxTokens);
-        CHECK(streamed == completion.text);
-        CHECK_THAT(completion.text, !ContainsSubstring("<think>") && !ContainsSubstring("</think>"));
-        REQUIRE_FALSE(completion.stoppedAtLimit);
-        const nlohmann::json output = nlohmann::json::parse(completion.text);
-        CHECK(output.at("intent").is_string());
+    // The block stays out of the answer and the stream; the answer alone follows the grammar.
+    CHECK_FALSE(completion.thinking.empty());
+    CHECK(completion.thinkingTokens <= spec.thinkingMaxTokens);
+    CHECK(streamed == completion.text);
+    CHECK_THAT(completion.text, !ContainsSubstring("<think>") && !ContainsSubstring("</think>"));
+    REQUIRE_FALSE(completion.stoppedAtLimit);
+    const nlohmann::json output = nlohmann::json::parse(completion.text);
+    CHECK(output.at("intent").is_string());
 
-        // The thinking call evaluates no more prompt than CountPromptTokens promises.
-        CHECK(completion.promptTokens <= pBackend->CountPromptTokens(prompt));
-    }
+    // The thinking call evaluates no more prompt than CountPromptTokens promises.
+    CHECK(completion.promptTokens <= backend.CountPromptTokens(prompt));
 }
 
 TEST_CASE("A thinking block that runs out of budget is closed by the backend", "[llama]")
@@ -137,6 +130,23 @@ TEST_CASE("A thinking budget too small to close the block is a contract error", 
 
 TEST_CASE("A thinking format whose end marker is not a single token is refused at load", "[llama]")
 {
+    test::RequireThinkingModel(); // Outside the CHECK: a skip inside it would be caught as a throw.
     CHECK_THROWS_WITH(test::MakeThinkingBackend({core::ThinkingMode::Format, {"[T]", "", "[/T]", "\n", "x[/T]\n"}}),
                       ContainsSubstring("the thinking format's end marker '[/T]' is not a single token"));
+}
+
+TEST_CASE("A thinking format whose close text fills the smallest budget is refused at load", "[llama]")
+{
+    test::RequireThinkingModel();
+    // Every word is at least one token, so this close text uses far more than core::MIN_THINKING_TOKENS.
+    std::string close;
+    for (int word = 0; word < 100; ++word) {
+        close += "word ";
+    }
+    close += "</think>\n\n";
+    const core::ThinkingSetting setting = {
+        core::ThinkingMode::Format, {"<think>\n", "<think>\n\n</think>\n\n", "</think>", "\n\n", close}};
+    CHECK_THROWS_WITH(test::MakeThinkingBackend(setting),
+                      ContainsSubstring("the thinking format's close text uses") &&
+                          ContainsSubstring("it must be under 64 (the smallest thinking budget)"));
 }

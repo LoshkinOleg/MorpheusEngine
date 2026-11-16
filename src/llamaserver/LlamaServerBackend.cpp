@@ -23,6 +23,7 @@
 #include <httplib.h>
 
 #include "core/Errors.h"
+#include "core/Settings.h"
 #include "core/Thinking.h"
 
 namespace morpheus::llamaserver {
@@ -366,6 +367,12 @@ LlamaServerBackend::LlamaServerBackend(LlamaServerConfig config)
         markers.open = ServerTokens(format->open, false, true);
         markers.skip = format->skip.empty() ? std::vector<std::int32_t>() : ServerTokens(format->skip, false, true);
         markers.close = ServerTokens(format->close, false, true);
+        // A close text must fit the smallest thinking budget, or no budget could hold it (a data fault, found here).
+        if (markers.close.size() >= static_cast<std::size_t>(core::MIN_THINKING_TOKENS)) {
+            throw InferenceError(std::format("the thinking format's close text uses {} tokens; it must be under {} "
+                                             "(the smallest thinking budget)",
+                                             markers.close.size(), core::MIN_THINKING_TOKENS));
+        }
         markers.end = ServerTokens(format->end, false, true);
         markers.afterEnd = ServerTokens(format->afterEnd, false, false);
         markers.openText = format->open;

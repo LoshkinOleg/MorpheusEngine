@@ -15,6 +15,7 @@
 #include <llama.h>
 
 #include "core/Errors.h"
+#include "core/Settings.h"
 #include "core/Text.h"
 #include "core/Thinking.h"
 
@@ -183,6 +184,12 @@ LlamaCppBackend::LlamaCppBackend(LlamaConfig config)
         markers.open = Tokenize(pVocab, format->open, false, true);
         markers.skip = Tokenize(pVocab, format->skip, false, true);
         markers.close = Tokenize(pVocab, format->close, false, true);
+        // A close text must fit the smallest thinking budget, or no budget could hold it (a data fault, found here).
+        if (markers.close.size() >= static_cast<std::size_t>(core::MIN_THINKING_TOKENS)) {
+            throw InferenceError(std::format("the thinking format's close text uses {} tokens; it must be under {} "
+                                             "(the smallest thinking budget)",
+                                             markers.close.size(), core::MIN_THINKING_TOKENS));
+        }
         markers.afterEnd = Tokenize(pVocab, format->afterEnd, false, false);
         markers.endToken = end.front();
         _thinking = std::move(markers);

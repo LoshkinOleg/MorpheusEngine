@@ -38,17 +38,23 @@ inline llama::LlamaCppBackend& SharedBackend()
 // Thinking tests need a thinking chat model too (its chat template has enable_thinking, as Qwen3.5 and later do):
 //   MORPHEUS_TEST_THINKING_MODEL  e.g. Qwen3.8-27B-UD-Q4_K_M.gguf, or a small Qwen3.5 for a quick run
 // with MORPHEUS_TEST_EMBED_MODEL. The calling test is skipped when either is unset.
-// A new backend on the thinking model with the given thinking setting (a test that compares settings loads its own).
-inline std::unique_ptr<llama::LlamaCppBackend> MakeThinkingBackend(const core::ThinkingSetting& thinking)
+// Skips the calling test unless the thinking model and the embedding model are set. Call it outside any CHECK (a CHECK
+// would catch the skip).
+inline void RequireThinkingModel()
 {
-    const std::string chatModel = EnvironmentVariable("MORPHEUS_TEST_THINKING_MODEL");
-    const std::string embedModel = EnvironmentVariable("MORPHEUS_TEST_EMBED_MODEL");
-    if (chatModel.empty() || embedModel.empty()) {
+    if (EnvironmentVariable("MORPHEUS_TEST_THINKING_MODEL").empty() ||
+        EnvironmentVariable("MORPHEUS_TEST_EMBED_MODEL").empty()) {
         SKIP("set MORPHEUS_TEST_THINKING_MODEL and MORPHEUS_TEST_EMBED_MODEL to run thinking tests");
     }
+}
+
+// A new backend on the thinking model with the given thinking setting (a test that loads its own setting).
+inline std::unique_ptr<llama::LlamaCppBackend> MakeThinkingBackend(const core::ThinkingSetting& thinking)
+{
+    RequireThinkingModel();
     llama::LlamaConfig config;
-    config.chatModel = chatModel;
-    config.embeddingModel = embedModel;
+    config.chatModel = EnvironmentVariable("MORPHEUS_TEST_THINKING_MODEL");
+    config.embeddingModel = EnvironmentVariable("MORPHEUS_TEST_EMBED_MODEL");
     config.embeddingQueryPrefix = "search_query: ";
     config.embeddingDocumentPrefix = "search_document: ";
     config.contextSize = 8192; // A resolve prompt, a thinking block and a long answer.
