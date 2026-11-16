@@ -363,6 +363,12 @@ ApiResponse Api::Handle(std::string_view method, std::string_view path, std::str
                     if (json.contains("allowed_actions")) {
                         request.allowedActions = StringList(json, "allowed_actions");
                     }
+                    if (json.contains("review")) {
+                        if (!json.at("review").is_boolean()) {
+                            throw core::DataError("review: expected true or false");
+                        }
+                        request.review = json.at("review").get<bool>();
+                    }
 
                     // The turn runs on the run's worker, on its conversation's slot; its events come back through the
                     // stream. It is the only job that stops a running background fold: other requests wait for the
@@ -423,11 +429,17 @@ ApiResponse Api::Handle(std::string_view method, std::string_view path, std::str
                                     if (!rest.empty()) {
                                         stream->Push({"sentence", {{"text", rest}}});
                                     }
-                                    // The timings: resolve and speak, and decide when a decide call ran.
+                                    // The timings: resolve and speak, and decide, review and respeak when those calls ran.
                                     nlohmann::json timings = {{"resolve", record->timings.at("resolve")},
                                                               {"speak", record->timings.at("speak")}};
                                     if (record->timings.contains("decide")) {
                                         timings["decide"] = record->timings.at("decide");
+                                    }
+                                    if (record->timings.contains("review")) {
+                                        timings["review"] = record->timings.at("review");
+                                    }
+                                    if (record->timings.contains("respeak")) {
+                                        timings["respeak"] = record->timings.at("respeak");
                                     }
                                     stream->Push({"done",
                                                   {{"speaker", record->speakerId},

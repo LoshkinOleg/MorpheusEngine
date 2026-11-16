@@ -3,6 +3,18 @@
 The morpheus_server API's versions (`api_version` on every response). A breaking change bumps the major version and
 gets an entry here with a migration note.
 
+## API 1.5.0
+
+The review of a hosted turn (design: `docs/superpowers/specs/2026-11-16-hosted-review-design.md`). Only additions.
+
+- A turn's optional `review` (boolean, default false): the line is checked against the speaking rules by one more model
+  call. The line is held back while the review runs and streams after it (its `token` and `sentence` events come
+  after the review); on problems the engine asks for the line once more (one respeak) and the second line stands.
+  The cost is one review call, and sometimes one more speak call. A `review` that is not a boolean is a 400.
+- The `done` event's `timings` gain `review` (the call's telemetry, `consistent`, `problems`, and `error` when the
+  review was unreadable) and `respeak` (the second speak call's telemetry), each only when that call ran.
+- The prompt pack gains `review` (no variable), the review call's system text; `GET /v1/prompts/default` lists it.
+
 ## API 1.4.0
 
 The engine chooses the speaker (design: `docs/superpowers/specs/2026-11-16-decide-speaker-design.md`). Only additions.

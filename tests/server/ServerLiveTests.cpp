@@ -52,12 +52,24 @@ TEST_CASE("morpheus_server against real llama-servers: the conversation fixture 
     // The fixture's requests, answered by the real model. The first turn fills the slot's cache; later turns show the
     // warm figure the host's 1.5 s target is about (measured here, not asserted: the target is for its RTX 3060 Ti).
     int turnNumber = 0;
-    for (const nlohmann::json& step : fixture.at("steps")) {
+    const nlohmann::json& steps = fixture.at("steps");
+    std::size_t lastTurnStep = 0;
+    for (std::size_t i = 0; i < steps.size(); ++i) {
+        if (steps[i].contains("turn")) {
+            lastTurnStep = i;
+        }
+    }
+    for (std::size_t stepIndex = 0; stepIndex < steps.size(); ++stepIndex) {
+        const nlohmann::json& step = steps[stepIndex];
         if (step.contains("events")) {
             REQUIRE(test::JsonPost(client, base + "/events", {{"events", step.at("events")}}).status == 200);
             continue;
         }
         nlohmann::json body = step.at("turn");
+        // The fixture's last turn asks for the review: it must still complete and end with done.
+        if (stepIndex == lastTurnStep) {
+            body["review"] = true;
+        }
         if (!body.contains("observation")) {
             body["observation"] = test::FixtureObservation();
         }

@@ -20,7 +20,7 @@ The Mantella fork reaches Morpheus over HTTP on localhost. `morpheus_server` is 
 
 - The server listens on 127.0.0.1 only; port 4998 by default (`--port`).
 - Bodies are JSON (UTF-8); a body that is not a JSON object answers 400.
-- Every response, error or not, carries `"api_version"` (semver; 1.4.0 now), in the JSON body and, for a stream, in its first event. That includes the answers cpp-httplib makes itself (a method no route takes such as OPTIONS, a request it refuses, its own 404, an exception that escaped a handler: 500, logged): `HttpServer` gives them the Api's error body. A breaking change bumps the major version and gets a `CHANGELOG.md` entry with a migration note.
+- Every response, error or not, carries `"api_version"` (semver; 1.5.0 now), in the JSON body and, for a stream, in its first event. That includes the answers cpp-httplib makes itself (a method no route takes such as OPTIONS, a request it refuses, its own 404, an exception that escaped a handler: 500, logged): `HttpServer` gives them the Api's error body. A breaking change bumps the major version and gets a `CHANGELOG.md` entry with a migration note.
 - The listening socket owns its port alone (`SO_EXCLUSIVEADDRUSE` on Windows, plain `SO_REUSEADDR` elsewhere; cpp-httplib's default lets a second server share a live port). A port in use makes the server exit at startup with a message naming it.
 
 ### Endpoints
@@ -33,7 +33,7 @@ Conversations sit under their run: their ids are short and per run (`c1`, `c2`, 
 | `GET /v1/prompts/default` | - | `{prompts, variables}`: the engine's default texts and the variables each takes; added in 1.3.0 (F) |
 | `POST /v1/runs/{run_id}/open` | `{catalog, observation_schema, lore?, clock?, prompts?, seed?}`: D1's host data (`HostDataFromJson`) and an optional sampling seed (default 0) | `{run_id, created}`. Idempotent: the same host data reopens as it is; changed host data is D1's re-embed-then-replace. |
 | `POST /v1/runs/{run_id}/conversations` | `{participants, observation}` | `{conversation_id}` |
-| `POST /v1/runs/{run_id}/conversations/{cid}/turn` | `{speaker, player_text?, events?, observation, allowed_actions?}` (`speaker` accepts `"decide"`, added in 1.4.0, G1) | A Server-Sent Events stream (below) |
+| `POST /v1/runs/{run_id}/conversations/{cid}/turn` | `{speaker, player_text?, events?, observation, allowed_actions?, review?}` (`speaker` accepts `"decide"`, added in 1.4.0, G1; `review`, a boolean, added in 1.5.0, G3) | A Server-Sent Events stream (below) |
 | `POST /v1/runs/{run_id}/conversations/{cid}/events` | `{events}` | `{}` |
 | `POST /v1/runs/{run_id}/conversations/{cid}/participants` | `{joined?, left?, observation}` | `{participants}`: the ids in join order |
 | `POST /v1/runs/{run_id}/conversations/{cid}/end` | `{}` | `{}`; folding follows in the background (section 2) |
@@ -53,7 +53,7 @@ Conversations sit under their run: their ids are short and per run (`c1`, `c2`, 
 - `action`: `{api_version, speaker, action, refused?}`. `action` is `{id, params}`, or null when the proposal was refused. A refused proposal adds `refused`: its reasons. The event is sent as soon as the action has been adjudicated, before the line starts.
 - `token`: `{text}`, one per streamed piece.
 - `sentence`: `{text}`, sent as soon as a sentence of the line is complete (section 1, "Sentences").
-- `done`: `{speaker, action, line, turn, events_omitted, timings}`. The first three are the brief's turn result (section 5.3); `turn` is the committed turn's number; `timings` holds the resolve and speak times in ms and the tokens reused.
+- `done`: `{speaker, action, line, turn, events_omitted, timings}`. The first three are the brief's turn result (section 5.3); `turn` is the committed turn's number; `timings` holds the resolve and speak times in ms and the tokens reused, and `decide`, `review` and `respeak` when those calls ran. With `review` the line's `token` and `sentence` events come after the review.
 - `error`: `{status, message}`, for a failure after the stream has started (an `InferenceError` during the line: status 503). The stream then ends and no turn is committed.
 
 A client that disconnects during a turn stops it through its stop token: `RunTurn` returns nullopt and nothing is committed, as D1 defines. The worker moves on to the next request.
@@ -196,7 +196,7 @@ The `conversation` fixture end to end over HTTP against real llama-servers. The 
 ## Documentation
 
 - README: a "morpheus_server" section: running it against llama-server, the flags, the endpoints, an example session with curl, the measured first-sentence time.
-- `CHANGELOG.md` (new, at the repo root): API 1.0.0. API 1.1.0 (E1, `2026-11-16-per-speaker-memory-design.md`) adds the two memory routes and changes behaviour: each NPC remembers only what it witnessed. API 1.2.0 (E2, `2026-11-16-rollback-design.md`) adds the rewind route and the host data's optional `clock`. API 1.3.0 (F, `2026-11-16-prompt-pack-design.md`) adds the host data's optional `prompts` and the defaults route. API 1.4.0 (G1, `2026-11-16-decide-speaker-design.md`) adds `speaker: "decide"` and the pack's `decide` text.
+- `CHANGELOG.md` (new, at the repo root): API 1.0.0. API 1.1.0 (E1, `2026-11-16-per-speaker-memory-design.md`) adds the two memory routes and changes behaviour: each NPC remembers only what it witnessed. API 1.2.0 (E2, `2026-11-16-rollback-design.md`) adds the rewind route and the host data's optional `clock`. API 1.3.0 (F, `2026-11-16-prompt-pack-design.md`) adds the host data's optional `prompts` and the defaults route. API 1.4.0 (G1, `2026-11-16-decide-speaker-design.md`) adds `speaker: "decide"` and the pack's `decide` text. API 1.5.0 (G3, `2026-11-16-hosted-review-design.md`) adds the turn's `review`, `timings.review` and `timings.respeak`, and the pack's `review` text.
 - CLAUDE.md: `src/server` and `tools/server` in the layout; `src/server` among the modules that include `<httplib.h>`; the `MORPHEUS_BUILD_SERVER` option.
 - Architecture spec: the server module row and its dependencies.
 - The hosted-world spec: section 6's overflow paragraph points here.
