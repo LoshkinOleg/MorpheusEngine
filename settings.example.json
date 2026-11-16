@@ -24,7 +24,7 @@
     "retrieval_cap": 768
   },
   "sampling": {
-    "resolve": { "temperature": 1.0, "top_k": 20, "top_p": 0.95 },
-    "narrate": { "temperature": 1.0, "top_k": 20, "top_p": 0.95 }
+    "resolve": { "temperature": 1.0, "top_k": 20, "top_p": 0.95, "min_p": 0.0 },
+    "narrate": { "temperature": 1.0, "top_k": 20, "top_p": 0.95, "min_p": 0.0 }
   }
 }

@@ -35,6 +35,7 @@ inference::Sampling SamplingFrom(const core::SamplingSettings& settings, std::ui
     sampling.temperature = static_cast<float>(settings.temperature);
     sampling.topK = settings.topK;
     sampling.topP = static_cast<float>(settings.topP);
+    sampling.minP = static_cast<float>(settings.minP);
     sampling.seed = seed;
     return sampling;
 }

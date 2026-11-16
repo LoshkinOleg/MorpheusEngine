@@ -233,13 +233,22 @@ Settings LoadSettings(const std::filesystem::path& file)
     checkKeys(sampling, "sampling", {"resolve", "narrate"});
     auto readSampling = [&](const char* callType) {
         const nlohmann::json& object = requireMember(sampling, callType, "sampling");
-        checkKeys(object, callType, {"temperature", "top_k", "top_p"});
+        checkKeys(object, callType, {"temperature", "top_k", "top_p", "min_p"});
         SamplingSettings result;
         result.temperature = requireNumber(object, "temperature", callType, 0.0, 2.0);
         result.topK = requireInt(object, "top_k", callType, 1, 1000);
         result.topP = requireNumber(object, "top_p", callType, 0.0, 1.0);
         if (result.topP <= 0.0) {
             throw DataError(std::format("{}: {} 'top_p' must be greater than 0", where, callType));
+        }
+        // min_p is optional (0: none), and below 1, which would keep only the top token.
+        if (object.contains("min_p")) {
+            const nlohmann::json& minP = object.at("min_p");
+            if (!minP.is_number() || minP.get<double>() < 0.0 || minP.get<double>() >= 1.0) {
+                throw DataError(std::format("{}: sampling '{}': 'min_p' must be at least 0 and below 1, not {}", where,
+                                            callType, minP.dump()));
+            }
+            result.minP = minP.get<double>();
         }
         return result;
     };
@@ -251,7 +260,8 @@ Settings LoadSettings(const std::filesystem::path& file)
 nlohmann::json SettingsToJson(const Settings& settings)
 {
     auto sampling = [](const SamplingSettings& values) {
-        return nlohmann::json{{"temperature", values.temperature}, {"top_k", values.topK}, {"top_p", values.topP}};
+        return nlohmann::json{{"temperature", values.temperature}, {"top_k", values.topK}, {"top_p", values.topP},
+                              {"min_p", values.minP}};
     };
     nlohmann::json json = {
         {"backend", BackendKindName(settings.backend)},

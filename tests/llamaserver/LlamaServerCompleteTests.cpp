@@ -1,3 +1,4 @@
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
@@ -56,7 +57,7 @@ TEST_CASE("LlamaServerBackend::Complete sends one streamed /completion request",
     inference::GenerationSpec spec;
     spec.grammar = YES_NO;
     spec.maxTokens = 16;
-    spec.sampling = {0.5f, 20, 0.75f, 77};
+    spec.sampling = {0.5f, 20, 0.75f, 77, 0.05f};
     backend.Complete(test::SERVER_PROMPT, spec, {}, {});
 
     const std::vector<test::FakeLlamaServer::Request> requests = chat.RequestsTo("/completion");
@@ -66,10 +67,11 @@ TEST_CASE("LlamaServerBackend::Complete sends one streamed /completion request",
     CHECK(body.at("prompt") == nlohmann::json(test::ServerPromptTokens()));
     CHECK(body.at("n_predict") == 16);
     CHECK(body.at("grammar") == YES_NO);
-    // The sampling of LlamaCppBackend's chain: top-k, top-p keeping at least one token, temperature, then the draw.
-    CHECK(body.at("samplers") == nlohmann::json::array({"top_k", "top_p", "temperature"}));
+    // The sampling of LlamaCppBackend's chain: top-k, top-p keeping at least one token, min-p, temperature, then the draw.
+    CHECK(body.at("samplers") == nlohmann::json::array({"top_k", "top_p", "min_p", "temperature"}));
     CHECK(body.at("top_k") == 20);
     CHECK(body.at("top_p").get<double>() == 0.75);
+    CHECK(body.at("min_p").get<double>() == Catch::Approx(0.05));
     CHECK(body.at("min_keep") == 1);
     CHECK(body.at("temperature").get<double>() == 0.5);
     CHECK(body.at("dynatemp_range").get<double>() == 0.0);
@@ -77,7 +79,6 @@ TEST_CASE("LlamaServerBackend::Complete sends one streamed /completion request",
     CHECK(body.at("seed") == 77);
     // Every other sampler llama-server knows is neutral, whatever its command line set.
     CHECK(body.at("mirostat") == 0);
-    CHECK(body.at("min_p").get<double>() == 0.0);
     CHECK(body.at("typical_p").get<double>() == 1.0);
     CHECK(body.at("top_n_sigma").get<double>() == -1.0);
     CHECK(body.at("xtc_probability").get<double>() == 0.0);

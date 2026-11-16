@@ -67,7 +67,8 @@ inline nlohmann::json FixtureObservation()
 
 // Settings for hosted session tests: a context of 16384 with roomy budgets (resolve_max_tokens 64, narrate_max_tokens
 // 256, narrate_allowance 128, tail_allowance 1024, engine_rules_cap 1024, world_cap 1024, summary_cap 512,
-// retrieval_cap 256) and no thinking.
+// retrieval_cap 256) and no thinking. Both samplings carry min_p 0.05, so the live hosted and [server] runs, which
+// start from these settings, sample with it (the fakes ignore sampling).
 inline core::Settings HostedSettings()
 {
     core::Settings settings;
@@ -77,8 +78,8 @@ inline core::Settings HostedSettings()
     settings.embeddingDocumentPrefix = "search_document: ";
     settings.contextSize = 16384;
     settings.budget = {64, 256, 128, 1024, 1024, 1024, 512, 256};
-    settings.resolveSampling = {0.3, 40, 0.9};
-    settings.narrateSampling = {0.8, 40, 0.95};
+    settings.resolveSampling = {0.3, 40, 0.9, 0.05};
+    settings.narrateSampling = {0.8, 40, 0.95, 0.05};
     return settings;
 }
 

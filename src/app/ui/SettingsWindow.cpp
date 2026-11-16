@@ -103,6 +103,7 @@ void SettingsWindow::Draw(AppController& controller)
                 ImGui::InputDouble("Temperature", &sampling.temperature, 0.05, 0.1, "%.2f");
                 ImGui::InputInt("Top K", &sampling.topK);
                 ImGui::InputDouble("Top P", &sampling.topP, 0.01, 0.05, "%.2f");
+                ImGui::InputDouble("Min P", &sampling.minP, 0.01, 0.05, "%.2f");
                 ImGui::PopID();
             };
             ImGui::SeparatorText("Sampling");

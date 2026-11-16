@@ -2,6 +2,7 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <string>
 
@@ -474,4 +475,30 @@ TEST_CASE("SettingsToJson writes the backend and its own keys", "[settings]")
     CHECK(local.contains("chat_model"));
     CHECK(local.contains("gpu_layers"));
     CHECK_FALSE(local.contains("server"));
+}
+
+TEST_CASE("LoadSettings reads an optional min_p per call type", "[settings]")
+{
+    // Absent: 0, so existing settings files load as they did.
+    const Settings plain = LoadSettings(WriteSettings("settings_min_p_absent", ValidSettingsJson()));
+    CHECK(plain.resolveSampling.minP == 0.0);
+    CHECK(plain.narrateSampling.minP == 0.0);
+
+    nlohmann::json json = ValidSettingsJson();
+    json["sampling"]["narrate"]["min_p"] = 0.05;
+    const Settings set = LoadSettings(WriteSettings("settings_min_p_set", json));
+    CHECK(set.narrateSampling.minP == 0.05);
+    CHECK(set.resolveSampling.minP == 0.0);
+    // It round-trips.
+    CHECK(LoadSettings(WriteSettings("settings_min_p_copy", SettingsToJson(set))).narrateSampling.minP == 0.05);
+
+    for (const double bad : {-0.1, 1.0, 1.5}) {
+        INFO(bad);
+        nlohmann::json wrong = ValidSettingsJson();
+        wrong["sampling"]["resolve"]["min_p"] = bad;
+        CHECK_THROWS_WITH(LoadSettings(WriteSettings("settings_min_p_bad", wrong)),
+                          ContainsSubstring(std::format("sampling 'resolve': 'min_p' must be at least 0 and below 1, "
+                                                        "not {}",
+                                                        bad)));
+    }
 }

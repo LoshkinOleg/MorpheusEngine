@@ -448,21 +448,21 @@ inference::Completion LlamaServerBackend::Complete(const inference::Prompt& prom
 
     // What every call of this completion sends. The prompt as token ids: /completion evaluates them as they are (it
     // adds BOS only to a prompt given as text). The sampling is LlamaCppBackend's chain: top-k, top-p keeping at least
-    // one token, temperature, then llama-server's draw with the seed (at temperature 0 only the most likely token is
-    // left: greedy, as in-process). Every other sampler llama-server knows is named neutral, so its command-line
-    // defaults (penalties, DRY, top-n-sigma, typical, min-p, XTC, mirostat, a logit bias) cannot change what the model
-    // writes. Then the slot, whose cache the calls share, and the stream.
+    // one token, min-p, temperature, then llama-server's draw with the seed (at temperature 0 only the most likely
+    // token is left: greedy, as in-process). Every other sampler llama-server knows is named neutral, so its
+    // command-line defaults (penalties, DRY, top-n-sigma, typical, XTC, mirostat, a logit bias) cannot change what the
+    // model writes. Then the slot, whose cache the calls share, and the stream.
     nlohmann::json body = {{"prompt", tokens},
-                           {"samplers", nlohmann::json::array({"top_k", "top_p", "temperature"})},
+                           {"samplers", nlohmann::json::array({"top_k", "top_p", "min_p", "temperature"})},
                            {"top_k", spec.sampling.topK},
                            {"top_p", spec.sampling.topP},
+                           {"min_p", spec.sampling.minP},
                            {"min_keep", 1},
                            {"temperature", spec.sampling.temperature},
                            {"dynatemp_range", 0.0},
                            {"dynatemp_exponent", 1.0},
                            {"seed", spec.sampling.seed},
                            {"mirostat", 0},
-                           {"min_p", 0.0},
                            {"typical_p", 1.0},
                            {"top_n_sigma", -1.0},
                            {"xtc_probability", 0.0},

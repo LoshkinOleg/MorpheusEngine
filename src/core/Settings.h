@@ -28,6 +28,7 @@ struct SamplingSettings {
     double temperature = 0.0; // 0 means greedy decoding.
     int topK = 40;
     double topP = 0.95;
+    double minP = 0.0;        // 0 means no min-p. Last, so positional initializers of the fields above stay valid.
 };
 
 // Token budget for one assembled prompt (architecture spec, "Context layout and KV cache").

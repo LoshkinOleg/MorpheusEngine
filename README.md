@@ -61,6 +61,7 @@ Then copy `settings.example.json` (the template) to `settings.json` at the repos
 - `budget.review_max_tokens` and `budget.review_thinking_tokens` are the review call's answer and thinking budgets (`review_max_tokens` at least 1, like the other answer budgets; `review_thinking_tokens` 0 or at least 64, like the other thinking budgets; together they must stay below `context_size`). The review prompt is short and standalone, so they are not reserved in the turn prompt's context.
 - `gpu_layers` is how many of the chat model's layers go to the GPU (-1: all). A model larger than the GPU's memory needs a lower number: the rest runs on the CPU, slower. llama.cpp puts the last N layers on the GPU. Whatever else uses the GPU (a game, a browser decoding video) lowers the limit; see "Performance with Qwen3.8-27B on a 10 GB GPU" below for measured values.
 - Qwen recommends temperature 1.0, top_k 20 and top_p 0.95 for its models in thinking mode, as in the example.
+- `min_p` (optional, 0 up to but not including 1, default 0) is a sampling entry's min-p cut: tokens less likely than `min_p` times the top token's probability are dropped. 0 means none.
 
 To check that the models, the GPU backend and KV-cache prefix reuse work, run the probe. It prints the prompt size and streams two completions; the second should report almost the whole prompt as reused:
 
@@ -92,7 +93,7 @@ Use `127.0.0.1`, not `localhost`, in both the command lines and `settings.json`:
 
 - `--parallel N` gives the chat server N slots, each with `--ctx-size / N` tokens of context: make that at least `context_size` (73728 / 3 = 24576 above).
 - The embedding server needs `--embedding` and a pooled sentence-embedding model; a batch as large as its context lets a long text be embedded in one piece, as in-process.
-- Morpheus sends the prompt as token ids, tokenized as in-process (a player's text never becomes control tokens), and names the in-process sampling chain in every request (top-k, top-p, temperature; the server's other samplers neutral), so the server's command-line sampling options do not change Morpheus's calls.
+- Morpheus sends the prompt as token ids, tokenized as in-process (a player's text never becomes control tokens), and names the in-process sampling chain in every request (top-k, top-p, min-p, temperature; the server's other samplers neutral), so the server's command-line sampling options do not change Morpheus's calls.
 - Thinking works as in-process: Morpheus writes the thinking block's markers itself, so the thinking budgets apply unchanged.
 - Connections: Morpheus keeps one connection alive to each server (a second, dedicated one for the streamed `/completion`, so a cancel closes only that one). llama-server closes a connection idle for 5 s, so a non-streaming request, and a `/completion` that got no answer, is sent once more when a stale connection failed it.
 - The app keeps its backend while the settings are unchanged, and the backend reads the servers' facts (the thinking markers, the BOS token, the embedding model's id) once at startup, so after swapping a server's model under the same URL, reload the backend (change and restore a setting, or restart the app): otherwise new embeddings are stored under the old embedding model's id.

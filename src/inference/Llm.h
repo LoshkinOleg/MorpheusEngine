@@ -49,6 +49,7 @@ struct Sampling {
     int topK = 40;
     float topP = 0.95f;
     std::uint32_t seed = 0;
+    float minP = 0.0f; // 0 means no min-p. Last, so positional initializers stay valid.
 };
 
 struct GenerationSpec {

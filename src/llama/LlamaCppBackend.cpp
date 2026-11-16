@@ -276,6 +276,7 @@ inference::Completion LlamaCppBackend::Complete(const inference::Prompt& prompt,
     } else {
         llama_sampler_chain_add(pChain.get(), llama_sampler_init_top_k(spec.sampling.topK));
         llama_sampler_chain_add(pChain.get(), llama_sampler_init_top_p(spec.sampling.topP, 1));
+        llama_sampler_chain_add(pChain.get(), llama_sampler_init_min_p(spec.sampling.minP, 1));
         llama_sampler_chain_add(pChain.get(), llama_sampler_init_temp(spec.sampling.temperature));
         llama_sampler_chain_add(pChain.get(), llama_sampler_init_dist(spec.sampling.seed));
     }

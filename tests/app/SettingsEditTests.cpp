@@ -35,6 +35,7 @@ TEST_CASE("ReadSettingsEdit reads the edited values as the file writes them", "[
     CHECK(edit.resolveSampling.temperature == file.at("sampling").at("resolve").at("temperature").get<double>());
     CHECK(edit.narrateSampling.topK == file.at("sampling").at("narrate").at("top_k").get<int>());
     CHECK(edit.narrateSampling.topP == file.at("sampling").at("narrate").at("top_p").get<double>());
+    CHECK(edit.narrateSampling.minP == 0.0);
     CHECK_FALSE(edit.memoryMode); // The example leaves memory_mode to each world.
 }
 
@@ -224,4 +225,14 @@ TEST_CASE("ReadSettingsEdit reads a llama-server file without model keys", "[set
     const core::Settings saved = app::SaveSettingsEdit(dir / "settings.json", edit);
     CHECK(saved.backend == core::BackendKind::LlamaServer);
     CHECK_FALSE(nlohmann::json::parse(test::ReadFile(dir / "settings.json")).contains("chat_model"));
+}
+
+TEST_CASE("SaveSettingsEdit writes min_p", "[settings_edit]")
+{
+    const std::filesystem::path file = test::SettingsFolder("settings_edit_min_p") / "settings.json";
+    app::SettingsEdit edit = app::ReadSettingsEdit(file);
+    edit.resolveSampling.minP = 0.1;
+    app::SaveSettingsEdit(file, edit);
+    CHECK(nlohmann::json::parse(test::ReadFile(file)).at("sampling").at("resolve").at("min_p").get<double>() == 0.1);
+    CHECK(core::LoadSettings(file).resolveSampling.minP == 0.1);
 }
