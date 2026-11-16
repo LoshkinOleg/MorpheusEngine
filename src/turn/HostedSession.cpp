@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <array>
-#include <climits>
 #include <cmath>
 #include <cstddef>
 #include <format>
@@ -24,11 +23,11 @@ namespace morpheus::turn {
 namespace {
 
 // The names of the host's lore in errors.
+constexpr std::string_view HOST_LORE_SOURCE = "host data: lore";
 // The decide call's answer allowance over its longest possible answer, and its seed's attempt (the resolve call's kind,
 // apart from the resolve call's attempts).
 constexpr int DECIDE_TOKEN_MARGIN = 8;
 constexpr int DECIDE_SEED_ATTEMPT = 1 << 22;
-constexpr std::string_view HOST_LORE_SOURCE = "host data: lore";
 // What a hosted tail holds, for the TurnError when it does not fit tail_allowance.
 constexpr std::string_view HOSTED_TAIL_NAME =
     "the observation, the events, the player text and the resolve instruction (prompts/resolve)";
@@ -337,16 +336,30 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
                 inputs.candidates.push_back(std::format("{} ({})", pCandidate->name, pCandidate->id));
             }
             inputs.instruction = PromptPack::Fill(_world.Prompts().decide, {.player = player.name});
-            // The oldest lines leave until it fits: the decide view is no NPC's memory, so nothing folds.
+            // It must fit as a resolve prompt does, minus the folds: the decide view is no NPC's memory. While the tail is
+            // over tail_allowance the oldest new events leave it (the store keeps them); then the oldest lines leave
+            // while L3 is over the transcript budget or the context overflows.
             context::Assembly decideAssembly = context::AssembleHostedPrompt(inputs, _settings.budget, *_pBackend);
-            while ((decideAssembly.transcriptOverBudget || decideAssembly.contextOverflow) &&
-                   !inputs.transcript.empty()) {
-                inputs.transcript.erase(inputs.transcript.begin());
+            while (!decideAssembly.Fits()) {
+                if (decideAssembly.tailOverBudget && !inputs.events.empty()) {
+                    inputs.events.erase(inputs.events.begin());
+                } else if ((decideAssembly.transcriptOverBudget || decideAssembly.contextOverflow) &&
+                           !inputs.transcript.empty()) {
+                    inputs.transcript.erase(inputs.transcript.begin());
+                } else {
+                    break;
+                }
                 decideAssembly = context::AssembleHostedPrompt(inputs, _settings.budget, *_pBackend);
             }
-            if (!decideAssembly.Fits()) {
-                throw TurnError(std::format("the decide prompt does not fit: its tail uses {} tokens, tail_allowance {}",
+            if (decideAssembly.tailOverBudget) {
+                throw TurnError(std::format("the decide prompt does not fit: its tail uses {} tokens, over "
+                                            "tail_allowance {}",
                                             decideAssembly.tokens.tail, _settings.budget.tailAllowance));
+            }
+            if (!decideAssembly.Fits()) {
+                throw TurnError(std::format("the decide prompt does not fit the context: its system message and tail "
+                                            "leave no room for the call's allowance, context {}",
+                                            _settings.contextSize));
             }
 
             // The answer's schema: one key, the candidates' ids. Its allowance: the longest answer, and a margin.

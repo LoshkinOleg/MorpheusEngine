@@ -141,7 +141,10 @@ public:
     // with no player text and no events while another remains; one candidate is chosen without a call, more with a
     // decide call; a refused decide answer goes to the candidate who spoke least recently, its reasons in
     // `timings.decide.refused`. A DataError "speaker: "decide" needs an NPC participant in the observation" when there
-    // is none.
+    // is none. The decide prompt fits as the resolve prompt does, without folds (the oldest new events, then the oldest
+    // lines, leave it); when it still does not, a TurnError names the tail (over tail_allowance) or the context, before
+    // any record. onSpeaker fires before the catch-up, so a turn cancelled or failing after it has reported its speaker
+    // without committing, as for onAction.
     std::optional<core::HostedTurn> RunTurn(const HostedTurnRequest& request, const HostedCallbacks& callbacks,
                                             std::stop_token stop);
 

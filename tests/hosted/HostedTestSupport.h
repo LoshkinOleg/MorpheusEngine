@@ -112,8 +112,8 @@ inline bool IsHostedDecide(const inference::Prompt& prompt)
 }
 
 // A scripted model for hosted turns. Resolve calls (they carry the proposal grammar) get `actions` in order, speak
-// calls (no grammar) get `lines` in order, decide calls get `decisions` in order, and fold and condense calls "Summary.". Running out of replies is a test
-// bug. The script must outlive the backends that call it.
+// calls (no grammar) get `lines` in order, decide calls get `decisions` in order, and fold and condense calls
+// "Summary.". Running out of replies is a test bug. The script must outlive the backends that call it.
 struct HostedScript {
     std::vector<std::string> actions = {};
     std::vector<std::string> lines = {};

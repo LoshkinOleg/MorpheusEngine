@@ -2,6 +2,7 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <cstddef>
+#include <filesystem>
 #include <optional>
 #include <stop_token>
 #include <string>
@@ -282,5 +283,98 @@ TEST_CASE("A turn stopped during its decide call commits nothing", "[hosted][dec
     const std::string id = session.StartConversation({test::HULDA, test::SAADIA, test::AELA}, test::FixtureObservation());
     CHECK_FALSE(session.RunTurn(test::Request(id, "decide", "Hello."), {}, source.get_token()));
     CHECK(backend.Calls().size() == 1);
+    CHECK(session.Turns(id).empty());
+}
+
+TEST_CASE("Events over the tail allowance: the decide tail drops the oldest as a resolve tail does", "[hosted][decide]")
+{
+    test::HostedScript script;
+    script.decisions = {Decision(test::SAADIA)};
+    script.actions = {NONE};
+    script.lines = {"Yes?"};
+    test::ScriptedBackend backend(16384, script.Responder());
+    turn::HostedSession session = OpenRun("hosted_decide_events", backend);
+    const std::string id = session.StartConversation({test::HULDA, test::SAADIA, test::AELA}, test::FixtureObservation());
+
+    // Four events of 300 tokens each (the fake counts 4 bytes a token): with the observation and the player's line,
+    // over tail_allowance 1024. Three are recorded, the fourth comes with the request.
+    const std::string a(1200, 'a');
+    const std::string b(1200, 'b');
+    const std::string c(1200, 'c');
+    const std::string d(1200, 'd');
+    session.RecordEvents(id, {nlohmann::json{{"text", a}}, nlohmann::json{{"text", b}}});
+    session.RecordEvents(id, {nlohmann::json{{"text", c}}});
+    turn::HostedTurnRequest request = test::Request(id, "decide", "Who is there?");
+    request.events = {nlohmann::json{{"text", d}}};
+    REQUIRE(session.RunTurn(request, {}, {}));
+
+    const std::vector<test::ScriptedBackend::Call> calls = DecideCalls(backend);
+    REQUIRE(calls.size() == 1);
+    const std::string& tail = calls[0].prompt.messages.back().content;
+    CHECK_THAT(tail, !ContainsSubstring(a));
+    CHECK_THAT(tail, !ContainsSubstring(b));
+    CHECK_THAT(tail, ContainsSubstring(c));
+    CHECK_THAT(tail, ContainsSubstring("(" + d + ")"));
+    CHECK_THAT(tail, ContainsSubstring("Who is there?"));
+    CHECK_THAT(tail, ContainsSubstring("# Who may speak"));
+}
+
+TEST_CASE("A conversation over the transcript budget still gets a decide call with its oldest turns left out",
+          "[hosted][decide]")
+{
+    test::HostedScript script;
+    script.decisions = {Decision(test::SAADIA)};
+    script.actions = {NONE, NONE, NONE, NONE, NONE, NONE};
+    script.lines = {std::string(1600, 'a'), std::string(1600, 'b'), std::string(1600, 'c'),
+                    std::string(1600, 'd'), std::string(1600, 'e'), "Saadia here."};
+    const std::filesystem::path file = test::HostedRunFile("hosted_decide_budget");
+    std::string id;
+    {
+        // Five long turns fit a big context, so nothing folds.
+        test::ScriptedBackend big(16384, script.Responder());
+        turn::HostedSession session = turn::HostedSession::Open(file, test::FixtureHostData(), test::HostedSettings(), 42, big);
+        id = session.StartConversation({test::HULDA, test::SAADIA, test::AELA}, test::FixtureObservation());
+        for (int i = 0; i < 5; ++i) {
+            REQUIRE(session.RunTurn(test::Request(id, test::HULDA, "Go on."), {}, {}));
+        }
+        REQUIRE(session.Conversation(id)->foldedThrough == 0);
+    }
+    // The run reopens on a small context: about 680 tokens of L3, room for one or two of those turns.
+    test::ScriptedBackend small(2500, script.Responder());
+    core::Settings settings = test::HostedSettings();
+    settings.contextSize = 2500;
+    turn::HostedSession session = turn::HostedSession::Open(file, test::FixtureHostData(), settings, 42, small);
+    REQUIRE(session.RunTurn(test::Request(id, "decide", "And you?"), {}, {}));
+
+    const std::vector<test::ScriptedBackend::Call> calls = DecideCalls(small);
+    REQUIRE(calls.size() == 1);
+    int assistantTurns = 0;
+    for (const inference::Message& message : calls[0].prompt.messages) {
+        if (message.role == inference::Role::Assistant) {
+            ++assistantTurns;
+        }
+    }
+    CHECK(assistantTurns >= 1);
+    CHECK(assistantTurns < 5);
+    // The newest turn stays, the oldest left.
+    std::string all;
+    for (const inference::Message& message : calls[0].prompt.messages) {
+        all += message.content + "\n";
+    }
+    CHECK_THAT(all, ContainsSubstring("eeee"));
+    CHECK_THAT(all, !ContainsSubstring("aaaa"));
+}
+
+TEST_CASE("A decide prompt whose tail cannot fit even without events is a TurnError before any call",
+          "[hosted][decide]")
+{
+    test::HostedScript script; // No reply: a model call would fail the test.
+    test::ScriptedBackend backend(16384, script.Responder());
+    turn::HostedSession session = OpenRun("hosted_decide_nofit", backend);
+    const std::string id = session.StartConversation({test::HULDA, test::SAADIA, test::AELA}, test::FixtureObservation());
+    // A player line of about 1500 tokens: over tail_allowance 1024 on its own.
+    CHECK_THROWS_WITH(session.RunTurn(test::Request(id, "decide", std::string(6000, 'x')), {}, {}),
+                      ContainsSubstring("the decide prompt does not fit: its tail uses"));
+    CHECK(backend.Calls().empty());
     CHECK(session.Turns(id).empty());
 }

@@ -28,7 +28,7 @@ A host that does not know who should talk next sends `speaker: "decide"`, and th
 
 - The prompt, assembled as a hosted prompt is (`context::AssembleHostedPrompt`, so the budgets are the resolve prompt's):
   - the system message every speaker of the conversation gets: the run's pack's system text, the host's always-on lore and the participants (so it is cached with theirs);
-  - L3: every visible turn of the conversation, whoever witnessed it (the entries `SyncHistory` renders, witness `""`), from the conversation's `folded_through` on; when they are over the transcript budget, the oldest are left out until they fit (no fold: the decide view is no NPC's memory);
+  - L3: every visible turn of the conversation, whoever witnessed it (the entries `SyncHistory` renders, witness `""`), from the conversation's `folded_through` on; when they are over the transcript budget, the oldest are left out until they fit (no fold: the decide view is no NPC's memory); when the tail is over `tail_allowance`, the oldest new events leave it as they leave a resolve tail (the store keeps them); when it still does not fit, a `TurnError` before any record names the tail ("the decide prompt does not fit: its tail uses N tokens, over tail_allowance M") or the context ("... does not fit the context ...");
   - no memories and no retrieval;
   - the tail: the observation, the new events and the player's line as a resolve tail shows them, then `# Who may speak` with one line `- <name> (<id>)` per candidate in candidate order, then the instruction (the pack's `decide` text, `{player}` filled).
 - The grammar: `grammar::FromSchema` of `{"type": "object", "properties": {"speaker": {"enum": [<candidate ids>]}}, "required": ["speaker"], "additionalProperties": false}`.
