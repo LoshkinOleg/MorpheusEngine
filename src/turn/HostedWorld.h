@@ -28,7 +28,7 @@ struct HostData {
     // "/game_time/days_passed". Empty: no clock, and a run cannot be rewound.
     std::string clock = {};
     // The host's prompt texts by pack key (prompt pack spec, section 1): any of system, resolve, speak, turn_cue,
-    // summarize, condense, as sent. A key left out takes the engine's default (PromptPack). Empty: no pack.
+    // decide, summarize, condense, as sent. A key left out takes the engine's default (PromptPack). Empty: no pack.
     std::map<std::string, std::string> prompts = {};
 };
 
