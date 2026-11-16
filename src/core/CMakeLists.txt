@@ -10,6 +10,7 @@ add_library(morpheus_core STATIC
     Changes.cpp
     Dice.cpp
     Text.cpp
+    Thinking.cpp
     World.cpp
 )
 add_library(Morpheus::core ALIAS morpheus_core) # The name host projects link.

@@ -12,6 +12,7 @@
 #include "core/Errors.h"
 #include "core/MemoryMode.h"
 #include "core/Settings.h"
+#include "core/Thinking.h"
 
 using namespace morpheus::core;
 using Catch::Matchers::ContainsSubstring;
@@ -501,4 +502,57 @@ TEST_CASE("LoadSettings reads an optional min_p per call type", "[settings]")
                                                         "not {}",
                                                         bad)));
     }
+}
+
+TEST_CASE("LoadSettings reads thinking_format: a preset or the five texts", "[settings][thinking]")
+{
+    CHECK(LoadSettings(WriteSettings("settings_thinking_absent", ValidSettingsJson())).thinking == ThinkingSetting{});
+    auto load = [](const std::string& name, const nlohmann::json& format) {
+        nlohmann::json json = ValidSettingsJson();
+        json["thinking_format"] = format;
+        return LoadSettings(WriteSettings(name, json));
+    };
+    CHECK(load("settings_thinking_auto", "auto").thinking == ThinkingSetting{});
+    CHECK(load("settings_thinking_qwen", "qwen").thinking == ThinkingSetting{ThinkingMode::Format, QWEN_THINKING});
+    CHECK(load("settings_thinking_none", "none").thinking.mode == ThinkingMode::None);
+    const nlohmann::json custom = {{"open", "[T]"}, {"skip", ""}, {"end", "[/T]"}, {"after_end", "\n"},
+                                   {"close", "Answer now.[/T]\n"}};
+    const Settings customSettings = load("settings_thinking_custom", custom);
+    CHECK(customSettings.thinking ==
+          ThinkingSetting{ThinkingMode::Format, {"[T]", "", "[/T]", "\n", "Answer now.[/T]\n"}});
+
+    // Each form round-trips through SettingsToJson: "qwen" for the preset, the object for a custom format.
+    CHECK(SettingsToJson(load("settings_thinking_qwen_json", "qwen")).at("thinking_format") == "qwen");
+    CHECK(SettingsToJson(customSettings).at("thinking_format") == custom);
+    CHECK(SettingsToJson(load("settings_thinking_none_json", "none")).at("thinking_format") == "none");
+    CHECK(LoadSettings(WriteSettings("settings_thinking_copy", SettingsToJson(customSettings))).thinking ==
+          customSettings.thinking);
+
+    // The faults.
+    CHECK_THROWS_WITH(load("settings_thinking_bad_name", "deepseek"),
+                      ContainsSubstring("'thinking_format' must be \"auto\", \"qwen\", \"none\" or an object with open, "
+                                        "skip, end, after_end and close, got 'deepseek'"));
+    nlohmann::json noOpen = custom;
+    noOpen["open"] = "";
+    CHECK_THROWS_WITH(load("settings_thinking_no_open", noOpen), ContainsSubstring("thinking_format 'open' must not be empty"));
+    nlohmann::json noEnd = custom;
+    noEnd["end"] = "";
+    CHECK_THROWS_WITH(load("settings_thinking_no_end", noEnd), ContainsSubstring("thinking_format 'end' must not be empty"));
+    nlohmann::json badClose = custom;
+    badClose["close"] = "Answer now.";
+    CHECK_THROWS_WITH(load("settings_thinking_bad_close", badClose),
+                      ContainsSubstring("thinking_format 'close' must end with 'end' followed by 'after_end'"));
+    nlohmann::json extra = custom;
+    extra["nudge"] = "x";
+    CHECK_THROWS_WITH(load("settings_thinking_extra", extra), ContainsSubstring("unknown key 'nudge' in thinking_format"));
+    nlohmann::json missing = custom;
+    missing.erase("skip");
+    CHECK_THROWS_WITH(load("settings_thinking_missing", missing), ContainsSubstring("thinking_format needs 'skip'"));
+
+    // With no thinking, every thinking budget must be 0.
+    nlohmann::json none = ValidSettingsJson();
+    none["thinking_format"] = "none";
+    none["budget"]["narrate_thinking_tokens"] = 128;
+    CHECK_THROWS_WITH(LoadSettings(WriteSettings("settings_thinking_none_budget", none)),
+                      ContainsSubstring("thinking_format is \"none\": budget 'narrate_thinking_tokens' must be 0"));
 }

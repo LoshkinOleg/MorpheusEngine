@@ -110,7 +110,8 @@ Settings LoadSettings(const std::filesystem::path& file)
 
     checkKeys(json, "settings", {"backend", "chat_model", "embedding_model", "embedding_query_prefix",
                                  "embedding_document_prefix", "context_size", "gpu_layers", "server", "budget",
-                                 "sampling", "memory_mode", "narration_check", "compact_transcript", "prose_turns"});
+                                 "sampling", "memory_mode", "narration_check", "compact_transcript", "prose_turns",
+                                 "thinking_format"});
 
     Settings settings;
 
@@ -228,6 +229,53 @@ Settings LoadSettings(const std::filesystem::path& file)
                                     where, fixed, contextSize, SETTINGS_TEMPLATE_MARGIN));
     }
 
+    // The thinking format (generation-controls spec, section 3): a preset name, or the five texts. Absent is "auto".
+    if (json.contains("thinking_format")) {
+        const nlohmann::json& format = json.at("thinking_format");
+        if (format.is_string()) {
+            const std::string name = format.get<std::string>();
+            if (name == "qwen") {
+                settings.thinking = {ThinkingMode::Format, QWEN_THINKING};
+            } else if (name == "none") {
+                settings.thinking = {ThinkingMode::None, {}};
+            } else if (name != "auto") {
+                throw DataError(std::format("{}: 'thinking_format' must be \"auto\", \"qwen\", \"none\" or an object "
+                                            "with open, skip, end, after_end and close, got '{}'",
+                                            where, name));
+            }
+        } else {
+            checkKeys(format, "thinking_format", {"open", "skip", "end", "after_end", "close"});
+            ThinkingFormat custom;
+            custom.open = requireString(format, "open", "thinking_format");
+            custom.skip = requireString(format, "skip", "thinking_format");
+            custom.end = requireString(format, "end", "thinking_format");
+            custom.afterEnd = requireString(format, "after_end", "thinking_format");
+            custom.close = requireString(format, "close", "thinking_format");
+            for (const auto& [key, text] : {std::pair{"open", &custom.open}, std::pair{"end", &custom.end}}) {
+                if (text->empty()) {
+                    throw DataError(std::format("{}: thinking_format '{}' must not be empty", where, key));
+                }
+            }
+            // A closed block ends as the model's own does: the end marker, then what follows it.
+            if (!custom.close.ends_with(custom.end + custom.afterEnd)) {
+                throw DataError(std::format("{}: thinking_format 'close' must end with 'end' followed by 'after_end'",
+                                            where));
+            }
+            settings.thinking = {ThinkingMode::Format, std::move(custom)};
+        }
+    }
+    // With no thinking, no call may think.
+    if (settings.thinking.mode == ThinkingMode::None) {
+        const std::pair<const char*, int> budgets[] = {{"resolve_thinking_tokens", settings.budget.resolveThinkingTokens},
+                                                       {"narrate_thinking_tokens", settings.budget.narrateThinkingTokens},
+                                                       {"review_thinking_tokens", settings.budget.reviewThinkingTokens}};
+        for (const auto& [key, value] : budgets) {
+            if (value > 0) {
+                throw DataError(std::format("{}: thinking_format is \"none\": budget '{}' must be 0", where, key));
+            }
+        }
+    }
+
     // Sampling per call type.
     const nlohmann::json& sampling = requireMember(json, "sampling", "settings");
     checkKeys(sampling, "sampling", {"resolve", "narrate"});
@@ -286,6 +334,18 @@ nlohmann::json SettingsToJson(const Settings& settings)
           {"retrieval_cap", settings.budget.retrievalCap}}},
         {"sampling", {{"resolve", sampling(settings.resolveSampling)}, {"narrate", sampling(settings.narrateSampling)}}},
     };
+    // The thinking format as settings.json spells it: a preset name, or the five texts.
+    if (settings.thinking.mode == ThinkingMode::Auto) {
+        json["thinking_format"] = "auto";
+    } else if (settings.thinking.mode == ThinkingMode::None) {
+        json["thinking_format"] = "none";
+    } else if (settings.thinking.format == QWEN_THINKING) {
+        json["thinking_format"] = "qwen";
+    } else {
+        const ThinkingFormat& format = settings.thinking.format;
+        json["thinking_format"] = {{"open", format.open}, {"skip", format.skip}, {"end", format.end},
+                                   {"after_end", format.afterEnd}, {"close", format.close}};
+    }
     if (settings.memoryMode) {
         json["memory_mode"] = *settings.memoryMode == MemoryMode::Engine ? "engine" : "assisted";
     }

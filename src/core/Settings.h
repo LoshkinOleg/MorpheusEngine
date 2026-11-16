@@ -8,6 +8,7 @@
 #include <nlohmann/json.hpp>
 
 #include "core/MemoryMode.h"
+#include "core/Thinking.h"
 
 namespace morpheus::core {
 
@@ -78,6 +79,7 @@ struct Settings {
     BudgetSettings budget = {};
     SamplingSettings resolveSampling = {};
     SamplingSettings narrateSampling = {};
+    ThinkingSetting thinking = {}; // thinking_format: how the backends write the thinking block (Auto: as the template says).
     std::optional<MemoryMode> memoryMode = {}; // Overrides the world's default memory_mode when set.
     // A review call after each narration checks it against the outcome; a contradiction is narrated once more.
     bool narrationCheck = false;
@@ -91,7 +93,7 @@ struct Settings {
 // gpu_layers; under llama-server a `server` object with chat_url and embedding_url (each "http://" and a host) and
 // slot (at least 0). Each backend's keys are ignored, not checked, under the other. The budget must leave room for the
 // transcript (L3) and SETTINGS_TEMPLATE_MARGIN chat-template tokens; the review budgets are not part of that sum.
-// memory_mode is optional; every other key is required.
+// memory_mode and thinking_format are optional; every other key is required.
 Settings LoadSettings(const std::filesystem::path& file);
 
 // The settings as settings.json JSON, with model paths absolute (UTF-8), and only the keys of the backend in use.

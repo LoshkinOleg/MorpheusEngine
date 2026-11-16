@@ -9,6 +9,7 @@
   "narration_check": true,
   "compact_transcript": true,
   "prose_turns": 2,
+  "thinking_format": "auto",
   "budget": {
     "resolve_max_tokens": 512,
     "narrate_max_tokens": 768,
