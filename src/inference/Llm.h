@@ -62,6 +62,9 @@ struct GenerationSpec {
     // The server slot whose prompt cache the call uses; -1 is the backend's default slot. The in-process backend has
     // one cache and ignores it; LlamaServerBackend sends it as id_slot. Morpheus's own game leaves it at -1.
     int slot = -1;
+    // What the call is, for the layers that tell calls apart (the replay, the app's labels); the backends ignore it.
+    // The turn layer sets it on every call (generation-controls spec, section 2).
+    std::string callTag = {};
 };
 
 struct Completion {

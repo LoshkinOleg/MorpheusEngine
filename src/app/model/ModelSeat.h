@@ -32,11 +32,9 @@ constexpr std::array<SeatLabel, 7> SEAT_LABELS = {SeatLabel::Resolve, SeatLabel:
 // The label's spelling in the window: "resolve", "narrate", "rewrite", "lookup", "review", "summarize" or "condense".
 std::string SeatLabelName(SeatLabel label);
 
-// The label of a call, from its prompt and spec as turn::CallKindOf tells them apart: a narrate call whose last
-// message contains turn::RENARRATE_CORRECTION is a rewrite, and a summary call is a summarize or a condense by the
-// instruction its last message ends with. Throws ContractError for a summary call that ends with neither (the engine
-// makes no such call).
-SeatLabel SeatLabelOf(const inference::Prompt& prompt, const inference::GenerationSpec& spec);
+// The label of a call, from its tag (the turn layer's): resolve, narrate, renarrate (a rewrite), lookup, review,
+// summarize, condense. Throws ContractError for any other tag.
+SeatLabel SeatLabelOf(const inference::GenerationSpec& spec);
 
 // A call waiting for the owner's reply.
 struct SeatRequest {

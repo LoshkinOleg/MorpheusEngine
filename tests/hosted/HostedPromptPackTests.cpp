@@ -89,6 +89,7 @@ TEST_CASE("A host's pack replaces the system text, the instructions and the cue 
     // The fold after the end: the pack's system text, and its summarize instruction filled.
     session.EndConversation(id);
     REQUIRE(session.Maintain({}));
+    CHECK(backend.Calls().back().spec.callTag == "summarize");
     const inference::Prompt& fold = backend.Calls().back().prompt;
     CHECK(fold.messages[0].content.starts_with(CustomPack().at("system")));
     CHECK(fold.messages.back().content == "PACK SUMMARIZE: Hulda remembers.");
@@ -130,6 +131,7 @@ TEST_CASE("A host's pack gives the condense call its instruction", "[hosted][pro
         const std::string& last = call.prompt.messages.back().content;
         if (last.find("PACK CONDENSE") != std::string::npos) {
             condensed = true;
+            CHECK(call.spec.callTag == "condense");
             CHECK(last.ends_with("- (told by Saadia) Secret.\n\nPACK CONDENSE: Hulda shortens."));
         }
     }

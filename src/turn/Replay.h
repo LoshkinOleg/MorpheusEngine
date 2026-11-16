@@ -20,11 +20,10 @@
 
 namespace morpheus::turn {
 
-// Which call a completion answers, told apart the way the session makes them: a grammar that starts with the
-// lookup grammar's root rule is the lookup call's, one that starts with the review grammar's root line is a review,
-// any other grammar is the resolve call's, and a grammar-free call ending with the summarize or condense instruction
-// is a summary; the rest is narration, renarrates included (their replies join the narrate replies, in call order).
-core::CallKind CallKindOf(const inference::Prompt& prompt, const inference::GenerationSpec& spec);
+// Which call a completion answers, read from its tag: lookup, resolve, narrate, review, summarize; a renarrate counts
+// as narration and a condense as a summary (their replies join those kinds', in call order). Throws ContractError for
+// any other tag: the replay and the app see only the owned game's calls.
+core::CallKind CallKindOf(const inference::GenerationSpec& spec);
 
 // Fixture spelling of a call kind: "lookup", "resolve", "narrate", "summarize", "review" or "renarrate".
 std::string CallKindName(core::CallKind kind);

@@ -175,7 +175,6 @@ std::string BuildLookupGrammar()
     builder.Rule("lookup", grammar::Object({{"source", grammar::Enum({"lore", "history", "notes"})},
                                             {"query", "short-text"}}));
     builder.Rule("short-text", grammar::JsonString(0, SHORT_TEXT_CHARS));
-    // The root line, {"lookups": [...]}, is how CallKindOf recognises a lookup call.
     return builder.Text(grammar::Object({{"lookups", "lookups"}}));
 }
 
@@ -208,7 +207,7 @@ std::string BuildReviewGrammar(bool check, bool digest)
     if (digest) {
         builder.Rule("digest-text", grammar::JsonString(0, DIGEST_MAX_CHARS));
     }
-    // A fixed root line, whatever is asked for, so the call is recognised by it (CallKindOf).
+    // A fixed root line, whatever is asked for.
     return builder.Text("review");
 }
 

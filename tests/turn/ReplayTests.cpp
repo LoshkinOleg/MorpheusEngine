@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <atomic>
 #include <deque>
@@ -70,9 +71,9 @@ TEST_CASE("Recorded sessions replay to the same turns and state", "[replay]")
                 }
             }
             int summaryFallbacks = 0; // Summaries the replay made up because the recording had none left.
-            test::ScriptedBackend backend(16384, [&replies, &summaryFallbacks](const inference::Prompt& prompt,
+            test::ScriptedBackend backend(16384, [&replies, &summaryFallbacks](const inference::Prompt&,
                                                                                const inference::GenerationSpec& spec) {
-                const core::CallKind kind = turn::CallKindOf(prompt, spec);
+                const core::CallKind kind = turn::CallKindOf(spec);
                 std::deque<std::string>& queue = replies[turn::CallKindName(kind)];
                 if (queue.empty()) {
                     // Fold timing depends on the tokenizer, so a replay may fold where the recording did not.
@@ -141,73 +142,31 @@ TEST_CASE("Recorded sessions replay to the same turns and state", "[replay]")
     REQUIRE(fixturesRun > 0); // An empty or missing fixture directory must not pass silently.
 }
 
-TEST_CASE("CallKindOf tells the calls apart and CallKindName spells them", "[replay]")
+TEST_CASE("CallKindOf reads the call tag and CallKindName spells the kinds", "[replay]")
 {
-    const core::World world = core::LoadWorld(test::TestDataDir() / "worlds" / "mini");
-    const inference::Prompt narration{{{inference::Role::System, "story"}, {inference::Role::User, "I walk."}}, 1};
-    const inference::Prompt summarize{{{inference::Role::System, "story"},
-                                       {inference::Role::User, std::string(turn::SUMMARIZE_INSTRUCTION)}},
-                                      1};
-    const inference::Prompt condense{{{inference::Role::System, "story"},
-                                      {inference::Role::User, std::string(turn::CONDENSE_INSTRUCTION)}},
-                                     1};
-    inference::GenerationSpec lookupSpec;
-    lookupSpec.grammar = turn::BuildLookupGrammar();
-    inference::GenerationSpec resolveSpec;
-    resolveSpec.grammar = turn::BuildResolveGrammar(world, world.initialState, core::MemoryMode::Engine);
-    const inference::GenerationSpec plainSpec;
-
-    CHECK(turn::CallKindOf(narration, lookupSpec) == core::CallKind::Lookup);
-    CHECK(turn::CallKindOf(narration, resolveSpec) == core::CallKind::Resolve);
-    CHECK(turn::CallKindOf(summarize, plainSpec) == core::CallKind::Summarize);
-    CHECK(turn::CallKindOf(condense, plainSpec) == core::CallKind::Summarize);
-    CHECK(turn::CallKindOf(narration, plainSpec) == core::CallKind::Narrate);
-    CHECK(turn::CallKindOf(inference::Prompt{}, plainSpec) == core::CallKind::Narrate);
+    auto kindOf = [](const std::string& tag) {
+        inference::GenerationSpec spec;
+        spec.callTag = tag;
+        return turn::CallKindOf(spec);
+    };
+    CHECK(kindOf("lookup") == core::CallKind::Lookup);
+    CHECK(kindOf("resolve") == core::CallKind::Resolve);
+    CHECK(kindOf("narrate") == core::CallKind::Narrate);
+    CHECK(kindOf("renarrate") == core::CallKind::Narrate); // Its replies join the narrate replies.
+    CHECK(kindOf("review") == core::CallKind::Review);
+    CHECK(kindOf("summarize") == core::CallKind::Summarize);
+    CHECK(kindOf("condense") == core::CallKind::Summarize);
+    // The replay and the app see only the owned game's calls: anything else is an engine bug.
+    CHECK_THROWS_WITH(kindOf(""), "CallKindOf: no call kind for the call tag ''");
+    CHECK_THROWS_WITH(kindOf("speak"), "CallKindOf: no call kind for the call tag 'speak'");
+    CHECK_THROWS_WITH(kindOf("decide"), "CallKindOf: no call kind for the call tag 'decide'");
 
     CHECK(turn::CallKindName(core::CallKind::Lookup) == "lookup");
     CHECK(turn::CallKindName(core::CallKind::Resolve) == "resolve");
     CHECK(turn::CallKindName(core::CallKind::Narrate) == "narrate");
     CHECK(turn::CallKindName(core::CallKind::Summarize) == "summarize");
-
-    // Every review grammar starts with the same root line, whichever parts it asks for.
-    for (const auto& [check, digest] : {std::pair{true, true}, std::pair{true, false}, std::pair{false, true}}) {
-        inference::GenerationSpec reviewSpec;
-        reviewSpec.grammar = turn::BuildReviewGrammar(check, digest);
-        CHECK(turn::CallKindOf(narration, reviewSpec) == core::CallKind::Review);
-    }
-    // A renarrate is a narrate call (no grammar, a narrate message): its reply joins the narrate replies.
-    const inference::Prompt renarrate{{{inference::Role::System, "story"},
-                                       {inference::Role::User, std::string(turn::RENARRATE_CORRECTION)}},
-                                      1};
-    CHECK(turn::CallKindOf(renarrate, plainSpec) == core::CallKind::Narrate);
     CHECK(turn::CallKindName(core::CallKind::Review) == "review");
     CHECK(turn::CallKindName(core::CallKind::Renarrate) == "renarrate");
-}
-
-TEST_CASE("A resolve grammar is not taken for a lookup when the world has a field named lookups", "[replay]")
-{
-    // An edited copy of the mini world whose character has a "lookups" string field.
-    const fs::path folder = test::FreshTempDir("replay_lookups_world") / "mini"; // The folder name must be the id.
-    fs::create_directories(folder);
-    for (const char* file : {"world.json", "rules.md", "lore.csv"}) {
-        fs::copy_file(test::TestDataDir() / "worlds" / "mini" / file, folder / file);
-    }
-    nlohmann::json schema = ReadJson(test::TestDataDir() / "worlds" / "mini" / "state_schema.json");
-    schema["entity_types"]["character"]["fields"]["lookups"] = {{"type", "string"}};
-    test::WriteFile(folder / "state_schema.json", schema.dump());
-    nlohmann::json initial = ReadJson(test::TestDataDir() / "worlds" / "mini" / "initial_state.json");
-    initial["player"]["fields"]["lookups"] = "none";
-    test::WriteFile(folder / "initial_state.json", initial.dump());
-
-    const core::World world = core::LoadWorld(folder);
-    inference::GenerationSpec resolveSpec;
-    resolveSpec.grammar = turn::BuildResolveGrammar(world, world.initialState, core::MemoryMode::Engine);
-    REQUIRE(resolveSpec.grammar.find("lookups") != std::string::npos); // The case is real.
-    CHECK(turn::CallKindOf(inference::Prompt{}, resolveSpec) == core::CallKind::Resolve);
-
-    inference::GenerationSpec lookupSpec;
-    lookupSpec.grammar = turn::BuildLookupGrammar();
-    CHECK(turn::CallKindOf(inference::Prompt{}, lookupSpec) == core::CallKind::Lookup);
 }
 
 TEST_CASE("RecordingBackend records each call's text by kind and MakeReplayFixture writes the format", "[replay]")
@@ -250,8 +209,10 @@ TEST_CASE("RecordingBackend Mark and RollBack restore the recorded reply counts"
     turn::RecordingBackend recording(inner);
     const inference::Prompt prompt{{{inference::Role::User, "I walk."}}, 1};
     inference::GenerationSpec narrateSpec;
+    narrateSpec.callTag = "narrate";
     inference::GenerationSpec lookupSpec;
     lookupSpec.grammar = turn::BuildLookupGrammar();
+    lookupSpec.callTag = "lookup";
 
     recording.Complete(prompt, narrateSpec, {}, {});
     const std::map<core::CallKind, std::size_t> mark = recording.Mark();
@@ -283,17 +244,21 @@ TEST_CASE("RecordingBackend RollBack keeps summarize replies", "[replay]")
     turn::RecordingBackend recording(inner);
     const inference::Prompt narration{{{inference::Role::User, "I walk."}}, 1};
     const inference::Prompt summarize{{{inference::Role::User, std::string(turn::SUMMARIZE_INSTRUCTION)}}, 1};
-    const inference::GenerationSpec plainSpec;
+    inference::GenerationSpec plainSpec;
+    plainSpec.callTag = "narrate";
+    inference::GenerationSpec summarizeSpec;
+    summarizeSpec.callTag = "summarize";
     inference::GenerationSpec resolveSpec;
     resolveSpec.grammar = turn::BuildResolveGrammar(world, world.initialState, core::MemoryMode::Engine);
+    resolveSpec.callTag = "resolve";
 
     // The previous turn's maintenance records a summary before the mark; the step then records a resolve and a
     // narration, and the previous turn's maintenance records another summary after the mark.
-    recording.Complete(summarize, plainSpec, {}, {});
+    recording.Complete(summarize, summarizeSpec, {}, {});
     const std::map<core::CallKind, std::size_t> mark = recording.Mark();
     CHECK(mark == std::map<core::CallKind, std::size_t>{{core::CallKind::Summarize, 1}});
     recording.Complete(narration, resolveSpec, {}, {});
-    recording.Complete(summarize, plainSpec, {}, {});
+    recording.Complete(summarize, summarizeSpec, {}, {});
     recording.Complete(narration, plainSpec, {}, {});
     REQUIRE(recording.Replies().at(core::CallKind::Summarize).size() == 2);
 
@@ -319,7 +284,8 @@ TEST_CASE("RecordingBackend is safe to mark, roll back and read while another th
     });
     turn::RecordingBackend recording(inner);
     const inference::Prompt prompt{{{inference::Role::User, "I walk."}}, 1};
-    const inference::GenerationSpec narrateSpec;
+    inference::GenerationSpec narrateSpec;
+    narrateSpec.callTag = "narrate";
 
     SECTION("readers see a growing recording and lose no reply")
     {

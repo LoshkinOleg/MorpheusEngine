@@ -69,10 +69,9 @@ public:
     std::string Rule(std::string_view name, std::string body);
 
     // The full grammar: the line `root ::= rootBody` first, then the rules in the order they were added, then the
-    // shared terminals the root and the rules use (`char`). The root line comes first because turn::CallKindOf
-    // recognises a review and a lookup call by their grammar's first line. Every rule name the root and the rules use
-    // must be one added here or a shared terminal; an undefined one, or a root body that is empty or holds a line
-    // break, is a ContractError.
+    // shared terminals the root and the rules use (`char`). Every rule name the root and the rules use must be
+    // one added here or a shared terminal; an undefined one, or a root body that is empty or holds a line break, is a
+    // ContractError.
     std::string Text(std::string_view rootBody) const;
 };
 

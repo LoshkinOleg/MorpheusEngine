@@ -30,8 +30,7 @@ using Catch::Matchers::ContainsSubstring;
 
 namespace {
 
-// A narrate call, as the seat labels it: no grammar, and a last message that is neither a summary instruction nor
-// a renarrate's correction.
+// The prompt of a narrate call; the specs below carry its call tag.
 const inference::Prompt NARRATE_PROMPT = {{{inference::Role::System, "story"}, {inference::Role::User, "I walk."}}, 1};
 
 const std::string MODEL_REPLY = "The model walks.";
@@ -99,6 +98,7 @@ TEST_CASE("With the seat off, or the call's label in Model mode, Complete is the
     test::ScriptedBackend& scripted = *pScripted;
     app::ModelSeatBackend backend(std::move(pScripted), pSeat);
     inference::GenerationSpec spec;
+    spec.callTag = "narrate";
     spec.maxTokens = 64;
 
     SECTION("the seat off")
@@ -127,6 +127,7 @@ TEST_CASE("In Human mode, Complete waits for the owner's reply and returns it as
     app::ModelSeatBackend backend(std::move(pScripted), pSeat);
     pSeat->SetEnabled(true); // Every label starts in Human mode.
     inference::GenerationSpec spec;
+    spec.callTag = "narrate";
     spec.maxTokens = 64;
     test::Streamed streamed;
     test::AsyncCall<inference::Completion> call(
@@ -171,6 +172,7 @@ TEST_CASE("In Draft mode, the real model's answer is the draft, and nothing stre
     pSeat->SetEnabled(true);
     pSeat->SetMode(app::SeatLabel::Narrate, app::SeatMode::Draft);
     inference::GenerationSpec spec;
+    spec.callTag = "narrate";
     spec.maxTokens = 64;
     spec.thinkingMaxTokens = 64;
     test::Streamed streamed;
@@ -222,6 +224,7 @@ TEST_CASE("A Draft call stopped while the model drafts returns the model's cance
     pSeat->SetEnabled(true);
     pSeat->SetMode(app::SeatLabel::Narrate, app::SeatMode::Draft);
     inference::GenerationSpec spec;
+    spec.callTag = "narrate";
     spec.maxTokens = 64;
     std::stop_source stop;
     stop.request_stop();
@@ -243,6 +246,7 @@ TEST_CASE("A reply over the call's limits is cut at whole tokens, as the model w
 
     // ScriptedBackend counts one token per 4 bytes, rounded up.
     inference::GenerationSpec spec;
+    spec.callTag = "narrate";
     spec.maxTokens = 2;
     spec.thinkingMaxTokens = 1;
     test::AsyncCall<inference::Completion> call(
@@ -258,6 +262,7 @@ TEST_CASE("A reply over the call's limits is cut at whole tokens, as the model w
 
     // The cut never splits a UTF-8 character: "abc" plus the two bytes of e-acute would be 2 tokens.
     inference::GenerationSpec narrow;
+    narrow.callTag = "narrate";
     narrow.maxTokens = 1;
     test::AsyncCall<inference::Completion> second(
         [&](std::stop_token stop) { return backend.Complete(NARRATE_PROMPT, narrow, {}, stop); });
@@ -277,6 +282,7 @@ TEST_CASE("A stop or a Withdraw ends a call waiting at the seat as cancelled, an
     app::ModelSeatBackend backend(std::move(pScripted), pSeat);
     pSeat->SetEnabled(true);
     inference::GenerationSpec spec;
+    spec.callTag = "narrate";
     spec.maxTokens = 64;
     test::Streamed streamed;
     test::AsyncCall<inference::Completion> call(
@@ -381,6 +387,7 @@ TEST_CASE("Turning the seat off while a call waits leaves that call waiting; lat
     app::ModelSeatBackend backend(MakeScripted(), pSeat);
     pSeat->SetEnabled(true);
     inference::GenerationSpec spec;
+    spec.callTag = "narrate";
     spec.maxTokens = 64;
     test::AsyncCall<inference::Completion> first(
         [&](std::stop_token stop) { return backend.Complete(NARRATE_PROMPT, spec, {}, stop); });

@@ -377,6 +377,7 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
             inference::GenerationSpec decideSpec;
             decideSpec.grammar = grammar::FromSchema(schema);
             decideSpec.maxTokens = longestAnswer + DECIDE_TOKEN_MARGIN;
+            decideSpec.callTag = "decide";
             decideSpec.sampling = SamplingFrom(_settings.resolveSampling,
                                                core::SamplingSeed(seed, turn, core::CallKind::Resolve, DECIDE_SEED_ATTEMPT));
             const inference::Completion decided = _pBackend->Complete(decideAssembly.prompt, decideSpec, {}, stop);
@@ -495,6 +496,7 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
     inference::GenerationSpec resolveSpec;
     resolveSpec.grammar = proposalGrammar;
     resolveSpec.maxTokens = _settings.budget.resolveMaxTokens;
+    resolveSpec.callTag = "resolve";
     resolveSpec.thinkingMaxTokens = _settings.budget.resolveThinkingTokens;
     resolveSpec.sampling =
         SamplingFrom(_settings.resolveSampling, core::SamplingSeed(seed, turn, core::CallKind::Resolve, 0));
@@ -514,6 +516,7 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
     context::ExtendForNarrate(speakPrompt, resolved.text, speakMessage);
     inference::GenerationSpec speakSpec;
     speakSpec.maxTokens = _settings.budget.narrateMaxTokens;
+    speakSpec.callTag = "speak";
     speakSpec.thinkingMaxTokens = _settings.budget.narrateThinkingTokens;
     speakSpec.sampling =
         SamplingFrom(_settings.narrateSampling, core::SamplingSeed(seed, turn, core::CallKind::Narrate, 0));

@@ -90,6 +90,9 @@ TEST_CASE("Decide chooses among the NPC participants with a model call when more
     REQUIRE(calls.size() == 3);
     const test::ScriptedBackend::Call& decide = calls[0];
     REQUIRE(test::IsHostedDecide(decide.prompt));
+    CHECK(calls[0].spec.callTag == "decide");
+    CHECK(calls[1].spec.callTag == "resolve");
+    CHECK(calls[2].spec.callTag == "speak");
     // The grammar offers the candidates' ids only; the answer fits maxTokens (6 tokens for {"speaker":"0001A6A4"} as the
     // fake counts them, plus 8).
     const nlohmann::json schema = {{"type", "object"},

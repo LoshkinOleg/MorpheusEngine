@@ -43,7 +43,7 @@ constexpr long long MAX_INT_MAGNITUDE  = 999999999; // Integers have at most 9 d
 std::string BuildResolveGrammar(const core::World& world, const nlohmann::json& state, core::MemoryMode mode);
 
 // GBNF for the assisted-mode lookup call: {"lookups": [{"source": "lore"|"history"|"notes", "query": str}]}, at
-// most MAX_LOOKUPS entries. Its first line, the root, is how turn::CallKindOf tells a lookup call.
+// most MAX_LOOKUPS entries.
 std::string BuildLookupGrammar();
 
 // GBNF for the review call (architecture spec, "Turn flow"). Its first line is always "root ::= review". The output

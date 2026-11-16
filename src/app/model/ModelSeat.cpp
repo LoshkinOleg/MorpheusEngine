@@ -1,15 +1,13 @@
 #include "app/model/ModelSeat.h"
 
 #include <cstddef>
+#include <format>
 #include <string>
 #include <utility>
 
-#include "core/Dice.h"
 #include "core/Errors.h"
 #include "grammar/Check.h"
 #include "inference/Llm.h"
-#include "turn/EngineText.h"
-#include "turn/Replay.h"
 
 namespace morpheus::app {
 
@@ -34,39 +32,32 @@ std::string SeatLabelName(SeatLabel label)
     throw core::ContractError("SeatLabelName: unhandled SeatLabel");
 }
 
-SeatLabel SeatLabelOf(const inference::Prompt& prompt, const inference::GenerationSpec& spec)
+SeatLabel SeatLabelOf(const inference::GenerationSpec& spec)
 {
-    // The call's kind, as the replay recorder tells it; narration and summaries are then split in two.
-    switch (turn::CallKindOf(prompt, spec)) {
-    case core::CallKind::Resolve:
+    // The tag the turn layer set: each owned call has its own label.
+    const std::string& tag = spec.callTag;
+    if (tag == "resolve") {
         return SeatLabel::Resolve;
-    case core::CallKind::Lookup:
+    }
+    if (tag == "narrate") {
+        return SeatLabel::Narrate;
+    }
+    if (tag == "renarrate") {
+        return SeatLabel::Rewrite;
+    }
+    if (tag == "lookup") {
         return SeatLabel::Lookup;
-    case core::CallKind::Review:
+    }
+    if (tag == "review") {
         return SeatLabel::Review;
-    case core::CallKind::Narrate: {
-        // A renarrate is a narrate call whose message carries the review's correction.
-        const bool rewrite = !prompt.messages.empty() &&
-                             prompt.messages.back().content.find(turn::RENARRATE_CORRECTION) != std::string::npos;
-        return rewrite ? SeatLabel::Rewrite : SeatLabel::Narrate;
     }
-    case core::CallKind::Summarize: {
-        // A fold ends with the summarize instruction, a condense with its own. CallKindOf returns Summarize only for
-        // a prompt with messages.
-        const std::string& last = prompt.messages.back().content;
-        if (last.ends_with(turn::SUMMARIZE_INSTRUCTION)) {
-            return SeatLabel::Summarize;
-        }
-        if (last.ends_with(turn::CONDENSE_INSTRUCTION)) {
-            return SeatLabel::Condense;
-        }
-        throw core::ContractError("SeatLabelOf: a summary call ends with neither the summarize nor the condense "
-                                  "instruction");
+    if (tag == "summarize") {
+        return SeatLabel::Summarize;
     }
-    case core::CallKind::Renarrate:
-        break; // CallKindOf never returns it: a renarrate is a narrate call, told apart above.
+    if (tag == "condense") {
+        return SeatLabel::Condense;
     }
-    throw core::ContractError("SeatLabelOf: unhandled call kind");
+    throw core::ContractError(std::format("SeatLabelOf: no seat label for the call tag '{}'", tag));
 }
 
 bool ModelSeat::Enabled() const

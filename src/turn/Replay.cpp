@@ -1,42 +1,32 @@
 #include "turn/Replay.h"
 
+#include <format>
 #include <iterator>
 
 #include "core/Errors.h"
-#include "turn/EngineText.h"
-#include "turn/ResolveGrammar.h"
 
 namespace morpheus::turn {
 
-core::CallKind CallKindOf(const inference::Prompt& prompt, const inference::GenerationSpec& spec)
+core::CallKind CallKindOf(const inference::GenerationSpec& spec)
 {
-    // A grammar means a structured call. The lookup grammar is told by its root rule (its first line), which no
-    // resolve grammar shares; searching the whole text would trip on a world with a field named "lookups". Every
-    // review grammar has the same first line, whatever it asks for.
-    if (!spec.grammar.empty()) {
-        static const std::string LOOKUP_ROOT = [] {
-            const std::string lookup = BuildLookupGrammar();
-            return lookup.substr(0, lookup.find('\n'));
-        }();
-        static const std::string REVIEW_ROOT = [] {
-            const std::string review = BuildReviewGrammar(true, true);
-            const std::size_t newline = review.find('\n');
-            MORPHEUS_REQUIRE(newline != std::string::npos, "the review grammar has a first line");
-            return review.substr(0, newline + 1);
-        }();
-        if (spec.grammar.starts_with(LOOKUP_ROOT)) {
-            return core::CallKind::Lookup;
-        }
-        return spec.grammar.starts_with(REVIEW_ROOT) ? core::CallKind::Review : core::CallKind::Resolve;
+    // The tag the turn layer set; a renarrate's and a condense's replies join the narrate and summarize replies.
+    const std::string& tag = spec.callTag;
+    if (tag == "lookup") {
+        return core::CallKind::Lookup;
     }
-    // Without a grammar, the closing instruction tells a summary from narration (a renarrate is narration).
-    if (!prompt.messages.empty()) {
-        const std::string& last = prompt.messages.back().content;
-        if (last == SUMMARIZE_INSTRUCTION || last == CONDENSE_INSTRUCTION) {
-            return core::CallKind::Summarize;
-        }
+    if (tag == "resolve") {
+        return core::CallKind::Resolve;
     }
-    return core::CallKind::Narrate;
+    if (tag == "narrate" || tag == "renarrate") {
+        return core::CallKind::Narrate;
+    }
+    if (tag == "review") {
+        return core::CallKind::Review;
+    }
+    if (tag == "summarize" || tag == "condense") {
+        return core::CallKind::Summarize;
+    }
+    throw core::ContractError(std::format("CallKindOf: no call kind for the call tag '{}'", tag));
 }
 
 std::string CallKindName(core::CallKind kind)
@@ -126,7 +116,7 @@ inference::Completion RecordingBackend::Complete(const inference::Prompt& prompt
     inference::Completion completion = _pInner->Complete(prompt, spec, onToken, stop);
     // A cancelled call is discarded by the session, so a replay never sees it.
     if (!completion.cancelled) {
-        const core::CallKind kind = CallKindOf(prompt, spec);
+        const core::CallKind kind = CallKindOf(spec);
         const std::lock_guard<std::mutex> lock(_mutex); // Only the append is guarded, not the inner call above.
         _replies[kind].push_back(completion.text);
     }

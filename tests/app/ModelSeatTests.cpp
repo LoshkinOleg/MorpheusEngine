@@ -1,28 +1,18 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
-#include <limits>
 #include <optional>
 #include <stop_token>
 #include <string>
 #include <string_view>
 #include <vector>
 
-#include "TestPaths.h"
 #include "app/SeatTestSupport.h"
 #include "app/model/ModelSeat.h"
-#include "context/Transcript.h"
 #include "core/Errors.h"
-#include "core/MemoryMode.h"
-#include "core/TurnRecord.h"
-#include "core/World.h"
 #include "fakes/FakeBackend.h"
 #include "fakes/ScriptedBackend.h"
 #include "inference/Llm.h"
-#include "turn/EngineText.h"
-#include "turn/Folding.h"
-#include "turn/Resolve.h"
-#include "turn/ResolveGrammar.h"
-#include "turn/Review.h"
 
 using namespace morpheus;
 
@@ -53,57 +43,22 @@ public:
 
 } // namespace
 
-TEST_CASE("SeatLabelOf labels each call the way the session and folding make it", "[model_seat]")
+TEST_CASE("SeatLabelOf labels each call by its tag", "[model_seat]")
 {
-    const core::World world = core::LoadWorld(test::TestDataDir() / "worlds" / "mini");
-    test::FakeBackend backend(16384);
-    const inference::Message system = {inference::Role::System, "story"};
-    const inference::GenerationSpec plain; // Narration and summaries have no grammar.
-
-    // The resolve and lookup calls, told apart by their grammars.
-    inference::GenerationSpec resolveSpec;
-    resolveSpec.grammar = turn::BuildResolveGrammar(world, world.initialState, core::MemoryMode::Assisted);
-    inference::GenerationSpec lookupSpec;
-    lookupSpec.grammar = turn::BuildLookupGrammar();
-    const inference::Prompt turnPrompt = {{system, {inference::Role::User, "I climb the cliff."}}, 1};
-    CHECK(app::SeatLabelOf(turnPrompt, resolveSpec) == app::SeatLabel::Resolve);
-    CHECK(app::SeatLabelOf(turnPrompt, lookupSpec) == app::SeatLabel::Lookup);
-
-    // The narrate call, and the renarrate, whose message carries the review's correction.
-    const turn::ResolveProposal proposal = turn::ParseResolveOutput(R"({"intent":"climb","checks":[],"changes":[]})");
-    const turn::Resolution resolution = turn::ApplyProposal(world, world.initialState, proposal, 42, 1);
-    const inference::Prompt narrate = {
-        {system, {inference::Role::User, turn::RenderNarrateMessage(proposal, resolution, {}, 4096, backend)}}, 1};
-    const inference::Prompt rewrite = {
-        {system,
-         {inference::Role::User,
-          turn::RenderNarrateMessage(proposal, resolution, {"The narration has the player fly."}, 4096, backend)}},
-        1};
-    CHECK(app::SeatLabelOf(narrate, plain) == app::SeatLabel::Narrate);
-    CHECK(app::SeatLabelOf(rewrite, plain) == app::SeatLabel::Rewrite);
-
-    // The review: its own prompt and grammar.
-    inference::GenerationSpec reviewSpec;
-    reviewSpec.grammar = turn::BuildReviewGrammar(true, true);
-    CHECK(app::SeatLabelOf(turn::ReviewPrompt("I climb the cliff.", proposal, resolution, "You climb."), reviewSpec) ==
-          app::SeatLabel::Review);
-
-    // The fold and condense calls.
-    core::TurnRecord played;
-    played.number = 1;
-    played.input = "I climb the cliff.";
-    played.narration = "You climb.";
-    CHECK(app::SeatLabelOf(turn::SummarizePrompt(system, context::TranscriptEntries({played}, std::numeric_limits<int>::max()),
-                                                 turn::SUMMARIZE_INSTRUCTION),
-                           plain) == app::SeatLabel::Summarize);
-    CHECK(app::SeatLabelOf(turn::CondensePrompt(system, turn::CONDENSE_INSTRUCTION), plain) == app::SeatLabel::Condense);
-
-    // CallKindOf takes a summary call to end with exactly the instruction, so a grammar-free call that only quotes
-    // one is narration. (A summary call that ends with neither instruction cannot be built: SeatLabelOf's throw for
-    // it guards a change of CallKindOf.)
-    const inference::Prompt quoting = {
-        {system, {inference::Role::User, "You were told: " + std::string(turn::SUMMARIZE_INSTRUCTION)}}, 1};
-    CHECK(app::SeatLabelOf(quoting, plain) == app::SeatLabel::Narrate);
+    auto labelOf = [](const std::string& tag) {
+        inference::GenerationSpec spec;
+        spec.callTag = tag;
+        return app::SeatLabelOf(spec);
+    };
+    CHECK(labelOf("resolve") == app::SeatLabel::Resolve);
+    CHECK(labelOf("narrate") == app::SeatLabel::Narrate);
+    CHECK(labelOf("renarrate") == app::SeatLabel::Rewrite);
+    CHECK(labelOf("lookup") == app::SeatLabel::Lookup);
+    CHECK(labelOf("review") == app::SeatLabel::Review);
+    CHECK(labelOf("summarize") == app::SeatLabel::Summarize);
+    CHECK(labelOf("condense") == app::SeatLabel::Condense);
+    CHECK_THROWS_WITH(labelOf(""), "SeatLabelOf: no seat label for the call tag ''");
+    CHECK_THROWS_WITH(labelOf("speak"), "SeatLabelOf: no seat label for the call tag 'speak'");
 }
 
 TEST_CASE("SeatLabelName spells the seven labels in the window's order", "[model_seat]")

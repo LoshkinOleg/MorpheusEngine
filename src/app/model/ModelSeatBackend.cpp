@@ -39,7 +39,7 @@ inference::Completion ModelSeatBackend::Complete(const inference::Prompt& prompt
     if (!_pSeat->Enabled()) {
         return _pInner->Complete(prompt, spec, onToken, stop);
     }
-    const SeatLabel label = SeatLabelOf(prompt, spec);
+    const SeatLabel label = SeatLabelOf(spec);
     const SeatMode mode = _pSeat->ModeOf(label);
     if (mode == SeatMode::Model) {
         return _pInner->Complete(prompt, spec, onToken, stop);
