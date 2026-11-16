@@ -79,7 +79,8 @@ struct Settings {
     BudgetSettings budget = {};
     SamplingSettings resolveSampling = {};
     SamplingSettings narrateSampling = {};
-    ThinkingSetting thinking = {}; // thinking_format: how the backends write the thinking block (Auto: as the template says).
+    // thinking_format: how the backends write the thinking block (Auto: as the template says).
+    ThinkingSetting thinking = {};
     std::optional<MemoryMode> memoryMode = {}; // Overrides the world's default memory_mode when set.
     // A review call after each narration checks it against the outcome; a contradiction is narrated once more.
     bool narrationCheck = false;

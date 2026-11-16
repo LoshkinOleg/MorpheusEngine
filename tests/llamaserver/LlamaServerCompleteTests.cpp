@@ -68,7 +68,8 @@ TEST_CASE("LlamaServerBackend::Complete sends one streamed /completion request",
     CHECK(body.at("prompt") == nlohmann::json(test::ServerPromptTokens()));
     CHECK(body.at("n_predict") == 16);
     CHECK(body.at("grammar") == YES_NO);
-    // The sampling of LlamaCppBackend's chain: top-k, top-p keeping at least one token, min-p, temperature, then the draw.
+    // The sampling of LlamaCppBackend's chain: top-k, top-p keeping at least one token, min-p, temperature, then the
+    // draw.
     CHECK(body.at("samplers") == nlohmann::json::array({"top_k", "top_p", "min_p", "temperature"}));
     CHECK(body.at("top_k") == 20);
     CHECK(body.at("top_p").get<double>() == 0.75);
@@ -339,8 +340,9 @@ TEST_CASE("LlamaServerBackend::Complete closes a thinking block that reaches its
 
     const std::vector<test::FakeLlamaServer::Request> requests = chat.RequestsTo("/completion");
     REQUIRE(requests.size() == 2);
-    CHECK(requests[1].body.at("prompt") == nlohmann::json(Joined({test::ServerPromptTokens(), Tokens(core::QWEN_THINKING.open),
-                                                                 Tokens("Hmm, "), Tokens(core::QWEN_THINKING.close)})));
+    CHECK(requests[1].body.at("prompt") ==
+          nlohmann::json(Joined({test::ServerPromptTokens(), Tokens(core::QWEN_THINKING.open), Tokens("Hmm, "),
+                                 Tokens(core::QWEN_THINKING.close)})));
     CHECK(completion.thinkingStoppedAtLimit);
     CHECK(completion.thinkingTokens == 256);
     CHECK(completion.thinking == "Hmm, ");

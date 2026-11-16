@@ -103,7 +103,10 @@ core::Settings SaveSettingsEdit(const std::filesystem::path& file, const Setting
     nlohmann::ordered_json json = ReadJson(file);
     auto samplingJson = [](const core::SamplingSettings& sampling) {
         return nlohmann::ordered_json{
-            {"temperature", sampling.temperature}, {"top_k", sampling.topK}, {"top_p", sampling.topP}, {"min_p", sampling.minP}};
+            {"temperature", sampling.temperature},
+            {"top_k", sampling.topK},
+            {"top_p", sampling.topP},
+            {"min_p", sampling.minP}};
     };
     try {
         // The backend and its own keys; the other backend's keys stay as the file has them.
