@@ -141,6 +141,28 @@ TEST_CASE("With no input the last speaker is left out; with player text or event
     CHECK(script.decided == 2);
 }
 
+TEST_CASE("Events recorded between turns count as input for decide", "[hosted][decide]")
+{
+    test::HostedScript script;
+    script.decisions = {Decision(test::HULDA)};
+    script.actions = {NONE, NONE};
+    script.lines = {"One.", "Two."};
+    test::ScriptedBackend backend(16384, script.Responder());
+    turn::HostedSession session = OpenRun("hosted_decide_recorded", backend);
+    const std::string id = session.StartConversation({test::HULDA, test::SAADIA, test::AELA}, test::FixtureObservation());
+
+    REQUIRE(session.RunTurn(test::Request(id, test::HULDA, "Hi."), {}, {}));
+    // An event recorded after Hulda's turn, then a decide turn with no player text and no request events: the recorded
+    // event is input, so both candidates are offered and Hulda, the last speaker, may speak again.
+    session.RecordEvents(id, {nlohmann::json{{"text", "A door slams."}}});
+    const std::optional<core::HostedTurn> second = session.RunTurn(test::Request(id, "decide", ""), {}, {});
+    REQUIRE(second);
+    CHECK(second->speakerId == test::HULDA);
+    const std::vector<test::ScriptedBackend::Call> decides = DecideCalls(backend);
+    REQUIRE(decides.size() == 1);
+    CHECK_THAT(decides[0].prompt.messages.back().content, ContainsSubstring("- Hulda (0001A6A4)\n- Saadia (0001B07C)"));
+}
+
 TEST_CASE("Decide keeps the last speaker when no one else may speak, and never offers the player or the absent",
           "[hosted][decide]")
 {

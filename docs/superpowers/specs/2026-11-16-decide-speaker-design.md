@@ -9,7 +9,7 @@ A host that does not know who should talk next sends `speaker: "decide"`, and th
 ## Owner decisions
 
 - The choice is a model call under a grammar whose only values are the candidates' ids, made before the speaker's own resolve call.
-- The last speaker is left out of the choice when the turn has no player text and no events (NPC-to-NPC chatter alternates), as long as another candidate remains. With player text or events, any candidate may answer, the last speaker included.
+- The last speaker is left out of the choice when the turn has no player text and no new events, recorded since the conversation's last turn or sent with the request (NPC-to-NPC chatter alternates), as long as another candidate remains. With player text or new events, any candidate may answer, the last speaker included.
 - The decide call sees a neutral view of the conversation (every line, whoever witnessed it), not an NPC's own view; it writes only an id.
 
 ## 1. The request
@@ -20,7 +20,7 @@ A host that does not know who should talk next sends `speaker: "decide"`, and th
 ## 2. The candidates
 
 - The conversation's participants that are in the turn's observation and are not the player, in join order.
-- "No input": after cleaning (as `RunTurn` cleans it today) the turn has no player text, and its request has no events. On a turn with no input, the speaker of the conversation's last visible turn is left out when at least one other candidate remains.
+- "No input": after cleaning (as `RunTurn` cleans it today) the turn has no player text, and no new events (recorded since the conversation's last turn or sent with the request). On a turn with no input, the speaker of the conversation's last visible turn is left out when at least one other candidate remains.
 - No candidate: a `DataError` "speaker: \"decide\" needs an NPC participant in the observation", before any model call or record.
 - One candidate: it is the speaker; no model call is made.
 

@@ -301,7 +301,7 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
                 candidates.push_back(pActor);
             }
         }
-        const bool noInput = !playerText && request.events.empty();
+        const bool noInput = !playerText && newEvents.empty();
         if (noInput && !played.empty() && candidates.size() > 1) {
             const std::string& last = played.back().speakerId;
             const bool lastIsCandidate = std::any_of(candidates.begin(), candidates.end(),

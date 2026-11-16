@@ -8,7 +8,8 @@ gets an entry here with a migration note.
 The engine chooses the speaker (design: `docs/superpowers/specs/2026-11-16-decide-speaker-design.md`). Only additions.
 
 - A turn's `speaker` may be `"decide"`: the engine chooses one of the conversation's NPCs present (not the player).
-  On a turn with no player text and no events the last speaker is left out while another remains. With one candidate
+  On a turn with no player text and no new events (recorded since the last turn or sent with it) the last speaker
+  is left out while another remains. With one candidate
   it is chosen at once; with more, a short model call chooses. The `action` event's `speaker` names the chosen NPC.
   No NPC participant in the observation is a 400.
 - The prompt pack gains `decide` (variable `{player}`), the decide call's instruction; `GET /v1/prompts/default`
