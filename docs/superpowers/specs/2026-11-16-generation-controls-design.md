@@ -27,7 +27,7 @@ Three small controls over model calls: one more sampling field, an explicit tag 
   - Morpheus's own game (`Session`): `lookup`, `resolve`, `narrate`, `renarrate`, `review`;
   - hosted runs (`HostedSession`): `decide`, `resolve`, `speak`;
   - the shared memory upkeep (`MemoryUpkeep`): `summarize` (a fold) and `condense`.
-- `turn::CallKindOf(spec)` (the prompt argument goes) reads the tag: `lookup` -> Lookup, `resolve` -> Resolve, `narrate` -> Narrate, `renarrate` -> Renarrate, `review` -> Review, `summarize` and `condense` -> Summarize. Any other tag, the empty one included, is a `ContractError` naming it: those contexts (the replay and the app) only see the owned game's calls.
+- `turn::CallKindOf(spec)` (the prompt argument goes) reads the tag: `lookup` -> Lookup, `resolve` -> Resolve, `narrate` and `renarrate` -> Narrate (a renarrate is narration, as today), `review` -> Review, `summarize` and `condense` -> Summarize. Any other tag, the empty one included, is a `ContractError` naming it: those contexts (the replay and the app) only see the owned game's calls.
 - The replay's fixture spelling does not change, so the recorded fixtures stay valid: a renarrate's reply is still taken from the `narrate` replies in call order, and a condense's from the `summarize` replies. `CallKindName` is unchanged.
 - The app's `ModelSeat` labels a call from `CallKindOf` as today; its current special cases that tell a renarrate or a condense from the prompt's text read the tag instead.
 - The rule that the lookup and review grammars start with a fixed root line, which only `CallKindOf` needed, is dropped from their comments (the grammars themselves need not change).
