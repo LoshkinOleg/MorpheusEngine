@@ -423,15 +423,19 @@ ApiResponse Api::Handle(std::string_view method, std::string_view path, std::str
                                     if (!rest.empty()) {
                                         stream->Push({"sentence", {{"text", rest}}});
                                     }
+                                    // The timings: resolve and speak, and decide when a decide call ran.
+                                    nlohmann::json timings = {{"resolve", record->timings.at("resolve")},
+                                                              {"speak", record->timings.at("speak")}};
+                                    if (record->timings.contains("decide")) {
+                                        timings["decide"] = record->timings.at("decide");
+                                    }
                                     stream->Push({"done",
                                                   {{"speaker", record->speakerId},
                                                    {"action", ActionJson(record->adjudication)},
                                                    {"line", record->line},
                                                    {"turn", record->number},
                                                    {"events_omitted", record->eventsOmitted},
-                                                   {"timings",
-                                                    {{"resolve", record->timings.at("resolve")},
-                                                     {"speak", record->timings.at("speak")}}}}});
+                                                   {"timings", timings}}});
                                 }
                             } catch (const std::exception& error) {
                                 // Before the action, the handler answers with this error's status; after it, the
