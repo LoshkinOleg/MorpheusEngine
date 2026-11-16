@@ -10,7 +10,9 @@ The review of a hosted turn (design: `docs/superpowers/specs/2026-11-16-hosted-r
 - A turn's optional `review` (boolean, default false): the line is checked against the speaking rules by one more model
   call. The line is held back while the review runs and streams after it (its `token` and `sentence` events come
   after the review); on problems the engine asks for the line once more (one respeak) and the second line stands.
-  The cost is one review call, and sometimes one more speak call. A `review` that is not a boolean is a 400.
+  The cost is one review call, sometimes one more speak call, and the conversation's prompt cache: the review prompt is
+  standalone and runs on the conversation's slot, so it replaces that slot's cached prompt, and the next call of that
+  conversation (the respeak, then the next turn's resolve) re-reads its whole prompt. Measure with that in mind. A `review` that is not a boolean is a 400.
 - The `done` event's `timings` gain `review` (the call's telemetry, `consistent`, `problems`, and `error` when the
   review was unreadable) and `respeak` (the second speak call's telemetry), each only when that call ran.
 - The prompt pack gains `review` (no variable), the review call's system text; `GET /v1/prompts/default` lists it.

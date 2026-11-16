@@ -25,7 +25,7 @@ Three small controls over model calls: one more sampling field, an explicit tag 
 - `inference::GenerationSpec` gains `std::string callTag = {}`: what the call is, for the layers that tell calls apart (the replay, the app's labels). The backends ignore it.
 - The turn layer sets it on every call:
   - Morpheus's own game (`Session`): `lookup`, `resolve`, `narrate`, `renarrate`, `review`;
-  - hosted runs (`HostedSession`): `decide`, `resolve`, `speak`;
+  - hosted runs (`HostedSession`): `decide`, `resolve`, `speak`, and for a turn with a review `review` and `respeak` (G3);
   - the shared memory upkeep (`MemoryUpkeep`): `summarize` (a fold) and `condense`.
 - `turn::CallKindOf(spec)` (the prompt argument goes) reads the tag: `lookup` -> Lookup, `resolve` -> Resolve, `narrate` and `renarrate` -> Narrate (a renarrate is narration, as today), `review` -> Review, `summarize` and `condense` -> Summarize. Any other tag, the empty one included, is a `ContractError` naming it: those contexts (the replay and the app) only see the owned game's calls.
 - The replay's fixture spelling does not change, so the recorded fixtures stay valid: a renarrate's reply is still taken from the `narrate` replies in call order, and a condense's from the `summarize` replies. `CallKindName` is unchanged.

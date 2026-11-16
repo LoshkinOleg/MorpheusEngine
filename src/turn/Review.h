@@ -42,8 +42,8 @@ Review ParseReviewOutput(std::string_view text, bool check, bool digest);
 inference::Prompt ReviewPrompt(const std::string& input, const ResolveProposal& proposal,
                                const Resolution& resolution, const std::string& narration);
 
-// The review call of a hosted turn (hosted-review spec, section 2), standalone: `rules` (the run's pack `review`) as the
-// system message, then one user message: "# Speaker\n<name>\n\n", "# Player\n<playerLine>\n\n" when there is one,
+// The review call of a hosted turn (hosted-review spec, section 2), standalone: `rules` (the run's pack `review`)
+// as the system message, then one user message: "# Speaker\n<name>\n\n", "# Player\n<playerLine>\n\n" when there is one,
 // "# Requested action\n<id>" (then " <params as compact JSON>" when it has parameters; "none (the proposal was
 // refused)" for a refused one), "\n\n# Observation\n<compact JSON>\n\n# Line\n<line>\n\n# Task\n" and
 // HOSTED_REVIEW_INSTRUCTION. stableCount is 1 (the rules).

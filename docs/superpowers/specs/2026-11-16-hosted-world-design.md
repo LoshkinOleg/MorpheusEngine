@@ -112,7 +112,7 @@ E1 replaced the run-wide summaries below with per-NPC summaries worked through a
    - the resolve output exactly as the model produced it, and the adjudication;
    - the line and the timings.
 
-There is no review call, no dice, no state and no snapshot. Thinking, sampling, the context size and the budgets come from `core::Settings`, as in `Session`. A cancel at any step commits nothing.
+A turn has no review call unless it asks for one (`review`, G3, `2026-11-16-hosted-review-design.md`); there are no dice, no state and no snapshot. Thinking, sampling, the context size and the budgets come from `core::Settings`, as in `Session`. A cancel at any step commits nothing.
 
 ### The prompt
 
@@ -243,7 +243,7 @@ The model writes `{"action":"attack","params":{"target":"0001A6A4"}}` (compact).
 - **D2:** `morpheus_server`, HTTP, SSE and `sentence` events, one slot per conversation and any concurrency across conversations (added without changing `HostedSession`'s API; section 1, D1's contract), and `model_id` under llama-server.
 - **E:** per-speaker memory, sharing, and rollback to a game time.
 - **F:** the host's prompt pack and its layer and variable validation.
-- **Later:** the optional review per turn and an explicit call tag (R9); R8's `"decide"` is done (G1, `2026-11-16-decide-speaker-design.md`).
+- **Later:** nothing of R8 and R9 is left: `"decide"` is done (G1, `2026-11-16-decide-speaker-design.md`), the explicit call tag is done (G2) and the optional review per turn is done (G3, `2026-11-16-hosted-review-design.md`).
 
 ## Documentation
 

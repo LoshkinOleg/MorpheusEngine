@@ -13,9 +13,10 @@
 
 namespace morpheus::turn {
 
-// REVIEW_RULES says "at most three" problems in prose.
+// REVIEW_RULES and HOSTED_REVIEW_RULES say "at most three" problems in prose.
 static_assert(REVIEW_MAX_PROBLEMS == 3,
-              "REVIEW_RULES (EngineText.h) names the problem limit in words: change it with REVIEW_MAX_PROBLEMS");
+              "REVIEW_RULES and HOSTED_REVIEW_RULES (EngineText.h) name the problem limit in words: change them with "
+              "REVIEW_MAX_PROBLEMS");
 
 Review ParseReviewOutput(std::string_view text, bool check, bool digest)
 {

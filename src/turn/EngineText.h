@@ -117,8 +117,8 @@ inline constexpr std::string_view HOSTED_CONDENSE_INSTRUCTION =
     "Condense what {actor} remembers, above, into one summary for {actor}'s own memory, not for the player. Keep names, "
     "places, items, promises, secrets, who told {actor} what, and the order of events. Plain prose, at most 250 words.";
 
-// A hosted turn's review call: its system message, and PromptPack's default `review` (no variable). The review reads one
-// spoken line against these rules (hosted-review spec, section 4).
+// A hosted turn's review call: its system message, and PromptPack's default `review` (no variable). The review
+// reads one spoken line against these rules (hosted-review spec, section 4).
 inline constexpr std::string_view HOSTED_REVIEW_RULES = R"(# Review
 You check one spoken line of a character in a role-playing game that a host game runs. Reply with one JSON object and nothing else: "consistent" is false when the line breaks a rule below, true otherwise, and "problems" names each broken rule in one short sentence, at most three (empty when consistent).
 The rules:

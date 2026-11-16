@@ -429,7 +429,8 @@ ApiResponse Api::Handle(std::string_view method, std::string_view path, std::str
                                     if (!rest.empty()) {
                                         stream->Push({"sentence", {{"text", rest}}});
                                     }
-                                    // The timings: resolve and speak, and decide, review and respeak when those calls ran.
+                                    // The timings: resolve and speak, and decide, review and respeak
+                                    // when those calls ran.
                                     nlohmann::json timings = {{"resolve", record->timings.at("resolve")},
                                                               {"speak", record->timings.at("speak")}};
                                     if (record->timings.contains("decide")) {
