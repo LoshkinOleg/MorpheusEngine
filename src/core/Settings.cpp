@@ -243,6 +243,11 @@ Settings LoadSettings(const std::filesystem::path& file)
                                             "with open, skip, end, after_end and close, got '{}'",
                                             where, name));
             }
+        } else if (!format.is_object()) {
+            // A number, null, an array or a boolean: the same message as a bad name, with the value as JSON.
+            throw DataError(std::format("{}: 'thinking_format' must be \"auto\", \"qwen\", \"none\" or an object "
+                                        "with open, skip, end, after_end and close, got {}",
+                                        where, format.dump()));
         } else {
             checkKeys(format, "thinking_format", {"open", "skip", "end", "after_end", "close"});
             ThinkingFormat custom;

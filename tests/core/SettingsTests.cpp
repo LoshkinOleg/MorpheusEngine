@@ -534,6 +534,12 @@ TEST_CASE("LoadSettings reads thinking_format: a preset or the five texts", "[se
     CHECK_THROWS_WITH(load("settings_thinking_bad_name", "deepseek"),
                       ContainsSubstring("'thinking_format' must be \"auto\", \"qwen\", \"none\" or an object with open, "
                                         "skip, end, after_end and close, got 'deepseek'"));
+    // A value that is neither a string nor an object gets the same message, with the value as JSON.
+    CHECK_THROWS_WITH(load("settings_thinking_number", 5),
+                      ContainsSubstring("'thinking_format' must be \"auto\", \"qwen\", \"none\" or an object with open, "
+                                        "skip, end, after_end and close, got 5"));
+    CHECK_THROWS_WITH(load("settings_thinking_null", nullptr),
+                      ContainsSubstring("skip, end, after_end and close, got null"));
     nlohmann::json noOpen = custom;
     noOpen["open"] = "";
     CHECK_THROWS_WITH(load("settings_thinking_no_open", noOpen), ContainsSubstring("thinking_format 'open' must not be empty"));
