@@ -223,12 +223,17 @@ void MemoryIndex::SyncSummaries(const std::vector<core::Summary>& summaries, sto
 std::vector<RetrievalHit> MemoryIndex::Retrieve(const RetrievalQuery& query,
                                                 std::span<const store::EmbeddingKind> sources, int capTokens,
                                                 std::size_t maxHits, inference::LlmBackend& backend,
-                                                std::optional<std::string_view> witness) const
+                                                std::optional<std::string_view> witness,
+                                                const std::function<bool(std::string_view subject)>& loreVisible) const
 {
     // An entry is searched when its kind is one of the sources and, for a witness, when it may see it: a turn it
-    // witnessed, or a summary it owns. Lore and notes are everyone's.
-    auto searched = [&sources, &witness](const Entry& entry) {
+    // witnessed, or a summary it owns. Lore and notes are everyone's, except that a lore filter may refuse a lore
+    // entry (the entry's refId is its subject).
+    auto searched = [&sources, &witness, &loreVisible](const Entry& entry) {
         if (std::find(sources.begin(), sources.end(), entry.kind) == sources.end()) {
+            return false;
+        }
+        if (entry.kind == store::EmbeddingKind::Lore && loreVisible && !loreVisible(entry.refId)) {
             return false;
         }
         if (!witness || (entry.kind != store::EmbeddingKind::Turn && entry.kind != store::EmbeddingKind::Summary)) {

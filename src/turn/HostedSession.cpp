@@ -4,9 +4,11 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <functional>
 #include <format>
 #include <map>
 #include <set>
+#include <string_view>
 #include <system_error>
 #include <utility>
 
@@ -329,7 +331,7 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
             // speak and the pack's decide text. No memories and no retrieval: it is no NPC's view.
             context::HostedInputs inputs;
             inputs.systemText = _world.Prompts().system;
-            inputs.lore = _world.Lore();
+            inputs.lore = _world.AlwaysOnLore(observation.json);
             inputs.participants = conversation.participants;
             inputs.transcript = Entries(conversation, played, conversation.foldedThrough, _store.LatestHostedTurn(), "");
             inputs.observation = observation.json;
@@ -457,9 +459,25 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
     query.input = playerText.value_or("");
     query.scene = {pSpeaker->name};
     query.digest = played.empty() ? std::string() : played.back().line;
+    // A lore entry is searched only when the speaker may see it on this turn's observation: its condition (if any)
+    // holds and its scopes are empty or share one with the speaker's `knows`.
+    const std::function<bool(std::string_view)> loreVisible = [&](std::string_view subject) {
+        for (const core::LoreEntry& entry : _world.Lore()) {
+            if (entry.subject != subject) {
+                continue;
+            }
+            if (entry.condition && !entry.condition->Holds(observation.json)) {
+                return false;
+            }
+            return entry.scopes.empty() || std::any_of(entry.scopes.begin(), entry.scopes.end(), [&](const std::string& scope) {
+                       return std::find(pSpeaker->knows.begin(), pSpeaker->knows.end(), scope) != pSpeaker->knows.end();
+                   });
+        }
+        return false; // Not host lore: the index holds only the host's lore, so this cannot happen.
+    };
     std::vector<RetrievalHit> hits =
         _index.Retrieve(query, HOSTED_SOURCES, _settings.budget.retrievalCap, RETRIEVAL_MAX_HITS, *_pBackend,
-                        speakerId);
+                        speakerId, loreVisible);
 
     // 2. Resolve: a prompt that fits (the fit loop sheds hits, condenses and folds), under the proposal grammar.
     context::HostedInputs tail;
@@ -998,7 +1016,7 @@ FitPass HostedSession::Pass(std::string_view conversationId, std::string_view ac
     MORPHEUS_REQUIRE(inputs.observation.is_object(), "HostedSession::Pass: the tail needs its observation");
     const std::vector<core::Actor> observed = HostedWorld::ActorsOf(inputs.observation);
     inputs.systemText = _world.Prompts().system;
-    inputs.lore = _world.Lore();
+    inputs.lore = _world.AlwaysOnLore(inputs.observation);
     inputs.participants = conversation->participants;
     // The speaker's shown summaries are its memories, oldest first; a shared one names its teller.
     inputs.speakerName = ActorName(conversation->participants, observed, actorId);

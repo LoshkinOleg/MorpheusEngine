@@ -457,6 +457,17 @@ const std::vector<core::LoreEntry>& HostedWorld::Lore() const
     return _lore;
 }
 
+std::vector<core::LoreEntry> HostedWorld::AlwaysOnLore(const nlohmann::json& observation) const
+{
+    std::vector<core::LoreEntry> shown;
+    for (const core::LoreEntry& entry : _lore) {
+        if (entry.alwaysOn && (!entry.condition || entry.condition->Holds(observation))) {
+            shown.push_back(entry);
+        }
+    }
+    return shown;
+}
+
 bool HostedWorld::HasClock() const
 {
     return _hasClock;

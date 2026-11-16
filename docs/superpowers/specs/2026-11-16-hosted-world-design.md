@@ -31,7 +31,7 @@ R5's three operations over the host data of one run.
 
 - **Construction** from the host data: the action catalog (section 3), the observation schema, and the lore entries. It checks all three and throws `core::DataError` naming the JSON pointer of the first fault. The observation schema must stay within the extended `grammar::Validate` subset (section 4).
 - **`Observation Observe(const nlohmann::json& observation) const`** validates the observation and returns it with its parsed core:
-  - first the core, which the engine needs whatever the schema says: `actors`, an array of objects each with `id` (a non-empty string), `name` (a non-empty string) and `is_player` (a boolean), and an optional `bio` (a string). Ids are unique and exactly one actor is the player;
+  - first the core, which the engine needs whatever the schema says: `actors`, an array of objects each with `id` (a non-empty string), `name` (a non-empty string) and `is_player` (a boolean), and an optional `bio` (a string), and an optional `knows` (an array of non-empty strings: the actor's lore scopes; host-feedback spec, section 2). Ids are unique and exactly one actor is the player;
   - then `grammar::Validate` against the host's schema; every error is collected;
   - any fault is a `DataError` that names each failing pointer (for example `/actors/2/id`).
   `Observation` holds the original JSON and the parsed actors (`id`, `name`, `isPlayer`, `bio`) in their order.
@@ -97,7 +97,7 @@ E1 replaced the run-wide summaries below with per-NPC summaries worked through a
    - Every allowed action id must be in the catalog, and at least one action must be left after the actor scopes are applied (section 3).
    - A fault is a `DataError` naming the field. A player text with no room in the tail allowance is a `TurnError`, as in `Session`.
    - The request's events are added to the conversation before the turn, in order.
-1. **Retrieve.** The query is the player text, the speaker's name and the previous line. Hits come from lore and from folded turns of the whole run (this and earlier conversations).
+1. **Retrieve.** (A lore entry is a candidate only when it is visible to the speaker: its scopes and condition, host-feedback spec, section 2.) The query is the player text, the speaker's name and the previous line. Hits come from lore and from folded turns of the whole run (this and earlier conversations).
 2. **Resolve.** The assembled prompt plus the resolve instruction runs under `ProposalGrammar` with a small token cap.
    - `Adjudicate` marks the action requested or refused.
    - A refused action is logged with its reasons and the turn goes on with no action.

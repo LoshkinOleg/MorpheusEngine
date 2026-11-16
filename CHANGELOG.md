@@ -3,6 +3,23 @@
 The morpheus_server API's versions (`api_version` on every response). A breaking change bumps the major version and
 gets an entry here with a migration note.
 
+## API 1.6.0
+
+Lore scopes and conditions, and the review as a continuation (design:
+`docs/superpowers/specs/2026-11-16-host-feedback-design.md`). Only additions to the shapes.
+
+- A host lore entry's optional `scopes` (an array of non-empty strings) and `requires` (`{"pointer", "min"?, "max"?,
+  "equals"?}`: a JSON pointer into the observation and at least one comparison; `min` and `max` are numbers,
+  inclusive, `equals` any JSON value, compared by JSON equality), and an observation actor's optional `knows` (an array
+  of non-empty strings). A lore entry is visible to a speaker on a turn when its `requires` holds on that turn's
+  observation (a missing value, or a value of another type, does not hold) and its `scopes` are empty or share one with
+  the speaker's `knows`. A retrieved entry that is not visible is not searched; an always-on entry is shown in the
+  system message, the decide prompt and the fold prompts only while its `requires` holds on the observation the prompt
+  is built from (a quest stage reached changes the system message once). An always-on entry may not have `scopes`: a
+  400 at `open`. Host data without the new keys is unchanged and keeps its hash.
+- The review becomes a continuation of the speak prompt: it keeps the conversation's prompt cache, so a reviewed turn
+  no longer re-reads the whole conversation prompt afterwards. The shapes are the same.
+
 ## API 1.5.0
 
 The review of a hosted turn (design: `docs/superpowers/specs/2026-11-16-hosted-review-design.md`). Only additions.

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string>
@@ -118,10 +119,13 @@ public:
     // order (ties by kind, then refId), at most maxHits of them, whose "- text\n" lines fit capTokens together. A hit
     // too big for the rest of the cap is skipped. With a `witness`, a turn entry is searched only when the witness is
     // among its witnesses and a summary entry only when the witness owns it; lore and notes are unaffected. No
-    // embedding call is made when nothing is searchable.
+    // embedding call is made when nothing is searchable. With a `loreVisible`, a lore entry is searched only when it
+    // returns true for the entry's subject (a hosted turn's scopes and conditions); turns, summaries and notes are not
+    // asked about. Without one every lore entry is searched.
     std::vector<RetrievalHit> Retrieve(const RetrievalQuery& query, std::span<const store::EmbeddingKind> sources,
                                        int capTokens, std::size_t maxHits, inference::LlmBackend& backend,
-                                       std::optional<std::string_view> witness = std::nullopt) const;
+                                       std::optional<std::string_view> witness = std::nullopt,
+                                       const std::function<bool(std::string_view subject)>& loreVisible = {}) const;
 
 private:
     // Vectors for `documents` of one kind, aligned with them: stored ones whose hash still matches, the rest

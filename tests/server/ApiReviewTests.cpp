@@ -33,7 +33,7 @@ TEST_CASE("A review turn streams the action, then the line after the review, the
     const std::vector<server::StreamEvent> events = test::ReadAll(*response.stream);
     REQUIRE(events.size() >= 3);
     CHECK(events.front().name == "action");
-    CHECK(events.front().data.at("api_version") == "1.5.0");
+    CHECK(events.front().data.at("api_version") == "1.6.0");
 
     // The line is held back until the review is done and then delivered in one piece (an unreviewed turn streams it
     // in several): exactly one token event, whose text is the whole line, after the action.

@@ -32,7 +32,7 @@ TEST_CASE("A decide turn's action event names the speaker the engine chose", "[h
     REQUIRE_FALSE(events.empty());
     CHECK(events.front().name == "action");
     CHECK(events.front().data.at("speaker") == test::SAADIA);
-    CHECK(events.front().data.at("api_version") == "1.5.0");
+    CHECK(events.front().data.at("api_version") == "1.6.0");
     CHECK(events.back().name == "done");
 }
 

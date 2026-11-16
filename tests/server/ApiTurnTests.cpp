@@ -62,7 +62,7 @@ TEST_CASE("A turn streams its action, its tokens and its sentences, then done, a
 
     // The action first, with the API version; done last.
     CHECK(events.front().name == "action");
-    CHECK(events.front().data == nlohmann::json{{"api_version", "1.5.0"},
+    CHECK(events.front().data == nlohmann::json{{"api_version", "1.6.0"},
                                                 {"speaker", test::HULDA},
                                                 {"action", {{"id", "follow"}, {"params", nlohmann::json::object()}}}});
     CHECK(events.back().name == "done");
@@ -139,7 +139,7 @@ TEST_CASE("A turn's errors before its action are JSON with their status, and not
         INFO(response.body.dump());
         CHECK(response.stream == nullptr);
         CHECK(response.status == status);
-        CHECK(response.body.at("api_version") == "1.5.0");
+        CHECK(response.body.at("api_version") == "1.6.0");
         CHECK_THAT(response.body.at("error").at("message").get<std::string>(), ContainsSubstring(part));
     };
 

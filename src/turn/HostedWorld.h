@@ -102,6 +102,10 @@ public:
 
     const std::vector<core::LoreEntry>& Lore() const;
 
+    // The always-on lore a prompt built from `observation` shows: the always-on entries whose condition (if any) holds
+    // on it, in the host's order.
+    std::vector<core::LoreEntry> AlwaysOnLore(const nlohmann::json& observation) const;
+
     // True when the host data names a clock: every observation then holds a finite number at its pointer.
     bool HasClock() const;
 

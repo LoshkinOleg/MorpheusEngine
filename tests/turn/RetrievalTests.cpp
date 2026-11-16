@@ -7,6 +7,9 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <functional>
+#include <optional>
+#include <string_view>
 #include <set>
 #include <string>
 #include <utility>
@@ -101,6 +104,40 @@ TEST_CASE("Lore retrieval ranks shared words first and skips always-on lore", "[
     for (const turn::RetrievalHit& hit : hits) {
         CHECK(hit.refId != "lighthouse"); // Always-on lore is in L1, never retrieved.
     }
+}
+
+TEST_CASE("Retrieve with a lore filter skips the lore entries the filter refuses, and only those", "[retrieval]")
+{
+    const core::World world = MiniWorld();
+    store::RunStore store = NewRun("retrieval_lore_filter", world);
+    test::ScriptedBackend backend(16384);
+    turn::MemoryIndex index("search_document: ");
+    index.SyncLore(world, store, backend);
+    const turn::RetrievalQuery query{"Do storms arrive at dusk here? The keeper knows."};
+
+    // Without a filter the storm entry is a hit (and so is another, which the filter below must keep).
+    const std::vector<turn::RetrievalHit> all = index.Retrieve(query, ALL_SOURCES, 1000, 6, backend);
+    REQUIRE(FindLore(all, "storm") != nullptr);
+    REQUIRE(all.size() >= 2);
+
+    // A filter that refuses the storm entry by its subject removes it and leaves every other hit as it was.
+    std::vector<std::string> asked;
+    const std::function<bool(std::string_view)> noStorm = [&asked](std::string_view subject) {
+        asked.emplace_back(subject);
+        return subject != "storm";
+    };
+    const std::vector<turn::RetrievalHit> filtered = index.Retrieve(query, ALL_SOURCES, 1000, 6, backend, std::nullopt, noStorm);
+    CHECK(FindLore(filtered, "storm") == nullptr);
+    CHECK(filtered.size() == all.size() - 1);
+    for (const turn::RetrievalHit& hit : filtered) {
+        CHECK(FindLore(all, hit.refId) != nullptr);
+    }
+    CHECK_FALSE(asked.empty());
+
+    // A filter that accepts everything changes nothing.
+    const std::function<bool(std::string_view)> everything = [](std::string_view) { return true; };
+    const std::vector<turn::RetrievalHit> same = index.Retrieve(query, ALL_SOURCES, 1000, 6, backend, std::nullopt, everything);
+    CHECK(same.size() == all.size());
 }
 
 TEST_CASE("Stored lore vectors are reused until the text or the prefix changes", "[retrieval]")
