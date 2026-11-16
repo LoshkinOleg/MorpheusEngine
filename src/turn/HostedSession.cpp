@@ -16,6 +16,8 @@
 #include "core/Text.h"
 #include "grammar/Schema.h"
 #include "turn/PromptPack.h"
+#include "turn/Review.h"
+#include "turn/ResolveGrammar.h"
 #include "turn/Session.h"
 
 namespace morpheus::turn {
@@ -511,7 +513,7 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
     }
 
     // 3. Speak: the resolve prompt, the resolve output as the model wrote it, and the speak instruction, so nearly all
-    // of the prompt stays cached. No grammar; the line streams.
+    // of the prompt stays cached. No grammar; the line streams only without a review (with one it is held back).
     inference::Prompt speakPrompt = assembly->prompt;
     context::ExtendForNarrate(speakPrompt, resolved.text, speakMessage);
     inference::GenerationSpec speakSpec;
@@ -520,9 +522,77 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
     speakSpec.thinkingMaxTokens = _settings.budget.narrateThinkingTokens;
     speakSpec.sampling =
         SamplingFrom(_settings.narrateSampling, core::SamplingSeed(seed, turn, core::CallKind::Narrate, 0));
-    const inference::Completion spoken = _pBackend->Complete(speakPrompt, speakSpec, callbacks.onToken, stop);
+    const inference::Completion spoken = _pBackend->Complete(speakPrompt, speakSpec, request.review ? inference::TokenCallback() : callbacks.onToken, stop);
     if (spoken.cancelled) {
         return std::nullopt;
+    }
+
+    // 3b. The review (hosted-review spec), when the request asks for it: the line was held back; the model reviews it
+    // against the requested action and the speaking rules; problems get one respeak; the line is then delivered.
+    std::string line = core::Trim(spoken.text);
+    nlohmann::json reviewTelemetry = nullptr;
+    nlohmann::json respeakTelemetry = nullptr;
+    if (request.review) {
+        inference::GenerationSpec reviewSpec;
+        reviewSpec.grammar = BuildReviewGrammar(true, false);
+        reviewSpec.maxTokens = _settings.budget.reviewMaxTokens;
+        reviewSpec.thinkingMaxTokens = _settings.budget.reviewThinkingTokens;
+        reviewSpec.callTag = "review";
+        reviewSpec.sampling =
+            SamplingFrom(_settings.resolveSampling, core::SamplingSeed(seed, turn, core::CallKind::Review, 0));
+        const inference::Completion reviewed =
+            _pBackend->Complete(HostedReviewPrompt(_world.Prompts().review, pSpeaker->name, tail.playerLine,
+                                                   adjudication, observation.json, line),
+                                reviewSpec, {}, stop);
+        if (reviewed.cancelled) {
+            return std::nullopt;
+        }
+        // An output that cannot be read is the model's mistake: the line stands, and the error is kept.
+        const Review review = ParseReviewOutput(reviewed.text, true, false);
+        reviewTelemetry = CallTelemetry(reviewed, reviewSpec);
+        if (review.consistent) {
+            reviewTelemetry["consistent"] = *review.consistent;
+        }
+        reviewTelemetry["problems"] = review.problems;
+        if (!review.error.empty()) {
+            reviewTelemetry["error"] = review.error;
+        }
+        if (review.consistent == false) {
+            // The respeak message: the correction, the problems that fit narrate_allowance (dropped from the end), a
+            // blank line and the speak instruction; when even the bare correction is too long, the speak instruction.
+            std::vector<std::string> problems = review.problems;
+            auto respeakMessage = [&] {
+                std::string text = std::string(HOSTED_RESPEAK_CORRECTION) + "\n";
+                for (const std::string& problem : problems) {
+                    text += "- " + problem + "\n";
+                }
+                return text + "\n" + speakMessage;
+            };
+            std::string message = respeakMessage();
+            while (_pBackend->CountTokens(message) > _settings.budget.narrateAllowance && !problems.empty()) {
+                problems.pop_back();
+                message = respeakMessage();
+            }
+            if (_pBackend->CountTokens(message) > _settings.budget.narrateAllowance) {
+                message = speakMessage;
+            }
+            inference::Prompt respeakPrompt = assembly->prompt;
+            context::ExtendForNarrate(respeakPrompt, resolved.text, message);
+            inference::GenerationSpec respeakSpec = speakSpec;
+            respeakSpec.callTag = "respeak";
+            respeakSpec.sampling =
+                SamplingFrom(_settings.narrateSampling, core::SamplingSeed(seed, turn, core::CallKind::Renarrate, 0));
+            const inference::Completion respoken = _pBackend->Complete(respeakPrompt, respeakSpec, {}, stop);
+            if (respoken.cancelled) {
+                return std::nullopt;
+            }
+            respeakTelemetry = CallTelemetry(respoken, respeakSpec);
+            line = core::Trim(respoken.text);
+        }
+        // The line the turn commits reaches the host now, in one piece.
+        if (callbacks.onToken && !line.empty()) {
+            callbacks.onToken(line);
+        }
     }
 
     // 4. Commit the record: the listeners are the other participants present.
@@ -540,7 +610,7 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
     record.observation = observation.json;
     record.resolveOutput = resolved.text;
     record.adjudication = adjudication;
-    record.line = core::Trim(spoken.text);
+    record.line = line;
     record.eventsOmitted = static_cast<int>(newEvents.size() - tail.events.size());
     nlohmann::json timings = nlohmann::json::object();
     timings["resolve"] = CallTelemetry(resolved, resolveSpec);
@@ -548,6 +618,12 @@ std::optional<core::HostedTurn> HostedSession::RunTurn(const HostedTurnRequest& 
         timings["resolve"]["refused"] = adjudication.reasons; // The log of why the speaker took no action.
     }
     timings["speak"] = CallTelemetry(spoken, speakSpec);
+    if (!reviewTelemetry.is_null()) {
+        timings["review"] = reviewTelemetry; // The review call, what it found and why it could not be read, if so.
+    }
+    if (!respeakTelemetry.is_null()) {
+        timings["respeak"] = respeakTelemetry;
+    }
     if (!decideTelemetry.is_null()) {
         timings["decide"] = decideTelemetry; // The decide call, and why its answer was refused, if it was.
     }

@@ -34,6 +34,7 @@ struct HostedTurnRequest {
     std::vector<nlohmann::json> events = {};    // Objects with a `text` string, added to the conversation before the turn.
     nlohmann::json observation = nlohmann::json::object();
     std::optional<std::vector<std::string>> allowedActions = {}; // Action ids; absent means every action of the catalog.
+    bool review = false; // Review the line before it is delivered (hosted-review spec); off: as before.
 };
 
 // What a hosted turn reports while it runs.
@@ -144,7 +145,9 @@ public:
     // is none. The decide prompt fits as the resolve prompt does, without folds (the oldest new events, then the oldest
     // lines, leave it); when it still does not, a TurnError names the tail (over tail_allowance) or the context, before
     // any record. onSpeaker fires before the catch-up, so a turn cancelled or failing after it has reported its speaker
-    // without committing, as for onAction.
+    // without committing, as for onAction. With `review` the line is held back, reviewed, spoken once more with the
+    // review's problems when it finds any, then delivered to onToken in one piece; `timings.review` and
+    // `timings.respeak` record the two calls.
     std::optional<core::HostedTurn> RunTurn(const HostedTurnRequest& request, const HostedCallbacks& callbacks,
                                             std::stop_token stop);
 
