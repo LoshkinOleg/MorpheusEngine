@@ -274,7 +274,7 @@ TEST_CASE("Two runs play at once, each conversation on its own slot, and folding
     const std::size_t embeddedBefore = harness.embed.RequestsTo("/embedding").size();
     REQUIRE(test::JsonPost(client, "/v1/runs/a/conversations/c1/end", nlohmann::json::object()).status == 200);
     // The test waits on the fakes: the ended conversation's turn is embedded as history (a document) as its background
-    // upkeep starts. The GET below then waits for the running fold (only a turn stops it), so Hulda's memory is stored.
+    // upkeep starts, which marks it folded.
     CHECK(test::WaitUntil([&] {
         const std::vector<test::FakeLlamaServer::Request> embedded = harness.embed.RequestsTo("/embedding");
         return std::any_of(embedded.begin() + static_cast<std::ptrdiff_t>(embeddedBefore), embedded.end(),
@@ -285,6 +285,9 @@ TEST_CASE("Two runs play at once, each conversation on its own slot, and folding
     const test::HttpJson conversation = test::JsonGet(client, "/v1/runs/a/conversations/c1");
     REQUIRE(conversation.status == 200);
     CHECK(conversation.body.at("conversation").at("folded_through") == 1);
+    // Hulda's memory of it is the fold call after that, which may come after the GET: the upkeep yields to a waiting
+    // request between its steps. So the test waits for the fold's request too.
+    CHECK(test::WaitUntil([&] { return harness.chat.RequestsTo("/completion").size() >= 5; }));
     const std::vector<test::FakeLlamaServer::Request> completions = harness.chat.RequestsTo("/completion");
     REQUIRE(completions.size() == 5);
     CHECK(completions.back().body.at("id_slot") == server::SlotPool::UPKEEP_SLOT);
