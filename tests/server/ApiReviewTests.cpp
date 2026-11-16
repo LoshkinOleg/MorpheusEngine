@@ -1,5 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -37,6 +39,47 @@ TEST_CASE("A review turn streams the action, then the line after the review, the
 
     // The tokens and sentences, after the action, say the line; the last event is done.
     std::string spoken;
+    std::size_t firstToken = events.size();
+    for (std::size_t i = 0; i < events.size(); ++i) {
+        if (events[i].name == "token") {
+            spoken += events[i].data.at("text").get<std::string>();
+            firstToken = std::min(firstToken, i);
+        }
+    }
+    CHECK(spoken == "Stay close.");
+    CHECK(firstToken > 0); // The action event came first: the line is held back until the review is done.
+    CHECK(events.back().name == "done");
+    const nlohmann::json& timings = events.back().data.at("timings");
+    CHECK(timings.contains("review"));
+    CHECK(timings.at("review").at("consistent") == true);
+    CHECK_FALSE(timings.contains("respeak"));
+}
+
+TEST_CASE("A review that finds problems makes done carry timings.respeak and the tokens say the second line",
+          "[hosted-server][api][review]")
+{
+    test::HostedScript script;
+    script.actions = {R"({"action":"none","params":{}})"};
+    script.lines = {"Hulda: Stay close.", "Stay close."};
+    script.reviews = {R"({"consistent":false,"problems":["x"]})"};
+    test::ApiHarness harness("api_review_respeak", script.Responder());
+    REQUIRE(harness.Post("/v1/runs/save_1/open", test::ReadFixture("open.json")).status == 200);
+    REQUIRE(harness.Post("/v1/runs/save_1/conversations",
+                         {{"participants", {test::HULDA, test::AELA}}, {"observation", test::FixtureObservation()}})
+                .status == 200);
+    const server::ApiResponse response = harness.Post("/v1/runs/save_1/conversations/c1/turn",
+                                                      {{"speaker", test::HULDA},
+                                                       {"player_text", "Wait here."},
+                                                       {"review", true},
+                                                       {"observation", test::FixtureObservation()}});
+    REQUIRE(response.status == 200);
+    REQUIRE(response.stream != nullptr);
+    const std::vector<server::StreamEvent> events = test::ReadAll(*response.stream);
+    REQUIRE(events.size() >= 3);
+    CHECK(events.front().name == "action");
+
+    // The tokens spell the second line, not the first.
+    std::string spoken;
     for (const server::StreamEvent& event : events) {
         if (event.name == "token") {
             spoken += event.data.at("text").get<std::string>();
@@ -45,9 +88,8 @@ TEST_CASE("A review turn streams the action, then the line after the review, the
     CHECK(spoken == "Stay close.");
     CHECK(events.back().name == "done");
     const nlohmann::json& timings = events.back().data.at("timings");
-    CHECK(timings.contains("review"));
-    CHECK(timings.at("review").at("consistent") == true);
-    CHECK_FALSE(timings.contains("respeak"));
+    CHECK(timings.at("review").at("consistent") == false);
+    CHECK(timings.contains("respeak"));
 }
 
 TEST_CASE("A malformed review is a 400", "[hosted-server][api][review]")

@@ -47,11 +47,11 @@ A conversation's participants and its end flag are state today. To restore them,
 A run is its live records plus at most one open rollback. Rewind:
 
 1. Undoes the open rollback, if any (below).
-2. If `gameTime` is below the latest live clock, applies a rollback to `gameTime`.
+2. If `gameTime` is below the latest seen clock (section 1's rule: the highest visible clock, raised to the time of the most recent rollback not undone), applies a rollback to `gameTime`.
 
 A rewind that changes nothing (`rewound` false: no rollback was open and none applied) does not resync the retrieval index.
 
-So a rewind to an earlier time hides, a rewind to a later time restores (up to that time), and a rewind to or past the latest live clock restores everything.
+So a rewind to an earlier time hides, a rewind to a later time restores (up to that time), and a rewind to or past the latest seen clock restores everything. An abandoned rollback whose time is above every visible record raises the latest seen clock, so a rewind can then be one that hides nothing; it still dates later records at the save's time.
 
 Without a clock in the host data: `DataError` "game_time: the host data names no clock". A `gameTime` that is not finite: `DataError` "game_time: ...".
 

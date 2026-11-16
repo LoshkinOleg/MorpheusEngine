@@ -15,7 +15,7 @@ TEST_CASE("SamplingFrom converts settings and carries the seed", "[turn]")
     CHECK(sampling.seed == 77u);
 }
 
-TEST_CASE("SamplingFrom copies min_p", "[sampling]")
+TEST_CASE("SamplingFrom copies min_p", "[turn]")
 {
     core::SamplingSettings settings{0.7, 30, 0.9, 0.05};
     const inference::Sampling sampling = turn::SamplingFrom(settings, 99);

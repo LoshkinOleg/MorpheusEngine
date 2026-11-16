@@ -139,7 +139,7 @@ public:
     // turn's L3 entry leaves them out as its prompt did. Model mistakes are not exceptions: a refused action is
     // recorded with its reasons and the turn goes on with no action. With `speakerId` DECIDE_SPEAKER the engine chooses
     // the speaker among the conversation's NPCs present (decide-speaker spec): the last speaker is left out on a turn
-    // with no player text and no events while another remains; one candidate is chosen without a call, more with a
+    // with no player text and no new events while another remains; one candidate is chosen without a call, more with a
     // decide call; a refused decide answer goes to the candidate who spoke least recently, its reasons in
     // `timings.decide.refused`. A DataError "speaker: "decide" needs an NPC participant in the observation" when there
     // is none. The decide prompt fits as the resolve prompt does, without folds (the oldest new events, then the oldest
@@ -179,15 +179,17 @@ public:
                               const std::string& conversationId);
 
     // The run as it was at game time `gameTime` (rollback spec, section 3): the host calls it on every save load. It
-    // undoes the open rollback, if any, then applies one to `gameTime` when that is before the latest live clock; a
-    // rewind to the open rollback's own time changes nothing, and a rewind that changes nothing (rewound false) does
-    // not resync the retrieval index. Hidden records are kept; a later rewind restores them
-    // until a new record abandons them (a turn committed, events recorded, a conversation started or ended,
-    // participants changed, a share stored or copied: see the writers above). The background upkeep then refolds what
-    // NPCs are missing. Throws DataError "game_time: ..." when the host data names no clock or `gameTime` is not
-    // finite, and InferenceError when the backend fails while the retrieval index is synced afterwards (an embedding):
-    // the store has already rewound then, and the next full sync (SyncHistory: a later rewind that changes what is
-    // hidden, a fold during a turn, Maintain's mark of an ended conversation, or reopening the run) repairs the index.
+    // undoes the open rollback, if any, then applies one to `gameTime` when that is before the latest seen clock (the
+    // highest visible clock, raised to the time of a rollback not undone: so an abandoned rollback whose time is above
+    // every visible record can make a rewind that hides nothing, and later records are then dated at the save's time);
+    // a rewind to the open rollback's own time changes nothing, and a rewind that changes nothing (rewound false) does
+    // not resync the retrieval index. Hidden records are kept; a later rewind restores them until a new record abandons
+    // them (a turn committed, events recorded, a conversation started or ended, participants changed, a share stored or
+    // copied: see the writers above). The background upkeep then refolds what NPCs are missing. Throws DataError
+    // "game_time: ..." when the host data names no clock or `gameTime` is not finite, and InferenceError when the
+    // backend fails while the retrieval index is synced afterwards (an embedding): the store has already rewound then,
+    // and the next full sync (SyncHistory: a later rewind that changes what is hidden, a fold during a turn, Maintain's
+    // mark of an ended conversation, or reopening the run) repairs the index.
     RewindResult Rewind(double gameTime);
 
     const store::RunMeta& Meta() const;

@@ -157,7 +157,8 @@ TEST_CASE("HostedReviewPrompt lays out the speaker, the player, the action, the 
     CHECK_THAT(turn::HostedReviewPrompt("R", "Hulda", "", give, observation, "Here.").messages[1].content,
                Catch::Matchers::ContainsSubstring("# Requested action\ngive_item {\"item\":\"Sweetroll\"}\n\n"));
     core::Adjudication refused;
-    const std::string none = turn::HostedReviewPrompt("R", "Hulda", "", refused, observation, "Hm.").messages[1].content;
+    const std::string none =
+        turn::HostedReviewPrompt("R", "Hulda", "", refused, observation, "Hm.").messages[1].content;
     CHECK(none.starts_with("# Speaker\nHulda\n\n# Requested action\nnone (the proposal was refused)\n\n"));
 }
 

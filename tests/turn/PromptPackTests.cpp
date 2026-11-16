@@ -73,7 +73,8 @@ TEST_CASE("A host's texts replace the defaults they name and leave the others", 
 TEST_CASE("A pack's faults name the text and the variable", "[prompts]")
 {
     CHECK(PackError({{"narrate", "Say it."}}) ==
-          "prompts/narrate: unknown text; the pack's texts are system, resolve, speak, turn_cue, decide, summarize, condense, review");
+          "prompts/narrate: unknown text; the pack's texts are system, resolve, speak, turn_cue, decide, summarize, "
+          "condense, review");
     CHECK(PackError({{"speak", ""}}) == "prompts/speak: empty");
     CHECK(PackError({{"system", "You are {speaker}."}}) ==
           "prompts/system: unknown variable {speaker}; this text takes no variable");
@@ -88,11 +89,13 @@ TEST_CASE("A pack's faults name the text and the variable", "[prompts]")
     CHECK(PackError({{"summarize", "Remember, {speaker}."}}) ==
           "prompts/summarize: unknown variable {speaker}; this text takes {actor}");
     CHECK(PackError({{"condense", "{player}"}}) == "prompts/condense: unknown variable {player}; this text takes {actor}");
-    CHECK(PackError({{"review", "Check {speaker}."}}) == "prompts/review: unknown variable {speaker}; this text takes no variable");
+    CHECK(PackError({{"review", "Check {speaker}."}}) ==
+          "prompts/review: unknown variable {speaker}; this text takes no variable");
 
     // The first fault: an unknown key before any text; then texts in the table's order, variables in text order.
     CHECK(PackError({{"zzz", "x"}, {"system", ""}}) ==
-          "prompts/zzz: unknown text; the pack's texts are system, resolve, speak, turn_cue, decide, summarize, condense, review");
+          "prompts/zzz: unknown text; the pack's texts are system, resolve, speak, turn_cue, decide, summarize, "
+          "condense, review");
     CHECK(PackError({{"speak", "{a}"}, {"resolve", "{b} {c}"}}) ==
           "prompts/resolve: unknown variable {b}; this text takes {speaker}, {player}");
     CHECK(PackError({{"speak", ""}, {"resolve", "{b}"}}) ==

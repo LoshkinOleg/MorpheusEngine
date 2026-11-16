@@ -27,7 +27,8 @@ namespace {
 
 const std::string NONE = R"({"action":"none","params":{}})";
 
-// A host's pack replacing the six texts it names (not decide); each marked "PACK" and naming its variables, so a test sees them filled.
+// A host's pack replacing the six texts it names (not decide); each marked "PACK" and naming its variables, so a test
+// sees them filled.
 std::map<std::string, std::string> CustomPack()
 {
     return {{"system", "# Pack\nYou voice the people of a test scene. Act as step 1 asks, then speak as step 2 asks."},
@@ -68,7 +69,8 @@ TEST_CASE("A host's pack replaces the system text, the instructions and the cue 
 {
     test::ScriptedBackend backend(16384, PackResponder());
     turn::HostedSession session = turn::HostedSession::Open(test::HostedRunFile("hosted_pack_texts"),
-                                                            PackHostData(CustomPack()), test::HostedSettings(), 42, backend);
+                                                            PackHostData(CustomPack()), test::HostedSettings(), 42,
+                                                            backend);
     const std::string id = session.StartConversation({test::HULDA, test::AELA}, test::FixtureObservation());
     // Hulda speaks first with no player text and no events (her entry shows the cue), then Aela speaks to her.
     REQUIRE(session.RunTurn(test::Request(id, test::HULDA, ""), {}, {}));
@@ -143,7 +145,8 @@ TEST_CASE("Under a host's pack each turn's prompt keeps the previous prompt's st
 {
     test::ScriptedBackend backend(16384, PackResponder());
     turn::HostedSession session = turn::HostedSession::Open(test::HostedRunFile("hosted_pack_prefix"),
-                                                            PackHostData(CustomPack()), test::HostedSettings(), 42, backend);
+                                                            PackHostData(CustomPack()), test::HostedSettings(), 42,
+                                                            backend);
     const std::string id = session.StartConversation({test::HULDA, test::SAADIA, test::AELA}, test::FixtureObservation());
     std::vector<inference::Prompt> prompts;
     REQUIRE(session.RunTurn(test::Request(id, test::HULDA, "Hi."), {}, {}));

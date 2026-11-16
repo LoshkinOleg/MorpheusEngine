@@ -70,11 +70,13 @@ struct LayerTokens {
 struct Assembly {
     inference::Prompt prompt = {};
     LayerTokens tokens = {};
-    int transcriptBudget = 0;          // Tokens L3 may add to the templated prompt, with the summary counted at most at summary_cap (always positive).
+    // Tokens L3 may add to the templated prompt, with the summary counted at most at summary_cap (always positive).
+    int transcriptBudget = 0;
     int transcriptCost = 0;            // Tokens L3 adds to the templated prompt, template tokens included.
     bool transcriptOverBudget = false; // Fold old turns into the summary and assemble again.
     bool summaryOverBudget = false;    // The summary itself must be condensed.
-    bool tailOverBudget = false;       // The tail (state or observation, retrieval, input and instruction) exceeds tail_allowance.
+    // The tail (state or observation, retrieval, input and instruction) exceeds tail_allowance.
+    bool tailOverBudget = false;
     // The full templated prompt plus both generations exceeds the context: shrink the tail or fold.
     bool contextOverflow = false;
 

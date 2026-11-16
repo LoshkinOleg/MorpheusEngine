@@ -157,7 +157,8 @@ TEST_CASE("Host data carries the host's prompt texts; without them it hashes as 
     // A wrong shape names its pointer.
     nlohmann::json notObject = test::ReadFixture("open.json");
     notObject["prompts"] = "speak";
-    CHECK_THROWS_WITH(turn::HostDataFromJson(notObject), "host data at /prompts: 'prompts' must be a JSON object of texts");
+    CHECK_THROWS_WITH(turn::HostDataFromJson(notObject),
+                      "host data at /prompts: 'prompts' must be a JSON object of texts");
     nlohmann::json notString = test::ReadFixture("open.json");
     notString["prompts"] = {{"speak", 3}};
     CHECK_THROWS_WITH(turn::HostDataFromJson(notString), "host data at /prompts/speak: a prompt text must be a string");
@@ -220,7 +221,8 @@ TEST_CASE("Each actor scope offers its actors, never the speaker, each once", "[
         {"id": "beckon", "params": {"companion": {"type": "actor", "scope": "participant"}}}]})"));
     const turn::Observation observation = world.Observe(test::FixtureObservation());
     // Hulda and Aela take part; Aela is listed twice to show the enum keeps each id once.
-    const turn::Participants participants = {{test::HULDA, "Hulda", ""}, {test::AELA, "Aela", ""}, {test::AELA, "Aela", ""}};
+    const turn::Participants participants = {
+        {test::HULDA, "Hulda", ""}, {test::AELA, "Aela", ""}, {test::AELA, "Aela", ""}};
     auto targets = [](const nlohmann::json& schema, std::size_t branch, const char* param) {
         return schema.at("oneOf")[branch].at("properties").at("params").at("properties").at(param).at("enum");
     };

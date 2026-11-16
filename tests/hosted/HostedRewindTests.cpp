@@ -279,6 +279,28 @@ TEST_CASE("A record written after a rewind is dated at the rewind's time", "[hos
     CHECK(events[0].clock == 2.5);
 }
 
+TEST_CASE("A conversation end after an abandon is dated at the rollback's time", "[hosted][rewind]")
+{
+    // The rewind to 1.5 hid turn 2 (at 2.0) and left its rollback open; the end below abandons it. The visible records
+    // are at 1.0, so the run is at 1.5 (the rollback's time), not 1.0: the end is dated 1.5.
+    test::HostedScript script;
+    script.actions = {R"({"action":"none","params":{}})", R"({"action":"none","params":{}})"};
+    script.lines = {"One.", "Two."};
+    test::ScriptedBackend backend(16384, test::MemoryEchoResponder(script));
+    turn::HostData data = test::FixtureHostData();
+    data.clock = CLOCK;
+    turn::HostedSession session = turn::HostedSession::Open(test::HostedRunFile("hosted_rewind_end_clock"), data,
+                                                            test::HostedSettings(), 42, backend);
+    const Rewound run = PlayAndRewind(session);
+    session.EndConversation(run.open);
+    REQUIRE(session.Conversation(run.open)->ended);
+
+    // A rewind to 1.4 hides what is dated after it: the end is (it is at 1.5; dated 1.0 it would stay), so the
+    // conversation is open again.
+    REQUIRE(session.Rewind(1.4).rewound);
+    CHECK_FALSE(session.Conversation(run.open)->ended);
+}
+
 TEST_CASE("A rewind that changes nothing does not resync the retrieval index", "[hosted][rewind]")
 {
     test::HostedScript script;
